@@ -66,7 +66,7 @@ fn fuzz_negative_control_rejects_a_dropped_mention_marker() {
 
 fn files(menu: &mut CompletionMenu) {
     for path in ["src/readme.md", "src/a b.rs", "界/👩‍💻.rs", "@memo.rs"] {
-        let result = menu.set_file(&format!("workspace/{path}"), Some(b""));
+        let result = menu.set_file(&format!("names/{path}"), Some(b""));
         assert!(result.is_ok(), "{result:?}");
     }
 }
@@ -83,7 +83,7 @@ fn commands(menu: &mut CompletionMenu) {
 }
 fn single(menu: &mut CompletionMenu, value: &str) {
     menu.clear_files();
-    let result = menu.set_file(&format!("workspace/{value}"), Some(b""));
+    let result = menu.set_file(&format!("names/{value}"), Some(b""));
     assert!(result.is_ok(), "{result:?}");
 }
 fn refresh_files(menu: &mut CompletionMenu, editor: &Editor) {

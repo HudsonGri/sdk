@@ -1,4 +1,32 @@
 impl DemandSource for NativeDemandSource {
+    async fn same_volume<W: FsWork + Send>(
+        &self,
+        source: SourceReference,
+        directory: &NamespacePath,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<bool, DemandError> {
+        self.request(
+            directory,
+            work,
+            cancellation,
+            move |provider, directory, context| {
+                provider.check(source, context)?;
+                let (relative, allocation) = provider.relative(directory, context)?;
+                let result = match provider.inner.root.same_mount(&relative, context) {
+                    // Authored-only directories have no native mount to cross.
+                    Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Ok(true)
+                    }
+                    result => result,
+                };
+                drop(relative);
+                context.release(allocation)?;
+                result
+            },
+        )
+        .await
+    }
     fn reference(&self) -> SourceReference {
         SourceReference {
             identity: self.inner.identity,

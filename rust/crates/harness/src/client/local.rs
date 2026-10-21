@@ -42,9 +42,12 @@ pub async fn local_completions(
     local: &LocalHarness,
     input: &mut crate::tui::PromptInput,
 ) -> Result<crate::tui_files::CompletionFiles> {
-    // TODO(#495): take this resident query bound from the followed client settings.
-    crate::tui_files::CompletionFiles::observe_authorized(local.task_files(), input, None, 4096)
-        .await
+    let mut files =
+        crate::tui_files::CompletionFiles::observe_authorized(local.task_files(), input, None)
+            .await?;
+    #[cfg(feature = "native-execution")]
+    local.bind_name_search(&mut files).await?;
+    Ok(files)
 }
 
 /// Open the file-backed UI session. Its identity is supplied by the client binding.

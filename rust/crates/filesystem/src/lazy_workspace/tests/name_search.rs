@@ -1,0 +1,306 @@
+use super::*;
+use crate::{GitIgnorePolicy, NameWalk};
+
+async fn names_hydrate(n: usize, broken: bool) -> usize {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::from_static(b"candidate content"));
+    source.directory_entries = n;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::parse("file-0001.txt\n"))
+        .await
+        .unwrap();
+    let mut seen = 0;
+    while let Some(page) = walk.next_page().await.unwrap() {
+        for name in page {
+            assert!(name.regular);
+            if broken {
+                walk.read(&name.path, 1024).await.unwrap();
+            }
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, n - usize::from(n > 1));
+    source.counts.ranges.load(Ordering::Relaxed)
+}
+
+#[tokio::test]
+async fn name_search_does_not_hydrate_lazy_candidates() {
+    assert_eq!(names_hydrate(64, false).await, 0);
+}
+
+#[tokio::test]
+async fn name_search_hydration_counter_detects_content_reads() {
+    assert!(names_hydrate(64, true).await > 0);
+}
+
+#[tokio::test]
+async fn name_search_million_generated_entries_are_paged_without_retaining_the_tree() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::from_static(b"never hydrate"));
+    source.directory_entries = 1_000_000;
+    source.paged = true;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut total = 0;
+    let mut largest = 0;
+    while let Some(page) = walk.next_page().await.unwrap() {
+        total += page.len();
+        largest = largest.max(page.len());
+        assert!(
+            walk.pending_directories() <= 1,
+            "flat generated source retained a namespace frontier"
+        );
+    }
+    assert_eq!(total, 1_000_000);
+    assert_eq!(largest, 128);
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn name_search_explicit_symlink_is_never_a_regular_candidate() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::from_static(b"/loop"));
+    source.node.kind = SourceNodeKind::SymbolicLink;
+    let lazy = attach(&fs, Arc::new(source), MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, Some("loop"), GitIgnorePolicy::parse(""))
+        .await
+        .unwrap();
+    let page = loop {
+        let page = walk.next_page().await.unwrap().unwrap();
+        if !page.is_empty() {
+            break page;
+        }
+    };
+    assert_eq!(page.len(), 1);
+    assert!(!page[0].regular);
+    assert!(!page[0].directory);
+    assert!(walk.next_page().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating() {
+    use crate::{NameIndex, NameIndexManifest};
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::from_static(b"unread contents"));
+    source.directory_entries = 513;
+    source.paged = true;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::parse(""))
+        .await
+        .unwrap();
+    let page = loop {
+        let page = walk.next_page().await.unwrap().unwrap();
+        if !page.is_empty() {
+            break page;
+        }
+    };
+    assert_eq!(page.len(), 128);
+    let expected = lazy
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    let manifest = NameIndexManifest {
+        schema: 1,
+        cut: walk.cut(),
+        observed_generation: expected.id(),
+        pages: 1,
+        pending_directories: walk.pending_directories(),
+        complete: false,
+        checkpoint: walk.checkpoint().unwrap(),
+    };
+    NameIndex::publish(lazy.workspace(), &expected, manifest, Some(&page))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(walk);
+    let before = source.counts.pages.load(Ordering::Relaxed);
+    let index = NameIndex::open(lazy.workspace()).await.unwrap().unwrap();
+    for _ in 0..4 {
+        assert_eq!(index.page(0).await.unwrap().len(), 128);
+    }
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
+    let mut resumed =
+        NameWalk::resume(&lazy, index.manifest.checkpoint, GitIgnorePolicy::parse(""))
+            .await
+            .unwrap();
+    let mut remaining = 0;
+    while let Some(page) = resumed.next_page().await.unwrap() {
+        remaining += page.len();
+    }
+    assert_eq!(remaining, 513 - 128);
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn name_search_checkpoint_rejects_another_volume() {
+    let fs = Fs::memory();
+    let lazy = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::new())),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let checkpoint = NameWalk::lazy(&lazy, None, GitIgnorePolicy::parse(""))
+        .await
+        .unwrap()
+        .checkpoint()
+        .unwrap();
+    let other_fs = Fs::memory();
+    let other = attach(
+        &other_fs,
+        Arc::new(CountingSource::new(Bytes::new())),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        NameWalk::resume(&other, checkpoint, GitIgnorePolicy::parse(""))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn name_search_uses_authored_metadata_before_the_unindexed_source() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::from_static(b"unread"));
+    source.directory_entries = 1_000_000;
+    source.paged = true;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    lazy.write(
+        "/near.txt",
+        Bytes::from_static(b"overlay").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        accounting!(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let first = walk.next_page().await.unwrap().unwrap();
+    assert_eq!(
+        first
+            .iter()
+            .map(|name| name.path.as_str())
+            .collect::<Vec<_>>(),
+        ["near.txt"]
+    );
+    assert_eq!(
+        source.counts.pages.load(Ordering::Relaxed),
+        0,
+        "authored seed waited for source listing"
+    );
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+    // Negative control: merged directory enumeration starts with the unindexed
+    // source. It cannot provide the known authored file immediately.
+    let cut = lazy.snapshot(accounting!()).await.unwrap();
+    let (page, _, _) = lazy
+        .list_directory_at_snapshot(cut, "/", None, 128, accounting!())
+        .await
+        .unwrap();
+    assert!(
+        !page
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"near.txt")
+    );
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
+    use crate::{NameIndex, NameIndexManifest};
+    let fs = Fs::memory();
+    let lazy = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::new())),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let page = walk.next_page().await.unwrap().unwrap();
+    let expected = lazy
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    let manifest = NameIndexManifest {
+        schema: 1,
+        cut: walk.cut(),
+        observed_generation: expected.id(),
+        pages: 1,
+        pending_directories: walk.pending_directories(),
+        complete: false,
+        checkpoint: walk.checkpoint().unwrap(),
+    };
+    lazy.write(
+        "/concurrent.txt",
+        Bytes::from_static(b"written").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        accounting!(),
+    )
+    .await
+    .unwrap();
+    let current = lazy
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    assert_ne!(expected.id(), current.id());
+    assert!(
+        NameIndex::publish(lazy.workspace(), &expected, manifest.clone(), Some(&page))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Negative control: the same index bytes are valid under the current head.
+    assert!(
+        NameIndex::publish(lazy.workspace(), &current, manifest, Some(&page))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}

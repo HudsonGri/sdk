@@ -4,9 +4,7 @@ use super::*;
 pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
     matches!(
         argv.first().map(String::as_str),
-        Some(
-            "commit" | "status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore"
-        )
+        Some("commit" | "status" | "diff" | "blame" | "clean" | "archive" | "check-ignore")
     )
 }
 
@@ -28,7 +26,10 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
-    if !git_transition_command(argv)
+    // Read-only content search must never recover a pending mutation as a
+    // side effect. Its caller deliberately holds no publication lease.
+    if !argv.first().is_some_and(|command| command == "grep")
+        && !git_transition_command(argv)
         && repository
             .resume(executor)
             .await

@@ -21,7 +21,16 @@ impl TryFrom<String> for InputPath {
         if path.len() > 4096
             || !matches!(
                 parts.next(),
-                Some("commands" | "workspace" | "config" | ".claude" | ".codex" | "skills")
+                Some(
+                    "commands"
+                        | "workspace"
+                        | "config"
+                        | ".claude"
+                        | ".codex"
+                        | "skills"
+                        | "names"
+                        | "search"
+                )
             )
             || !path.contains('/')
             || parts.any(|p| {

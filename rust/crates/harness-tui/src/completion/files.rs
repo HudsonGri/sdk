@@ -6,17 +6,22 @@ pub(super) struct Entry {
     pub kind: CompletionKind,
     pub item: Rc<Completion>,
     pub theme: bool,
+    pub query: Option<String>,
 }
 
 impl CompletionMenu {
-    /// Fold one command/workspace file from a snapshot or cursor-follow change.
+    /// Fold one command or path-index file from a snapshot/follow change.
     /// Paths are logical volume paths: commands/*.json, commands/**/*.md,
-    /// workspace/**. `None` removes a file. A malformed replacement is atomic.
+    /// names/**. UI workspace files are never mention candidates.
     pub fn set_file(&mut self, path: &str, bytes: Option<&[u8]>) -> io::Result<()> {
         let entries = bytes
             .map(|bytes| parse_file(path, bytes))
             .transpose()?
             .unwrap_or_default();
+        let progress = progress(path, bytes)?;
+        if let Some(progress) = progress {
+            self.indexing_directories = progress;
+        }
         self.set_entries(path, bytes.is_some(), entries);
         Ok(())
     }
@@ -34,10 +39,13 @@ impl CompletionMenu {
                     .map(|bytes| parse_file(path, bytes))
                     .transpose()?
                     .unwrap_or_default();
-                Ok((path, bytes.is_some(), entries))
+                Ok((path, bytes.is_some(), entries, progress(path, bytes)?))
             })
             .collect::<io::Result<Vec<_>>>()?;
-        for (path, present, entries) in decoded {
+        for (path, present, entries, progress) in decoded {
+            if let Some(progress) = progress {
+                self.indexing_directories = progress;
+            }
             self.set_entries(path, present, entries);
         }
         Ok(())
@@ -110,7 +118,27 @@ impl CompletionMenu {
         self.next_file = 0;
         self.items.clear();
         self.selected = 0;
+        self.indexing_directories = None;
     }
+}
+
+fn progress(path: &str, bytes: Option<&[u8]>) -> io::Result<Option<Option<(String, usize)>>> {
+    if path != "search/progress.json" {
+        return Ok(None);
+    }
+    let Some(bytes) = bytes else {
+        return Ok(Some(None));
+    };
+    #[derive(serde::Deserialize)]
+    struct Progress {
+        query: String,
+        pending_dirs: usize,
+        complete: bool,
+    }
+    let value: Progress = serde_json::from_slice(bytes)?;
+    Ok(Some(
+        (!value.complete).then_some((value.query, value.pending_dirs)),
+    ))
 }
 
 fn make(
@@ -123,6 +151,7 @@ fn make(
     Entry {
         kind,
         theme: false,
+        query: None,
         item: Rc::new(Completion {
             label: if kind == CompletionKind::Command {
                 format!("/{value}")
@@ -138,7 +167,7 @@ fn make(
 }
 
 fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
-    if let Some(path) = path.strip_prefix("workspace/") {
+    if let Some(path) = path.strip_prefix("names/") {
         return Ok(vec![make(
             CompletionKind::Mention,
             path.into(),
@@ -146,6 +175,23 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
             false,
             true,
         )]);
+    }
+    if path == "search/results.json" {
+        #[derive(serde::Deserialize)]
+        struct Results {
+            query: String,
+            paths: Vec<String>,
+        }
+        let results: Results = serde_json::from_slice(bytes)?;
+        return Ok(results
+            .paths
+            .into_iter()
+            .map(|path| {
+                let mut entry = make(CompletionKind::Mention, path, String::new(), false, true);
+                entry.query = Some(results.query.clone());
+                entry
+            })
+            .collect());
     }
     let Some(path) = path.strip_prefix("commands/") else {
         return Ok(vec![]);

@@ -139,6 +139,14 @@ pub mod notification;
 pub mod operation_window;
 pub mod path;
 mod path_index;
+mod name_walk;
+#[cfg(not(target_arch = "wasm32"))]
+mod name_index;
+#[cfg(not(target_arch = "wasm32"))]
+pub use name_index::{NameIndex, NameIndexManifest};
+pub use name_walk::{NameWalk, SearchName, SearchError, NameCut};
+#[cfg(not(target_arch = "wasm32"))]
+pub use name_walk::NameCheckpoint;
 pub mod performance;
 mod record_store;
 pub mod s3;

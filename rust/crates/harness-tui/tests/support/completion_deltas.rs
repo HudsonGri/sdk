@@ -4,7 +4,7 @@ use acyclic_harness_tui::{CompletionMenu, Editor};
 /// every edit. The reference menu never shares cached parser/editor state.
 pub fn exercise(data: &[u8]) {
     let mut catalog = CompletionMenu::default();
-    for path in ["workspace/a.rs", "workspace/a b.rs", "workspace/aa file.rs"] {
+    for path in ["names/a.rs", "names/a b.rs", "names/aa file.rs"] {
         catalog.set_file(path, Some(b"")).unwrap();
     }
     catalog.set_file("commands/a.md", Some(b"a")).unwrap();

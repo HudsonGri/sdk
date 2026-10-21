@@ -20,6 +20,8 @@ pub struct Workspace<'a> {
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.
     pub authored_at_seconds: i64,
+    /// Evaluates the caller's path access decision before each search read.
+    pub read_allowed: &'a (dyn Fn(&str) -> bool + Send + Sync),
 }
 
 /// A facade result and any branch view selected by checkout.
@@ -51,10 +53,18 @@ where
         OperationWindowLease::publication_permit,
     );
     let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
-    let (ignore, merge_drivers) = git_policy(workspace.view).await?;
+    let (ignore, merge_drivers) = if args.first().is_some_and(|command| command == "grep") {
+        (
+            search_ignore(workspace.view).await?,
+            Arc::new(MergeDriverRegistry::new()),
+        )
+    } else {
+        git_policy(workspace.view).await?
+    };
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
+        read_allowed: workspace.read_allowed,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),

@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 fn candidate(menu: &mut CompletionMenu, path: &str) -> Result<(), std::io::Error> {
     menu.clear_files();
-    menu.set_file(&format!("workspace/{path}"), Some(b""))
+    menu.set_file(&format!("names/{path}"), Some(b""))
 }
 
 pub fn exercise(data: &[u8]) -> Result<(), std::io::Error> {

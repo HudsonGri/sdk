@@ -195,6 +195,25 @@ pub trait DemandSource: Send + Sync {
     /// Current opaque source reference.
     fn reference(&self) -> SourceReference;
 
+    /// Whether recursive metadata enumeration may enter this directory without
+    /// leaving the source's volume. Logical sources have no native mount boundary.
+    fn same_volume<W: crate::facade::FsWork + Send>(
+        &self,
+        _source: SourceReference,
+        _directory: &NamespacePath,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = W::Output<bool, DemandError>> + Send {
+        async move {
+            let accounting = work.accounting(cancellation);
+            let result = cancellation
+                .check()
+                .map(|()| true)
+                .map_err(|_| DemandError::Cancelled);
+            work.finish(result, &accounting)
+        }
+    }
+
     /// Resolve only the requested path. `None` is known absence.
     fn lookup<W: crate::facade::FsWork + Send>(
         &self,

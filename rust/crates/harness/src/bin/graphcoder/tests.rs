@@ -128,7 +128,7 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
     input.committed_text("@rea", 2);
     input
         .completion
-        .set_file("workspace/read me.rs", Some(b"source"))
+        .set_file("names/read me.rs", Some(b"source"))
         .unwrap();
     input.refresh_completions();
     assert!(
@@ -139,6 +139,24 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
     assert_eq!(input.editor.text(), "/read @\"read me.rs\" ");
     input.editor.undo();
     assert_eq!(input.editor.text(), "/read @rea");
+}
+
+#[test]
+fn file_search_progress_and_query_bound_top_k_render_in_graphcoder() {
+    use acyclic_harness::tui::{Editor, Screen, key_event::{KeyCode, KeyEvent, KeyModifiers}};
+    let mut input = PromptInput::new(Editor::new("inspect @mntgt"));
+    input.completion.set_file("search/progress.json", Some(br#"{"query":"mntgt","pending_dirs":17,"complete":false}"#)).unwrap();
+    input.refresh_completions();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal.draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0)).unwrap();
+    assert!(screen_text(&terminal).contains("still indexing (17 dirs)"));
+    input.completion.set_file("workspace/layout.json", Some(b"{}")).unwrap();
+    assert_eq!(input.completion.items().len(), 0);
+    input.completion.set_file("search/results.json", Some(br#"{"query":"mntgt","paths":["neighbour/mention target.txt"]}"#)).unwrap();
+    terminal.draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0)).unwrap();
+    assert!(screen_text(&terminal).contains("neighbour/mention target.txt"));
+    assert!(input.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 1, 78).is_empty());
+    assert_eq!(input.editor.text(), "inspect @\"neighbour/mention target.txt\" ");
 }
 
 #[test]
@@ -320,7 +338,7 @@ async fn completion_popup_follows_real_task_volume_publications() {
         .append(
             cut,
             &Write::new(
-                FileKey::parse("workspace/新しい.rs").unwrap(),
+                FileKey::parse("names/新しい.rs").unwrap(),
                 b"source".to_vec(),
             ),
         )

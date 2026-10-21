@@ -38,6 +38,8 @@ mod context;
 mod files;
 mod inheritance;
 mod input;
+#[cfg(all(feature = "tui", feature = "native-execution"))]
+mod name_search;
 mod orphans;
 mod owner;
 mod owner_record;

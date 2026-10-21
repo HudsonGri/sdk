@@ -107,6 +107,7 @@ async fn run(
             checkout: None,
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
         },
         &argv,
     )
@@ -202,6 +203,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 checkout: None,
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
             },
             &["diff".into(), "agents/absent".into()],
         )
@@ -397,6 +399,167 @@ async fn fixture_native(
 }
 
 #[tokio::test]
+async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    std::fs::write(root.join("unrelated.txt"), b"must stay lazy\n")?;
+    // Search does not require merge attributes, even when they are invalid UTF-8.
+    std::fs::write(root.join(".gitattributes"), [0xff])?;
+    let before = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let (output, _) = run(
+        &fs,
+        &store,
+        &main,
+        main.workspace().id(),
+        &["grep", "origin", "native.txt"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = output
+    else {
+        return Err("expected grep result".into());
+    };
+    assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(value["matches"][0]["path"], "native.txt");
+    assert_eq!(value["files_examined"], 1);
+    assert_eq!(value["complete"], true);
+    let after = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    assert_eq!(before.id(), after.id(), "grep exactified source files");
+    assert!(
+        after
+            .stat(
+                "/unrelated.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    // Negative control: the former whole-tree preparation authors source files.
+    main.exactify(
+        "/",
+        PublicationPermit::Unrestricted,
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await?;
+    let exact = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    assert_ne!(before.id(), exact.id());
+    assert!(
+        exact
+            .stat(
+                "/unrelated.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_grep_checks_each_candidate_access_decision() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    for denied in [true, false] {
+        let output = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository: main.workspace().id(),
+                lease: None,
+                checkout: None,
+                author: "test",
+                authored_at_seconds: 1,
+                read_allowed: &|path| !(denied && path == "native.txt"),
+            },
+            &["grep".into(), "origin".into()],
+        )
+        .await?;
+        let Some(GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+            value, ..
+        })) = output.command
+        else {
+            return Err("expected grep result".into());
+        };
+        assert_eq!(
+            value["matches"].as_array().unwrap().len(),
+            usize::from(!denied)
+        );
+        assert_eq!(value["files_examined"], u64::from(!denied));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_grep_does_not_recover_pending_mutations() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture_native(true).await?;
+    let repository = acyclic_fs::GitCompatRepository::new(main.workspace().id(), store.clone());
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let snapshot = main
+        .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
+        .await?;
+    assert!(matches!(
+        repository
+            .execute(
+                acyclic_fs::GitCommand::Switch {
+                    branch: "topic".into(),
+                    create: true
+                },
+                acyclic_fs::GitTreeRef::Lazy(snapshot)
+            )
+            .await?,
+        GitCommandOutput::Prepared { .. }
+    ));
+    let pending = repository.pending_transition().await?.unwrap().id;
+    assert!(
+        run(
+            &fs,
+            &store,
+            &main,
+            main.workspace().id(),
+            &["grep", "origin"]
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(repository.pending_transition().await?.unwrap().id, pending);
+    // Negative control: the existing mutation recovery entry point consumes it.
+    let output = git::run(
+        git::Workspace {
+            filesystem: &fs,
+            store: &store,
+            view: (&main).into(),
+            root: std::path::Path::new("."),
+            repository: main.workspace().id(),
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+            read_allowed: &|_| true,
+        },
+        &["log".into()],
+    )
+    .await?;
+    assert!(output.command.is_none());
+    assert!(repository.pending_transition().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     let repository = main.workspace().id();
@@ -447,6 +610,7 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
             checkout: None,
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
         },
         &["diff".into(), "agents/child".into()],
     )
@@ -523,6 +687,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 checkout,
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
             },
             &["tag".into(), tag.into()],
         )
@@ -544,6 +709,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 checkout,
                 author: "test",
                 authored_at_seconds: 1,
+                read_allowed: &|_| true,
             },
             &["diff".into(), "agents/absent".into()],
         )

@@ -61,7 +61,7 @@ fn files_snapshot_follow_and_resume() -> Result {
                 );
             }
             put(&volume, "commands/thesis.md", b"Draft a thesis").await?;
-            put(&volume, "workspace/Straße.rs", b"source").await?;
+            put(&volume, "names/Straße.rs", b"source").await?;
             let mut input = PromptInput::new(Editor::new("/thes"));
             let mut files = CompletionFiles::observe(&volume, &mut input, None, 100).await?;
             assert_eq!(
@@ -79,7 +79,7 @@ fn files_snapshot_follow_and_resume() -> Result {
             input.editor.set_text("@new", 2);
             input.refresh_completions();
             assert!(!input.completion.active(&input.editor));
-            put(&volume, "workspace/new.rs", b"new source").await?;
+            put(&volume, "names/new.rs", b"new source").await?;
             files.next(&mut input).await?;
             assert!(input.completion.active(&input.editor));
             assert_eq!(input.completion.items().next().unwrap().value, "new.rs");
@@ -174,7 +174,7 @@ fn pty_child() -> Result {
             input.editor.set_text("@new", 2);
             input.refresh_completions();
             assert!(!input.completion.active(&input.editor));
-            put(&volume, "workspace/new.rs", b"created after snapshot").await?;
+            put(&volume, "names/new.rs", b"created after snapshot").await?;
             files.next(&mut input).await?;
             assert!(input.completion.active(&input.editor));
             assert_eq!(input.completion.items().next().unwrap().value, "new.rs");
@@ -214,7 +214,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 48, ..Default::default() })]
     #[test]
     fn source_paths_are_canonical_and_round_trip(path in ".{0,256}") {
-        for prefix in ["commands/", "workspace/", "config/"] {
+        for prefix in ["commands/", "names/", "config/"] {
             let path = format!("{prefix}{path}");
             path_sequences::exercise(path.as_bytes());
             if let Ok(key) = FileKey::parse(&path) {
@@ -232,10 +232,10 @@ proptest::proptest! {
 fn deserialization_cannot_bypass_source_path_validation() {
     for path in [
         "commands/../secret",
-        "workspace/",
-        "workspace/C:/secret",
-        "workspace/a\\b",
-        "workspace//x",
+        "names/",
+        "names/C:/secret",
+        "names/a\\b",
+        "names//x",
     ] {
         let encoded = serde_json::json!({"Input": path});
         assert!(serde_json::from_value::<FileKey>(encoded).is_err());

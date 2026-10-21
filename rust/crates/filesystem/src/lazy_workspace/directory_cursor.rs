@@ -1,10 +1,52 @@
 use super::*;
+use crate::facade::FsWork as _;
 use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
     Encoder, ReadAllocationStep,
 };
 const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v1\0";
 impl LazyDirectoryCursor {
+    /// Freezes a continuation for a durable metadata-index checkpoint.
+    pub(crate) fn checkpoint(&self) -> Result<Vec<u8>, LazyWorkspaceError> {
+        let stop = CancellationToken::new();
+        let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
+        let directory = self
+            .directory
+            .unicode_text_with_accounting(&mut ctx, &stop)?;
+        let encoded = encode_fields(self, &directory.0, &mut ctx)?;
+        let length = directory.0.capacity() as u64;
+        drop(directory.0);
+        crate::kernel::retire_allocation(directory.1, length, &mut ctx)?;
+        Ok(encoded.0)
+    }
+
+    pub(crate) fn restore_checkpoint(
+        bytes: &[u8],
+        profile: crate::FilesystemProfile,
+        limits: crate::VolumeLimits,
+    ) -> Result<Self, LazyWorkspaceError> {
+        let stop = CancellationToken::new();
+        let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
+        let input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
+            decode_fields(bytes, profile, limits, &mut observe)
+        })?;
+        let directory =
+            NamespacePath::parse_in_profile(&input.0.1, profile, limits, &mut ctx, &stop)?;
+        let length = input.0.1.capacity() as u64;
+        let mut allocation = input.1;
+        let temporary = crate::kernel::split_allocation(&mut allocation, length)?;
+        drop(input.0.1);
+        crate::kernel::retire_allocation(temporary, length, &mut ctx)?;
+        let mut directory_allocation = directory.1;
+        allocation.absorb(&mut directory_allocation)?;
+        Ok(Self {
+            cut: input.0.0,
+            directory: directory.0,
+            phase: input.0.2,
+            allocation,
+        })
+    }
+
     /// Encodes a frozen continuation on its original native ledger.
     pub fn encode(
         &self,

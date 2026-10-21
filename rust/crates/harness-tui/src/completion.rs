@@ -295,6 +295,7 @@ pub struct CompletionMenu {
     /// Selected row, wrapping during navigation.
     pub selected: usize,
     dismissed: Option<CompletionRequest>,
+    indexing_directories: Option<(String, usize)>,
 }
 
 impl CompletionMenu {
@@ -385,11 +386,17 @@ impl CompletionMenu {
         if self.request == request {
             return;
         }
-        let narrower = self
-            .request
-            .as_ref()
-            .zip(request.as_ref())
-            .is_some_and(|(old, new)| old.kind == new.kind && new.query.starts_with(&old.query));
+        let narrower = !self
+            .files
+            .values()
+            .any(|(_, entries)| entries.iter().any(|entry| entry.query.is_some()))
+            && self
+                .request
+                .as_ref()
+                .zip(request.as_ref())
+                .is_some_and(|(old, new)| {
+                    old.kind == new.kind && new.query.starts_with(&old.query)
+                });
         self.request = request;
         self.selected = 0;
         if narrower {
@@ -416,6 +423,13 @@ impl CompletionMenu {
     }
 
     fn rank_entry(&mut self, order: u64, index: usize, entry: &Entry) {
+        if entry.query.as_ref().is_some_and(|query| {
+            self.request
+                .as_ref()
+                .is_none_or(|request| &request.query != query)
+        }) {
+            return;
+        }
         if self.request.as_ref().is_some_and(|r| r.kind == entry.kind) {
             self.rank(order, index, entry.item.clone());
         }
@@ -455,12 +469,24 @@ impl CompletionMenu {
 
     /// Whether results still belong to the current editor version.
     pub fn active(&self, editor: &Editor) -> bool {
-        !self.items.is_empty()
+        (!self.items.is_empty() || self.indexing().is_some())
             && self.request.is_some()
             && self
                 .version
                 .as_ref()
                 .is_some_and(|old| same_version(old, &editor.completion_version()))
+    }
+
+    /// Remaining directory work from the followed index progress file. An
+    /// incomplete walk keeps an empty popup visible instead of claiming absence.
+    pub fn indexing(&self) -> Option<usize> {
+        self.request
+            .as_ref()
+            .zip(self.indexing_directories.as_ref())
+            .filter(|(request, (query, _))| {
+                request.kind == CompletionKind::Mention && &request.query == query
+            })
+            .map(|(_, (_, pending))| *pending)
     }
 
     /// Cycle candidates in either direction.
@@ -574,3 +600,5 @@ fn scan_until(text: &str, mut stop: impl FnMut(char) -> bool, work: &mut usize) 
 
 #[cfg(test)]
 mod incremental_tests;
+mod streaming;
+pub use streaming::{PathMatches, PATH_RESULT_COUNT};

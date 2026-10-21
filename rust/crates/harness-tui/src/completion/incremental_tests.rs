@@ -1,11 +1,106 @@
 use super::*;
 use proptest::prelude::*;
 
+fn streamed_keystroke_work(broken: bool) {
+    let mut input = Editor::new("@rs");
+    let mut menu = CompletionMenu::default();
+    let mut best = PathMatches::new("rs");
+    for index in 0..1_000_000 {
+        best.push(format!("generated/{index:06}.rs"));
+    }
+    let paths: Vec<_> = best.paths().collect();
+    menu.set_file(
+        "search/results.json",
+        Some(&serde_json::to_vec(&serde_json::json!({"query":"rs", "paths":paths})).unwrap()),
+    )
+    .unwrap();
+    if broken {
+        for index in 0..128 {
+            menu.set_file(&format!("names/old-{index}.rs"), Some(b""))
+                .unwrap();
+        }
+    }
+    menu.refresh(&input);
+    for text in ["x", "y", "z"] {
+        let before = menu.work.candidates;
+        input.insert(text, 1);
+        menu.refresh(&input);
+        assert!(
+            menu.work.candidates - before <= PATH_RESULT_COUNT,
+            "keystroke scored the namespace"
+        );
+    }
+}
+
+#[test]
+fn streamed_million_entry_results_bound_per_keystroke_scoring() {
+    streamed_keystroke_work(false);
+}
+
+#[test]
+#[should_panic(expected = "keystroke scored the namespace")]
+fn negative_control_detects_namespace_candidates_in_the_editor() {
+    streamed_keystroke_work(true);
+}
+
+#[test]
+fn server_results_are_bound_to_the_query_that_was_scored() {
+    let mut editor = Editor::new("@a");
+    let mut menu = CompletionMenu::default();
+    menu.set_file(
+        "search/results.json",
+        Some(br#"{"query":"a","paths":["abc.rs","another.rs"]}"#),
+    )
+    .unwrap();
+    menu.refresh(&editor);
+    assert_eq!(menu.items().len(), 2);
+    editor.insert("b", 1);
+    menu.refresh(&editor);
+    assert_eq!(
+        menu.items().len(),
+        0,
+        "an old top-k cannot stand in for a new narrower query"
+    );
+    menu.set_file(
+        "search/results.json",
+        Some(br#"{"query":"ab","paths":["abc.rs"]}"#),
+    )
+    .unwrap();
+    assert_eq!(menu.items().len(), 1);
+    menu.set_file("workspace/layout.json", Some(b"{}")).unwrap();
+    assert_eq!(
+        menu.items().len(),
+        1,
+        "UI state cannot enter pathname candidates"
+    );
+}
+
+#[test]
+fn incomplete_empty_query_results_remain_visible_and_stale_progress_is_ignored() {
+    let editor = Editor::new("@missing");
+    let mut menu = CompletionMenu::default();
+    menu.refresh(&editor);
+    menu.set_file(
+        "search/progress.json",
+        Some(br#"{"query":"missing","pending_dirs":7,"complete":false}"#),
+    )
+    .unwrap();
+    assert!(menu.active(&editor));
+    assert_eq!(menu.indexing(), Some(7));
+    menu.set_file(
+        "search/progress.json",
+        Some(br#"{"query":"old","pending_dirs":9,"complete":false}"#),
+    )
+    .unwrap();
+    assert_eq!(menu.indexing(), None);
+    assert!(!menu.active(&editor));
+}
+
 fn unchanged_work(count: usize, repeats: usize, broken: bool) {
     let editor = Editor::new("@file");
     let mut menu = CompletionMenu::default();
     for index in 0..count {
-        menu.set_file(&format!("workspace/file{index}.rs"), Some(b"content"))
+        menu.set_file(&format!("names/file{index}.rs"), Some(b"content"))
             .unwrap();
     }
     menu.refresh(&editor);
@@ -24,12 +119,11 @@ fn unchanged_work(count: usize, repeats: usize, broken: bool) {
         allocations.count_total, 0,
         "unchanged refresh must allocate nothing"
     );
-    menu.set_file("workspace/file-new.rs", Some(b"new"))
-        .unwrap();
+    menu.set_file("names/file-new.rs", Some(b"new")).unwrap();
     assert_eq!(menu.work.candidates - before.candidates, 1);
     assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
     let before = menu.work;
-    menu.set_file("workspace/file-new.rs", Some(b"replacement"))
+    menu.set_file("names/file-new.rs", Some(b"replacement"))
         .unwrap();
     assert_eq!(menu.work.candidates - before.candidates, 2);
     assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
@@ -45,7 +139,7 @@ proptest! {
     fn edits_only_scan_the_active_token(prefix in 0usize..4096, edits in 1usize..24) {
         let mut editor = Editor::new(&format!("{} @a", "z".repeat(prefix)));
         let mut menu = CompletionMenu::default();
-        menu.set_file("workspace/aaaaaaaaaaaaaaaaaaaaaaaa.rs", Some(b"")).unwrap();
+        menu.set_file("names/aaaaaaaaaaaaaaaaaaaaaaaa.rs", Some(b"")).unwrap();
         menu.refresh(&editor);
         for i in 0..edits {
             let before = menu.work;
@@ -74,7 +168,7 @@ proptest! {
     fn delta_requests_agree_with_full_parsing(prefix in "[a-z @/\\\"]{0,48}", edits in proptest::collection::vec("[a-z @/\\\"\n]{0,6}", 1..24)) {
         let mut editor = Editor::new(&prefix);
         let mut menu = CompletionMenu::default();
-        menu.set_file("workspace/a.rs", Some(b"")).unwrap();
+        menu.set_file("names/a.rs", Some(b"")).unwrap();
         menu.set_file("commands/a.md", Some(b"a")).unwrap();
         menu.refresh(&editor);
         for (i, text) in edits.iter().enumerate() {
@@ -98,7 +192,7 @@ proptest! {
     ) {
         let mut editor = Editor::new(&prefix);
         let mut menu = CompletionMenu::default();
-        menu.set_file("workspace/src/main.rs", Some(b"")).unwrap();
+        menu.set_file("names/src/main.rs", Some(b"")).unwrap();
         menu.set_file("commands/theme.md", Some(b"theme")).unwrap();
         menu.refresh(&editor);
         for (step, batch) in batches.iter().enumerate() {
@@ -268,7 +362,7 @@ fn keystroke_work(
     let text = text.join("\n");
     let mut editor = Editor::new(&text);
     let mut menu = CompletionMenu::default();
-    menu.set_file("workspace/a.rs", Some(b"")).unwrap();
+    menu.set_file("names/a.rs", Some(b"")).unwrap();
     menu.refresh(&editor);
     let starts: Vec<_> = text
         .char_indices()

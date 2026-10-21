@@ -22,7 +22,7 @@ impl CheckoutTools {
         let (relative, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
         let read_only = matches!(
             parsed.arguments[0].as_str(),
-            "diff" | "log" | "show" | "status"
+            "diff" | "log" | "show" | "status" | "grep"
         );
         for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
@@ -39,7 +39,7 @@ impl CheckoutTools {
         }
         if !relative.is_empty() && !read_only && parsed.arguments[0] != "merge" {
             return Err(Error::Unsupported(
-                "--volume supports diff, log, show, status and merge".into(),
+                "--volume supports diff, log, show, status, grep and merge".into(),
             ));
         }
         if !relative.is_empty() && mount.view.source.is_none() {
@@ -76,6 +76,57 @@ impl CheckoutTools {
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         owner.verify_owner(None)?.await?;
+        let (_, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
+        let read_allowed = |path: &str| {
+            mount
+                .check(
+                    acyclic_fs::access::Action::Read,
+                    path,
+                    self.clock.now_unix_millis() / 1000,
+                )
+                .is_ok()
+        };
+        // Search pins the logical view and reads only its candidate files.
+        // Capturing an ordinary checkout here would read every source file
+        // before the lazy search executor has a chance to apply its budgets.
+        if parsed.arguments[0] == "grep" {
+            let output = crate::tools::git::run_with_guard(
+                crate::tools::git::Workspace {
+                    filesystem: &workspace.filesystem,
+                    store: &workspace.store,
+                    view,
+                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
+                        source.destination.as_path()
+                    }),
+                    repository: if source.is_some() {
+                        view.workspace().id()
+                    } else {
+                        workspace.view().workspace().id()
+                    },
+                    lease: None,
+                    checkout: None,
+                    author: "LocalHarness",
+                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                        .unwrap_or(i64::MAX),
+                    read_allowed: &read_allowed,
+                },
+                &parsed.arguments,
+                || async { owner.verify_owner(None)?.await },
+            )
+            .await;
+            return match output {
+                Ok(output) => Ok(ToolResult {
+                    value: serde_json::json!({"result": output.command}),
+                }),
+                Err(
+                    error @ (Error::Conflict(_)
+                    | Error::Invalid(_)
+                    | Error::NotFound(_)
+                    | Error::Unsupported(_)),
+                ) => Ok(crate::tools::rejected_input(error)),
+                Err(error) => Err(error),
+            };
+        }
         let (task, fence) = owner.task_binding();
         let lease_id = lease_identity(task, context.operation_id(), fence);
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(
@@ -158,6 +209,7 @@ impl CheckoutTools {
                     author: "LocalHarness",
                     authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                         .unwrap_or(i64::MAX),
+                    read_allowed: &read_allowed,
                 },
                 &parsed.arguments,
                 || async { owner.verify_owner(None)?.await },
