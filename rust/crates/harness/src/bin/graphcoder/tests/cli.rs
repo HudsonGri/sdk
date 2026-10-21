@@ -215,31 +215,7 @@ async fn scenario(mode: Mode) {
     let [workspace, settings, catalog] = prepare(directory.path(), mode, address, model).unwrap();
     let operation = OperationId::new();
     let output = execute(&workspace, &catalog, &settings, operation, mode).await;
-    let mut lines = std::str::from_utf8(&output).unwrap().lines();
-    let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
-    assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
-    let mut answers = Vec::new();
-    for line in lines {
-        let change: Change = jsonl::parse_change(line).unwrap();
-        for file in change.file.into_iter().chain(change.files) {
-            if fs_refusals {
-                assert!(
-                    !matches!(file.key, FileKey::Child { .. }),
-                    "refusal created a child file"
-                );
-            }
-            if matches!(
-                file.key,
-                FileKey::Session {
-                    file: TaskFile::ExecutionResult(_),
-                    ..
-                }
-            ) {
-                answers.push(serde_json::from_slice::<Value>(&file.bytes).unwrap());
-            }
-        }
-    }
+    let answers = answers(&output, operation, fs_refusals);
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0]["ok"]["text"], "fixture answer");
     assert_eq!(answers[0]["completion"], "completed");
@@ -265,6 +241,36 @@ async fn scenario(mode: Mode) {
     assert!(counted > 0);
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+/// The execution results one run printed, after checking its session header.
+fn answers(output: &[u8], operation: OperationId, fs_refusals: bool) -> Vec<Value> {
+    let mut lines = std::str::from_utf8(output).unwrap().lines();
+    let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
+    assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
+    let mut answers = Vec::new();
+    for line in lines {
+        let change: Change = jsonl::parse_change(line).unwrap();
+        for file in change.file.into_iter().chain(change.files) {
+            if fs_refusals {
+                assert!(
+                    !matches!(file.key, FileKey::Child { .. }),
+                    "refusal created a child file"
+                );
+            }
+            if matches!(
+                file.key,
+                FileKey::Session {
+                    file: TaskFile::ExecutionResult(_),
+                    ..
+                }
+            ) {
+                answers.push(serde_json::from_slice::<Value>(&file.bytes).unwrap());
+            }
+        }
+    }
+    answers
 }
 
 /// Writes one scenario's workspace, settings and catalog under `directory`.
