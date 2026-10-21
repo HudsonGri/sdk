@@ -93,6 +93,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         let mut leaves = BTreeMap::new();
         let mut subtrees = BTreeSet::new();
         for change in paths {
+            if change
+                .path
+                .components()
+                .iter()
+                .any(|name| name.unicode_utf8_bytes().is_none())
+            {
+                // The string index must rediscover and record these bindings
+                // as unavailable, rather than fail its live producer.
+                return Ok(NameIndexRefresh::Ineligible);
+            }
             let mut path = String::new();
             for component in change.path.components() {
                 if !path.is_empty() {

@@ -530,26 +530,31 @@ async fn only_index_changes(
         Err(failure) => return Err(failure.error.into()),
     };
     for path in paths {
-        let mut text = String::new();
-        for component in path.path.components() {
-            text.push('/');
-            text.push_str(
-                &component
-                    .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .map_err(|failure| WorkspaceError::from(failure.error))?
-                    .value,
-            );
-        }
-        let path = if text.is_empty() { "/" } else { &text };
-        if path != "/"
-            && path != "/.acyclic-sdk"
-            && path != "/.acyclic-sdk/name-index"
-            && !path.starts_with("/.acyclic-sdk/name-index/")
-        {
+        if !index_path(path.path.components()) {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn index_path(parts: &[acyclic_fs::kernel::LogicalName]) -> bool {
+    fn equals(name: &acyclic_fs::kernel::LogicalName, text: &str) -> bool {
+        use acyclic_fs::kernel::NameEncoding;
+        match name.encoding() {
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => name.as_bytes() == text.as_bytes(),
+            NameEncoding::WindowsUtf16Le => {
+                let (units, rest) = name.as_bytes().as_chunks::<2>();
+                rest.is_empty()
+                    && units
+                        .iter()
+                        .map(|unit| u16::from_le_bytes(*unit))
+                        .eq(text.encode_utf16())
+            }
+        }
+    }
+    parts.is_empty()
+        || (equals(&parts[0], ".acyclic-sdk")
+            && (parts.len() == 1 || equals(&parts[1], "name-index")))
 }
 
 async fn fill(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) -> crate::Result<()> {
@@ -654,6 +659,47 @@ async fn fill_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_search_index_only_paths_classify_native_names_without_projection() {
+        use acyclic_fs::kernel::{LogicalName, NameEncoding};
+        for encoding in [
+            NameEncoding::Utf8,
+            NameEncoding::PosixBytes,
+            NameEncoding::WindowsUtf16Le,
+        ] {
+            let name = |text: &str| {
+                LogicalName::new(
+                    encoding,
+                    match encoding {
+                        NameEncoding::WindowsUtf16Le => {
+                            text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+                        }
+                        _ => text.as_bytes().to_vec(),
+                    },
+                    255,
+                )
+                .unwrap()
+            };
+            assert!(index_path(&[]));
+            assert!(index_path(&[name(".acyclic-sdk")]));
+            assert!(index_path(&[
+                name(".acyclic-sdk"),
+                name("name-index"),
+                name("page.json")
+            ]));
+            assert!(!index_path(&[name(".acyclic-sdk"), name("public.txt")]));
+            assert!(!index_path(&[name(".acyclic-sdk-other")]));
+        }
+        let raw = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255).unwrap();
+        // Negative control: the old projection fails before classifying this
+        // ordinary authored edit as a reason to refresh the index.
+        assert!(
+            raw.unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .is_err()
+        );
+        assert!(!index_path(&[raw]));
+    }
 
     #[tokio::test]
     async fn volume_search_pinned_readers_allow_publication_and_retain_their_page()

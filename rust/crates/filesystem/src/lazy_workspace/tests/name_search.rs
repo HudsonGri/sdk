@@ -219,6 +219,124 @@ async fn name_search_does_not_hydrate_lazy_candidates() {
 }
 
 #[tokio::test]
+async fn name_search_authored_raw_names_trigger_partial_rediscovery_instead_of_failure() {
+    use crate::kernel::{LogicalName, NamespacePath};
+    use crate::{NameCut, NameIndexRefresh};
+    for (profile, encoding, bytes) in [
+        (
+            crate::FilesystemProfile::Posix,
+            NameEncoding::PosixBytes,
+            vec![0xff],
+        ),
+        (
+            crate::FilesystemProfile::Windows,
+            NameEncoding::WindowsUtf16Le,
+            vec![0, 0xd8],
+        ),
+    ] {
+        let fs = Fs::memory();
+        let stop = CancellationToken::new();
+        let config = VolumeConfig {
+            profile,
+            ..VolumeConfig::portable(crate::Lifecycle::Ephemeral)
+        };
+        let workspace = fs
+            .create_workspace_with_config("raw-authored", config, WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        let generation = workspace
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        let walk = NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::exact(
+            generation,
+            None,
+            GitIgnorePolicy::default(),
+        )
+        .await
+        .unwrap();
+        let index = publish_name_walk(&workspace, walk).await;
+        let raw = LogicalName::new(encoding, bytes, config.limits.maximum_component_bytes).unwrap();
+        // Negative control: the incremental path's previous string conversion
+        // fails on both supported native encodings.
+        assert!(raw.unicode_text(WorkBudget::UNBOUNDED, &stop).is_err());
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        transaction
+            .checkout
+            .create(
+                crate::AuthoredMutation::CreateFile {
+                    path: NamespacePath::new(vec![raw], config.limits).unwrap(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"raw"),
+                    metadata: crate::kernel::FileMetadata::default(),
+                },
+                WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .unwrap();
+        transaction
+            .write_text("/healthy.txt", "healthy")
+            .await
+            .unwrap();
+        transaction
+            .commit(
+                None,
+                PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &stop,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        let generation = workspace
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        assert!(matches!(
+            index
+                .refresh_authored(
+                    &workspace,
+                    NameCut::Exact {
+                        workspace: workspace.id(),
+                        generation: generation.id(),
+                    },
+                    &GitIgnorePolicy::default()
+                )
+                .await
+                .unwrap(),
+            NameIndexRefresh::Ineligible
+        ));
+        let mut walk = NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::exact(
+            generation,
+            None,
+            GitIgnorePolicy::default(),
+        )
+        .await
+        .unwrap();
+        let mut names = Vec::new();
+        while let Some(page) = walk.next_page().await.unwrap() {
+            names.extend(page.into_iter().map(|name| name.path));
+        }
+        assert_eq!(names, ["healthy.txt"]);
+        assert_eq!(walk.unavailable_entries(), 1);
+    }
+}
+
+#[tokio::test]
 async fn name_search_unrepresentable_names_are_explicitly_partial_without_losing_other_names() {
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::new());

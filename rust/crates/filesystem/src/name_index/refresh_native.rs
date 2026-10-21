@@ -72,6 +72,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         for path in paths {
+            if path
+                .path
+                .components()
+                .iter()
+                .any(|name| name.unicode_utf8_bytes().is_none())
+            {
+                return Ok(NameIndexRefresh::Ineligible);
+            }
             if let Some(first) = path.path.components().first()
                 && first
                     .unicode_text(WorkBudget::UNBOUNDED, &stop)
