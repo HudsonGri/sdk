@@ -17,6 +17,7 @@ struct Shared {
     latest: AsyncMutex<Option<Arc<Index>>>,
     changed: watch::Sender<u64>,
     failure: Mutex<Option<String>>,
+    directory_query: Mutex<Option<String>>,
     refresh: tokio::sync::Notify,
 }
 
@@ -119,6 +120,7 @@ impl IndexedNames {
             latest: AsyncMutex::new(existing.map(Arc::new)),
             changed,
             failure: Mutex::new(None),
+            directory_query: Mutex::new(None),
             refresh: tokio::sync::Notify::new(),
         });
         *entry = Arc::downgrade(&shared);
@@ -137,6 +139,22 @@ impl IndexedNames {
             next: 0,
             cut: None,
         })
+    }
+
+    /// Supplies a disposable scheduling hint derived from the followed query
+    /// file. The producer and durable index remain shared by all consumers;
+    /// query text is never published into the volume's public index files.
+    pub fn prefer_directory_names(&self, query: &str) -> crate::Result<()> {
+        let mut current = self
+            .shared
+            .directory_query
+            .lock()
+            .map_err(|_| Error::Storage("index directory query lock poisoned".into()))?;
+        let query = (!query.is_empty()).then_some(query);
+        if current.as_deref() != query {
+            *current = query.map(str::to_owned);
+        }
+        Ok(())
     }
 
     /// Reads at most one committed page; awaits publication if indexing is
@@ -594,6 +612,13 @@ async fn fill_pass(
         (walk, 0, expected)
     };
     loop {
+        {
+            let query = shared
+                .directory_query
+                .lock()
+                .map_err(|_| Error::Storage("index directory query lock poisoned".into()))?;
+            walk.prefer_directory_names(query.as_deref());
+        }
         let page = walk
             .next_page()
             .await
@@ -684,6 +709,7 @@ mod tests {
             latest: AsyncMutex::new(Some(Arc::new(index))),
             changed,
             failure: Mutex::new(None),
+            directory_query: Mutex::new(None),
             refresh: tokio::sync::Notify::new(),
         });
         let reader = shared.snapshot().await.unwrap();

@@ -155,6 +155,7 @@ async fn search(
             continue;
         };
         let names = crate::tools::git::IndexedNames::open(view).await?;
+        names.prefer_directory_names(query)?;
         volumes.push(VolumeSearch {
             names,
             prefix,

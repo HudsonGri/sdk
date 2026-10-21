@@ -714,6 +714,93 @@ async fn name_search_uses_authored_metadata_before_the_unindexed_source() {
 }
 
 #[tokio::test]
+async fn name_search_query_prioritizes_pending_siblings_without_hydrating() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::new());
+    source.directory_entries = 0;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let stop = CancellationToken::new();
+    let mut transaction = lazy
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .write_batch(
+            &["/a-cold", "/z-hot"],
+            &[
+                (
+                    "/a-cold/cold.txt",
+                    acyclic_stream::OwnedBytes::from_static(b"cold"),
+                ),
+                (
+                    "/z-hot/hot.txt",
+                    acyclic_stream::OwnedBytes::from_static(b"hot"),
+                ),
+            ],
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+
+    for (query, first) in [(None, "a-cold/cold.txt"), (Some("HoT"), "z-hot/hot.txt")] {
+        let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+            .await
+            .unwrap();
+        let root = walk.next_page().await.unwrap().unwrap();
+        assert_eq!(root.iter().filter(|name| name.directory).count(), 2);
+        // The query arrives after the siblings were queued. Restart first to
+        // establish that scheduling is derived, rather than required index state.
+        walk = NameWalk::resume(
+            &lazy,
+            walk.checkpoint().unwrap(),
+            GitIgnorePolicy::default(),
+        )
+        .await
+        .unwrap();
+        walk.prefer_directory_names(query);
+        let mut found = Vec::new();
+        while let Some(page) = walk.next_page().await.unwrap() {
+            assert!(walk.pending_directories() <= 5);
+            found.extend(
+                page.into_iter()
+                    .filter(|name| name.regular)
+                    .map(|name| name.path),
+            );
+        }
+        // Negative control: ordinary DFS reaches the alphabetically first
+        // directory; the active query must change discovery order.
+        assert_eq!(found.first().unwrap(), first);
+        assert_eq!(found.len(), 2);
+    }
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn name_search_authored_directory_frontier_depends_on_depth_not_tree_breadth() {
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::new());

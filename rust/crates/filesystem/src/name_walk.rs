@@ -176,6 +176,7 @@ pub struct NameWalk<'a, A, O, D, S> {
     authored: Option<Generation<A, O>>,
     ignore_policies: BTreeMap<String, GitIgnorePolicy>,
     unavailable_entries: usize,
+    directory_query: Option<String>,
 }
 
 impl<
@@ -331,6 +332,7 @@ impl<
             authored,
             ignore_policies: checkpoint.ignore_policies,
             unavailable_entries: checkpoint.unavailable_entries,
+            directory_query: None,
         })
     }
 
@@ -425,6 +427,7 @@ impl<
             authored,
             ignore_policies: BTreeMap::new(),
             unavailable_entries: 0,
+            directory_query: None,
         };
         if directory
             && let Cut::Lazy(lazy, snapshot) = &walk.cut
@@ -480,6 +483,37 @@ impl<
     /// Unreadable or unrepresentable entries encountered so far.
     pub fn unavailable_entries(&self) -> usize {
         self.unavailable_entries
+    }
+
+    /// Updates disposable scheduling from the caller's followed query file.
+    /// Only pending sibling roots are reordered; a parent continuation never
+    /// jumps ahead of its children and expands the frontier to tree breadth.
+    pub fn prefer_directory_names(&mut self, query: Option<&str>) {
+        let query = query.filter(|query| !query.is_empty());
+        if self.directory_query.as_deref() == query {
+            return;
+        }
+        self.directory_query = query.map(str::to_owned);
+        let Some((top, cursor)) = self.pending.last() else {
+            return;
+        };
+        if !matches!(cursor, Continuation::Lazy(None) | Continuation::Exact(None)) {
+            return;
+        }
+        let depth = top.bytes().filter(|byte| *byte == b'/').count();
+        let mut start = self.pending.len();
+        while start > 0 {
+            let (path, cursor) = &self.pending[start - 1];
+            if path.bytes().filter(|byte| *byte == b'/').count() != depth
+                || !matches!(cursor, Continuation::Lazy(None) | Continuation::Exact(None))
+            {
+                break;
+            }
+            start -= 1;
+        }
+        if let Some(query) = &self.directory_query {
+            self.pending[start..].sort_by_cached_key(|(path, _)| directory_matches(path, query));
+        }
     }
 
     fn start(&self) -> Continuation {
@@ -678,6 +712,9 @@ impl<
             }
             names.push(name);
         }
+        if let Some(query) = &self.directory_query {
+            children.sort_by_cached_key(|(path, _)| !directory_matches(path, query));
+        }
         // Descend before reading the parent's next page. The frontier is at
         // most PAGE_ENTRIES siblings per depth, independent of tree breadth.
         if exact && self.authored.is_some() {
@@ -768,6 +805,17 @@ impl<
                 .map_err(|failure| SearchError::from(failure.error)),
         }
     }
+}
+
+fn directory_matches(path: &str, query: &str) -> bool {
+    let mut query = query.chars().flat_map(char::to_lowercase);
+    let mut wanted = query.next();
+    for letter in path.chars().flat_map(char::to_lowercase) {
+        if wanted == Some(letter) {
+            wanted = query.next();
+        }
+    }
+    wanted.is_none()
 }
 
 #[cfg(test)]
