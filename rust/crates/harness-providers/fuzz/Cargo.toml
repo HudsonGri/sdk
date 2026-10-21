@@ -7,6 +7,13 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[[bin]]
+name = "native_image"
+path = "fuzz_targets/native_image.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 
 [dependencies]

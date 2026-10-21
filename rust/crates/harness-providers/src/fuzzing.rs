@@ -12,6 +12,11 @@ mod turn_text;
 pub use tool_arguments::assert_tool_arguments;
 use turn_text::text_matches;
 
+/// Native image container recognition and every adapter preserve arbitrary bytes.
+pub fn assert_image_invariants(input: &[u8]) {
+    crate::projection::image::assert_roundtrip(input);
+}
+
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
     parse_at(adapter, input, width, [1; 16])
 }
