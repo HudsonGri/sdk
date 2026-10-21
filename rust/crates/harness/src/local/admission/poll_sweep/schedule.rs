@@ -214,10 +214,19 @@ pub(super) fn check_cut<T>(exit: &Exit<T>, cut: usize, hit: usize) -> Result<(),
     }
 }
 
-/// Records the schedule of one blocking job racing an independent owner. The
-/// job runs `work` long; the independent boundary follows the job's start
-/// after `wait`. Only these physical durations differ between calls.
-fn physical_race(work: std::time::Duration, wait: std::time::Duration) -> Vec<&'static str> {
+/// Which boundary reaches the driver first while the blocking job runs.
+#[derive(Clone, Copy)]
+enum Arrival {
+    /// The independent boundary is queued before the job may finish.
+    IndependentFirst,
+    /// The job's completion is queued before the independent boundary is raised.
+    CompletionFirst,
+}
+
+/// Records the schedule of one blocking job racing an independent owner.
+/// Boundaries reach the driver through a forwarder that reports what it has
+/// queued, so each arrival order is forced by a handshake, not by timing.
+fn physical_race(arrival: Arrival) -> Vec<&'static str> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -225,21 +234,46 @@ fn physical_race(work: std::time::Duration, wait: std::time::Duration) -> Vec<&'
     runtime.block_on(async {
         let (schedule, mut events) = Schedule::new();
         schedule.start();
+        let (forward, mut forwarded) = tokio::sync::mpsc::unbounded_channel();
+        let (independent_queued, independent_seen) = std::sync::mpsc::channel();
+        let (completion_queued, completion_seen) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut completion_queued = Some(completion_queued);
+            while let Some(boundary) = events.recv().await {
+                let name = boundary.name;
+                if forward.send(boundary).is_err() {
+                    break;
+                }
+                match name {
+                    "independent" => drop(independent_queued.send(())),
+                    "blocking:completed" => {
+                        if let Some(queued) = completion_queued.take() {
+                            drop(queued.send(()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
         let (started, running) = tokio::sync::oneshot::channel();
         let raced = async {
             // Submitted inside the driven scope, so the job owns its barriers.
             let job = acyclic_native_runtime::testing::spawn_blocking(move || {
                 started.send(()).unwrap();
-                std::thread::sleep(work);
+                if matches!(arrival, Arrival::IndependentFirst) {
+                    independent_seen.recv().unwrap();
+                }
             });
             let independent = async {
                 running.await.unwrap();
-                tokio::time::sleep(wait).await;
+                if matches!(arrival, Arrival::CompletionFirst) {
+                    completion_seen.await.unwrap();
+                }
                 schedule.point("independent").await;
             };
             futures::join!(job, independent).0.unwrap();
         };
-        let (exit, _, _) = drive(raced, None, |_| true, &schedule, &mut events).await;
+        let (exit, _, _) = drive(raced, None, |_| true, &schedule, &mut forwarded).await;
         assert!(matches!(exit, Exit::Completed(())));
         schedule.points()
     })
@@ -247,16 +281,9 @@ fn physical_race(work: std::time::Duration, wait: std::time::Duration) -> Vec<&'
 
 #[test]
 fn physical_completion_precedes_boundaries_raised_while_it_runs() {
-    let slow_work = std::time::Duration::from_millis(200);
     let expected = ["blocking:submitted", "blocking:completed", "independent"];
-    // The independent boundary arrives first, then the completion.
-    assert_eq!(
-        physical_race(slow_work, std::time::Duration::ZERO),
-        expected
-    );
-    // The completion arrives first, then the independent boundary.
-    assert_eq!(
-        physical_race(std::time::Duration::ZERO, slow_work),
-        expected
-    );
+    // The independent boundary is queued first, then the completion.
+    assert_eq!(physical_race(Arrival::IndependentFirst), expected);
+    // The completion is queued first, then the independent boundary.
+    assert_eq!(physical_race(Arrival::CompletionFirst), expected);
 }
