@@ -1,8 +1,5 @@
 use super::*;
 
-// Saturation fixtures share the process-wide physical pool.
-static SATURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn abandoned_replay_releases_parked_native_and_blocking_workers() {
     for native in [false, true] {
@@ -52,10 +49,14 @@ fn abandoned_replay_releases_parked_native_and_blocking_workers() {
                     drop(answer);
                 }
             }
+            // The abandoned host resumes its worker on the original wake
+            // itself, before the worker's result is awaited.
+            assert!(
+                lock(&host.state).phase != Phase::Parked,
+                "the original wake left the abandoned worker parked"
+            );
             assert_eq!(
-                completion
-                    .recv_timeout(std::time::Duration::from_secs(1))
-                    .unwrap(),
+                completion.recv().unwrap(),
                 wake != 2,
                 "original channel result changed after abandonment"
             );
@@ -287,8 +288,14 @@ fn inline_metered_waits_retain_the_original_host() {
 
 #[test]
 fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
-    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
-    let workers = crate::workers(&crate::BLOCKING_WORKERS, false).unwrap();
+    if crate::tests::passed_in_exclusive_process(
+        "testing::host::tests::unscoped_physical_workers_leave_the_driver_available_to_reply",
+    )
+    .unwrap()
+    {
+        return;
+    }
+    let workers = crate::tests::exclusive_workers(&crate::BLOCKING_WORKERS).unwrap();
     let (started, receive) = std::sync::mpsc::channel();
     let mut occupants = Vec::new();
     let mut replies = Vec::new();
@@ -334,8 +341,14 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
 
 #[test]
 fn queued_workers_leave_the_executor_available_to_reply() {
-    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
-    let count = crate::workers(&crate::BLOCKING_WORKERS, false)
+    if crate::tests::passed_in_exclusive_process(
+        "testing::host::tests::queued_workers_leave_the_executor_available_to_reply",
+    )
+    .unwrap()
+    {
+        return;
+    }
+    let count = crate::tests::exclusive_workers(&crate::BLOCKING_WORKERS)
         .unwrap()
         .threads;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -505,8 +518,14 @@ proptest::proptest! {
 
 #[test]
 fn saturated_native_submission_leaves_the_simulated_deadline_available() {
-    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
-    let count = crate::workers(&crate::BLOCKING_WORKERS, false)
+    if crate::tests::passed_in_exclusive_process(
+        "testing::host::tests::saturated_native_submission_leaves_the_simulated_deadline_available",
+    )
+    .unwrap()
+    {
+        return;
+    }
+    let count = crate::tests::exclusive_workers(&crate::BLOCKING_WORKERS)
         .unwrap()
         .threads;
     let runtime = tokio::runtime::Builder::new_current_thread()
