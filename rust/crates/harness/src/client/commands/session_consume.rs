@@ -117,7 +117,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let selection_first = true;
         #[cfg(test)]
         let selection_first = !SELECTION_AFTER_OUTCOME.with(std::cell::Cell::get);
-        if selection_first && let Ok(value) = &result {
+        // A failed admitted task still owns the retained transcript. Publish its
+        // identity before releasing the request, just as for successful turns.
+        let failed_selection = match &result {
+            Err(Error::TaskFailed { task, .. }) => Some(json!({"selected_task": task})),
+            _ => None,
+        };
+        let selection = result.as_ref().ok().or(failed_selection.as_ref());
+        if selection_first && let Some(value) = selection {
             self.apply_outcome(value).await?;
         }
         loop {
@@ -138,7 +145,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         self.persist_activity().await?;
-        if !selection_first && let Ok(value) = &result {
+        if !selection_first && let Some(value) = selection {
             self.apply_outcome(value).await?;
         }
         result.map(Some)

@@ -118,7 +118,7 @@ fn payload_only_result_budget_is_detected_negative_control() {
     futures::executor::block_on(framed_result::<false>(8, false));
 }
 
-async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16]) {
+async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16], failed: bool) {
     use futures::StreamExt as _;
     let volume = Arc::new(
         files::TaskVolume::open(
@@ -153,13 +153,17 @@ async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16]) {
     let mut observation = volume.observe(files::Query::Root, None, 128).await.unwrap();
     let selected = TaskId::from_bytes(id);
     SELECTION_AFTER_OUTCOME.with(|flag| flag.set(!ORDERED));
-    commands
+    let outcome = commands
         .consume(&request, |_, _, _| async {
-            Ok(json!({"selected_task":selected}))
+            if failed {
+                Err(Error::TaskFailed { task: selected, message: "interrupted stream".into() })
+            } else {
+                Ok(json!({"selected_task":selected}))
+            }
         })
-        .await
-        .unwrap();
+        .await;
     SELECTION_AFTER_OUTCOME.with(|flag| flag.set(false));
+    assert_eq!(outcome.is_err(), failed);
     let mut seen_selection = false;
     while let Some(change) = observation.changes.next().await {
         let change = change.unwrap();
@@ -173,6 +177,8 @@ async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16]) {
                     file: files::TaskFile::ExecutionResult(_),
                     ..
                 } => {
+                    let outcome: Value = serde_json::from_slice(&file.bytes).unwrap();
+                    assert_eq!(outcome["completion"], if failed { "failed" } else { "completed" });
                     assert!(
                         seen_selection,
                         "completion must follow its selected conversation"
@@ -189,13 +195,24 @@ async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16]) {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
-    fn every_completion_observer_has_the_selection(id in prop::array::uniform16(any::<u8>())) {
-        futures::executor::block_on(selection_before_completion::<true>(id));
+    fn every_completion_observer_has_the_selection(id in prop::array::uniform16(any::<u8>()), failed in any::<bool>()) {
+        futures::executor::block_on(selection_before_completion::<true>(id, failed));
     }
 }
 
 #[test]
 #[should_panic(expected = "completion must follow its selected conversation")]
 fn completion_before_selection_negative_control() {
-    futures::executor::block_on(selection_before_completion::<false>([3; 16]));
+    futures::executor::block_on(selection_before_completion::<false>([3; 16], false));
+}
+
+#[test]
+fn failed_task_keeps_its_selected_transcript() {
+    futures::executor::block_on(selection_before_completion::<true>([3; 16], true));
+}
+
+#[test]
+#[should_panic(expected = "completion must follow its selected conversation")]
+fn failed_completion_before_selection_negative_control() {
+    futures::executor::block_on(selection_before_completion::<false>([3; 16], true));
 }
