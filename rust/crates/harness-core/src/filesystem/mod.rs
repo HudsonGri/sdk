@@ -7,7 +7,6 @@
     )
 )]
 #![doc = include_str!("../../docs/filesystem.md")]
-
 use crate::contract::capability;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
@@ -36,14 +35,11 @@ use acyclic_fs::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
-
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
-
 mod content_input;
 use content_input::ContentInput;
 mod content_publisher;
 pub use content_publisher::FilesystemContentPublisher;
-
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
@@ -159,7 +155,6 @@ pub use task_runtime::{
     TaskSourceInspection, TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome,
     TaskWorkerTick,
 };
-
 mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
@@ -180,7 +175,6 @@ mod project_verifier;
 pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;
 pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
         &self,
@@ -203,7 +197,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(hold);
         Ok(Some(file))
     }
-
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -395,7 +388,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                 })
             }?;
-            let committed = self.read_pinned_io(&reference, maximum_bytes, io).await?;
+            let committed = self
+                .read_retained_file(&prior, &reference, maximum_bytes, io)
+                .await?;
             if committed.as_ref() != bytes {
                 return Err(stock_boundary(
                     io,
@@ -484,10 +479,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
             })
         }?;
-        self.read_pinned_io(&reference, maximum_bytes, io).await?;
+        self.read_retained_file(&generation, &reference, maximum_bytes, io)
+            .await?;
         Ok(reference)
     }
-
+    async fn read_retained_file(
+        &self,
+        generation: &Generation<A, O>,
+        reference: &FileRef,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        pinned_read_tests::retained::sample_items(false, io);
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if pinned_read_tests::retained::reopen() {
+            let result = self.read_pinned_io(reference, maximum_bytes, io).await;
+            pinned_read_tests::retained::sample_items(true, io);
+            return result;
+        }
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+            reference.validate(&mut Some(&mut io.history_io()))?;
+        }
+        if reference.volume().provider() != &self.provider
+            || reference.descriptor().byte_length() > maximum_bytes
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.and_then(PreparationIo::original_native_work).is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "content provider or size limit mismatch",
+                });
+            }
+            return Err(Error::Invalid(
+                "content provider or size limit mismatch".into(),
+            ));
+        }
+        let (_path, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+            })?;
+            let hold = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            (hold, path)
+        };
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("read", maximum_bytes));
+        let bytes = read_generation(generation, &path, maximum_bytes, io).await?;
+        crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        pinned_read_tests::retained::sample_items(true, io);
+        Ok(bytes)
+    }
     async fn read_pinned_io(
         &self,
         reference: &FileRef,
