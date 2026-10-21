@@ -67,8 +67,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         for path in paths {
-            let mut components = path.path.components();
-            if let Some(first) = components.next()
+            if let Some(first) = path.path.components().first()
                 && first
                     .unicode_text(WorkBudget::UNBOUNDED, &stop)
                     .map_err(|failure| WorkspaceError::from(failure.error))?

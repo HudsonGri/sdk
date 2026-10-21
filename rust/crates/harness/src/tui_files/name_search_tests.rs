@@ -72,13 +72,38 @@ async fn name_search_request_identity_fences_task_switches_and_cancelled_results
         .without_default_tools(),
     )
     .await?;
+    let key = FileKey::parse("search/results.json")?;
+    let cut = harness
+        .task_files()
+        .inner
+        .snapshot(&Query::File(key.clone()), 1)
+        .await?
+        .generation;
+    harness
+        .task_files()
+        .inner
+        .append(
+            cut,
+            &FileValue::new(
+                key,
+                br#"{"query":"rs","paths":["previous-client.rs"]}"#.to_vec(),
+            ),
+        )
+        .await?;
     let mut input = PromptInput::new(crate::tui::Editor::new("@rs"));
     let mut files =
         CompletionFiles::observe_authorized(harness.task_files(), &mut input, None).await?;
+    // Negative control: restoring the snapshot alone exposes the old result.
+    assert_eq!(
+        input.completion.items().next().unwrap().value,
+        "previous-client.rs"
+    );
     files.bind_search(
+        &mut input,
         std::sync::Arc::clone(harness.task_files()),
         tokio::spawn(std::future::pending()),
-    );
+    )?;
+    assert_eq!(input.completion.items().len(), 0);
     files
         .refresh_query(&mut input, Some(TaskId::from_bytes([1; 16])))
         .await?;

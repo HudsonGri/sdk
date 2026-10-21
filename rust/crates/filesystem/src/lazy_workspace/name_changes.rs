@@ -140,7 +140,7 @@ mod tests {
         let policy = path(".gitignore", true);
         // Negative control: comparing raw bytes with UTF-8 misses this policy.
         assert_ne!(
-            policy.components().next().unwrap().as_bytes(),
+            policy.components().first().unwrap().as_bytes(),
             b".gitignore"
         );
         signal

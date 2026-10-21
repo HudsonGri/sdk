@@ -87,14 +87,26 @@ impl CompletionFiles {
     #[cfg(all(feature = "native-execution", feature = "filesystem-local"))]
     pub(crate) fn bind_search(
         &mut self,
+        input: &mut PromptInput,
         files: std::sync::Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
         worker: tokio::task::JoinHandle<crate::Result<()>>,
-    ) {
+    ) -> crate::Result<()> {
+        // The initial snapshot may belong to a previous client/task. Before
+        // the first frame, discard results that have no current request owner.
+        input
+            .completion
+            .set_files([
+                ("search/results.json", None),
+                ("search/progress.json", None),
+            ])
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        input.refresh_completions();
         self.search = Some(SearchBinding {
             files,
             worker,
             request: None,
         });
+        Ok(())
     }
 
     /// Publish a changed token before entering the file/input wait. The owner

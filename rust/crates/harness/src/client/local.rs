@@ -46,7 +46,7 @@ pub async fn local_completions(
         crate::tui_files::CompletionFiles::observe_authorized(local.task_files(), input, None)
             .await?;
     #[cfg(feature = "native-execution")]
-    local.bind_name_search(&mut files).await?;
+    local.bind_name_search(&mut files, input).await?;
     Ok(files)
 }
 

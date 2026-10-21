@@ -11,6 +11,7 @@ impl LocalHarness {
     pub(crate) async fn bind_name_search(
         &self,
         completion: &mut crate::tui_files::CompletionFiles,
+        input: &mut crate::tui::PromptInput,
     ) -> Result<()> {
         let Some(workspace) = self.workspace().cloned() else {
             return Ok(());
@@ -54,7 +55,7 @@ impl LocalHarness {
                 }
             }
         });
-        completion.bind_search(files, worker);
+        completion.bind_search(input, files, worker)?;
         Ok(())
     }
 }
