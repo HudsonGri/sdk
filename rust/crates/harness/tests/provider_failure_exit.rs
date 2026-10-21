@@ -2,6 +2,10 @@
 //! refused connections, refusal statuses, a body cut after output escaped and a body that falls
 //! silent after output. A recovered refusal is the negative control, and exits 0 with the
 //! provider's text. Harness state lives in fixture directories only.
+//!
+//! Deadlines are measured on a fixture clock, not the wall clock: time passes only when the
+//! scripted server has fallen silent after output, so scheduling delay on a loaded host never
+//! reads as provider silence, and the one test that measures silence measures only that.
 #![cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 
 use acyclic_harness::{
@@ -15,13 +19,18 @@ use acyclic_harness_providers::{
     ModelSpec, ProviderSpec, Registry, ReqwestTransport, RetrySpec, TimeoutSpec, TokenCountField,
     TokenCounterSpec,
 };
-use acyclic_stream::BoxProviderFuture;
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use bytes::Bytes;
+use futures::{Stream, StreamExt as _};
 use std::{
     collections::{BTreeMap, VecDeque},
+    pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    task::{Context, Poll},
+    time::Duration,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -44,12 +53,91 @@ enum Reply {
     Hold(String, usize),
 }
 
-/// The idle deadline of these exchanges, short enough for a test and far above loopback gaps.
+/// The idle deadline of these exchanges, on the fixture [`Clock`].
 const IDLE_MS: u32 = 300;
 
-/// Counts the requests sent through the platform transport, whose timer it keeps.
+/// Whether a run measures the server's silence after output.
+#[derive(Clone, Copy)]
+enum Silence {
+    /// No deadline elapses: the scripted reply alone decides the outcome.
+    Unmeasured,
+    /// Deadline wake-ups elapse once the consumer has taken this many leading body bytes, the
+    /// complete output event, so a body silent after them times out.
+    Measured(usize),
+}
+
+/// The fixture clock deadlines are measured on. It is frozen, so neither scheduling nor a slow
+/// consumer between polls counts as silence. Redelivery backoffs, shorter than the idle deadline,
+/// elapse at once. A deadline wake-up elapses only once a [`Silence::Measured`] run has started
+/// the clock, and then advances it by its wait, so it expires exactly the deadline it was armed
+/// for.
+struct Clock {
+    silence: Silence,
+    /// Nanoseconds since the origin.
+    now: AtomicU64,
+    /// Set once the consumer has taken the complete output event in a measured run.
+    started: tokio::sync::watch::Sender<bool>,
+}
+
+/// A measured model body. It delivers every chunk in two pieces, with the second pending for one
+/// poll as a split read would be, so the output event never arrives whole. It starts the clock only when the consumer polls again after the whole output
+/// prefix has arrived. By then the decoder has taken the complete output event, however the
+/// bytes were split.
+struct Measured {
+    body: BoxProviderStream<'static, Result<Bytes>>,
+    clock: Arc<Clock>,
+    /// Output bytes not yet delivered.
+    output: usize,
+    /// The second piece of the last chunk, and whether it has been pending for a poll.
+    rest: Option<(Bytes, bool)>,
+}
+
+impl Measured {
+    fn deliver(&mut self, bytes: Bytes) -> Poll<Option<Result<Bytes>>> {
+        self.output = self.output.saturating_sub(bytes.len());
+        Poll::Ready(Some(Ok(bytes)))
+    }
+}
+
+impl Stream for Measured {
+    type Item = Result<Bytes>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.output == 0 {
+            this.clock.started.send_replace(true);
+        }
+        match this.rest.take() {
+            Some((rest, true)) => return this.deliver(rest),
+            Some((rest, false)) => {
+                this.rest = Some((rest, true));
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            None => {}
+        }
+        match this.body.poll_next_unpin(context) {
+            Poll::Ready(Some(Ok(mut bytes))) => {
+                if bytes.len() > 1 {
+                    this.rest = Some((bytes.split_off(bytes.len() / 2), false));
+                }
+                this.deliver(bytes)
+            }
+            other => other,
+        }
+    }
+}
+
+impl Clock {
+    fn now(&self) -> Duration {
+        Duration::from_nanos(self.now.load(Ordering::SeqCst))
+    }
+}
+
+/// Counts the requests sent through the platform transport, and keeps the fixture clock.
 struct Counted {
     inner: ReqwestTransport,
+    clock: Arc<Clock>,
     /// Model requests.
     sent: AtomicUsize,
     /// Every request, token counts included.
@@ -62,13 +150,41 @@ impl HttpTransport for Counted {
         if !request.url.ends_with(COUNT_PATH) {
             self.sent.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.send(request)
+        let measured = match self.clock.silence {
+            Silence::Measured(output) if !request.url.ends_with(COUNT_PATH) => Some(output),
+            _ => None,
+        };
+        let clock = self.clock.clone();
+        let send = self.inner.send(request);
+        Box::pin(async move {
+            let mut response = send.await?;
+            if let Some(output) = measured {
+                response.body = Box::pin(Measured {
+                    body: response.body,
+                    clock,
+                    output,
+                    rest: None,
+                });
+            }
+            Ok(response)
+        })
     }
-    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
-        self.inner.delay(wait)
+    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, ()> {
+        if wait < Duration::from_millis(IDLE_MS.into()) {
+            return Box::pin(async {});
+        }
+        let clock = self.clock.clone();
+        let due = clock.now().saturating_add(wait);
+        let mut started = clock.started.subscribe();
+        Box::pin(async move {
+            // The clock owns the sender, so the channel stays open while this waits.
+            let _ = started.wait_for(|started| *started).await;
+            let due = u64::try_from(due.as_nanos()).unwrap_or(u64::MAX);
+            clock.now.fetch_max(due, Ordering::SeqCst);
+        })
     }
-    fn now(&self) -> std::time::Duration {
-        self.inner.now()
+    fn now(&self) -> Duration {
+        self.clock.now()
     }
 }
 
@@ -152,11 +268,16 @@ struct Run {
 }
 
 /// Runs one headless prompt against `base_url` with fixture state only.
-async fn headless(base_url: String) -> Result<Run> {
+async fn headless(base_url: String, silence: Silence) -> Result<Run> {
     let workspace = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let transport = Arc::new(Counted {
         inner: ReqwestTransport::new()?,
+        clock: Arc::new(Clock {
+            silence,
+            now: AtomicU64::new(0),
+            started: tokio::sync::watch::channel(false).0,
+        }),
         sent: AtomicUsize::new(0),
         all: AtomicUsize::new(0),
     });
@@ -234,7 +355,7 @@ async fn refused_connections_fail_the_turn_with_a_typed_cause_and_exit_1() -> Re
     drop(listener);
     let Run {
         code, jsonl, all, ..
-    } = headless(format!("http://127.0.0.1:{port}/v1")).await?;
+    } = headless(format!("http://127.0.0.1:{port}/v1"), Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     // The first exchange to meet the refusal, a token count or the request, ends the turn
     // after exactly its bounded attempts.
@@ -255,7 +376,7 @@ async fn refusal_statuses_fail_with_their_status_and_body_and_exit_1() -> Result
         .collect();
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, attempts());
     assert!(
@@ -266,7 +387,7 @@ async fn refusal_statuses_fail_with_their_status_and_body_and_exit_1() -> Result
     let replies = vec![Reply::Full(400, "bad request".into())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(jsonl.contains("status 400"), "{jsonl}");
@@ -279,7 +400,7 @@ async fn a_body_cut_after_output_is_final_and_exits_1() -> Result<()> {
     let replies = vec![Reply::Cut(body, TEXT.len())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(
@@ -291,12 +412,13 @@ async fn a_body_cut_after_output_is_final_and_exits_1() -> Result<()> {
 
 #[tokio::test]
 async fn a_body_silent_after_output_times_out_and_exits_1() -> Result<()> {
-    // Output escaped, so the idle timeout is final: one request, a typed timeout, exit 1.
+    // Output escaped, so the idle timeout is final: one request, a typed timeout, exit 1. The
+    // output event reaches the decoder split in two, and silence counts only after all of it.
     let body = format!("{TEXT}{DONE}");
     let replies = vec![Reply::Hold(body, TEXT.len())];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Measured(TEXT.len())).await?;
     assert_eq!(code, 1, "{jsonl}");
     assert_eq!(sent, 1);
     assert!(
@@ -316,7 +438,7 @@ async fn a_recovered_refusal_completes_and_exits_0() -> Result<()> {
     ];
     let Run {
         code, jsonl, sent, ..
-    } = headless(serve(replies).await?).await?;
+    } = headless(serve(replies).await?, Silence::Unmeasured).await?;
     assert_eq!(code, 0, "{jsonl}");
     assert_eq!(sent, 2);
     assert!(jsonl.contains("loopback ok"), "{jsonl}");
