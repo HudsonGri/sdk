@@ -703,6 +703,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-grpc-observability",
  "acyclic-test-support",
+ "blake3",
  "bytes",
  "compio-buf",
  "compio-driver",
