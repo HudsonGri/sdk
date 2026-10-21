@@ -212,66 +212,7 @@ async fn scenario(mode: Mode) {
             .unwrap();
     });
     let directory = tempfile::tempdir().unwrap();
-    let workspace = directory.path().join("workspace");
-    let settings = directory.path().join("settings");
-    std::fs::create_dir(&workspace).unwrap();
-    std::fs::create_dir(&settings).unwrap();
-    if matches!(mode, Mode::NestedWorkspace) {
-        std::fs::create_dir_all(workspace.join("nested/deep")).unwrap();
-        std::fs::write(workspace.join("nested/deep/source.txt"), "cold workspace").unwrap();
-    }
-    if instructions {
-        std::fs::write(
-            workspace.join("AGENTS.md"),
-            "Reply using the workspace instructions. λ\n",
-        )
-        .unwrap();
-        std::fs::write(
-            workspace.join("CLAUDE.md"),
-            "Project marker: claude-context λ",
-        )
-        .unwrap();
-    }
-    std::fs::create_dir(settings.join(".codex")).unwrap();
-    let configured = match mode {
-        Mode::CatalogDefault => "",
-        Mode::ExplicitModel | Mode::EnvironmentModel => "model = \"missing/model\"\n",
-        Mode::ConfiguredOpaqueModel => {
-            "model = \"vendor/tiny\"\nmodel_provider = \"graphcoder-qual\"\n"
-        }
-        _ => "model = \"tiny\"\nmodel_provider = \"graphcoder-qual\"\n",
-    };
-    std::fs::write(settings.join(".codex/config.toml"), configured).unwrap();
-    std::fs::create_dir(settings.join("codex-home")).unwrap();
-    if matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
-        std::fs::write(settings.join("codex-home/config.toml"), configured).unwrap();
-        std::fs::write(
-            settings.join(".codex/config.toml"),
-            "model = \"missing/decoy\"\n",
-        )
-        .unwrap();
-    }
-    let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{model:{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
-        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
-    }})).unwrap()).unwrap();
-    if matches!(
-        mode,
-        Mode::CatalogDefault | Mode::EnvironmentModel | Mode::ExplicitModel
-    ) {
-        let mut document: Value =
-            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
-        document["default_model"] = json!("graphcoder-qual/tiny");
-        std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-    if matches!(mode, Mode::UnknownOutput) {
-        let mut document: Value =
-            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
-        document["graphcoder-qual"]["models"]["tiny"]["capacity"]["output_tokens"] = Value::Null;
-        std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
+    let [workspace, settings, catalog] = prepare(directory.path(), mode, address, model).unwrap();
     let operation = OperationId::new();
     let output = execute(&workspace, &catalog, &settings, operation, mode).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
@@ -305,22 +246,9 @@ async fn scenario(mode: Mode) {
     // A second real process restores the same request/result instead of generating again.
     execute(&workspace, &catalog, &settings, operation, mode).await;
     if matches!(mode, Mode::Recreated) {
-        // A new checkout at the same path must run even the same operation
-        // afresh: it must neither replay nor refuse its predecessor's state.
-        std::fs::remove_dir_all(&workspace).unwrap();
-        std::fs::create_dir(&workspace).unwrap();
-        let output = execute(&workspace, &catalog, &settings, operation, mode).await;
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .contains("fixture answer")
-        );
-        let states = std::fs::read_dir(settings.join("acyclic/harness"))
-            .unwrap()
-            .count();
         assert_eq!(
-            states, 2,
-            "the new checkout inherited its predecessor's state"
+            recreate(&workspace, &catalog, &settings, operation).await,
+            Ok(())
         );
     }
     let mut generated = 0;
@@ -332,17 +260,105 @@ async fn scenario(mode: Mode) {
             _ => unreachable!(),
         }
     }
-    assert_eq!(
-        generated,
-        if fs_refusals || matches!(mode, Mode::Recreated) {
-            2
-        } else {
-            1
-        }
-    );
+    let reruns = usize::from(fs_refusals || matches!(mode, Mode::Recreated));
+    assert_eq!(generated, 1 + reruns);
     assert!(counted > 0);
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+/// Writes one scenario's workspace, settings and catalog under `directory`.
+fn prepare(
+    directory: &Path,
+    mode: Mode,
+    address: std::net::SocketAddr,
+    model: &str,
+) -> std::io::Result<[std::path::PathBuf; 3]> {
+    let instructions = matches!(mode, Mode::Instructions);
+    let workspace = directory.join("workspace");
+    let settings = directory.join("settings");
+    std::fs::create_dir(&workspace)?;
+    std::fs::create_dir(&settings)?;
+    if matches!(mode, Mode::NestedWorkspace) {
+        std::fs::create_dir_all(workspace.join("nested/deep"))?;
+        std::fs::write(workspace.join("nested/deep/source.txt"), "cold workspace")?;
+    }
+    if instructions {
+        std::fs::write(
+            workspace.join("AGENTS.md"),
+            "Reply using the workspace instructions. λ\n",
+        )?;
+        std::fs::write(
+            workspace.join("CLAUDE.md"),
+            "Project marker: claude-context λ",
+        )?;
+    }
+    std::fs::create_dir(settings.join(".codex"))?;
+    let configured = match mode {
+        Mode::CatalogDefault => "",
+        Mode::ExplicitModel | Mode::EnvironmentModel => "model = \"missing/model\"\n",
+        Mode::ConfiguredOpaqueModel => {
+            "model = \"vendor/tiny\"\nmodel_provider = \"graphcoder-qual\"\n"
+        }
+        _ => "model = \"tiny\"\nmodel_provider = \"graphcoder-qual\"\n",
+    };
+    std::fs::write(settings.join(".codex/config.toml"), configured)?;
+    std::fs::create_dir(settings.join("codex-home"))?;
+    if matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
+        std::fs::write(settings.join("codex-home/config.toml"), configured)?;
+        std::fs::write(
+            settings.join(".codex/config.toml"),
+            "model = \"missing/decoy\"\n",
+        )?;
+    }
+    let catalog = directory.join("catalog.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec(&json!({"graphcoder-qual":{
+            "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+            "models":{model:{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+            "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+        }}))?,
+    )?;
+    if matches!(
+        mode,
+        Mode::CatalogDefault | Mode::EnvironmentModel | Mode::ExplicitModel
+    ) {
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&catalog)?)?;
+        document["default_model"] = json!("graphcoder-qual/tiny");
+        std::fs::write(&catalog, serde_json::to_vec(&document)?)?;
+    }
+    if matches!(mode, Mode::UnknownOutput) {
+        let mut document: Value = serde_json::from_slice(&std::fs::read(&catalog)?)?;
+        document["graphcoder-qual"]["models"]["tiny"]["capacity"]["output_tokens"] = Value::Null;
+        std::fs::write(&catalog, serde_json::to_vec(&document)?)?;
+    }
+    Ok([workspace, settings, catalog])
+}
+
+/// A new checkout at the same path must run even the same operation afresh:
+/// it must neither replay nor refuse its predecessor's state.
+async fn recreate(
+    workspace: &Path,
+    catalog: &Path,
+    settings: &Path,
+    operation: OperationId,
+) -> Result<(), String> {
+    std::fs::remove_dir_all(workspace).map_err(|error| error.to_string())?;
+    std::fs::create_dir(workspace).map_err(|error| error.to_string())?;
+    let output = execute(workspace, catalog, settings, operation, Mode::Recreated).await;
+    if !String::from_utf8_lossy(&output).contains("fixture answer") {
+        return Err("the recreated checkout produced no fresh answer".into());
+    }
+    let states = std::fs::read_dir(settings.join("acyclic/harness"))
+        .map_err(|error| error.to_string())?
+        .count();
+    if states != 2 {
+        return Err(format!(
+            "the new checkout inherited its predecessor's state: {states}"
+        ));
+    }
+    Ok(())
 }
 
 // The provider sees the refusal through real HTTP, then finishes the same turn.

@@ -38,6 +38,7 @@ mod context;
 mod files;
 mod inheritance;
 mod input;
+mod opening;
 mod orphans;
 mod owner;
 mod owner_record;
@@ -116,234 +117,27 @@ impl LocalHarness {
             if config.concurrency == 0 {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
-            let config = config.prepare_state()?;
+            let mut config = config.prepare_state()?;
             let state_location = config.state_location()?;
-            let (model, provider) = config.model;
-            model.validate()?;
-            let mut tools = ToolRegistry::default();
-            if config.default_tools {
-                crate::tools::bind_defaults(
-                    &mut tools,
-                    &mut Vec::new(),
-                    None,
-                    true,
-                    cfg!(feature = "native-execution"),
-                )?;
-            }
-            for tool in config.tools {
-                tools.register((tool, None), &mut None, None)?;
-            }
-            #[cfg(feature = "search-http")]
-            if config.web_tools {
-                web::WebExecutor::bind(&mut tools, config.search_provider)?;
-            }
-            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            let settings_configuration =
-                settings::configuration(&config.project, config.settings, config.hermetic)?;
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
-                &settings_configuration,
-            ))
-            .await?;
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let mcp_workspace =
-                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp
-                .install(tools, &mcp_workspace, config.mcp_limits)
-                .await?;
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let tools = installation.tools;
-            let compaction = compaction::select(
-                config.compaction,
-                &model,
-                provider.as_ref(),
-                &tools,
-                config.limits,
-            )
-            .await?;
-            #[cfg(feature = "native-execution")]
-            let native_mounts = tools.get("bash", None, None)?.is_some();
-            acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
-            #[cfg(feature = "native-execution")]
-            acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-            #[cfg(feature = "native-execution")]
-            if native_mounts {
-                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
-                acyclic_fs::initialize_native_mount_services().map_err(storage)?;
-            }
-            #[cfg(not(feature = "native-execution"))]
-            if matches!(config.project, LocalProject::Workspace(_)) {
-                return Err(Error::Unsupported(
-                    "checkout workspaces require native-execution".into(),
-                ));
-            }
-            if let LocalProject::Workspace(path) = &config.project {
-                if !path.is_dir() {
-                    return Err(Error::Invalid("local workspace is not a directory".into()));
-                }
-            }
-            // Refuse a caller's overlapping control directory before capture
-            // can publish the checkout's incarnation token.
-            let selected_directory = match (&state_location, &config.project) {
-                (config::StateLocation::Directory(directory), LocalProject::Workspace(path)) => {
-                    Some(owner::separated_directory(directory, Some(path))?)
-                }
-                (config::StateLocation::ProjectRoot(root), LocalProject::Workspace(path)) => {
-                    owner::separated_directory(root, Some(path))?;
-                    None
-                }
-                _ => None,
-            };
-            let checkout = match &config.project {
-                LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
-                LocalProject::Volume { .. } => None,
-            };
-            let state_directory = state_location.resolve(&config.project, checkout.as_ref())?;
-            let directory = match selected_directory {
-                Some(directory) => directory,
-                None => owner::separated_directory(
-                    &state_directory,
-                    checkout.as_ref().map(|checkout| checkout.path.as_path()),
-                )?,
-            };
-            #[cfg(test)]
-            let checkout = match (&config.project, owner::RECAPTURE.get()) {
-                (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
-                _ => checkout,
-            };
-            let owner = owner::Owner::open(&directory, &config.project, checkout.as_ref())?;
-            let options = acyclic_fs::LocalOptions::new(match &config.project {
-                LocalProject::Workspace(_) => directory.join("filesystem"),
-                LocalProject::Volume { directory, .. } => directory.clone(),
-            });
-            let state_owner = config.test_state;
-            let filesystem = match &state_owner {
-                Some(owner) if matches!(&config.project, LocalProject::Workspace(_)) => {
-                    acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await
-                }
-                _ => acyclic_fs::Fs::local(options).await,
-            }
-            .map_err(storage)?;
-            let provider_ref = owner.project.provider();
-            let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
-            let scratch = VolumeRef::new(
-                provider_ref.clone(),
-                format!("scratch-{}", owner.agent),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(owner.agent),
-                &mut None,
-            )?;
-            let journal = VolumeRef::new(
-                provider_ref.clone(),
-                format!("journal-{}", owner.agent),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(owner.agent),
-                &mut None,
-            )?;
-            let task_volume = VolumeRef::new(
-                provider_ref.clone(),
-                format!("tasks-{}", owner.agent),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(owner.agent),
-                &mut None,
-            )?;
-            files.create_volume(&task_volume).await?;
-            files.create_volume(&scratch).await?;
-            files.create_volume(&journal).await?;
-            // This standalone composition owns its private companion namespace.
-            // Retain the existing owned WAL instead of reopening/checkpointing it
-            // for every transaction. Embedded bind() retains shared-store semantics.
-            #[cfg(feature = "native-execution")]
-            let store =
-                acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
-                    .map_err(storage)?
-                    .with_ownership_anchor(state_owner.clone());
-            #[cfg(feature = "native-execution")]
-            let workspace = match &config.project {
-                LocalProject::Workspace(_) => Some(
-                    workspace::open(
-                        &filesystem,
-                        &owner.project,
-                        &scratch,
-                        checkout
-                            .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
-                            .root,
-                        &directory,
-                        workspace::attach_operation(owner.task),
-                        false,
-                        native_mounts,
-                        store,
-                    )
-                    .await?,
-                ),
-                LocalProject::Volume { .. } => Some(
-                    workspace::open_volume(
-                        &filesystem,
-                        &owner.project,
-                        &scratch,
-                        &directory,
-                        workspace::attach_operation(owner.task),
-                        native_mounts,
-                        store,
-                    )
-                    .await?,
-                ),
-            };
-            #[cfg(feature = "native-execution")]
-            let files = match &workspace {
-                Some(workspace) => files.with_project_family(
-                    workspace.view().workspace().id(),
-                    workspace.store.clone(),
-                )?,
-                None => files,
-            };
-            // A configured project is opened, never silently replaced by an empty volume.
-            files
-                .resolve(
-                    &crate::filesystem::workspace_ref(
-                        provider_ref.clone(),
-                        &owner.project.storage_name(&mut None)?,
-                    )?,
-                    None,
-                )
-                .await?;
-            #[cfg(feature = "native-execution")]
-            let workspace = workspace.map(Arc::new);
-            let stream = Arc::new(
-                LocalStream::open_with_clock_and_anchor(
-                    directory.join("stream"),
-                    Default::default(),
-                    config.clock.clone(),
-                    state_owner,
-                )
-                .await
-                .map_err(storage)?,
-            );
-            let issuer = AuthorityIssuer::new(
-                "acyclic.local",
-                owner.key,
-                Authority {
-                    kind: AggregateKind::Task,
-                    id: owner.task.to_string(),
-                },
-            );
-            let verifier = issuer.verifier(&mut None)?;
+            config.model.0.validate()?;
+            let tooling = opening::Tooling::assemble(&mut config).await?;
+            let opened = opening::Storage::open(&config, state_location, &tooling).await?;
+            let owner = &opened.owner;
             let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
-                files: files.clone(),
+                files: opened.files.clone(),
                 #[cfg(feature = "native-execution")]
-                workspace: workspace.as_ref().map(Arc::clone),
-                stream,
-                task_volume: &task_volume,
-                issuer: &issuer,
-                verifier: &verifier,
+                workspace: opened.workspace.as_ref().map(Arc::clone),
+                stream: opened.stream,
+                task_volume: &opened.task_volume,
+                issuer: &opened.issuer,
+                verifier: &opened.verifier,
                 agent: owner.agent,
                 project: &owner.project,
-                scratch: &scratch,
-                journal: &journal,
-                tools: &tools,
+                scratch: &opened.scratch,
+                journal: &opened.journal,
+                tools: &tooling.tools,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-                capabilities: &installation.capabilities,
+                capabilities: &tooling.capabilities,
                 limits: config.limits,
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
@@ -351,15 +145,16 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            let local = Self {
-                files,
+            let (model, provider) = config.model;
+            Ok(Self {
+                files: opened.files,
                 runtime,
                 task_files,
-                project: owner.project.clone(),
-                scratch,
-                journal,
-                verifier,
-                issuer: Some(issuer),
+                project: opened.owner.project.clone(),
+                scratch: opened.scratch,
+                journal: opened.journal,
+                verifier: opened.verifier,
+                issuer: Some(opened.issuer),
                 signed,
                 model,
                 provider,
@@ -369,19 +164,18 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 #[cfg(feature = "hooks")]
-                settings: settings_configuration,
+                settings: tooling.settings,
                 limits: config.limits,
-                compaction,
+                compaction: tooling.compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-                mcp_diagnostics: installation.diagnostics,
+                mcp_diagnostics: tooling.diagnostics,
                 goal_continuations: config.goal_continuations,
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 drivers: orphans::Drivers::new(),
                 #[cfg(feature = "native-execution")]
-                workspace,
-            };
-            Ok(local)
+                workspace: opened.workspace,
+            })
         })
     }
 
