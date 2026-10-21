@@ -14,10 +14,16 @@ type Registry = BTreeMap<(usize, acyclic_fs::WorkspaceId), Arc<AsyncMutex<Weak<S
 static INDEXES: OnceLock<Mutex<Registry>> = OnceLock::new();
 
 struct Shared {
-    latest: AsyncMutex<Option<Index>>,
+    latest: AsyncMutex<Option<Arc<Index>>>,
     changed: watch::Sender<u64>,
     failure: Mutex<Option<String>>,
     refresh: tokio::sync::Notify,
+}
+
+impl Shared {
+    async fn snapshot(&self) -> Option<Arc<Index>> {
+        self.latest.lock().await.clone()
+    }
 }
 
 /// A bounded cursor following the shared, file-backed name index.
@@ -56,14 +62,24 @@ impl IndexedNames {
         };
         let mut entry = entry.lock().await;
         if let Some(shared) = entry.upgrade() {
-            let mut latest = shared.latest.lock().await;
+            let latest = shared.snapshot().await;
             let valid = if let Some(index) = latest.as_ref() {
                 reusable(view, index).await?
             } else {
                 true
             };
             if !valid {
-                *latest = None;
+                let mut current = shared.latest.lock().await;
+                // Reuse checks perform I/O without blocking page readers or
+                // the producer. Do not invalidate a newer publication that
+                // arrived while this snapshot was being checked.
+                if current
+                    .as_ref()
+                    .zip(latest.as_ref())
+                    .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
+                {
+                    *current = None;
+                }
                 shared.refresh.notify_one();
             }
             drop(latest);
@@ -100,7 +116,7 @@ impl IndexedNames {
         restore_watches(&owned, native.is_some(), existing.as_ref()).await?;
         let (changed, receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
-            latest: AsyncMutex::new(existing),
+            latest: AsyncMutex::new(existing.map(Arc::new)),
             changed,
             failure: Mutex::new(None),
             refresh: tokio::sync::Notify::new(),
@@ -137,7 +153,7 @@ impl IndexedNames {
             {
                 return Err(Error::Storage(message));
             }
-            let latest = self.shared.latest.lock().await;
+            let latest = self.shared.snapshot().await;
             if let Some(index) = latest.as_ref() {
                 if self.cut.as_ref() != Some(&index.manifest.names_cut) {
                     self.cut = Some(index.manifest.names_cut.clone());
@@ -198,7 +214,7 @@ impl IndexedNames {
     /// Index-only transactions may advance authored generations, but source,
     /// overlay, shadow, and public pathname changes cannot be substituted.
     pub async fn matches_tree(&self, tree: GitTreeRef) -> crate::Result<bool> {
-        let latest = self.shared.latest.lock().await;
+        let latest = self.shared.snapshot().await;
         let Some(index) = latest.as_ref() else {
             return Ok(false);
         };
@@ -377,7 +393,7 @@ async fn maintain(
             let mut latest = shared.latest.lock().await;
             let changed = latest.as_ref().map(|index| index.generation().id())
                 != published.as_ref().map(|index| index.generation().id());
-            *latest = published;
+            *latest = published.map(Arc::new);
             if changed {
                 shared.changed.send_modify(|revision| *revision += 1);
             }
@@ -532,7 +548,7 @@ async fn fill(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) -> cra
             Some(index) if reusable(view.view(), &index).await? => Some(index),
             _ => None,
         };
-        *shared.latest.lock().await = current;
+        *shared.latest.lock().await = current.map(Arc::new);
         shared.changed.send_modify(|revision| *revision += 1);
         tokio::task::yield_now().await;
     }
@@ -544,10 +560,9 @@ async fn fill_pass(
     shared: &Shared,
 ) -> crate::Result<bool> {
     let workspace = view.workspace();
-    let prior = shared.latest.lock().await.take();
+    let prior = shared.snapshot().await;
     let (mut walk, mut pages, mut expected) = if let Some(index) = prior {
         if index.manifest.complete {
-            *shared.latest.lock().await = Some(index);
             return Ok(true);
         }
         let walk = match view.view() {
@@ -561,7 +576,6 @@ async fn fill_pass(
         .map_err(super::search::search_error)?;
         let pages = index.manifest.pages;
         let expected = index.generation();
-        *shared.latest.lock().await = Some(index);
         (walk, pages, expected)
     } else {
         let expected = workspace
@@ -603,11 +617,96 @@ async fn fill_pass(
             return Ok(false);
         };
         expected = index.generation();
-        *shared.latest.lock().await = Some(index);
+        *shared.latest.lock().await = Some(Arc::new(index));
         shared.changed.send_modify(|revision| *revision += 1);
         if complete {
             return Ok(true);
         }
         tokio::task::yield_now().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn volume_search_pinned_readers_allow_publication_and_retain_their_page()
+    -> crate::Result<()> {
+        let temp = tempfile::tempdir().map_err(storage_index)?;
+        let fs = LocalFs::local(acyclic_fs::LocalOptions::new(temp.path().join("fs")))
+            .await
+            .map_err(storage_index)?;
+        let stop = CancellationToken::new();
+        let workspace = fs
+            .create_workspace("snapshot-reader", WorkBudget::UNBOUNDED, &stop)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        workspace.write_text("/retained.txt", "content").await?;
+        let expected = workspace
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let mut walk = NameWalk::exact(expected.clone(), None, GitIgnorePolicy::default())
+            .await
+            .map_err(super::super::search::search_error)?;
+        let page = walk
+            .next_page()
+            .await
+            .map_err(super::super::search::search_error)?
+            .unwrap();
+        assert!(
+            walk.next_page()
+                .await
+                .map_err(super::super::search::search_error)?
+                .is_none()
+        );
+        let manifest = NameIndexManifest {
+            schema: 1,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages: 1,
+            pending_directories: 0,
+            complete: true,
+            checkpoint: walk
+                .checkpoint()
+                .map_err(super::super::search::search_error)?,
+        };
+        let index = Index::publish(&workspace, &expected, manifest, Some(&page))
+            .await
+            .map_err(super::super::search::search_error)?
+            .unwrap();
+        let (changed, _receiver) = watch::channel(0);
+        let shared = Arc::new(Shared {
+            latest: AsyncMutex::new(Some(Arc::new(index))),
+            changed,
+            failure: Mutex::new(None),
+            refresh: tokio::sync::Notify::new(),
+        });
+        let reader = shared.snapshot().await.unwrap();
+        // A suspended consumer keeps its generation pin, but publication must
+        // finish before that consumer resumes and reads its old immutable page.
+        let publisher = Arc::clone(&shared);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+            *publisher.latest.lock().await = None;
+        })
+        .await
+        .map_err(storage_index)?;
+        assert_eq!(
+            reader
+                .page(0)
+                .await
+                .map_err(super::super::search::search_error)?[0]
+                .path,
+            "retained.txt"
+        );
+        // Negative control: holding the old reader guard prevents publication.
+        let held = shared.latest.lock().await;
+        assert!(shared.latest.try_lock().is_err());
+        drop(held);
+        Ok(())
     }
 }
