@@ -3,10 +3,12 @@ import test from 'node:test';
 import {checkTestSupport} from './check-test-support.mjs';
 
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
-  const dependency = {id: 'backend@1', name: 'backend', features: {'test-support': []}};
-  const consumer = {id: 'consumer@1', name: 'consumer', features: {'test-support': []},
-    dependencies: [{name: 'backend', rename: alias, optional, kind, target}]};
-  const node = {id: consumer.id, deps: [{name: alias.replaceAll('-', '_'), pkg: dependency.id,
+  const features = () => /** @type {Record<string, string[]>} */ ({'test-support': []});
+  const dependency = {id: 'backend@1', name: 'backend', features: features()};
+  const consumer = {id: 'consumer@1', name: 'consumer', features: features(),
+    dependencies: [{name: 'backend', rename: alias, optional, kind, target,
+      features: /** @type {string[]} */ ([])}]};
+  const node = {id: consumer.id, features: /** @type {string[]} */ ([]), deps: [{name: alias.replaceAll('-', '_'), pkg: dependency.id,
     dep_kinds: [{kind, target}]}]};
   return {packages: [consumer, dependency], workspace_members: [consumer.id],
     resolve: {nodes: [node]}, consumer, dependency, node};
