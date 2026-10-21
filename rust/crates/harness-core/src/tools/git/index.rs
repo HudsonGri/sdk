@@ -457,7 +457,7 @@ async fn only_index_changes(
     observed: &LocalGeneration,
     current: &LocalGeneration,
 ) -> crate::Result<bool> {
-    let (diff, _) = observed
+    let (diff, _) = match observed
         .diff_to(
             current,
             512,
@@ -465,8 +465,11 @@ async fn only_index_changes(
             &CancellationToken::new(),
         )
         .await
-        .map_err(|failure| failure.error)?
-        .value;
+    {
+        Ok(receipt) => receipt.value,
+        Err(failure) if matches!(failure.error, WorkspaceError::JoinLimit) => return Ok(false),
+        Err(failure) => return Err(failure.error.into()),
+    };
     if diff.changes().truncated {
         return Ok(false);
     }

@@ -540,18 +540,21 @@ async fn volume_search_streams_large_authored_revisions_without_diff_limit_failu
         .head(WorkBudget::UNBOUNDED, &stop)
         .await?
         .value;
-    let (diff, _) = old
+    let bounded = old
         .diff_to(&current, 512, WorkBudget::UNBOUNDED, &stop)
-        .await?
-        .value;
+        .await;
     // Negative control: a bounded diff cannot certify this namespace revision.
-    assert!(
-        diff.changes().truncated
-            || diff
-                .changed_paths(512, WorkBudget::UNBOUNDED, &stop)
-                .await
-                .is_err()
-    );
+    assert!(match bounded {
+        Ok(receipt) =>
+            receipt.value.0.changes().truncated
+                || receipt
+                    .value
+                    .0
+                    .changed_paths(512, WorkBudget::UNBOUNDED, &stop)
+                    .await
+                    .is_err(),
+        Err(failure) => matches!(failure.error, acyclic_fs::WorkspaceError::JoinLimit),
+    });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let mut count = 0;
@@ -783,10 +786,10 @@ async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -
 #[tokio::test]
 async fn volume_search_grep_matches_original_bytes_before_display_decoding() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(false).await?;
-    let bytes = b"other\r\n\xffneedle\r\nlast needle";
-    std::fs::write(root.join("encoded.txt"), bytes)?;
+    let bytes = b"other\r\n\xffneedle\r\nlast needle".to_vec();
+    std::fs::write(root.join("encoded.txt"), &bytes)?;
     assert!(
-        std::str::from_utf8(bytes).is_err(),
+        std::str::from_utf8(&bytes).is_err(),
         "UTF-8-only control accepted the fixture"
     );
     for (pattern, expected) in [("needle", 2), ("\u{fffd}", 0)] {

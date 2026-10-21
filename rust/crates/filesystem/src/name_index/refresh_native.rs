@@ -50,11 +50,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             .await
             .map_err(|failure| failure.error)?
             .value;
-        let (diff, _) = observed
+        let (diff, _) = match observed
             .diff_to(&expected, 512, WorkBudget::UNBOUNDED, &stop)
             .await
-            .map_err(|failure| failure.error)?
-            .value;
+        {
+            Ok(receipt) => receipt.value,
+            Err(failure) if matches!(failure.error, WorkspaceError::JoinLimit) => {
+                return Ok(NameIndexRefresh::Ineligible);
+            }
+            Err(failure) => return Err(failure.error.into()),
+        };
         if diff.changes().truncated {
             return Ok(NameIndexRefresh::Ineligible);
         }
