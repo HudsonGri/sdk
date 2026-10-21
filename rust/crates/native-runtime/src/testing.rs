@@ -22,6 +22,8 @@ pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
 pub use process::{ProcessCapture, capture_process};
+mod metadata;
+pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(test)]
@@ -64,6 +66,7 @@ struct State {
     wall: Option<clock::Wall>,
     writes: durability::Writes,
     process: Option<Arc<process::Provider>>,
+    metadata: Option<Arc<metadata::Provider>>,
 }
 
 struct Inner {

@@ -347,6 +347,14 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
 }
 
 fn replay(seed: u64, erase_source: bool) -> EntryFuture<'static, Result<Trace>> {
+    replay_with_directory_times(seed, erase_source, 1_700_000_000_000_000_000)
+}
+
+fn replay_with_directory_times(
+    seed: u64,
+    erase_source: bool,
+    directory_time: i64,
+) -> EntryFuture<'static, Result<Trace>> {
     entry(async move {
         // Negative control erases entropy without changing polling or time.
         let mut driver = if erase_source {
@@ -354,6 +362,21 @@ fn replay(seed: u64, erase_source: bool) -> EntryFuture<'static, Result<Trace>> 
         } else {
             driver::Driver::new(seed, None)
         };
+        // Native directory times are fixture inputs, just as scripted provider
+        // output is. Physical identities and snapshot validation remain real;
+        // every supplied timestamp is encoded in the unchanged durable trace.
+        driver.schedule.set_native_times_provider(move |input| {
+            if input.directory {
+                acyclic_native_runtime::testing::NativeTimes {
+                    created_ns: input.times.created_ns.map(|_| directory_time),
+                    modified_ns: input.times.modified_ns.map(|_| directory_time),
+                    accessed_ns: input.times.accessed_ns.map(|_| directory_time),
+                    changed_ns: input.times.changed_ns.map(|_| directory_time),
+                }
+            } else {
+                input.times
+            }
+        });
         let directory = tempfile::tempdir().map_err(storage)?;
         let result = driver.run(scenario(directory.path())).await;
         let driver::Outcome::Completed(result) = result else {
