@@ -144,7 +144,15 @@ async fn search(
     signed: &Scope,
 ) -> Result<()> {
     let query = request.query.as_str();
-    let admitted = match request.task {
+    // The UI initially selects its authenticated owner, which names the
+    // conversation's project before any execution admission exists. Only
+    // that exact signed audience uses the project view directly; arbitrary
+    // selected task IDs must still resolve an admission and its grants.
+    let task = request.task.filter(|task| {
+        let owner = verifier.audience();
+        owner.kind != AggregateKind::Task || owner.id != task.to_string()
+    });
+    let admitted = match task {
         Some(task) => Some(runtime.task_host().observe_admission(task).await?),
         None => None,
     };
@@ -153,7 +161,7 @@ async fn search(
     results(files, request, &best, 1, false, 0).await?;
     // Keep the selected branch alive for the complete query. Each mounted
     // volume is searched through its logical view and its own access policy.
-    let selected = selected_view(workspace, runtime, request.task).await?;
+    let selected = selected_view(workspace, runtime, task).await?;
     let mut volumes = Vec::new();
     for (prefix, mount) in workspace.mounts.mounts() {
         let view = if prefix.is_empty() {
@@ -531,10 +539,32 @@ mod tests {
         );
         input.editor = crate::tui::Editor::new("@recovered");
         input.refresh_completions();
-        completion.refresh_query(&mut input, None).await?;
+        let owner = TaskId::parse(&harness.client_owner().id)?;
+        // Negative control: GraphCoder selects this owner at startup, but it
+        // has no execution admission. Treating it as an admitted task makes
+        // the otherwise healthy popup permanently report an unavailable source.
+        assert!(
+            harness
+                .runtime
+                .task_host()
+                .observe_admission(owner)
+                .await
+                .is_err()
+        );
+        harness
+            .workspace
+            .as_ref()
+            .unwrap()
+            .view
+            .workspace()
+            .write_text("/recovered.rs", "candidate content")
+            .await?;
+        completion.refresh_query(&mut input, Some(owner)).await?;
         terminal(&mut completion, &mut input).await?;
         assert_eq!(input.completion.unavailable_entries(), 0);
         assert!(input.completion.indexing().is_none());
+        assert!(input.completion.accept(&mut input.editor, 1));
+        assert_eq!(input.editor.text(), "@recovered.rs ");
         Ok(())
     }
 
