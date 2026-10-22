@@ -327,6 +327,12 @@ impl NativeNameChanges {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, NativeDemandSource, S>
 {
+    /// Rejects old pinned reads and native cursors after persisted metadata
+    /// proves that the source changed while no subscription was running.
+    pub fn invalidate_indexed_native_metadata(&self) {
+        self.source.invalidate();
+    }
+
     /// Reinstalls native observation from an indexed metadata name. This
     /// deliberately bypasses authored directory bindings, which can coexist
     /// with unindexed native children. It performs no directory enumeration.

@@ -114,8 +114,11 @@ impl IndexedNames {
         } else {
             None
         };
-        let restart_fresh = restore_watches(&owned, existing.as_ref()).await?;
-        if !restart_fresh {
+        let restart_delta = restore_watches(&owned, existing.as_ref()).await?;
+        if restart_delta.all || !restart_delta.paths.is_empty() {
+            if let OwnedView::Checkout(lazy) = &owned {
+                lazy.invalidate_indexed_native_metadata();
+            }
             existing = None;
         }
         let (changed, receiver) = watch::channel(0);
@@ -129,7 +132,7 @@ impl IndexedNames {
         *entry = Arc::downgrade(&shared);
         let producer = Arc::clone(&shared);
         tokio::spawn(async move {
-            if let Err(error) = maintain(&owned, &producer, native, restart_fresh).await {
+            if let Err(error) = maintain(&owned, &producer, native, restart_delta).await {
                 if let Ok(mut failure) = producer.failure.lock() {
                     *failure = Some(error.to_string());
                 }
@@ -301,13 +304,16 @@ fn native_follow(
     })
 }
 
-async fn restore_watches(view: &OwnedView, index: Option<&Index>) -> crate::Result<bool> {
+async fn restore_watches(
+    view: &OwnedView,
+    index: Option<&Index>,
+) -> crate::Result<acyclic_fs::lazy_workspace::NativeNameDelta> {
     // A newly opened inotify subscription initially watches only the root.
     // Restore registrations and compare persisted per-directory tokens before
     // declaring a completed index live. Lookup registers each directory and
     // its ancestors; it never lists it or reads candidate content. Offline
     // changes cannot be hidden by reinstalling watches on a stale snapshot.
-    let mut fresh = true;
+    let mut delta = acyclic_fs::lazy_workspace::NativeNameDelta::default();
     if let OwnedView::Checkout(lazy) = view
         && let Some(index) = index
         && let acyclic_fs::NameCut::Lazy(snapshot) = &index.manifest.cut
@@ -323,19 +329,34 @@ async fn restore_watches(view: &OwnedView, index: Option<&Index>) -> crate::Resu
             let observed = lazy
                 .observe_indexed_native_metadata(*snapshot, &format!("/{path}"), &mut accounting)
                 .await?;
-            fresh &= observed == expected;
+            if observed != expected {
+                // Policy content can change without touching the directory's
+                // token. Rediscover that policy's subtree, not its siblings.
+                let root = if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
+                    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+                } else {
+                    path
+                };
+                if root.is_empty() || !index.manifest.complete || delta.paths.len() == 512 {
+                    delta.all = true;
+                    delta.paths.clear();
+                } else if !delta.all {
+                    delta.paths.insert(root.to_owned());
+                }
+            }
         }
     }
-    Ok(fresh)
+    Ok(delta)
 }
 
 async fn maintain(
     view: &OwnedView,
     shared: &Shared,
     mut native: Option<acyclic_fs::lazy_workspace::NativeNameChanges>,
-    mut restart_fresh: bool,
+    restart_delta: acyclic_fs::lazy_workspace::NativeNameDelta,
 ) -> crate::Result<()> {
-    let mut native_delta = None;
+    let mut native_delta =
+        (restart_delta.all || !restart_delta.paths.is_empty()).then_some(restart_delta);
     let (provider, path) = view
         .workspace()
         .authority_records()
@@ -357,10 +378,6 @@ async fn maintain(
             .map_err(super::search::search_error)?;
         let mut policy = None;
         let published = match published {
-            Some(_) if !restart_fresh => {
-                restart_fresh = true;
-                None
-            }
             Some(index) if reusable(view.view(), &index).await? => Some(index),
             Some(index) => {
                 // The shared index has one volume-owned policy. Query callers

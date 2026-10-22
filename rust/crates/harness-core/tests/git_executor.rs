@@ -673,10 +673,34 @@ enum RestartEdit {
     DirectoryToFile,
 }
 
+#[derive(Default)]
+struct SearchDirectoryObservations(std::sync::Mutex<Vec<String>>);
+
+impl acyclic_fs::demand::DemandDirectoryObserver for SearchDirectoryObservations {
+    fn observe_directory(
+        &self,
+        directory: &acyclic_fs::kernel::NamespacePath,
+        _accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> std::result::Result<(), acyclic_fs::demand::DemandError> {
+        let stop = CancellationToken::new();
+        let mut text = String::from("/");
+        for (ordinal, name) in directory.components().iter().enumerate() {
+            if ordinal != 0 {
+                text.push('/');
+            }
+            text.push_str(&name.unicode_text(WorkBudget::UNBOUNDED, &stop)?.value);
+        }
+        self.0.lock().unwrap().push(text);
+        Ok(())
+    }
+}
+
 async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
     let (_temp, root, _fs, store, main) = fixture_native(false).await?;
     std::fs::create_dir(root.join("nested"))?;
     std::fs::write(root.join("nested/removed-offline.txt"), b"unread")?;
+    std::fs::create_dir(root.join("untouched"))?;
+    std::fs::write(root.join("untouched/retained.txt"), b"unread")?;
     if matches!(edit, RestartEdit::IgnorePolicy) {
         std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
         std::fs::write(root.join("nested/.gitignore"), b"created-offline.txt\n")?;
@@ -746,12 +770,13 @@ async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
         }
     }
     let config = VolumeConfig::native(Lifecycle::Durable);
+    let listed = Arc::new(SearchDirectoryObservations::default());
     let source = NativeDemandSource::open(
         Cow::Borrowed(&root),
         config.profile,
         config.limits,
         Some(snapshot.source),
-        None,
+        Some(listed.clone()),
         WorkBudget::UNBOUNDED,
         &stop,
     )
@@ -784,6 +809,37 @@ async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
     };
     assert!(paths.iter().any(|path| path == arrived));
     assert_eq!(names.unavailable_entries().await, 0);
+    assert!(paths.iter().any(|path| path == "untouched/retained.txt"));
+    if !matches!(edit, RestartEdit::DirectoryToFile) {
+        let directories = listed.0.lock().unwrap();
+        assert!(directories.iter().any(|path| path == "/nested"));
+        // Restoring the two policy absence tokens observes their parent.
+        // The unchanged sibling needs no additional native observation.
+        let untouched = directories
+            .iter()
+            .filter(|path| *path == "/untouched")
+            .count();
+        assert_eq!(untouched, 2, "unexpected sibling work: {directories:?}");
+        drop(directories);
+        // Negative control: the former whole-tree recovery lists the sibling.
+        let mut full = git::walk_names(
+            (&reopened).into(),
+            None,
+            git::search_ignore((&reopened).into()).await?,
+        )
+        .await?;
+        while full.next_page().await?.is_some() {}
+        assert!(
+            listed
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|path| *path == "/untouched")
+                .count()
+                > untouched
+        );
+    }
     assert!(
         !paths
             .iter()
