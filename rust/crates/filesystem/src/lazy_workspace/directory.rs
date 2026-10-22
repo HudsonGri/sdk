@@ -125,7 +125,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             // An indexed directory may have been removed or replaced by a
             // file while the source was closed. Its former descendants are
             // absent, rather than an environmental failure of the index.
-            Err(crate::demand::DemandError::Io(error))
+            Err(LazyWorkspaceError::Demand(crate::demand::DemandError::Io(error)))
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
@@ -133,7 +133,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             {
                 Ok(None)
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 
