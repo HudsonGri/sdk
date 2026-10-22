@@ -167,10 +167,13 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
     let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
     fixture.write(&[("zz-changed", Some("after"))]).await?;
     let current = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
-    let (stat, _) = current.stat("/zz-changed", BOUNDARY_BUDGET, &cancel).await;
+    let stat = current
+        .stat("/zz-changed", BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value;
     // Negative control: an output bound used as a cold scan bound cannot find it.
     let old = current
-        .paths_for_file_id(stat?.file_id, 4, BOUNDARY_BUDGET, &cancel)
+        .paths_for_file_id(stat.file_id, 4, BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
     assert!(old.is_empty());
@@ -213,8 +216,11 @@ async fn directory_replacement_and_restoration_preserve_both_endpoints() -> Test
     transaction.remove("/dir", BOUNDARY_BUDGET, &cancel).await?;
     transaction.write_text("/dir", "replacement\n").await?;
     let file = commit(&mut transaction).await?;
-    let (stat, _) = file.stat("/dir/a.txt", BOUNDARY_BUDGET, &cancel).await;
-    let error = stat.unwrap_err();
+    let error = file
+        .stat("/dir/a.txt", BOUNDARY_BUDGET, &cancel)
+        .await
+        .unwrap_err()
+        .error;
     assert!(matches!(error, acyclic_fs::WorkspaceError::NotDirectory));
     // Negative control: the old NotFound-only classifier rejects this endpoint.
     assert!(!matches!(error, acyclic_fs::WorkspaceError::NotFound));
