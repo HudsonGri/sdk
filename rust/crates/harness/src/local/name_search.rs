@@ -163,18 +163,24 @@ async fn search(
         } else {
             continue;
         };
-        let names = crate::tools::git::IndexedNames::open(view).await?;
-        names.prefer_directory_names(query)?;
+        let names = match crate::tools::git::IndexedNames::open(view).await {
+            Ok(names) => {
+                names.prefer_directory_names(query)?;
+                Some(names)
+            }
+            Err(_) => None,
+        };
+        let complete = names.is_none();
         volumes.push(VolumeSearch {
             names,
             prefix,
             mount,
             best: crate::tui::PathMatches::new(query),
-            complete: false,
+            complete,
         });
     }
-    if volumes.is_empty() {
-        return results(files, request, &best, 0, true, 0).await;
+    if volumes.iter().all(|volume| volume.names.is_none()) {
+        return results(files, request, &best, 0, true, volumes.len()).await;
     }
     let mut last = None;
     loop {
@@ -184,19 +190,39 @@ async fn search(
         let (index, page) = {
             let mut next = futures::stream::FuturesUnordered::new();
             for (index, volume) in volumes.iter_mut().enumerate() {
+                let complete = volume.complete;
+                let Some(names) = &mut volume.names else {
+                    continue;
+                };
                 next.push(async move {
-                    if volume.complete {
-                        volume.names.changed().await?;
+                    let page = async {
+                        if complete {
+                            names.changed().await?;
+                        }
+                        names.next_page().await
                     }
-                    Ok::<_, Error>((index, volume.names.next_page().await?))
+                    .await;
+                    (index, page)
                 });
             }
-            next.next()
-                .await
-                .ok_or_else(|| Error::Storage("name searches ended".into()))??
+            let Some(event) = next.next().await else {
+                return Ok(());
+            };
+            event
         };
         verifier.verify(signed, &mut None)?;
         let volume = &mut volumes[index];
+        let page = match page {
+            Ok(page) => page,
+            Err(_) => {
+                // A failed source cannot certify an empty volume. Retain
+                // healthy mounts, clear this source's stale names and report
+                // one unavailable source until the next query retries it.
+                volume.names = None;
+                volume.best = crate::tui::PathMatches::new(query);
+                None
+            }
+        };
         volume.complete = page.is_none();
         if let Some(page) = page {
             if page.reset {
@@ -230,8 +256,12 @@ async fn search(
                 combined.push(path.to_owned());
             }
             complete &= volume.complete;
-            pending += volume.names.pending_directories().await;
-            unavailable += volume.names.unavailable_entries().await;
+            if let Some(names) = &volume.names {
+                pending += names.pending_directories().await;
+                unavailable += names.unavailable_entries().await;
+            } else {
+                unavailable += 1;
+            }
         }
         let publication = (
             combined.paths().map(str::to_owned).collect::<Vec<_>>(),
@@ -248,7 +278,7 @@ async fn search(
 }
 
 struct VolumeSearch<'a> {
-    names: crate::tools::git::IndexedNames,
+    names: Option<crate::tools::git::IndexedNames>,
     prefix: &'a str,
     mount: &'a crate::workspace::Mount<Option<Arc<workspace::MountedVolume>>>,
     best: crate::tui::PathMatches,
@@ -323,6 +353,74 @@ fn name_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn name_search_failed_volume_preserves_healthy_mount_results() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let project = super::super::tests::volume(directory.path()).await?;
+        let harness = LocalHarness::open(
+            super::super::tests::volume_config(
+                directory.path(),
+                project,
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            )?
+            .without_default_tools(),
+        )
+        .await?;
+        let workspace = harness.workspace.as_ref().unwrap();
+        workspace
+            .view
+            .workspace()
+            .write_text("/.acyclic-sdk/name-index/manifest.json", "invalid JSON")
+            .await
+            .map_err(storage)?;
+        let stop = acyclic_fs::CancellationToken::new();
+        let scratch = workspace
+            .filesystem
+            .open_workspace(
+                harness.scratch().storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        scratch
+            .write_text("/healthy.rs", "candidate content")
+            .await
+            .map_err(storage)?;
+        let mut input = crate::tui::PromptInput::new(crate::tui::Editor::new("@healthy"));
+        let mut completion = crate::tui_files::CompletionFiles::observe_authorized(
+            harness.task_files(),
+            &mut input,
+            None,
+        )
+        .await?;
+        harness
+            .bind_name_search(&mut completion, &mut input)
+            .await?;
+        completion.refresh_query(&mut input, None).await?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let change = completion.read_change().await?;
+                let complete = change.file.iter().chain(&change.files).any(|file| {
+                    file.key.path() == "search/progress.json"
+                        && serde_json::from_slice::<serde_json::Value>(&file.bytes)
+                            .is_ok_and(|value| value["complete"] == true)
+                });
+                completion.apply_change(change, &mut input)?;
+                if complete {
+                    return Ok::<_, Error>(());
+                }
+            }
+        })
+        .await
+        .map_err(storage)??;
+        assert_eq!(input.completion.unavailable_entries(), 1);
+        assert!(input.completion.accept(&mut input.editor, 1));
+        assert_eq!(input.editor.text(), "@.volumes/scratch/healthy.rs ");
+        Ok(())
+    }
 
     #[tokio::test]
     async fn name_search_failed_request_is_visibly_partial_and_the_next_request_runs() -> Result<()>
