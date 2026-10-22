@@ -54,6 +54,7 @@ fn with_file(arguments: &serde_json::Value, body: &str) -> String {
 /// The provider answers each request with the next scripted turn.
 fn scripted(
     turns: Vec<serde_json::Value>,
+    child_writes: bool,
 ) -> (
     std::net::SocketAddr,
     Arc<Mutex<Vec<String>>>,
@@ -67,6 +68,7 @@ fn scripted(
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let app = Router::new()
+        .route("/source", axum::routing::get(|| async { SOURCE }))
         .route(
             "/count",
             post(|| async { axum::Json(json!({"input_tokens": 64})) }),
@@ -82,7 +84,19 @@ fn scripted(
                     // Children run their own turns against the same provider;
                     // only the parent's requests advance the script.
                     let turn = if body.contains(CHILD_TASK_IN_REQUEST) {
-                        text("child done")
+                        // A writing child leaves a change on its own branch,
+                        // so the parent's merge joins two diverged trees.
+                        if child_writes && tool_outputs(&body).is_empty() {
+                            let mut write = call(
+                                "write",
+                                json!({"path": "child.txt", "text": "child\n",
+                                    "media_type": "text/plain", "display_name": "child.txt"}),
+                            );
+                            write["call_id"] = json!("child-write");
+                            write
+                        } else {
+                            text("child done")
+                        }
                     } else if body.contains("stack fixture") {
                         let outputs = tool_outputs(&body);
                         match outputs.len() {
@@ -110,7 +124,10 @@ fn scripted(
                         }
                         if turn["type"] == "function_call" {
                             turn["call_id"] = json!(format!("call{}", requests.len()));
-                            turn["arguments"] = json!(with_file(&turn["arguments"], &body));
+                            turn["arguments"] = json!(
+                                with_file(&turn["arguments"], &body)
+                                    .replace("$ORIGIN", &format!("http://{address}"))
+                            );
                             // Actual SDK rejection: popping before any push
                             // must not count as successful deep tool coverage.
                             if std::env::var_os(EARLY_ERROR).is_some()
@@ -183,12 +200,14 @@ const EARLY_ERROR: &str = "GRAPHCODER_STACK_EARLY_ERROR";
 fn measured_turn<const UNBOXED: bool>(
     turns: Vec<serde_json::Value>,
     entry: Entry,
+    child_writes: bool,
 ) -> (u8, usize, Vec<String>) {
     let spawn = turns.first().is_some_and(|turn| turn["name"] == "spawn");
-    let existing_child = turns
-        .first()
-        .is_some_and(|turn| matches!(turn["name"].as_str(), Some("send" | "wait" | "archive")));
-    let (address, requests, stop, server) = scripted(turns);
+    let existing_child = child_writes
+        || turns
+            .first()
+            .is_some_and(|turn| matches!(turn["name"].as_str(), Some("send" | "wait" | "archive")));
+    let (address, requests, stop, server) = scripted(turns, child_writes);
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
@@ -304,6 +323,7 @@ pub(crate) fn qualify() {
         "tools-rejected",
         "merge-continue",
         "merge-abort",
+        "child-merge",
         "spawn",
         "send",
         "wait",
@@ -332,6 +352,7 @@ pub(crate) fn qualify() {
             "tools-rejected" => tool_group("tools-recovery"),
             case if case.starts_with("tools-") => tool_group(case),
             "merge-continue" | "merge-abort" => merge_recovery(&case),
+            "child-merge" => child_merge(),
             "send" | "wait" | "archive" => vec![child_call(&case), text("done")],
             _ => panic!("unknown stack case {case}"),
         };
@@ -340,10 +361,11 @@ pub(crate) fn qualify() {
             "tui" => Entry::Tui,
             _ => Entry::Prompt,
         };
+        let child_writes = case == "child-merge";
         let (code, used, requests) = if case == "unboxed" {
-            measured_turn::<true>(turns, entry)
+            measured_turn::<true>(turns, entry, child_writes)
         } else {
-            measured_turn::<false>(turns, entry)
+            measured_turn::<false>(turns, entry, child_writes)
         };
         if case.starts_with("tools-") {
             covers_every_entry_point(
@@ -360,6 +382,10 @@ pub(crate) fn qualify() {
         }
         if case.starts_with("merge-") {
             covers_merge_recovery(&case, code, used, &requests);
+            return;
+        }
+        if case == "child-merge" {
+            covers_child_merge(code, used, &requests);
             return;
         }
         if case == "unboxed" {
@@ -500,8 +526,11 @@ fn call(name: &str, arguments: serde_json::Value) -> serde_json::Value {
 /// Every model tool GraphCoder offers. A tool the provider sees that is not
 /// listed here fails the `tools` case, so a new tool cannot ship unmeasured.
 const TOOLS: &[&str] = &[
-    "archive", "bash", "edit", "fs", "read", "send", "spawn", "wait", "write",
+    "archive", "bash", "edit", "fs", "read", "send", "spawn", "url_fetch", "wait", "write",
 ];
+
+/// The body the fixture serves to `url_fetch`, a real credential-free GET.
+const SOURCE: &str = "stack source\n";
 
 /// One `fs` command per Git-compatible command variant, in an order where each
 /// finds the history it acts on. `apply` takes the typed patch path, so it is
@@ -576,6 +605,7 @@ fn tool_group(case: &str) -> Vec<serde_json::Value> {
             "edit",
             json!({"file": "$FILE", "old_text": "beta", "new_text": "gamma"}),
         ),
+        call("url_fetch", json!({"url": "$ORIGIN/source"})),
         call(
             "bash",
             json!({"command": "printf 'diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n' > change.patch"}),
@@ -740,6 +770,7 @@ fn tool_result_succeeded(turn: &serde_json::Value, output: &serde_json::Value) -
         "read" => output == "alpha beta\n",
         "write" | "edit" => output["file"].is_object(),
         "bash" => output["exit_code"] == 0 && output["success"] == true,
+        "url_fetch" => output["content"] == SOURCE,
         "fs" => {
             let command = arguments["command"].as_str().unwrap();
             let Ok(result) =
@@ -860,6 +891,56 @@ fn covers_merge_recovery(case: &str, code: u8, used: usize, requests: &[String])
         outputs.last().unwrap()["result"]["Status"].is_object(),
         "status failed: {}",
         outputs.last().unwrap()
+    );
+}
+
+/// The parent joins a finished child's branch into its own diverged tree:
+/// the `fs merge agents/<child>` path of a spawned agent's work.
+fn child_merge() -> Vec<serde_json::Value> {
+    vec![
+        call(
+            "write",
+            json!({"path": "parent.txt", "text": "parent\n",
+                "media_type": "text/plain", "display_name": "parent.txt"}),
+        ),
+        child_call("archive"),
+        fs("merge agents/kid"),
+        call("bash", json!({"command": "cat child.txt parent.txt"})),
+        text("done"),
+    ]
+}
+
+fn covers_child_merge(code: u8, used: usize, requests: &[String]) {
+    assert_eq!(code, 0, "child-merge: the session did not complete");
+    assert!(
+        used < BUDGET_KIB * 1024,
+        "child-merge: {used} bytes exceeds the strict {BUDGET_KIB} KiB budget"
+    );
+    let outputs = tool_outputs(requests.last().unwrap());
+    assert_eq!(outputs.len(), child_merge().len() - 1, "{outputs:?}");
+    assert!(
+        outputs[0]["file"].is_object(),
+        "parent write: {}",
+        outputs[0]
+    );
+    assert_eq!(
+        outputs[1],
+        json!({"agent": "kid"}),
+        "archive: {}",
+        outputs[1]
+    );
+    let merged =
+        serde_json::from_value::<acyclic_fs::GitCommandOutput>(outputs[2]["result"].clone());
+    assert!(
+        matches!(merged, Ok(acyclic_fs::GitCommandOutput::Committed(_))),
+        "child merge did not commit a join: {}",
+        outputs[2]
+    );
+    assert_eq!(
+        outputs[3]["stdout"],
+        "child\nparent\n",
+        "merged tree lacks either side: {}",
+        outputs[3]
     );
 }
 
