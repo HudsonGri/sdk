@@ -33,14 +33,14 @@ impl DirectoryState {
                 source_entries_visited: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            // Enumeration needs names and no-follow metadata, never a held
-            // content handle for every leaf. Linux can use statx by name;
-            // placeholder-backed hosts stay on their metadata query path.
+            // Preserve the same inode-generation identity as lookup. On Linux
+            // this adds name_to_handle_at to no-follow statx; it neither opens
+            // nor reads file content. Other hosts retain metadata-only queries.
             #[cfg(target_os = "linux")]
             {
                 self.pending_position = self.entries.position();
             }
-            match self.entries.next_metadata(work)? {
+            match self.entries.next(work)? {
                 None => self.eof = true,
                 Some((entry, bytes)) => {
                     self.ownership.retain(bytes, work)?;
