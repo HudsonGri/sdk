@@ -16,7 +16,6 @@ use acyclic_harness::{
     test_support::{
         ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config, local_task_stream,
     },
-    tools::shell::PLATFORM,
 };
 use acyclic_stream::{StreamPath, StreamProvider as _};
 use futures::StreamExt as _;
