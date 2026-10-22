@@ -20,6 +20,27 @@ pub(super) trait Files: Send + Sync + Sized + 'static {
     fn flush(&self, file: &Self::File) -> io::Result<()>;
 }
 
+/// Work a lease does for the cache, charged before the work is done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Cost {
+    /// Reopening a file by path, then reading its identity.
+    Reopen,
+    /// One allocation of this many bytes, owned by the cache.
+    Allocation(usize),
+    /// Flushing another file's writes before its idle descriptor closes.
+    Flush,
+}
+
+/// Charges a [`Cost`] before its work; an error refuses that work.
+pub(super) type Charge<'a> = &'a mut dyn FnMut(Cost) -> io::Result<()>;
+
+/// The most descriptors one eviction pass takes, so that evicting never
+/// allocates.
+const BATCH: usize = 4;
+
+/// Files whose idle descriptor an eviction pass took, still open.
+type Victims<F> = [Option<(Arc<Entry<F>>, crate::sync::Arc<Handle<F>>)>; BATCH];
+
 /// Open descriptors of one process, at most `capacity` of them idle.
 pub(super) struct Cache<F: Files> {
     files: F,
@@ -31,6 +52,9 @@ pub(super) struct Cache<F: Files> {
 struct Ring<F: Files> {
     entries: Vec<Weak<Entry<F>>>,
     hand: usize,
+    /// Slots reserved for files being admitted, so that listing them never
+    /// allocates.
+    reserved: usize,
 }
 
 impl<F: Files> Cache<F> {
@@ -41,6 +65,7 @@ impl<F: Files> Cache<F> {
             ring: Mutex::new(Ring {
                 entries: Vec::new(),
                 hand: 0,
+                reserved: 0,
             }),
         }
     }
@@ -55,31 +80,76 @@ impl<F: Files> Cache<F> {
             .store(capacity.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
+    fn ring(&self) -> crate::sync::MutexGuard<'_, Ring<F>> {
+        self.ring.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Files whose descriptor the cache holds.
     pub(super) fn cached(&self) -> usize {
-        self.ring
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.ring()
             .entries
             .iter()
             .filter(|entry| entry.strong_count() != 0)
             .count()
     }
 
-    /// Records that `entry`, whose state lock the caller holds, now has a
-    /// descriptor, and takes the descriptors of files that went unused
-    /// longest until the cache is within its capacity. The caller drops the
-    /// taken descriptors after releasing its locks, since closing one may
-    /// flush it.
-    fn admit(&self, entry: &Arc<Entry<F>>, evicted: &mut Vec<crate::sync::Arc<Handle<F>>>) {
-        let mut ring = self.ring.lock().unwrap_or_else(PoisonError::into_inner);
+    /// Reserves the ring slot of one file about to be listed, charging the
+    /// ring's growth when it must grow.
+    fn reserve(&self, charge: Charge<'_>) -> io::Result<()> {
+        let mut ring = self.ring();
+        let needed = ring.entries.len() + ring.reserved + 1;
+        if needed > ring.entries.capacity() {
+            let grown = needed.max(ring.entries.capacity().saturating_mul(2));
+            charge(Cost::Allocation(
+                grown.saturating_mul(std::mem::size_of::<Weak<Entry<F>>>()),
+            ))?;
+            let additional = grown - ring.entries.len();
+            ring.entries
+                .try_reserve_exact(additional)
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        }
+        ring.reserved += 1;
+        Ok(())
+    }
+
+    fn unreserve(&self) {
+        self.ring().reserved -= 1;
+    }
+
+    /// Lists `entry` in the slot reserved for it.
+    fn list(&self, entry: &Arc<Entry<F>>) {
+        let mut ring = self.ring();
+        ring.reserved -= 1;
         ring.entries.push(Arc::downgrade(entry));
+    }
+
+    /// Closes the idle descriptors of files that went unused longest until
+    /// the cache is within its capacity, or every other file is in use.
+    fn shrink(&self, charge: Charge<'_>) {
+        loop {
+            let victims = self.evict(charge);
+            if victims.iter().all(Option::is_none) {
+                return;
+            }
+            for (entry, handle) in victims.into_iter().flatten() {
+                entry.close(&handle);
+            }
+        }
+    }
+
+    /// Takes up to [`BATCH`] idle descriptors from the ring. Each stays its
+    /// file's descriptor until [`Entry::close`] has flushed it, so that a
+    /// use of the file meanwhile finds it rather than reopening the file.
+    fn evict(&self, charge: Charge<'_>) -> Victims<F> {
+        let mut victims: Victims<F> = std::array::from_fn(|_| None);
+        let mut taken = 0;
+        let mut ring = self.ring();
         let capacity = self.capacity();
         // A file's reference bit clears on the hand's first pass, so the
         // second finds every idle victim; a sweep that finds none leaves the
         // ring over capacity only while every other file is in use.
         let mut budget = ring.entries.len().saturating_mul(3);
-        while ring.entries.len() > capacity && budget > 0 {
+        while ring.entries.len() > capacity && budget > 0 && taken < BATCH {
             budget -= 1;
             if ring.hand >= ring.entries.len() {
                 ring.hand = 0;
@@ -90,10 +160,6 @@ impl<F: Files> Cache<F> {
                 ring.entries.swap_remove(hand);
                 continue;
             };
-            if Arc::ptr_eq(&candidate, entry) {
-                ring.hand += 1;
-                continue;
-            }
             // Never waits while holding the ring: a file whose lock is held
             // is in use, which is a reference.
             let Ok(mut state) = candidate.state.try_lock() else {
@@ -104,13 +170,31 @@ impl<F: Files> Cache<F> {
                 ring.hand += 1;
                 continue;
             }
-            if let Some(handle) = state.open.take() {
-                evicted.push(handle);
-            }
+            let victim = match &state.open {
+                // A leased descriptor is in use.
+                Some(open) if crate::sync::Arc::strong_count(open) > 1 => {
+                    ring.hand += 1;
+                    continue;
+                }
+                // Closing a written descriptor flushes it, which the user
+                // that evicts it pays for, or the file stays.
+                Some(open) if open.dirty() && charge(Cost::Flush).is_err() => {
+                    ring.hand += 1;
+                    continue;
+                }
+                open => open.clone(),
+            };
             state.cached = false;
             drop(state);
             ring.entries.swap_remove(hand);
+            if let Some(handle) = victim
+                && let Some(slot) = victims.get_mut(taken)
+            {
+                *slot = Some((candidate, handle));
+                taken += 1;
+            }
         }
+        victims
     }
 }
 
@@ -125,7 +209,7 @@ pub(super) struct Entry<F: Files> {
     /// A write that no flush could make durable before its descriptor
     /// closed. Kept apart from `state`, since a descriptor may close while
     /// `state` is held.
-    lost: Arc<std::sync::Mutex<Option<io::ErrorKind>>>,
+    lost: Arc<Mutex<Option<io::ErrorKind>>>,
 }
 
 struct State<F: Files> {
@@ -146,22 +230,26 @@ pub(super) struct Handle<F: Files> {
     unsynced: AtomicBool,
     /// Whether closing must flush.
     durable: bool,
-    lost: Arc<std::sync::Mutex<Option<io::ErrorKind>>>,
+    lost: Arc<Mutex<Option<io::ErrorKind>>>,
+    /// Held across each flush, so that a flush which reports success ran
+    /// after any earlier flush of this descriptor had kept its failure.
+    flushing: Mutex<()>,
+}
+
+/// Fails when a write to the file was lost as a descriptor closed.
+fn check_lost(lost: &Mutex<Option<io::ErrorKind>>) -> io::Result<()> {
+    match *lost.lock().unwrap_or_else(PoisonError::into_inner) {
+        Some(kind) => Err(io::Error::new(
+            kind,
+            "a write was lost when its file's descriptor closed",
+        )),
+        None => Ok(()),
+    }
 }
 
 impl<F: Files> Drop for Handle<F> {
     fn drop(&mut self) {
-        if !self.durable || !self.unsynced.load(Ordering::Acquire) {
-            return;
-        }
-        // On Linux a descriptor opened later never sees a writeback error
-        // of this one, so a failure here is kept for the file's next use.
-        if let Err(error) = self.cache.files.flush(&self.file) {
-            self.lost
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get_or_insert(error.kind());
-        }
+        self.close_flush();
     }
 }
 
@@ -170,21 +258,48 @@ impl<F: Files> Handle<F> {
         &self.file
     }
 
+    /// Whether closing this descriptor must flush it.
+    fn dirty(&self) -> bool {
+        self.durable && self.unsynced.load(Ordering::Acquire)
+    }
+
+    /// Flushes the writes made through this descriptor before it closes.
+    /// On Linux a descriptor opened later never sees a writeback error of
+    /// this one, and a later flush of this one may no longer report it, so a
+    /// failure here is kept for the file's every later use and flush.
+    fn close_flush(&self) {
+        let _flushing = self.flushing.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.durable
+            && self.unsynced.swap(false, Ordering::AcqRel)
+            && let Err(error) = self.cache.files.flush(&self.file)
+        {
+            self.lost
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_or_insert(error.kind());
+        }
+    }
+
     /// Marks the writes `write` makes, before it makes them.
     pub(super) fn write<R>(&self, write: impl FnOnce(&F::File) -> io::Result<R>) -> io::Result<R> {
         self.unsynced.store(true, Ordering::Release);
         write(&self.file)
     }
 
-    /// Runs `flush`, which makes every earlier write durable.
+    /// Runs `flush`, which makes every earlier write durable. It fails when
+    /// a write to the file was lost as a descriptor closed, even if `flush`
+    /// itself succeeds.
     pub(super) fn flush<R>(&self, flush: impl FnOnce(&F::File) -> io::Result<R>) -> io::Result<R> {
+        let _flushing = self.flushing.lock().unwrap_or_else(PoisonError::into_inner);
         // Cleared first, so a write racing the flush stays marked.
         let unsynced = self.unsynced.swap(false, Ordering::AcqRel);
-        flush(&self.file).inspect_err(|_| {
+        let flushed = flush(&self.file).inspect_err(|_| {
             if unsynced {
                 self.unsynced.store(true, Ordering::Release);
             }
-        })
+        })?;
+        check_lost(&self.lost)?;
+        Ok(flushed)
     }
 }
 
@@ -197,12 +312,32 @@ impl<F: Files> Entry<F> {
         path: &Path,
         write: bool,
         durable: bool,
+        charge: Charge<'_>,
     ) -> io::Result<Arc<Self>> {
+        // The entry, its failure slot and its descriptor, each with two
+        // reference counts, and its path.
+        let counts = 2 * std::mem::size_of::<usize>();
+        charge(Cost::Allocation(std::mem::size_of::<Self>() + counts))?;
+        charge(Cost::Allocation(
+            std::mem::size_of::<Mutex<Option<io::ErrorKind>>>() + counts,
+        ))?;
+        charge(Cost::Allocation(std::mem::size_of::<Handle<F>>() + counts))?;
+        charge(Cost::Allocation(path.as_os_str().len()))?;
+        let absolute = std::path::absolute(path)?;
+        // A relative path also takes the working directory.
+        if let Some(extra) = absolute
+            .as_os_str()
+            .len()
+            .checked_sub(path.as_os_str().len())
+            .filter(|extra| *extra != 0)
+        {
+            charge(Cost::Allocation(extra))?;
+        }
         let identity = cache.files.identity(&file)?;
-        let lost = Arc::default();
+        let lost = Arc::new(Mutex::new(None));
         let entry = Arc::new(Self {
             cache: Arc::clone(cache),
-            path: std::path::absolute(path)?,
+            path: absolute,
             write,
             durable,
             state: Mutex::new(State {
@@ -213,7 +348,7 @@ impl<F: Files> Entry<F> {
             }),
             lost,
         });
-        entry.install(file);
+        entry.install(file, charge)?;
         Ok(entry)
     }
 
@@ -224,64 +359,103 @@ impl<F: Files> Entry<F> {
             unsynced: AtomicBool::new(false),
             durable: self.durable,
             lost: Arc::clone(&self.lost),
+            flushing: Mutex::new(()),
         })
     }
 
-    fn check_lost(&self) -> io::Result<()> {
-        match *self.lost.lock().unwrap_or_else(PoisonError::into_inner) {
-            Some(kind) => Err(io::Error::new(
-                kind,
-                "a write was lost when its file's descriptor closed",
-            )),
-            None => Ok(()),
+    /// Reopens the file by path, charging the reopen and its descriptor
+    /// first. It must be the very file cached, never another that took its
+    /// name.
+    fn reopen(
+        &self,
+        identity: F::Identity,
+        charge: Charge<'_>,
+    ) -> io::Result<crate::sync::Arc<Handle<F>>> {
+        charge(Cost::Reopen)?;
+        // The descriptor and its two reference counts.
+        charge(Cost::Allocation(
+            std::mem::size_of::<Handle<F>>() + 2 * std::mem::size_of::<usize>(),
+        ))?;
+        let file = self.cache.files.reopen(&self.path, self.write)?;
+        if self.cache.files.identity(&file)? != identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a cached file was replaced while its descriptor was closed",
+            ));
         }
+        Ok(self.handle(file))
     }
 
-    /// The file's descriptor, reopened by path when the cache closed it,
-    /// after `admit` admits the reopen. A reopened file must be the very file
-    /// cached, never another that took its name.
+    /// The file's descriptor, reopened by path when the cache closed it. The
+    /// work the cache does for it (a reopen, the allocations it makes and
+    /// the flushes of other files it evicts) is charged before it is done.
     pub(super) fn lease(
         self: &Arc<Self>,
-        admit: impl FnOnce() -> io::Result<()>,
+        charge: Charge<'_>,
     ) -> io::Result<crate::sync::Arc<Handle<F>>> {
-        self.check_lost()?;
-        let mut evicted = Vec::new();
-        let leased = (|| {
+        let (handle, listed) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            // Checked under the lock: an evicted descriptor leaves `open`
+            // only once its closing flush has kept any failure, so no reopen
+            // can pass this check before an earlier close reports.
+            check_lost(&self.lost)?;
             state.referenced = true;
-            if let Some(open) = &state.open {
-                return Ok(crate::sync::Arc::clone(open));
+            let listing = !state.cached;
+            if listing {
+                self.cache.reserve(charge)?;
             }
-            admit()?;
-            let file = self.cache.files.reopen(&self.path, self.write)?;
-            if self.cache.files.identity(&file)? != state.identity {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a cached file was replaced while its descriptor was closed",
-                ));
-            }
-            let handle = self.handle(file);
+            let opened = match &state.open {
+                Some(open) => Ok(crate::sync::Arc::clone(open)),
+                None => self.reopen(state.identity, charge),
+            };
+            let handle = match opened {
+                Ok(handle) => handle,
+                Err(error) => {
+                    if listing {
+                        self.cache.unreserve();
+                    }
+                    return Err(error);
+                }
+            };
             state.open = Some(crate::sync::Arc::clone(&handle));
-            if !state.cached {
+            if listing {
                 state.cached = true;
-                self.cache.admit(self, &mut evicted);
+                self.cache.list(self);
             }
-            Ok(handle)
-        })();
-        drop(evicted);
-        leased
+            (handle, listing)
+        };
+        if listed {
+            self.cache.shrink(charge);
+        }
+        Ok(handle)
     }
 
-    fn install(self: &Arc<Self>, file: F::File) {
-        let mut evicted = Vec::new();
+    /// Closes `handle`, an idle descriptor of this file that an eviction
+    /// took: it flushes, then leaves `open` unless the file was used since.
+    fn close(&self, handle: &crate::sync::Arc<Handle<F>>) {
+        handle.close_flush();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.open = Some(self.handle(file));
-        state.referenced = true;
-        if !state.cached {
-            state.cached = true;
-            self.cache.admit(self, &mut evicted);
+        if !state.cached
+            && state
+                .open
+                .as_ref()
+                .is_some_and(|open| crate::sync::Arc::ptr_eq(open, handle))
+            && crate::sync::Arc::strong_count(handle) == 2
+        {
+            state.open = None;
         }
         drop(state);
-        drop(evicted);
+    }
+
+    fn install(self: &Arc<Self>, file: F::File, charge: Charge<'_>) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.cache.reserve(charge)?;
+        state.open = Some(self.handle(file));
+        state.referenced = true;
+        state.cached = true;
+        self.cache.list(self);
+        drop(state);
+        self.cache.shrink(charge);
+        Ok(())
     }
 }

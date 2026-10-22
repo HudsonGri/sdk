@@ -1,4 +1,4 @@
-use super::cache::{Cache, Entry};
+use super::cache::{Cache, Cost, Entry};
 use super::*;
 use std::fs::OpenOptions;
 
@@ -17,7 +17,7 @@ fn create(path: &Path) -> io::Result<File> {
 }
 
 fn cached(cache: &Arc<Cache<Native>>, path: &Path) -> io::Result<Arc<Entry<Native>>> {
-    Entry::new(cache, create(path)?, path, true, true)
+    Entry::new(cache, create(path)?, path, true, true, &mut |_| Ok(()))
 }
 
 /// Descriptors this process holds on files under `directory`.
@@ -36,13 +36,13 @@ fn descriptors_under(directory: &Path) -> io::Result<usize> {
 
 fn write_at(entry: &Arc<Entry<Native>>, offset: u64, bytes: &[u8]) -> io::Result<()> {
     entry
-        .lease(|| Ok(()))?
+        .lease(&mut |_| Ok(()))?
         .write(|file| crate::write_all_at(file, offset, bytes, None))
 }
 
 fn read(entry: &Arc<Entry<Native>>, length: usize) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; length];
-    let lease = entry.lease(|| Ok(()))?;
+    let lease = entry.lease(&mut |_| Ok(()))?;
     let read = crate::read_at(lease.file(), 0, &mut bytes)?;
     bytes.truncate(read);
     Ok(bytes)
@@ -82,7 +82,7 @@ fn a_file_replaced_or_removed_while_closed_is_refused() -> io::Result<()> {
     let other = directory.path().join("other.log");
     std::fs::write(&other, b"another")?;
     std::fs::rename(&other, &replaced_path)?;
-    let refusal = replaced.lease(|| Ok(())).map(drop);
+    let refusal = replaced.lease(&mut |_| Ok(())).map(drop);
     assert_eq!(
         refusal.map_err(|error| error.kind()),
         Err(io::ErrorKind::InvalidData)
@@ -92,7 +92,7 @@ fn a_file_replaced_or_removed_while_closed_is_refused() -> io::Result<()> {
     std::fs::remove_file(&removed_path)?;
     assert_eq!(
         removed
-            .lease(|| Ok(()))
+            .lease(&mut |_| Ok(()))
             .map(drop)
             .map_err(|error| error.kind()),
         Err(io::ErrorKind::NotFound)
@@ -115,26 +115,73 @@ fn the_default_capacity_is_a_quarter_of_the_descriptor_limit() {
     assert!((16..=1 << 16).contains(&capacity));
 }
 
+/// Every cost a lease or a new file charges, in order.
+fn charged<T>(
+    run: impl FnOnce(&mut dyn FnMut(Cost) -> io::Result<()>) -> io::Result<T>,
+) -> io::Result<(T, Vec<Cost>)> {
+    let mut costs = Vec::new();
+    let value = run(&mut |cost| {
+        costs.push(cost);
+        Ok(())
+    })?;
+    Ok((value, costs))
+}
+
 #[test]
-fn a_metered_lease_charges_only_the_reopen() -> io::Result<()> {
+fn a_lease_charges_the_cache_work_it_causes() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = private_cache(1);
+    let path = directory.path().join("log");
+    let (file, costs) =
+        charged(|charge| Entry::new(&cache, create(&path)?, &path, true, true, charge))?;
+    // The entry, its failure slot, its descriptor, its path and the ring.
+    assert_eq!(costs.len(), 5, "{costs:?}");
+    assert!(costs.iter().all(|cost| matches!(cost, Cost::Allocation(_))));
+    // An open file: nothing to charge.
+    let (lease, costs) = charged(|charge| file.lease(charge))?;
+    drop(lease);
+    assert_eq!(costs, []);
+    // Another file, written and left idle, takes the only slot.
+    let other = cached(&cache, &directory.path().join("other"))?;
+    write_at(&other, 0, b"unflushed")?;
+    let (lease, costs) = charged(|charge| file.lease(charge))?;
+    drop(lease);
+    assert!(
+        matches!(
+            costs.as_slice(),
+            [Cost::Reopen, Cost::Allocation(_), Cost::Flush]
+        ),
+        "the reopen, its descriptor, then the evicted file's flush: {costs:?}"
+    );
+    assert_eq!(cache.cached(), 1);
+    // A flush the caller cannot pay for keeps that file's descriptor.
+    write_at(&other, 0, b"unflushed")?;
+    let mut refused = |cost| match cost {
+        Cost::Flush => Err(io::Error::from(io::ErrorKind::QuotaExceeded)),
+        _ => Ok(()),
+    };
+    let lease = file.lease(&mut refused)?;
+    assert_eq!(cache.cached(), 2);
+    drop(lease);
+    Ok(())
+}
+
+#[test]
+fn a_metered_lease_charges_its_meter() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let cache = private_cache(1);
     let file = cached(&cache, &directory.path().join("log"))?;
-    let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-    let charged = || {
-        meter
-            .used_operations
-            .load(std::sync::atomic::Ordering::Acquire)
-    };
-    let admit = || {
-        crate::NativeReadMeter::check(&meter)?;
-        crate::NativeReadMeter::admit_read(&meter, 0)
-    };
-    // Open: nothing to charge.
-    drop(file.lease(admit)?);
-    assert_eq!(charged(), 0);
     let _ = cached(&cache, &directory.path().join("other"))?;
-    drop(file.lease(admit)?);
-    assert_eq!(charged(), 1, "the reopen is one read operation");
+    let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    drop(file.lease(&mut charge(Some(&meter)))?);
+    let load =
+        |counter: &std::sync::atomic::AtomicU64| counter.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        load(&meter.used_operations),
+        2,
+        "the open and identity reads"
+    );
+    assert_eq!(load(&meter.used_allocations), 1, "the descriptor");
+    assert_eq!(load(&meter.memory), 0, "the cache keeps what it allocates");
     Ok(())
 }

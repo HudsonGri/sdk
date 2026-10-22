@@ -46,7 +46,7 @@ pub(crate) fn open(
         let (state, operations, inline_bytes) = replay(&mut file, &root, options, limits)?;
         let bytes = file.stream_position()?;
         // Idle, the journal holds no descriptor: it reopens when next used.
-        let file = journal_file(file, &path)?;
+        let file = journal_file(file, &path, None)?;
         obs::record!("frames" = operations, "bytes" = bytes);
         let mut references = BTreeSet::new();
         for bucket in state.buckets.values() {

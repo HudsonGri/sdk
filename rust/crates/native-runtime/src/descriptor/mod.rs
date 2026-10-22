@@ -20,7 +20,7 @@ mod model;
 #[cfg(all(test, not(acyclic_native_runtime_loom)))]
 mod tests;
 
-use cache::{Cache, Entry, Files, Handle};
+use cache::{Cache, Cost, Entry, Files, Handle};
 
 /// The cache on this machine's files.
 struct Native;
@@ -135,7 +135,21 @@ impl CachedFile {
     /// truncating it. A `durable` file flushes its writes before a descriptor
     /// with unflushed writes closes.
     pub fn new(file: File, path: &Path, write: bool, durable: bool) -> io::Result<Self> {
-        Entry::new(cache(), file, path, write, durable).map(|entry| Self { entry })
+        Self::new_metered(file, path, write, durable, None)
+    }
+
+    /// [`CachedFile::new`], charging `meter` the allocations caching the
+    /// file makes, and the flushes of other files it evicts, before it
+    /// makes them.
+    pub fn new_metered(
+        file: File,
+        path: &Path,
+        write: bool,
+        durable: bool,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<Self> {
+        Entry::new(cache(), file, path, write, durable, &mut charge(meter))
+            .map(|entry| Self { entry })
     }
 
     /// The file's descriptor, held open until the lease drops.
@@ -146,21 +160,43 @@ impl CachedFile {
         self.lease_metered(None)
     }
 
-    /// [`CachedFile::lease`], charging `meter` one read operation when the
-    /// lease reopens the file.
+    /// [`CachedFile::lease`], charging `meter` the work the cache does for
+    /// the lease before doing it: when the lease reopens the file, two reads
+    /// (the open and the identity check) and the descriptor's allocation; a
+    /// growth of the cache's ring; and a durability operation for each
+    /// written file whose idle descriptor it evicts. A file whose flush the
+    /// meter refuses keeps its descriptor.
     pub fn lease_metered(
         &self,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<FileLease> {
         self.entry
-            .lease(|| match meter {
-                Some(meter) => {
-                    meter.check()?;
-                    meter.admit_read(0)
-                }
-                None => Ok(()),
-            })
+            .lease(&mut charge(meter))
             .map(|handle| FileLease { handle })
+    }
+}
+
+/// Charges the cache's work to `meter`, when there is one.
+fn charge(meter: Option<&dyn crate::NativeReadMeter>) -> impl FnMut(Cost) -> io::Result<()> {
+    move |cost| {
+        let Some(meter) = meter else {
+            return Ok(());
+        };
+        meter.check()?;
+        match cost {
+            Cost::Reopen => {
+                meter.admit_read(0)?;
+                meter.admit_read(0)
+            }
+            Cost::Allocation(bytes) => {
+                let bytes = bytes as u64;
+                meter.allocate(bytes)?;
+                // The cache keeps it, not the caller.
+                meter.release(bytes);
+                Ok(())
+            }
+            Cost::Flush => meter.admit_durability(),
+        }
     }
 }
 

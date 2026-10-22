@@ -21,6 +21,8 @@ struct World {
     /// Writes whose flush failed as their descriptor closed.
     failed: u64,
     fail_flushes: bool,
+    /// The one descriptor whose next flush fails, when only one does.
+    failing: Option<u64>,
 }
 
 /// Simulated files. The world lock is never held across a Loom operation,
@@ -100,7 +102,13 @@ impl Files for Sim {
     fn flush(&self, file: &SimFile) -> io::Result<()> {
         let mut world = self.world();
         let unflushed = world.unflushed.insert(file.id, 0).unwrap_or_default();
-        if world.fail_flushes {
+        // A failing descriptor reports its failure once, as a Linux
+        // descriptor does; a later flush of it succeeds.
+        let fails_once = world.failing == Some(file.id);
+        if fails_once {
+            world.failing = None;
+        }
+        if world.fail_flushes || fails_once {
             world.failed += unflushed;
             return Err(io::ErrorKind::StorageFull.into());
         }
@@ -150,12 +158,12 @@ fn cache(sim: &Sim, capacity: usize) -> Arc<Cache<Sim>> {
 
 fn entry(cache: &Arc<Cache<Sim>>, sim: &Sim, path: &str) -> Result<Arc<Entry<Sim>>, String> {
     let file = sim.create(path);
-    Entry::new(cache, file, Path::new(path), true, true).map_err(failed)
+    Entry::new(cache, file, Path::new(path), true, true, &mut |_| Ok(())).map_err(failed)
 }
 
 /// Writes once through `entry`, as a store appends.
 fn append(entry: &Arc<Entry<Sim>>) -> io::Result<()> {
-    entry.lease(|| Ok(()))?.write(|file| {
+    entry.lease(&mut |_| Ok(()))?.write(|file| {
         file.write();
         Ok(())
     })
@@ -180,7 +188,7 @@ fn a_write_racing_eviction_is_flushed_before_its_descriptor_closes() {
             let written = Arc::clone(&written);
             loom::thread::spawn(move || append(&written))
         };
-        let evicting = loom::thread::spawn(move || other.lease(|| Ok(())).map(drop));
+        let evicting = loom::thread::spawn(move || other.lease(&mut |_| Ok(())).map(drop));
         join(writer)?.map_err(failed)?;
         join(evicting)?.map_err(failed)?;
         drop(written);
@@ -206,11 +214,11 @@ fn a_flush_that_fails_as_a_descriptor_closes_fails_the_next_use() {
             let written = Arc::clone(&written);
             loom::thread::spawn(move || append(&written))
         };
-        let evicting = loom::thread::spawn(move || other.lease(|| Ok(())).map(drop));
+        let evicting = loom::thread::spawn(move || other.lease(&mut |_| Ok(())).map(drop));
         join(writer)?.map_err(failed)?;
         let _ = join(evicting)?;
         let failed = sim.world().failed;
-        let next = written.lease(|| Ok(()));
+        let next = written.lease(&mut |_| Ok(()));
         check(
             failed == 0 || next.is_err(),
             "a write lost as its descriptor closed was never reported",
@@ -264,11 +272,43 @@ fn a_file_replaced_while_closed_is_refused() {
         let cache = cache(&sim, 1);
         let replaced = entry(&cache, &sim, "/a")?;
         let other = entry(&cache, &sim, "/b")?;
-        other.lease(|| Ok(())).map_err(failed)?;
+        other.lease(&mut |_| Ok(())).map_err(failed)?;
         drop(sim.create("/a"));
         check(
-            replaced.lease(|| Ok(())).is_err(),
+            replaced.lease(&mut |_| Ok(())).is_err(),
             "another file under the cached name was used",
+        )
+    });
+}
+
+/// An idle descriptor's closing flush fails while the file is used again:
+/// a flush through any descriptor of the file that reports success came
+/// after that failure was kept, so it reports the failure instead.
+#[test]
+fn a_flush_never_succeeds_past_a_failed_close() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let written = entry(&cache, &sim, "/a")?;
+        sim.world().failing = Some(1);
+        append(&written).map_err(failed)?;
+        let evicting = {
+            let cache = Arc::clone(&cache);
+            let sim = sim.clone();
+            loom::thread::spawn(move || entry(&cache, &sim, "/b").map(drop))
+        };
+        let flushed = (|| {
+            let lease = written.lease(&mut |_| Ok(()))?;
+            lease.write(|file| {
+                file.write();
+                Ok(())
+            })?;
+            lease.flush(|file| sim.flush(file))
+        })();
+        join(evicting)??;
+        check(
+            flushed.is_err() || sim.world().failed == 0,
+            "a flush succeeded though a write was lost as a descriptor closed",
         )
     });
 }

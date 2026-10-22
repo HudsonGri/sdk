@@ -123,8 +123,13 @@ pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &OwnedBytes)
 
 /// The journal at `path`, which holds a descriptor only while recently used
 /// and reopens by `path`, the name it has or is about to be renamed to.
-fn journal_file(file: File, path: &Path) -> std::io::Result<acyclic_native_runtime::CachedFile> {
-    acyclic_native_runtime::CachedFile::new(file, path, true, true)
+/// Caching it charges `meter`, when there is one.
+fn journal_file(
+    file: File,
+    path: &Path,
+    meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+) -> std::io::Result<acyclic_native_runtime::CachedFile> {
+    acyclic_native_runtime::CachedFile::new_metered(file, path, true, true, meter)
 }
 
 fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {

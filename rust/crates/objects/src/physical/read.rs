@@ -311,11 +311,12 @@ async fn open_native_body(
                         let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
                         open_meter.admit_read(0)?;
                         let file = File::open(&path.value)?;
-                        *journal = Some(acyclic_native_runtime::CachedFile::new(
+                        *journal = Some(acyclic_native_runtime::CachedFile::new_metered(
                             file,
                             &path.value,
                             false,
                             false,
+                            Some(open_meter.as_ref()),
                         )?);
 
                         drop(path);

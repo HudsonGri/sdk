@@ -78,7 +78,7 @@ impl Journal {
                 )?;
                 #[cfg(test)]
                 self.checkpoint_fault(2)?;
-                let journal = journal_file(output.file, &destination.value)?;
+                let journal = journal_file(output.file, &destination.value, publication.meter())?;
                 let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
                 let reclaimed = tail.bytes.saturating_sub(output.bytes);
                 // Close the old journal before Windows replacement.
