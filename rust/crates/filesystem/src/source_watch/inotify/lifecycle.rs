@@ -123,7 +123,7 @@ impl NativeSourceWatch {
                 .ancestors
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut ancestors);
-            *initialized
+            initialized
                 .watches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
