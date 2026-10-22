@@ -770,7 +770,12 @@ async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
         if page.reset {
             paths.clear();
         }
-        paths.extend(page.names.into_iter().map(|name| name.path));
+        paths.extend(
+            page.names
+                .into_iter()
+                .filter(|name| name.regular)
+                .map(|name| name.path),
+        );
     }
     let arrived = if matches!(edit, RestartEdit::DirectoryToFile) {
         "nested"
