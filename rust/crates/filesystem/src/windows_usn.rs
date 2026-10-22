@@ -14,10 +14,14 @@
 use crate::NativeRootIdentity;
 use crate::native_host::HostRoot;
 use std::mem::size_of;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::Path;
 use thiserror::Error;
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetFinalPathNameByHandleW, OPEN_EXISTING, VOLUME_NAME_GUID,
+};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
 
@@ -185,10 +189,8 @@ struct JournalSnapshot {
     next_usn: u64,
 }
 
-/// Reads the root's identity and its volume's journal through one held
-/// handle on the root itself: the journal is exactly the root's volume's
-/// (mounted-folder volumes included), and querying through a directory
-/// handle needs no volume access, so no administrator rights.
+/// Resolve the journal's volume from the held root, including mounted-folder
+/// volumes. USN control calls require a volume handle, not a directory handle.
 fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), WindowsUsnError> {
     let canonical = root
         .canonicalize()
@@ -200,12 +202,13 @@ fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), Wi
 }
 
 fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
+    let volume = open_journal_volume(root)?;
     let mut data = USN_JOURNAL_DATA_V0::default();
     let mut returned = 0_u32;
     let output_size = u32::try_from(size_of::<USN_JOURNAL_DATA_V0>())
         .map_err(|_| WindowsUsnError::InvalidJournal)?;
-    let handle = HANDLE(root.directory_handle().as_raw_handle());
-    // SAFETY: `root` holds a valid directory handle for the duration of the call;
+    let handle = HANDLE(volume.as_raw_handle());
+    // SAFETY: `volume` holds a valid volume handle for the duration of the call;
     // the output pointer references a correctly sized initialized structure;
     // no overlapped operation outlives these stack values.
     unsafe {
@@ -230,6 +233,75 @@ fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
             .map_err(|_| WindowsUsnError::InvalidJournal)?,
         next_usn: u64::try_from(data.NextUsn).map_err(|_| WindowsUsnError::InvalidJournal)?,
     })
+}
+
+fn open_journal_volume(root: &HostRoot) -> Result<std::fs::File, WindowsUsnError> {
+    let handle = HANDLE(root.directory_handle().as_raw_handle());
+    let mut path = Vec::new();
+    loop {
+        // SAFETY: the held directory and initialized output buffer remain live
+        // through the synchronous call. An empty buffer queries its size.
+        let count = unsafe { GetFinalPathNameByHandleW(handle, &mut path, VOLUME_NAME_GUID) };
+        if count == 0 {
+            return Err(WindowsUsnError::Io(
+                std::io::Error::last_os_error().to_string(),
+            ));
+        }
+        let count = count as usize;
+        if count < path.len() {
+            path.truncate(count);
+            break;
+        }
+        path.resize(
+            count
+                .checked_add(1)
+                .ok_or(WindowsUsnError::InvalidJournal)?,
+            0,
+        );
+    }
+    let name = volume_device_name(&path)?;
+    // SAFETY: the GUID volume name is terminated and contains no embedded NUL.
+    // CreateFileW transfers a new synchronous handle, which File owns below.
+    let volume = unsafe {
+        CreateFileW(
+            windows::core::PCWSTR(name.as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    }
+    .map_err(|error| WindowsUsnError::Native(error.to_string()))?;
+    // SAFETY: this fresh handle is now owned by File and closes on every return.
+    Ok(unsafe { std::fs::File::from_raw_handle(volume.0) })
+}
+
+fn volume_device_name(path: &[u16]) -> Result<Vec<u16>, WindowsUsnError> {
+    const PREFIX: &[u16] = &[92, 92, 63, 92, 86, 111, 108, 117, 109, 101, 123];
+    // GetFinalPathNameByHandleW(VOLUME_NAME_GUID) returns
+    // \\?\Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}\..., independent of
+    // drive letters and the spelling used to reach a mounted-folder volume.
+    if !path.starts_with(PREFIX)
+        || path.get(47).copied() != Some(125)
+        || path.get(48).copied() != Some(92)
+    {
+        return Err(WindowsUsnError::InvalidJournal);
+    }
+    for (ordinal, unit) in path[11..47].iter().copied().enumerate() {
+        let valid = if matches!(ordinal, 8 | 13 | 18 | 23) {
+            unit == u16::from(b'-')
+        } else {
+            u8::try_from(unit).is_ok_and(|byte| byte.is_ascii_hexdigit())
+        };
+        if !valid {
+            return Err(WindowsUsnError::InvalidJournal);
+        }
+    }
+    let mut device = path[..48].to_vec();
+    device.push(0);
+    Ok(device)
 }
 
 fn decode_u64(bytes: &[u8]) -> u64 {
@@ -261,6 +333,26 @@ pub enum WindowsUsnError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_search_usn_device_comes_from_the_held_volume_guid() {
+        let guid = r"\\?\Volume{12345678-1234-abcd-ABCD-1234567890ab}";
+        for suffix in [r"\", r"\mounted\child", "\\非ASCII"] {
+            let input: Vec<_> = format!("{guid}{suffix}").encode_utf16().collect();
+            let device = volume_device_name(&input).unwrap();
+            assert_eq!(device, guid.encode_utf16().chain([0]).collect::<Vec<_>>());
+        }
+        // Negative controls: a drive or share spelling cannot identify a
+        // mounted-folder volume, and unvalidated text cannot select a device.
+        for invalid in [
+            r"C:\mounted",
+            r"\\?\C:\mounted",
+            r"\\server\share",
+            r"\\?\Volume{invalid}\",
+        ] {
+            assert!(volume_device_name(&invalid.encode_utf16().collect::<Vec<_>>()).is_err());
+        }
+    }
 
     #[test]
     fn checkpoint_encoding_is_canonical_versioned_and_bounded() {
@@ -337,14 +429,17 @@ mod tests {
 
     #[test]
     #[ignore = "requires a live local Windows volume with a readable USN journal"]
-    fn live_journal_proves_unchanged_restart_and_fences_a_write()
+    fn live_journal_uses_the_held_volume_and_fences_a_write()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let checkpoint = capture_windows_usn_checkpoint(root.path())?;
-        assert_eq!(
+        // The system volume can advance for unrelated writes between calls.
+        // Deterministic unchanged/mismatch controls are exercised above.
+        assert!(matches!(
             validate_windows_usn_checkpoint(root.path(), checkpoint)?,
             WindowsUsnContinuity::Unchanged
-        );
+                | WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::VolumeAdvanced)
+        ));
         let changed = root.path().join("changed");
         std::fs::write(&changed, b"changed")?;
         // FlushFileBuffers requires write access to the flushed handle.
