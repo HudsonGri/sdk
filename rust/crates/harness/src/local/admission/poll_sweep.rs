@@ -23,6 +23,7 @@ mod read_profile;
 mod requests;
 mod seed;
 mod selected_history;
+mod skill_reads;
 mod supersede;
 use seed::Seed;
 
@@ -243,6 +244,7 @@ impl Fixture {
             )?,
             provider: self.provider.clone(),
             context_manifest: None,
+            skill_cache: super::super::context::skills::cache(),
             context_read_observer: None,
             #[cfg(feature = "hooks")]
             settings: Arc::new(

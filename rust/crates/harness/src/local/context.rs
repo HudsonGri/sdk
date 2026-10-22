@@ -9,6 +9,7 @@ pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
 mod guidance;
+pub(super) mod skills;
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -149,9 +150,11 @@ impl LocalHarness {
         if self.checkout_context
             && let Some(workspace) = &self.workspace
         {
-            return self
+            let mut discovery = self
                 .checkout_instructions(workspace, names, maximum, publisher)
-                .await;
+                .await?;
+            discovery.skills = self.skills(None).await?;
+            return Ok(discovery);
         }
         let _ = publisher;
         self.volume_instructions(names, maximum, self.context_reader()?.as_ref())
@@ -195,6 +198,7 @@ impl LocalHarness {
                 Err(error) => return Err(error),
             }
         }
+        discovery.skills = self.skills(Some(&generation)).await?;
         Ok(discovery)
     }
 }
