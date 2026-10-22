@@ -118,6 +118,11 @@ async fn name_search_native_cookie_resumes_after_source_restart_without_replayin
             break;
         }
         last_cursor = cursor.clone();
+        if seen.len() == 3 {
+            // Keep this handle for the cancellation/smaller-retry case;
+            // subsequent boundaries all reopen the source.
+            continue;
+        }
         drop(page);
         drop(provider);
         provider = NativeDemandSource::open(
