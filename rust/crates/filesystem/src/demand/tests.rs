@@ -46,6 +46,39 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
 }
 
 #[tokio::test]
+async fn name_search_metadata_token_detects_a_write_with_restored_mtime()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let file = root.path().join(".gitignore");
+    std::fs::write(&file, b"before\n")?;
+    let source = native_source(root.path()).await?;
+    let stop = CancellationToken::new();
+    let name = path("/.gitignore")?;
+    let before = lookup_node(&source, source.reference(), &name, &stop).await?;
+    let metadata = std::fs::metadata(&file)?;
+    std::fs::write(&file, b"after!\n")?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_modified(metadata.modified()?))?;
+    let after_metadata = std::fs::metadata(&file)?;
+    let after = lookup_node(&source, source.reference(), &name, &stop).await?;
+    // Negative control: size, identity and mtime cannot distinguish this
+    // offline policy edit. Windows must also include its native ChangeTime.
+    assert_eq!(metadata.len(), after_metadata.len());
+    assert_eq!(metadata.modified()?, after_metadata.modified()?);
+    assert_eq!(before.file_identity, after.file_identity);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        assert_eq!(metadata.created()?, after_metadata.created()?);
+        assert_eq!(metadata.file_attributes(), after_metadata.file_attributes());
+    }
+    assert_ne!(before.version, after.version);
+    Ok(())
+}
+
+#[tokio::test]
 async fn name_search_mount_check_uses_the_nearest_existing_directory() -> Result<(), Box<dyn Error>>
 {
     let root = tempfile::tempdir()?;

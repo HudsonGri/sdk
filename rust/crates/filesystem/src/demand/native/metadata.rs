@@ -51,6 +51,7 @@ fn version(metadata: &HostStat) -> SourceVersion {
     {
         hash.update(&metadata.raw.FileAttributes.to_le_bytes());
         hash.update(&metadata.raw.LastWriteTime.to_le_bytes());
+        hash.update(&metadata.raw.ChangeTime.to_le_bytes());
         hash.update(&metadata.raw.CreationTime.to_le_bytes());
         hash.update(&metadata.volume_serial_number.to_le_bytes());
         hash.update(&metadata.raw.FileId.to_le_bytes());
