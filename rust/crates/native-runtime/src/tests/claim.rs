@@ -169,6 +169,30 @@ fn another_process_claim_excludes_until_that_process_dies() -> io::Result<()> {
     Ok(())
 }
 
+/// A process-lock probe that fails other than by contention, as an OS lock
+/// does on a descriptor without the access it needs, or on an I/O error.
+fn failing_probe(_: std::fs::File) -> io::Result<crate::FileLock> {
+    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+}
+
+#[test]
+fn an_owner_whose_lock_probe_fails_keeps_its_claim() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let owner = Owner::spawn(&path)?;
+    // The probe never answered, so nothing proves the owner dead.
+    assert!(contended(StoreClaim::acquire_probing(&path, failing_probe)));
+    let file = crate::FileLock::new(std::fs::File::open(&path)?);
+    let check = StoreClaim::check_probing(&file, failing_probe)?;
+    assert!(check.claimed, "an unanswered probe admitted: {check:?}");
+    drop(file);
+    // The same owner, probed for real, is alive; once gone it is dead.
+    assert!(contended(StoreClaim::acquire(&path)));
+    drop(owner);
+    drop(StoreClaim::acquire(&path)?);
+    Ok(())
+}
+
 #[test]
 fn another_process_claim_survives_removal_of_its_process_lock() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
