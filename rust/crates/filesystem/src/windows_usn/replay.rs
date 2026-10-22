@@ -203,7 +203,9 @@ mod tests {
     #[ignore = "requires a live local Windows volume with a readable USN journal"]
     fn live_usn_replay_is_bounded_and_resumes_only_after_acceptance() {
         let root = tempfile::tempdir().unwrap();
-        let checkpoint = capture_windows_usn_checkpoint(root.path()).unwrap();
+        let stop = crate::CancellationToken::new();
+        let mut work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &stop).unwrap();
+        let checkpoint = capture_windows_usn_checkpoint(root.path(), &mut work).unwrap();
         let file = root.path().join("before");
         std::fs::write(&file, b"journal replay").unwrap();
         std::fs::OpenOptions::new()
@@ -213,8 +215,6 @@ mod tests {
             .sync_all()
             .unwrap();
         std::fs::rename(file, root.path().join("after")).unwrap();
-        let stop = crate::CancellationToken::new();
-        let mut work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &stop).unwrap();
         let mut replay = WindowsUsnReplay::open(root.path(), checkpoint, &mut work).unwrap();
         let failure = replay.next_page(&mut work, |_, _| Err(WindowsUsnError::InvalidJournal));
         assert!(failure.is_err());

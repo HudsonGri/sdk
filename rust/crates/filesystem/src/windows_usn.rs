@@ -134,11 +134,13 @@ pub enum WindowsUsnContinuity {
 /// # Errors
 ///
 /// Rejects unsupported paths, unavailable journals, invalid journal values,
-/// root identity failures, or native I/O errors.
+/// root identity failures, native I/O errors, or work denied by the original
+/// native invocation. Root opening and volume resolution use that same work.
 pub fn capture_windows_usn_checkpoint(
     root: &Path,
+    work: &mut crate::NativeMaterializationWork,
 ) -> Result<WindowsUsnCheckpoint, WindowsUsnError> {
-    let (root_identity, journal) = observe_root(root)?;
+    let (root_identity, journal) = observe_root(root, work)?;
     Ok(WindowsUsnCheckpoint {
         root_identity,
         journal_id: journal.journal_id,
@@ -152,12 +154,13 @@ pub fn capture_windows_usn_checkpoint(
 ///
 /// Returns only environmental/native failures. Every semantic mismatch is a
 /// successful `BaselineRequired` outcome so callers cannot confuse baseline
-/// with transport failure.
+/// with transport failure. Native reads are charged to the original invocation.
 pub fn validate_windows_usn_checkpoint(
     root: &Path,
     checkpoint: WindowsUsnCheckpoint,
+    work: &mut crate::NativeMaterializationWork,
 ) -> Result<WindowsUsnContinuity, WindowsUsnError> {
-    let (observed, journal) = observe_root(root)?;
+    let (observed, journal) = observe_root(root, work)?;
     Ok(classify_continuity(observed, checkpoint, &journal))
 }
 
@@ -192,17 +195,13 @@ struct JournalSnapshot {
 
 /// Resolve the journal's volume from the held root, including mounted-folder
 /// volumes. USN control calls require a volume handle, not a directory handle.
-fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), WindowsUsnError> {
-    let canonical = root
-        .canonicalize()
-        .map_err(|error| WindowsUsnError::Io(error.to_string()))?;
-    let root = HostRoot::open(&canonical, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)
-        .map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
-    Ok((
-        root.identity(),
-        query_journal(&root, &mut crate::native_host::ordinary_work())?,
-    ))
+fn observe_root<W: SourceDemandReadWork>(
+    root: &Path,
+    work: &mut W,
+) -> Result<(NativeRootIdentity, JournalSnapshot), WindowsUsnError> {
+    work.check()?;
+    let root = HostRoot::open(root, work)?;
+    Ok((root.identity(), query_journal(&root, work)?))
 }
 
 fn query_journal<W: SourceDemandReadWork>(
@@ -361,9 +360,6 @@ pub enum WindowsUsnError {
     /// Checkpoint bytes are not the exact current canonical format.
     #[error("the Windows USN checkpoint is invalid")]
     InvalidCheckpoint,
-    /// The native root identity cannot be proven.
-    #[error("the Windows USN root identity is unavailable")]
-    RootIdentityUnavailable,
     /// The journal returned impossible or truncated metadata.
     #[error("the Windows USN journal metadata is invalid")]
     InvalidJournal,
@@ -476,15 +472,74 @@ mod tests {
     }
 
     #[test]
+    fn name_search_usn_entrypoints_honor_original_denial_and_cancellation() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let checkpoint = WindowsUsnCheckpoint {
+            root_identity: NativeRootIdentity::from_bytes([0; 16]),
+            journal_id: 1,
+            next_usn: 0,
+        };
+        for cancelled in [false, true] {
+            let stop = crate::CancellationToken::new();
+            let original =
+                crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &stop).unwrap();
+            let mut work = original
+                .native_volume_work(crate::WorkBudget {
+                    backend_read_operations: 0,
+                    backend_write_operations: 0,
+                    ..crate::WorkBudget::UNBOUNDED
+                })
+                .unwrap();
+            if cancelled {
+                stop.cancel();
+            }
+            for path in [directory.path(), missing.as_path()] {
+                let before = original.receipt();
+                // Negative control: an ambient root open reports a missing
+                // path or touches the real directory before noticing denial.
+                assert!(matches!(
+                    capture_windows_usn_checkpoint(path, &mut work),
+                    Err(WindowsUsnError::Demand(_))
+                ));
+                assert!(matches!(
+                    validate_windows_usn_checkpoint(path, checkpoint, &mut work),
+                    Err(WindowsUsnError::Demand(_))
+                ));
+                assert!(matches!(
+                    WindowsUsnReplay::open(path, checkpoint, &mut work),
+                    Err(WindowsUsnError::Demand(_))
+                ));
+                let after = original.receipt();
+                assert_eq!(
+                    before.backend_read_operations,
+                    after.backend_read_operations
+                );
+                assert_eq!(
+                    before.backend_write_operations,
+                    after.backend_write_operations
+                );
+                assert_eq!(before.source_bytes_read, after.source_bytes_read);
+                if cancelled {
+                    assert_eq!(before, after);
+                }
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires a live local Windows volume with a readable USN journal"]
     fn live_journal_uses_the_held_volume_and_fences_a_write()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let checkpoint = capture_windows_usn_checkpoint(root.path())?;
+        let stop = crate::CancellationToken::new();
+        let mut work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &stop)
+            .map_err(|(cause, _)| cause)?;
+        let checkpoint = capture_windows_usn_checkpoint(root.path(), &mut work)?;
         // The system volume can advance for unrelated writes between calls.
         // Deterministic unchanged/mismatch controls are exercised above.
         assert!(matches!(
-            validate_windows_usn_checkpoint(root.path(), checkpoint)?,
+            validate_windows_usn_checkpoint(root.path(), checkpoint, &mut work)?,
             WindowsUsnContinuity::Unchanged
                 | WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::VolumeAdvanced)
         ));
@@ -496,9 +551,27 @@ mod tests {
             .open(&changed)?
             .sync_all()?;
         assert_eq!(
-            validate_windows_usn_checkpoint(root.path(), checkpoint)?,
+            validate_windows_usn_checkpoint(root.path(), checkpoint, &mut work)?,
             WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::VolumeAdvanced)
         );
+        assert!(work.receipt().backend_read_operations > 0);
+        let mut watcher = crate::NativeWatch::open_with_profile_with_native_work(
+            root.path(),
+            crate::FilesystemProfile::Windows,
+            crate::NativeWatchOptions::new(crate::VolumeLimits::default()),
+            &work,
+        )?;
+        let wrong_root = WindowsUsnCheckpoint {
+            root_identity: NativeRootIdentity::from_bytes([0; 16]),
+            ..checkpoint
+        };
+        // Negative control: flattening every refusal to VolumeAdvanced hides
+        // root replacement, journal recreation, and truncation from callers.
+        assert_eq!(
+            watcher.accept_windows_usn_baseline(wrong_root, &mut work)??,
+            WindowsUsnContinuity::BaselineRequired(WindowsUsnDiscontinuity::RootChanged)
+        );
+        watcher.shutdown_with_native_work(&work)?;
         Ok(())
     }
 }
