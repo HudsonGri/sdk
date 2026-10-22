@@ -589,6 +589,30 @@ mod tests {
         // Negative control: the global selector still names the original view.
         assert!(workspace.selected_view().await?.0.is_none());
         assert_ne!(selected.workspace().id(), workspace.view.workspace().id());
+        let switched = crate::tools::git::run(
+            crate::tools::git::Workspace {
+                filesystem: &workspace.filesystem,
+                store: &workspace.store,
+                view: crate::tools::git::View::Checkout(&fork),
+                root: &workspace.path,
+                repository: fork.workspace().id(),
+                lease: None,
+                checkout: None,
+                author: "test",
+                authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: None,
+            },
+            &["switch".into(), "-c".into(), "popup-selected".into()],
+        )
+        .await?
+        .switched
+        .expect("selected task branch");
+        let selected = selected_view(workspace, &harness.runtime, Some(task_id))
+            .await?
+            .expect("saved task branch");
+        assert_eq!(selected.workspace().id(), switched.workspace().id());
+        assert_ne!(selected.workspace().id(), fork.workspace().id());
         assert!(workspace.mounted.is_none());
         assert!(!workspace.state.lock().await.initialized);
         Ok(())
