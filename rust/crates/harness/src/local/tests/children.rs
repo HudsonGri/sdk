@@ -177,7 +177,7 @@ async fn child_pre_tool_hook(search_only: bool) -> Result<()> {
             tools: &super::super::checkout_tools::CheckoutTools,
             task: Arc<crate::runtime::TaskContext>,
             command: &str,
-            grants: Option<Capabilities>,
+            grants: Option<crate::Capabilities>,
         ) -> Result<crate::tool::ToolResult> {
             let invocation = crate::tool::ToolInvocation {
                 operation_id: OperationId::new(),
