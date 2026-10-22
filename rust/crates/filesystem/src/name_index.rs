@@ -56,11 +56,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
     /// Opens the manifest at one exact SDK generation, without following into
     /// the native source namespace even when the workspace is lazy.
     pub async fn open(workspace: &Workspace<A, O>) -> Result<Option<Self>, SearchError> {
+        Self::open_reusing(workspace, None).await
+    }
+
+    /// Follows the current publication while retaining an already restored
+    /// checkpoint when its immutable generation is still the exact head.
+    /// A different generation always goes through the file query again.
+    pub async fn open_reusing(
+        workspace: &Workspace<A, O>,
+        previous: Option<&Self>,
+    ) -> Result<Option<Self>, SearchError> {
         let generation = workspace
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| failure.error)?
             .value;
+        if let Some(previous) = previous
+            && generation.id() == previous.generation.id()
+            && workspace.id() == previous.generation.workspace_id()
+            && workspace
+                .volume
+                .fs
+                .owns_workspace(&previous.generation.workspace())
+        {
+            return Ok(Some(Self {
+                generation,
+                manifest: previous.manifest.clone(),
+                #[cfg(test)]
+                checkpoint_policy_records: 0,
+                #[cfg(test)]
+                checkpoint_metadata_records: 0,
+                #[cfg(test)]
+                checkpoint_frontier_records: 0,
+            }));
+        }
         let bytes = match generation
             .read(
                 MANIFEST,

@@ -385,7 +385,8 @@ async fn maintain(
             .follow(path.clone(), watermark.accepted)
             .await
             .map_err(storage_index)?;
-        let published = Index::open(view.workspace())
+        let previous = shared.snapshot().await;
+        let published = Index::open_reusing(view.workspace(), previous.as_deref())
             .await
             .map_err(super::search::search_error)?;
         let mut policy = None;

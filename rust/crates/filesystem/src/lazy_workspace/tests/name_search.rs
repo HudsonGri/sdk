@@ -180,6 +180,106 @@ async fn name_search_lazy_checkpoint_reopens_native_directory_after_restart() {
 use crate::facade::FsWork as _;
 use crate::{GitIgnorePolicy, NameWalk, PublicationPermit};
 
+struct NameIndexReadCounter {
+    inner: crate::memory::MemoryObjectStore,
+    reads: Arc<AtomicUsize>,
+}
+
+impl AsyncObjectStore for NameIndexReadCounter {
+    async fn put(
+        &self,
+        id: crate::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put(id, bytes, work).await
+    }
+
+    async fn contains(
+        &self,
+        id: crate::ObjectId,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        self.inner.contains(id, work).await
+    }
+
+    async fn read(
+        &self,
+        id: crate::ObjectId,
+        maximum: u64,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.read(id, maximum, work).await
+    }
+}
+
+#[tokio::test]
+async fn name_search_same_generation_follow_does_not_restore_checkpoint_files() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        NameIndexReadCounter {
+            inner: Default::default(),
+            reads: Arc::clone(&reads),
+        },
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let lazy = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::new())),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let original = publish_name_walk(lazy.workspace(), walk).await;
+    let head_reads = reads.load(Ordering::Relaxed);
+    lazy.workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap();
+    let head_reads = reads.load(Ordering::Relaxed) - head_reads;
+    let before = reads.load(Ordering::Relaxed);
+    let followed = crate::NameIndex::open_reusing(lazy.workspace(), Some(&original))
+        .await
+        .unwrap()
+        .unwrap();
+    let follow_reads = reads.load(Ordering::Relaxed) - before;
+    assert_eq!(follow_reads, head_reads);
+    assert_eq!(followed.generation().id(), original.generation().id());
+    assert_eq!(
+        serde_json::to_vec(&followed.page(0).await.unwrap()).unwrap(),
+        serde_json::to_vec(&original.page(0).await.unwrap()).unwrap()
+    );
+    // Negative control: opening without the held generation reads the index
+    // manifest and checkpoint files in addition to the same head observation.
+    let before = reads.load(Ordering::Relaxed);
+    let reopened = crate::NameIndex::open(lazy.workspace())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reads.load(Ordering::Relaxed) - before > follow_reads);
+    assert_eq!(reopened.manifest.pages, followed.manifest.pages);
+    lazy.write(
+        "/.acyclic-sdk/name-index/manifest.json",
+        Bytes::from_static(b"{}").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        accounting!(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        crate::NameIndex::open_reusing(lazy.workspace(), Some(&original))
+            .await
+            .is_err(),
+        "a changed generation must query its files rather than reuse stale state"
+    );
+}
+
 #[cfg(all(unix, feature = "native-watch"))]
 #[tokio::test]
 async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() {
