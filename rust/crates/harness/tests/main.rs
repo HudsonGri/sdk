@@ -23,8 +23,6 @@ mod local_conversation_fork;
 #[cfg(feature = "test-support")]
 mod model_tool_call;
 #[cfg(feature = "test-support")]
-mod native_hook_http;
-#[cfg(feature = "test-support")]
 mod native_media_boundary;
 #[cfg(feature = "test-support")]
 mod portable_file_replay;
@@ -34,8 +32,6 @@ mod portable_text_tools;
 mod portable_text_variants;
 #[cfg(feature = "test-support")]
 mod project_workspaces;
-#[cfg(feature = "test-support")]
-mod provider_failure_exit;
 #[cfg(feature = "test-support")]
 mod recursive_fork;
 #[cfg(feature = "test-support")]
@@ -63,7 +59,7 @@ mod client_mention_attachments;
 #[path = "cases/tui_config.rs"]
 mod tui_config;
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", feature = "test-support"))]
 #[path = "cases/tui_completion.rs"]
 mod tui_completion;
 
@@ -86,6 +82,7 @@ mod default_tools;
 #[path = "cases/task_view.rs"]
 mod task_view;
 
+#[cfg(feature = "test-support")]
 #[path = "cases/task_volume.rs"]
 mod task_volume;
 
@@ -104,11 +101,11 @@ mod client_views_parity;
 #[path = "cases/goal_files.rs"]
 mod goal_files;
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(all(feature = "filesystem-local", feature = "test-support"))]
 #[path = "cases/local_recursive_fork.rs"]
 mod local_recursive_fork;
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(all(feature = "filesystem-local", feature = "test-support"))]
 #[path = "cases/context_continuation.rs"]
 mod context_continuation;
 
@@ -129,11 +126,15 @@ mod jsonl_wire;
 #[path = "cases/mcp_oauth_provider.rs"]
 mod mcp_oauth_provider;
 
-#[cfg(all(feature = "filesystem-local", feature = "mcp-http"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "mcp-http",
+    feature = "test-support"
+))]
 #[path = "cases/mcp_durable.rs"]
 mod mcp_durable;
 
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "cases/client_commands.rs"]
 mod client_commands;
 
@@ -146,13 +147,14 @@ mod plan_markdown;
 #[path = "cases/client_interests.rs"]
 mod client_interests;
 
+#[cfg(feature = "test-support")]
 #[path = "cases/client_query.rs"]
 mod client_query;
 
 #[path = "cases/client_swarm_views.rs"]
 mod client_swarm_views;
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(all(feature = "filesystem-local", feature = "test-support"))]
 #[path = "cases/task_workflow.rs"]
 mod task_workflow;
 
