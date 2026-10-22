@@ -773,7 +773,7 @@ mod tests {
             &stop,
         )
         .await
-        .map_err(|failure| Error::from(failure.error))?
+        .map_err(|failure| Error::from(acyclic_fs::LazyWorkspaceError::Demand(failure.error)))?
         .value;
         let (lazy, _) = LazyWorkspace::attach(
             &fs,
