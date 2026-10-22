@@ -132,6 +132,8 @@ async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()>
             previous: base.generation.clone(),
             generation: base.generation.clone(),
             paths: vec![DiffPath {
+                largest_file_bytes: None,
+                matches_base: false,
                 path: format!("\0{}", "x".repeat(bytes)),
                 base: None,
                 current: None,
@@ -172,11 +174,15 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
     for directories in [4, 1024] {
         let prefix = "z/".repeat(directories);
         let mut paths = vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "anchor".into(),
             base: Some(base.clone()),
             current: Some(current.clone()),
         }];
         paths.extend((0..256).map(|index| DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: format!("{prefix}{index}.txt"),
             base: None,
             current: None,
@@ -366,6 +372,8 @@ async fn a_large_addition_does_not_terminate_the_follow() -> Result<()> {
         previous: base.generation.clone(),
         generation: current.generation.clone(),
         paths: vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "added.txt".into(),
             base: None,
             current: Some(current),
@@ -405,6 +413,8 @@ async fn exhausted_work_stops_before_reading_the_next_file() -> Result<()> {
         paths: ["binary", "large"]
             .into_iter()
             .map(|path| DiffPath {
+                largest_file_bytes: None,
+                matches_base: false,
                 path: path.into(),
                 base: None,
                 current: Some(PinnedContextPath {
@@ -458,6 +468,8 @@ async fn endpoint_reads_use_only_the_remaining_input_allowance() -> Result<()> {
         previous: base.generation.clone(),
         generation: current.generation.clone(),
         paths: vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "a.txt".into(),
             base: Some(base.clone()),
             current: Some(current),
@@ -505,6 +517,8 @@ async fn unchanged_baseline_snapshot_initializes_once_without_reads() -> Result<
     };
     let mut conflict = snapshot.clone();
     conflict.paths.push(DiffPath {
+        largest_file_bytes: None,
+        matches_base: false,
         path: "a.txt".into(),
         base: None,
         current: None,
@@ -565,6 +579,8 @@ async fn render_bound_stops_before_reading_later_files_and_preserves_the_view() 
             .map(|index| {
                 let path = format!("big-{index}.txt");
                 DiffPath {
+                    largest_file_bytes: None,
+                    matches_base: false,
                     path: path.clone(),
                     base: None,
                     current: Some(PinnedContextPath {
@@ -618,6 +634,8 @@ async fn cancelling_a_read_keeps_the_received_publication_for_the_next_read() ->
         previous: base.generation.clone(),
         generation: current.generation.clone(),
         paths: vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "a.txt".into(),
             base: Some(base),
             current: Some(current),
@@ -669,6 +687,8 @@ async fn deletion_only_publications_keep_the_published_generation() -> Result<()
         previous: base.generation.clone(),
         generation: generation.clone(),
         paths: vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "a.txt".into(),
             base: Some(base),
             current: None,
@@ -707,6 +727,8 @@ async fn query_follow_waits_for_push_and_stops_on_a_cursor_gap() -> Result<()> {
         previous: base.generation.clone(),
         generation: current.generation.clone(),
         paths: vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "a.txt".into(),
             base: Some(base),
             current: Some(current),
@@ -765,6 +787,8 @@ async fn publications_update_only_named_files_and_keep_the_fork_base() -> Result
             previous: view.generation().clone(),
             generation: source.generation.clone(),
             paths: vec![DiffPath {
+                largest_file_bytes: None,
+                matches_base: false,
                 path: "a.txt".into(),
                 base: Some(base.clone()),
                 current: Some(source),
@@ -815,6 +839,8 @@ async fn a_full_view_can_replace_a_file_in_one_atomic_publication() -> Result<()
             previous: base.generation.clone(),
             generation: old.generation.clone(),
             paths: vec![DiffPath {
+                largest_file_bytes: None,
+                matches_base: false,
                 path: "old.txt".into(),
                 base: Some(base.clone()),
                 current: Some(old),
@@ -846,11 +872,15 @@ async fn a_full_view_can_replace_a_file_in_one_atomic_publication() -> Result<()
             generation,
             paths: vec![
                 DiffPath {
+                    largest_file_bytes: None,
+                    matches_base: false,
                     path: "new.txt".into(),
                     base: None,
                     current: Some(new),
                 },
                 DiffPath {
+                    largest_file_bytes: None,
+                    matches_base: false,
                     path: "old.txt".into(),
                     base: Some(base),
                     current: Some(restored),
@@ -882,6 +912,8 @@ async fn rejected_publications_leave_the_view_and_cursor_unchanged() -> Result<(
         previous: base.generation.clone(),
         generation: source.generation.clone(),
         paths: vec![DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
             path: "a.txt".into(),
             base: Some(base.clone()),
             current: Some(source.clone()),

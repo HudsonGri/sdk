@@ -6,11 +6,19 @@ use http_body_util::BodyExt as _;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
-use std::{cell::RefCell, convert::Infallible, fs::File, io::Write as _, rc::Rc};
+use std::{
+    cell::RefCell,
+    convert::Infallible,
+    fs::File,
+    io::{BufWriter, Write as _},
+    rc::Rc,
+};
+
+mod records;
 
 struct Host {
     engine: Engine,
-    record: File,
+    record: BufWriter<File>,
     sequence: u64,
 }
 
@@ -131,8 +139,7 @@ fn record(
     let record = json!({"sequence":host.sequence,"case":namespace,"method":method,"path":endpoint,"body":body,"step":step,"status":reply.status().as_u16()});
     // One local-executor turn owns consume -> append -> flush -> event. A caller
     // observing the event can immediately read the complete JSONL record.
-    writeln!(host.record, "{record}")?;
-    host.record.flush()?;
+    records::append(&mut host.record, &record)?;
     println!(
         "{}",
         json!({"event":"request","sequence":host.sequence,"case":namespace,"path":endpoint,"step":step})
@@ -199,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let script: Script = serde_json::from_slice(&std::fs::read(script)?)?;
     let host = Rc::new(RefCell::new(Host {
         engine: Engine::new(script),
-        record: File::create(record)?,
+        record: BufWriter::new(File::create(record)?),
         sequence: 0,
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

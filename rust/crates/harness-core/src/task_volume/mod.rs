@@ -15,9 +15,9 @@ mod files;
 mod follow;
 mod heads;
 mod listing;
-mod model_turn;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+mod model_turn;
 mod page;
 mod plan_name;
 mod publication;
@@ -42,6 +42,9 @@ pub use follow::query_id;
 #[doc(hidden)]
 pub use follow::record_changes;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
+mod approval_query;
+mod approvals;
+pub use approvals::{FileApproval, FileApprovalDecision};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
 pub use schema::{
@@ -262,6 +265,7 @@ struct Index {
     files: FileIndex,
     commands: command_query::Commands,
     views: recent::Views,
+    approvals: approval_query::Pending,
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
 }
 
@@ -287,8 +291,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[doc(hidden)]
-    pub fn shares_provider(&self, provider: &Arc<P>) -> bool {
-        Arc::ptr_eq(&self.provider, provider)
+    pub fn shares_provider<Q: StreamProvider + ?Sized>(&self, provider: &Arc<Q>) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.provider), Arc::as_ptr(provider))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -535,7 +539,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 path: self.path.clone(),
                 records: vec![segment],
             }],
-            idempotency_key: IdempotencyKey::new(crate::identity::fresh_uuid().as_bytes().to_vec())?,
+            idempotency_key: IdempotencyKey::new(
+                crate::identity::fresh_uuid().as_bytes().to_vec(),
+            )?,
         };
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
@@ -746,10 +752,12 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
     }
     let command = index.commands.prepare(&index.files, &file.key);
     let display = recent::Views::prepare(&file, position);
+    let approval = approval_query::Pending::prepare(&file.key);
     let previous = index
         .files
         .insert(file.key.clone(), StoredFile { file, position });
     index.views.record(display, previous.as_ref());
+    index.approvals.record(approval, previous.is_some());
     index.commands.record(command, position, previous.is_some());
 }
 

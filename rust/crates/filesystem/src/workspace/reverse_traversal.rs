@@ -119,6 +119,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     root: &crate::kernel::GenerationRoot,
     generation_root: crate::ObjectId,
     ids: &[FileId],
+    descendants: &[FileId],
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
@@ -144,7 +145,12 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
         ids,
         accounting,
     )?;
-    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting)?;
+    // The exact-id cache contains anchors only, never their descendants.
+    let (bytes, allocation) = if descendants.is_empty() {
+        volume.fs.path_index().load(cache_key, accounting)?
+    } else {
+        (None, accounting.claim_owned(0, 0)?)
+    };
     let bytes = (bytes, allocation);
     if let Some(payload) = bytes.0.as_ref() {
         let mut cached = crate::path_index::decode(payload, generation, ids, limits, accounting)?;
@@ -254,9 +260,9 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     let mut pending = (Vec::new(), allocation);
     reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
     let allocation = accounting.claim_owned(0, 0)?;
-    pending.0.push((namespace_root, allocation));
+    pending.0.push(((namespace_root, allocation), false));
     let mut examined = 0_u32;
-    while let Some(directory) = pending.0.pop() {
+    while let Some((directory, inherited)) = pending.0.pop() {
         let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
         loop {
             let (page, allocation) =
@@ -292,7 +298,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
                     }
                     let bytes = directory.0.retained_bytes();
                     reverse_drop(directory, bytes, accounting)?;
-                    while let Some(path) = pending.0.pop() {
+                    while let Some((path, _)) = pending.0.pop() {
                         let bytes = path.0.retained_bytes();
                         reverse_drop(path, bytes, accounting)?;
                     }
@@ -301,10 +307,11 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
                     return Ok(matches);
                 }
                 examined += 1;
-                let found = binary_search_with_accounting(ids, accounting, |id| {
-                    id.cmp(&entry.record.file_id)
-                })?
-                .is_ok();
+                let found = inherited
+                    || binary_search_with_accounting(ids, accounting, |id| {
+                        id.cmp(&entry.record.file_id)
+                    })?
+                    .is_ok();
                 let is_directory = entry.record.kind == FileKind::Directory;
                 if !found && !is_directory {
                     continue;
@@ -337,7 +344,12 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
                     continue;
                 }
                 reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
-                pending.0.push(path);
+                let expand = inherited
+                    || binary_search_with_accounting(descendants, accounting, |id| {
+                        id.cmp(&entry.record.file_id)
+                    })?
+                    .is_ok();
+                pending.0.push((path, expand));
             }
             let next = if page.0.has_more {
                 let name = page.0.entries.pop().ok_or(FsError::NotFound)?.name;
@@ -370,17 +382,19 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     let pending_bytes = workspace_vec_bytes(&pending.0);
     reverse_drop(pending, pending_bytes, accounting)?;
     reverse_sort(&mut matches.0.records, accounting)?;
-    let (bytes, allocation) =
-        crate::path_index::encode_records(generation, ids, &matches.0.records, accounting)?;
-    let bytes = (bytes, allocation);
-    if let Some(payload) = &bytes.0 {
-        volume
-            .fs
-            .path_index()
-            .store(cache_key, payload, accounting)?;
+    if descendants.is_empty() {
+        let (bytes, allocation) =
+            crate::path_index::encode_records(generation, ids, &matches.0.records, accounting)?;
+        let bytes = (bytes, allocation);
+        if let Some(payload) = &bytes.0 {
+            volume
+                .fs
+                .path_index()
+                .store(cache_key, payload, accounting)?;
+        }
+        let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
+        reverse_drop(bytes, bytes_count, accounting)?;
     }
-    let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
-    reverse_drop(bytes, bytes_count, accounting)?;
     matches.0.complete = true;
     Ok(matches)
 }

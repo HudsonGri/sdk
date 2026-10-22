@@ -37,6 +37,7 @@ mod chunks;
 mod configuration;
 mod content;
 mod interactions;
+mod approval_files;
 mod observations;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod publication_future_tests;

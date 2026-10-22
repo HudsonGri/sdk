@@ -106,6 +106,9 @@ impl CheckoutTools {
                 })
                 .await
                 .map_err(|failure| failure.cause)?;
+            if phase == 0 {
+                self.retain_diff_base(view.workspace()).await?;
+            }
             return Ok(());
         }
         let cancellation = CancellationToken::new();
@@ -114,7 +117,10 @@ impl CheckoutTools {
         let policy = &self.capture_policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
-        let baseline = slot.is_none();
+        // Initial registration fences watcher delivery; it has not imported the
+        // lazy source into an authored generation yet. Capture that source
+        // before retaining a diff base or publishing the first tool mutation.
+        let baseline = slot.as_ref().is_none_or(|cursor| cursor.initial.is_some());
         let mut cursor = match slot.take() {
             Some(cursor) => cursor,
             None => Cursor::open(physical, &self.capture_policy)?,
@@ -175,6 +181,9 @@ impl CheckoutTools {
                     "checkout capture publication raced with another writer".into(),
                 ));
             }
+        }
+        if phase == 0 {
+            self.retain_diff_base(view.workspace()).await?;
         }
         *slot = Some(cursor);
         Ok(())

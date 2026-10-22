@@ -287,6 +287,7 @@ impl From<FsError> for WorkspaceError {
             FsError::SourceSnapshotStale => Self::StaleSource,
             FsError::NotFound => Self::NotFound,
             FsError::NotDirectory
+            | FsError::Path(crate::kernel::PathLookupError::NotDirectory)
             | FsError::Mutation(crate::kernel::GenerationMutationError::NotDirectory) => {
                 Self::NotDirectory
             }

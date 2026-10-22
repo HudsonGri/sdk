@@ -7,7 +7,11 @@ use acyclic_harness::{
         term::{Environment, FrameTerminal, RegionScroll, ScreenMode, Tty},
     },
 };
+use futures::StreamExt as _;
 use std::{sync::Arc, time::Instant};
+#[path = "view/diff.rs"]
+mod diff;
+use diff::DiffState;
 
 pub async fn run(
     local: Arc<LocalHarness>,
@@ -52,16 +56,47 @@ pub async fn run(
     let start = Instant::now();
     client.follow_commands(&commands).await?;
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
+    let mut diff = DiffState::new();
     loop {
         client
             .follow_task(
                 local.task_files().as_ref(),
                 commands
-                    .active_task()
+                    .presentation_task()?
                     .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
             )
             .await?;
         renderer.update_files(&client, &authority);
+        let diff_open = commands
+            .state(client::CommandFileRoot::Session, "layout.json")?
+            .is_some_and(|layout| layout["open_view"] == "diff");
+        if diff_open {
+            let revision = client.presentation_revision();
+            if diff.needs_refresh(revision) {
+                match local.project_selection().await {
+                    Ok(selected) => {
+                        if diff.select(revision, selected, || client::local_diff(
+                            local.clone(),
+                            client::DiffLimits {
+                                files: 4096,
+                                changes: 4096,
+                                file_bytes: 65_536,
+                                render_bytes: 4 * 1024 * 1024,
+                                work: 16 * 1024 * 1024,
+                            },
+                        )) {
+                            renderer.update_diff(Ok(Vec::new()));
+                        }
+                    }
+                    Err(error) => {
+                        renderer.update_diff(Err(error));
+                        diff.selection_failed(revision);
+                    }
+                }
+            }
+        } else {
+            diff.close();
+        }
         if commands.exit_requested()? {
             return Ok(());
         }
@@ -96,7 +131,7 @@ pub async fn run(
             areas = screen.areas(area, &input);
         }
         if batch.is_empty() {
-            let Some(read) = client::next_file_tui_event(
+            let next = client::next_file_tui_event(
                 &mut client,
                 &mut events,
                 &mut completions,
@@ -105,9 +140,22 @@ pub async fn run(
                 areas.animation,
                 &mut renderer,
                 &mut documents,
-            )
-            .await?
-            else {
+            );
+            let Some(read) = (tokio::select! {
+                read = next => read?,
+                rows = async { match diff.stream() { Some(stream) => stream.next().await, None => std::future::pending().await } } => {
+                    match rows {
+                        Some(Ok(rows)) => renderer.update_diff(Ok(rows)),
+                        failed => {
+                            renderer.update_diff(failed.unwrap_or_else(|| {
+                                Err(acyclic_harness::Error::Conflict("project diff follow ended".into()))
+                            }));
+                            diff.failed();
+                        }
+                    }
+                    continue;
+                }
+            }) else {
                 continue;
             };
             batch = read;
