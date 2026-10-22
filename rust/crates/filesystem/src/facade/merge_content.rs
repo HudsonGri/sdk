@@ -133,7 +133,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
         let mut source = std::io::Cursor::new(bytes);
-        let blob = build_blob(
+        // The blob build and the payload mutation each run in a frame of
+        // their own, so this frame holds neither.
+        // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+        let cancellation = CancellationToken::new();
+        let blob = crate::heap_future::in_heap_unmetered(|| build_blob(
             &self.inner.objects,
             &mut source,
             BlobBuildOptions {
@@ -153,13 +157,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 maximum_blob_bytes,
             },
             WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+            &cancellation,
+        ))
         .await
         .map_err(WorkspaceError::engine)?;
-        let payload = apply_regular_mutation_async(
+        let empty = FilePayload::InlineRegular(InlineFileData::new(&[]).map_err(WorkspaceError::engine)?);
+        // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
+        let payload = crate::heap_future::in_heap_unmetered(|| apply_regular_mutation_async(
             &self.inner.objects,
-            FilePayload::InlineRegular(InlineFileData::new(&[]).map_err(WorkspaceError::engine)?),
+            empty,
             RegularMutation::Write {
                 offset: 0,
                 length: blob.logical_bytes,
@@ -168,8 +174,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             },
             workspace.config,
             WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+            &cancellation,
+        ))
         .await
         .map_err(WorkspaceError::engine)?;
         record.payload = payload.payload;
