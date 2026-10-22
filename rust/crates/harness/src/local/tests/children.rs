@@ -177,6 +177,7 @@ async fn child_pre_tool_hook(search_only: bool) -> Result<()> {
             tools: &super::super::checkout_tools::CheckoutTools,
             task: Arc<crate::runtime::TaskContext>,
             command: &str,
+            grants: Option<Capabilities>,
         ) -> Result<crate::tool::ToolResult> {
             let invocation = crate::tool::ToolInvocation {
                 operation_id: OperationId::new(),
@@ -185,17 +186,22 @@ async fn child_pre_tool_hook(search_only: bool) -> Result<()> {
                 arguments: json!({"command":command}),
             };
             let context = crate::runtime::ToolContext::new(
-                task,
+                Arc::clone(&task),
                 invocation.operation_id,
                 &invocation.call_id,
                 None,
             )?;
+            let context = match grants {
+                Some(grants) => context.scoped(grants, task.scope().limits())?,
+                None => context,
+            };
             tools.execute(invocation, Some(context)).await
         }
         let result = grep(
             &tools,
             Arc::clone(&child_context),
             "git grep 'parent source' source.txt",
+            None,
         )
         .await?;
         assert!(
@@ -231,27 +237,29 @@ async fn child_pre_tool_hook(search_only: bool) -> Result<()> {
             .await?;
         let project_read = project.capability(VolumeOperation::Read, &mut None)?;
         let project_write = project.capability(VolumeOperation::Write, &mut None)?;
-        let private_only = Arc::new(
-            child_context.scoped(
-                acyclic_harness::Capabilities::new(
-                    child_context
-                        .scope()
-                        .grants()
-                        .iter()
-                        .filter(|grant| *grant != project_read && *grant != project_write)
-                        .map(str::to_owned),
-                ),
-                child_context.scope().limits(),
-            )?,
+        let private_grants = acyclic_harness::Capabilities::new(
+            child_context
+                .scope()
+                .grants()
+                .iter()
+                .filter(|grant| *grant != project_read && *grant != project_write)
+                .map(str::to_owned),
         );
         assert!(matches!(
-            grep(&tools, Arc::clone(&private_only), "git grep needle").await,
+            grep(
+                &tools,
+                Arc::clone(&child_context),
+                "git grep needle",
+                Some(private_grants.clone())
+            )
+            .await,
             Err(Error::Unauthorized(_))
         ));
         let result = grep(
             &tools,
-            private_only,
+            Arc::clone(&child_context),
             "git --volume scratch grep 'private needle' private-note.txt",
+            Some(private_grants),
         )
         .await?;
         assert!(

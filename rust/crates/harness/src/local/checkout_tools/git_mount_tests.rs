@@ -10,6 +10,16 @@ async fn execute(
     name: &str,
     command: &str,
 ) -> Result<ToolResult> {
+    execute_with_grants(tools, task, name, command, None).await
+}
+
+async fn execute_with_grants(
+    tools: &CheckoutTools,
+    task: &Arc<crate::runtime::TaskContext>,
+    name: &str,
+    command: &str,
+    grants: Option<Capabilities>,
+) -> Result<ToolResult> {
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: command.into(),
@@ -22,6 +32,10 @@ async fn execute(
         &invocation.call_id,
         None,
     )?;
+    let context = match grants {
+        Some(grants) => context.scoped(grants, task.scope().limits())?,
+        None => context,
+    };
     Ok(tools
         .execute(invocation, Some(context))
         .await
@@ -85,8 +99,27 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
             .await?,
     );
     let workspace = harness.workspace.as_ref().unwrap().clone();
-    let before = workspace
-        .view()
+    // Prepare a real selected branch: repository roots deliberately cannot
+    // carry reconciliation markers because they have no parent to rebase.
+    let setup = crate::tools::git::run(
+        crate::tools::git::Workspace {
+            filesystem: &workspace.filesystem,
+            store: &workspace.store,
+            view: crate::tools::git::View::Checkout(workspace.view()),
+            root: &workspace.path,
+            repository: workspace.view().workspace().id(),
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
+        },
+        &["switch".into(), "-c".into(), "search-startup".into()],
+    )
+    .await?;
+    let selected = setup.switched.unwrap().into_checkout()?;
+    let before = selected
         .workspace()
         .head(
             acyclic_fs::WorkBudget::UNBOUNDED,
@@ -127,25 +160,26 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
             .watcher
             .is_none()
     );
-    workspace
-        .view()
+    selected
         .workspace()
         .write_text("/startup.txt", "candidate")
         .await
         .map_err(storage)?;
-    let readonly = Arc::new(
-        task.scoped(
-            Capabilities::new(
-                task.scope()
-                    .grants()
-                    .iter()
-                    .filter(|grant| *grant != tools.write_grant)
-                    .map(str::to_owned),
-            ),
-            task.scope().limits(),
-        )?,
+    let read_grants = Capabilities::new(
+        task.scope()
+            .grants()
+            .iter()
+            .filter(|grant| *grant != tools.write_grant)
+            .map(str::to_owned),
     );
-    let result = execute(&tools, &readonly, "fs", "git grep absent startup.txt").await?;
+    let result = execute_with_grants(
+        &tools,
+        &task,
+        "fs",
+        "git grep absent startup.txt",
+        Some(read_grants.clone()),
+    )
+    .await?;
     assert_eq!(
         result.value["result"]["Filesystem"]["Data"]["value"]["complete"],
         true
@@ -165,7 +199,13 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
         name: "bash".into(),
         arguments: json!({"command":"true"}),
     };
-    let context = ToolContext::new(readonly, invocation.operation_id, &invocation.call_id, None)?;
+    let context = ToolContext::new(
+        Arc::clone(&task),
+        invocation.operation_id,
+        &invocation.call_id,
+        None,
+    )?
+    .scoped(read_grants, task.scope().limits())?;
     assert!(matches!(
         tools.execute(invocation, Some(context)).await,
         Err(Error::Unauthorized(_))
