@@ -151,7 +151,7 @@ fn expansion_calls(charges: &[usize], mut budget: usize) -> Vec<(usize, usize)> 
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig { rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0003), ..ProptestConfig::with_cases(64) })]
     #[test]
     fn reference_budget_intervals_preserve_every_resolution(
         charges in prop::collection::vec(0usize..1024, 0..16),
@@ -204,4 +204,57 @@ proptest! {
             previous = Some(work);
         }
     }
+}
+
+#[test]
+fn malformed_definition_does_not_repeat_reference_parsing() {
+    let source = "[x][y][x][y]\n\n";
+    let mut markdown = Markdown::default();
+    markdown.push(source);
+    for definition in ["[y]: /target\n\n", "[outer [x][y]]: /target\n\n"] {
+        let before = references::PARSED_BYTES.get();
+        markdown.push(definition);
+        let used = references::PARSED_BYTES.get() - before;
+        assert!(
+            used <= source.len() + definition.len() * 3,
+            "{used} parser bytes for {definition:?}"
+        );
+    }
+}
+
+#[test]
+fn reference_definitions_preserve_every_cut() {
+    for body in [
+        "[x][r]",
+        "[r]",
+        "[r][]",
+        "![x][r]",
+        "[outer [x][r]][s]",
+        "[*x*][r]",
+        "[x][r][x][r]",
+    ] {
+        for definitions in [
+            "[r]: /one\n\n",
+            "[r]: /one \"title\"\n\n",
+            "[r]: /one\n  \"title\"\n\n",
+            "[r]: /one\n\n[r]: /two\n\n",
+            "[r]: /one\n\n[outer [x][r]]: /two\n\n",
+            "[s]: /s\n\n[r]: /r\n\n",
+        ] {
+            super::block_checkpoints::check_inline_cuts(&[
+                &format!("{body}\n\n{definitions}tail"),
+                &format!("{definitions}{body}\n\ntail"),
+            ]);
+        }
+    }
+}
+
+#[test]
+fn pending_definition_titles_reopen_under_every_cut() {
+    super::block_checkpoints::check_inline_cuts(&[
+        "[x][a\\]b]\n\n[a\\]b]: /one\n  \"title\"\n\ntail",
+        "[x][a b]\n\n[a b]: /one\n  \"title\"\n\ntail",
+        "[r]\n\n[r]: /one\n  'title'\n\ntail",
+        "[r]\n\n[r]: /one\n  (title)\n\ntail",
+    ]);
 }
