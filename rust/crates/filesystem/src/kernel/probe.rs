@@ -719,6 +719,115 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         Ok(record)
     }
 
+    /// The file `generation` binds at `directory`/`name`, if any.
+    async fn bound_with_accounting(
+        &self,
+        generation: GenerationId,
+        directory: FileId,
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileId>, crate::FsError> {
+        let Some(FileRecord {
+            payload: FilePayload::Directory { entries },
+            ..
+        }) = self
+            .record_with_accounting(generation, directory, accounting, cancellation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let (entry, allocation) = super::read::lookup_tree_entry_async_with_accounting(
+            self.store,
+            entries,
+            name,
+            self.limits.decode,
+            accounting,
+            cancellation,
+            self.data_custody,
+        )
+        .await?;
+        let retained = entry
+            .as_ref()
+            .map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
+        let entry = Owned::new(entry, allocation, retained);
+        let file = entry.value.as_ref().map(|entry| entry.file_id);
+        entry.retire(accounting)?;
+        Ok(file)
+    }
+
+    /// The kernel merge's replacement rule, read from two generations: `base`
+    /// binds `directory`/`name` to a single-link regular file the candidate
+    /// no longer has, and `candidate` binds it to a new single-link regular
+    /// file the base did not have.
+    pub(crate) async fn replacement_with_accounting(
+        &self,
+        base: GenerationId,
+        candidate: GenerationId,
+        directory: FileId,
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, crate::FsError> {
+        let Some(replaced) = self
+            .bound_with_accounting(base, directory, name, accounting, cancellation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(replacement) = self
+            .bound_with_accounting(candidate, directory, name, accounting, cancellation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if replaced == replacement {
+            return Ok(None);
+        }
+        for (generation, file, present) in [
+            (base, replaced, true),
+            (candidate, replaced, false),
+            (candidate, replacement, true),
+            (base, replacement, false),
+        ] {
+            let record = self
+                .record_with_accounting(generation, file, accounting, cancellation)
+                .await?;
+            let single = record.is_some_and(|record| {
+                record.kind == super::FileKind::Regular && record.link_count == 1
+            });
+            if (present && !single) || (!present && record.is_some()) {
+                return Ok(None);
+            }
+        }
+        Ok(Some((replaced, replacement)))
+    }
+
+    /// Whether the file table `working` has no record for `file`.
+    pub(crate) async fn absent_with_accounting(
+        &self,
+        working: ObjectId,
+        file: FileId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, crate::FsError> {
+        cancellation.check()?;
+        accounting.check()?;
+        let (record, allocation) = super::file_table::lookup_file_record_async_with_accounting(
+            self.store,
+            working,
+            file,
+            self.limits.decode,
+            accounting,
+            cancellation,
+            self.data_custody,
+        )
+        .await?;
+        // A file record is scalar, including its fixed-capacity inline payload.
+        retire_allocation(allocation, 0, accounting)?;
+        Ok(record.is_none())
+    }
+
     /// Resolves the full exact-region algorithm through nonblocking canonical I/O.
     pub async fn probe_async(
         &self,
@@ -756,6 +865,11 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let record = self
             .record_with_accounting(generation, file_id, accounting, cancellation)
             .await?;
+        // A captured range lay within its file. Where the file now ends
+        // before the range does, that exact region no longer exists.
+        if range_past_end(record, region) {
+            return Ok(DependencyState::Absent);
+        }
         self.capture_validated_record_with_accounting(
             record,
             region,
@@ -1136,6 +1250,89 @@ impl<S: AsyncObjectStore> super::rebase::AccountingRebaseProbe
             .await
             .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
     }
+
+    async fn replacement_with_accounting(
+        &self,
+        base: GenerationId,
+        candidate: GenerationId,
+        directory: FileId,
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        Self::replacement_with_accounting(
+            self,
+            base,
+            candidate,
+            directory,
+            name,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
+    }
+
+    // Generations alone carry no working tree.
+    async fn removed_locally_with_accounting(
+        &self,
+        _file: FileId,
+        _accounting: &mut KernelAccounting<'_>,
+        _cancellation: &CancellationToken,
+    ) -> Result<bool, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        Ok(false)
+    }
+}
+
+/// A checkout's probe: generation regions and replacements, plus the
+/// checkout's own working file table.
+pub(crate) struct WorkingRebaseProbe<'p, 'a, S> {
+    pub(crate) probe: &'p AuthenticatedGenerationProbe<'a, S>,
+    pub(crate) working: ObjectId,
+}
+
+impl<S: AsyncObjectStore> super::rebase::AccountingRebaseProbe for WorkingRebaseProbe<'_, '_, S> {
+    type Error = crate::FsError;
+
+    async fn probe_with_accounting(
+        &self,
+        generation: GenerationId,
+        region: &DependencyRegion,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<DependencyState, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        self.probe
+            .probe_async_with_accounting(generation, region, accounting, cancellation)
+            .await
+            .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
+    }
+
+    async fn replacement_with_accounting(
+        &self,
+        base: GenerationId,
+        candidate: GenerationId,
+        directory: FileId,
+        name: &super::LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(FileId, FileId)>, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        self.probe
+            .replacement_with_accounting(base, candidate, directory, name, accounting, cancellation)
+            .await
+            .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
+    }
+
+    async fn removed_locally_with_accounting(
+        &self,
+        file: FileId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, super::rebase::ClassifyRebaseFailure<Self::Error>> {
+        self.probe
+            .absent_with_accounting(self.working, file, accounting, cancellation)
+            .await
+            .map_err(super::rebase::ClassifyRebaseFailure::Accounting)
+    }
 }
 
 impl<S: AsyncObjectStore> AsyncRebaseProbe for AuthenticatedGenerationProbe<'_, S> {
@@ -1217,6 +1414,20 @@ fn validate_capture_batch_error(count: usize, maximum: u32) -> Result<(), crate:
         return Err(AuthenticatedProbeError::TooManyRegions { maximum }.into());
     }
     Ok(())
+}
+
+/// Whether `region` is a content range that extends past the end of the
+/// regular file `record`.
+fn range_past_end(record: Option<FileRecord>, region: &DependencyRegion) -> bool {
+    let DependencyRegion::ContentRange { offset, length, .. } = region else {
+        return false;
+    };
+    let file_bytes = match record.map(|record| record.payload) {
+        Some(FilePayload::InlineRegular(data)) => usize_to_u64(data.as_bytes().len()),
+        Some(FilePayload::Regular { logical_bytes, .. }) => logical_bytes,
+        _ => return false,
+    };
+    offset.checked_add(*length).is_none_or(|end| end > file_bytes)
 }
 
 fn region_owned_bytes(region: &DependencyRegion) -> u64 {

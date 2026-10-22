@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 
 impl CheckoutDependencies {
     pub(crate) const fn empty_logical_owned_bytes() -> usize {
@@ -381,6 +382,52 @@ impl CheckoutDependencies {
         owner: Option<&Arc<ProofDataCustody>>,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<Option<Self>, crate::FsError> {
+        if Arc::ptr_eq(&self.captured, &other.captured) {
+            return Ok(Some(self.clone()));
+        }
+        let entries = (self.captured.entries.iter())
+            .chain(other.captured.entries.iter())
+            .map(|(region, state)| (Cow::Borrowed(region), state.expected, state.usage));
+        self.rebuilt_with_accounting(entries, owner, accounting)
+    }
+
+    /// The ledger a rebase leaves once the candidate merge lands: each
+    /// region a replacement settled ([`Settlement`]) expects the candidate's
+    /// state, under its replacement's identity when it follows one. `settled`
+    /// is sorted by region. The copy is built and charged here, before the
+    /// rebased root is installed; `None` means two settled regions now
+    /// expect different states of one region.
+    pub(crate) fn followed_with_accounting(
+        &self,
+        settled: &[(&DependencyRegion, Settlement)],
+        owner: Option<&Arc<ProofDataCustody>>,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+    ) -> Result<Option<Self>, crate::FsError> {
+        let entries = self.captured.entries.iter().map(|(region, state)| {
+            let settlement = settled
+                .binary_search_by(|(settled, _)| (*settled).cmp(region))
+                .ok()
+                .and_then(|index| settled.get(index))
+                .map(|(_, settlement)| *settlement);
+            match settlement {
+                None => (Cow::Borrowed(region), state.expected, state.usage),
+                Some(Settlement::Expect(expected)) => (Cow::Borrowed(region), expected, state.usage),
+                Some(Settlement::Follow { file, expected }) => {
+                    (Cow::Owned(region.of_file(file)), expected, state.usage)
+                }
+            }
+        });
+        self.rebuilt_with_accounting(entries, owner, accounting)
+    }
+
+    /// A new ledger of `entries`, each region cloned and charged; a region
+    /// listed twice joins its uses, and `None` means it expects two states.
+    fn rebuilt_with_accounting<'r>(
+        &self,
+        entries: impl Iterator<Item = (Cow<'r, DependencyRegion>, DependencyState, DependencyUse)>,
+        owner: Option<&Arc<ProofDataCustody>>,
+        accounting: &mut super::allocation::KernelAccounting<'_>,
+    ) -> Result<Option<Self>, crate::FsError> {
         use super::allocation::KernelOwnedAllocation;
         #[cfg(not(target_arch = "wasm32"))]
         let witness = accounting
@@ -397,8 +444,8 @@ impl CheckoutDependencies {
         // Declared outside the physical merge so a rejected constructor drops
         // its actual payload before this untransferred ticket is released.
         let pending = std::cell::RefCell::new(None::<KernelOwnedAllocation>);
-        self.merged_with_data_claims(
-            other,
+        self.rebuilt_with_data_claims(
+            entries,
             |bytes, operations, copied, items| {
                 let mut accounting = accounting.borrow_mut();
                 accounting.charge(WorkCounters {
@@ -470,55 +517,46 @@ impl CheckoutDependencies {
         )
     }
 
-    #[cfg(any(feature = "native-mount", test))]
     #[allow(
         clippy::expect_used,
         reason = "The newly constructed Arc has not been shared before this mutable access."
     )]
-    fn merged_with_data_claims<E: From<WorkError>>(
+    fn rebuilt_with_data_claims<'r, E: From<WorkError>>(
         &self,
-        other: &Self,
+        entries: impl Iterator<Item = (Cow<'r, DependencyRegion>, DependencyState, DependencyUse)>,
         mut admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
         mut completed: impl FnMut(u64) -> Result<(), E>,
         mut control: impl FnMut(u64) -> Result<ProofDataClaim, E>,
         mut data: impl FnMut(u64) -> Result<ProofDataClaim, E>,
     ) -> Result<Option<Self>, E> {
-        if Arc::ptr_eq(&self.captured, &other.captured) {
-            return Ok(Some(self.clone()));
-        }
         let generation = self
             .data_generation
             .checked_add(1)
             .ok_or(WorkError::Overflow)?;
         let mut captured: BTreeMap<DependencyRegion, CapturedState> = BTreeMap::new();
         let mut name_data_bytes = 0_u64;
-        for (region, state) in self
-            .captured
-            .entries
-            .iter()
-            .chain(other.captured.entries.iter())
-        {
+        for (region, expected, usage) in entries {
             admit(0, 0, 0, 1)?;
-            if let Some(existing) = captured.get_mut(region) {
-                if existing.expected != state.expected {
+            if let Some(existing) = captured.get_mut(region.as_ref()) {
+                if existing.expected != expected {
                     return Ok(None);
                 }
-                existing.usage = existing.usage.with(state.usage);
+                existing.usage = existing.usage.with(usage);
                 continue;
             }
-            let bytes = dependency_name_bytes(region, true);
+            let bytes = dependency_name_bytes(&region, true);
             let retained = name_data_bytes
                 .checked_add(bytes)
                 .ok_or(WorkError::Overflow)?;
             admit(bytes, u64::from(bytes != 0), bytes, 0)?;
-            let region = region.clone();
+            let region = region.into_owned();
             completed(bytes)?;
             let data = data(dependency_name_bytes(&region, false))?;
             captured.insert(
                 region,
                 CapturedState {
-                    expected: state.expected,
-                    usage: state.usage,
+                    expected,
+                    usage,
                     data,
                 },
             );
