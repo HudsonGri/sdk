@@ -668,15 +668,15 @@ fn macos_locks_exclude_other_processes() -> TestResult {
     };
     let flock = "flock(F, LOCK_EX | LOCK_NB)";
     let fcntl = "fcntl(F, F_SETLK, my $region = pack('q q l s s', 0, 0, 0, F_WRLCK, 0))";
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)?;
-    // SAFETY: `file` owns a live descriptor for each call.
-    assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let file = acyclic_native_runtime::FileLock::acquire(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    )?;
     assert!(!contender(flock)?);
-    // SAFETY: as above.
-    assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) }, 0);
+    file.unlock()?;
     assert!(contender(flock)?);
     let region = libc::flock {
         l_start: 0,

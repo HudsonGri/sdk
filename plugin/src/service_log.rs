@@ -15,12 +15,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek as _, Write};
 use std::path::{Path, PathBuf};
 
+use acyclic_native_runtime::{FileLock, FileLockMode};
+
 pub(crate) const LIMIT: u64 = 4 * 1024 * 1024;
 
 pub(crate) struct ServiceLog {
     archive: PathBuf,
     staged: PathBuf,
-    file: File,
+    file: FileLock,
     limit: u64,
 }
 
@@ -45,7 +47,7 @@ impl ServiceLog {
         let mut log = Self {
             archive: suffix(path, ".1"),
             staged: suffix(path, ".1.next"),
-            file: file_options().create(true).open(path)?,
+            file: FileLock::new(file_options().create(true).open(path)?),
             limit,
         };
         match file_options().open(&log.archive) {
@@ -64,15 +66,15 @@ impl ServiceLog {
         &mut self,
         action: impl FnOnce(&mut Self) -> io::Result<T>,
     ) -> io::Result<Option<T>> {
-        match fs2::FileExt::try_lock_exclusive(&self.file) {
+        match self.file.try_lock(FileLockMode::Exclusive) {
             Ok(()) => {}
-            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                 return Ok(None);
             }
             Err(error) => return Err(error.kind().into()),
         }
         let result = action(self);
-        let unlocked = fs2::FileExt::unlock(&self.file);
+        let unlocked = self.file.unlock();
         // The formatter can report errors to stderr; strip user paths.
         result
             .and_then(|value| unlocked.map(|()| Some(value)))
@@ -90,15 +92,15 @@ impl ServiceLog {
             // writer would recursively acquire this lock.
             remove_staged(&self.staged)?;
             let mut archive = file_options().create_new(true).open(&self.staged)?;
-            self.file.rewind()?;
-            io::copy(&mut self.file, &mut archive)?;
+            (&*self.file).rewind()?;
+            io::copy(&mut &*self.file, &mut archive)?;
             drop(archive);
             // Replace the directory entry, never truncate through an alias.
             fs::rename(&self.staged, &self.archive)?;
             self.file.set_len(0)?;
         }
-        self.file.seek(io::SeekFrom::End(0))?;
-        self.file.write_all(bytes)
+        (&*self.file).seek(io::SeekFrom::End(0))?;
+        (&*self.file).write_all(bytes)
     }
 }
 
@@ -413,7 +415,7 @@ mod tests {
         let path = PathBuf::from(std::env::var_os("ACYCLIC_TEST_LOG_PATH").expect("log path"));
         let mut log = writer(&path, 8);
         log.write_all(b"complete").expect("fill");
-        fs2::FileExt::lock_exclusive(&log.file).expect("hold lock");
+        log.file.lock(FileLockMode::Exclusive).expect("hold lock");
         // Deliberately bypass Rust destructors while holding the file lock.
         std::process::exit(17);
     }
@@ -647,8 +649,11 @@ mod tests {
         fs::hard_link(&path, &alias).expect("active alias");
         fs::write(suffix(&alias, ".1"), b"old").expect("published archive");
         fs::write(suffix(&alias, ".1.next"), b"stage").expect("reserved stage");
-        let lock = file_options().open(&path).expect("lock handle");
-        fs2::FileExt::lock_exclusive(&lock).expect("hold lock");
+        let lock = FileLock::acquire(
+            file_options().open(&path).expect("lock handle"),
+            FileLockMode::Exclusive,
+        )
+        .expect("hold lock");
         let start = directory.path().join("start");
         let mut child = ChildGuard(
             std::process::Command::new(std::env::current_exe().expect("test binary"))
@@ -669,7 +674,7 @@ mod tests {
             fs::read(suffix(&alias, ".1.next")).expect("untouched stage"),
             b"stage"
         );
-        fs2::FileExt::unlock(&lock).expect("release lock");
+        lock.unlock().expect("release lock");
         // Windows prevents reads through another handle while byte-locked.
         // The child still waits at its barrier, so recovery cannot race this check.
         assert_eq!(fs::read(&path).expect("unchanged active"), b"full");

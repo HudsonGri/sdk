@@ -318,47 +318,68 @@ fn explicit_native_release_does_not_unlock_a_reacquired_file_description_on_drop
     let mut lock = acquire_lock(&mut paths, LockMode::Exclusive).unwrap();
     // dup shares the same Linux open file description. Reacquiring through it
     // makes even an uncharged, duplicate unlock in OwnerLock::drop observable.
-    let same_description = lock.0.try_clone().unwrap();
-    let probe = OpenOptions::new().read(true).write(true).open(&paths.lock).unwrap();
+    let same_description = FileLock::new(lock.0.try_clone().unwrap());
+    let probe = FileLock::new(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&paths.lock)
+            .unwrap(),
+    );
     let before = work.receipt();
     lock.unlock().unwrap();
     let after_unlock = work.receipt();
-    same_description.try_lock_exclusive().unwrap();
+    same_description.try_lock(FileLockMode::Exclusive).unwrap();
     drop(lock);
     let after_drop = work.receipt();
-    let exclusion = probe.try_lock_exclusive();
-    FileExt::unlock(&same_description).unwrap();
+    let exclusion = probe.try_lock(FileLockMode::Exclusive);
+    same_description.unlock().unwrap();
     assert!(
-        exclusion.as_ref().is_err_and(acyclic_native_runtime::is_exclusive_lock_contention),
+        exclusion
+            .as_ref()
+            .is_err_and(acyclic_native_runtime::is_exclusive_lock_contention),
         "dropping an explicitly released guard must not issue another unlock: {exclusion:?}"
     );
-    probe.try_lock_exclusive().unwrap();
-    FileExt::unlock(&probe).unwrap();
+    probe.try_lock(FileLockMode::Exclusive).unwrap();
+    probe.unlock().unwrap();
     assert_eq!(
         after_unlock.backend_write_operations - before.backend_write_operations,
         1
     );
-    assert_eq!(after_drop, after_unlock, "released drop must spend no further work");
+    assert_eq!(
+        after_drop, after_unlock,
+        "released drop must spend no further work"
+    );
     after_drop.verify(budget).unwrap();
 }
 
 #[test]
 fn explicit_ordinary_release_does_not_unlock_a_reacquired_file_description_on_drop() {
     let directory = tempfile::tempdir().unwrap();
-    let namespace = LocalCoreStateStore::new(directory.path()).namespace().unwrap();
+    let namespace = LocalCoreStateStore::new(directory.path())
+        .namespace()
+        .unwrap();
     let mut paths = namespace.record("logical-release", &[3; 16]).unwrap();
     let mut lock = acquire_lock(&mut paths, LockMode::Exclusive).unwrap();
-    let same_description = lock.0.try_clone().unwrap();
-    let probe = OpenOptions::new().read(true).write(true).open(&paths.lock).unwrap();
+    let same_description = FileLock::new(lock.0.try_clone().unwrap());
+    let probe = FileLock::new(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&paths.lock)
+            .unwrap(),
+    );
     lock.unlock().unwrap();
-    same_description.try_lock_exclusive().unwrap();
+    same_description.try_lock(FileLockMode::Exclusive).unwrap();
     drop(lock);
-    let exclusion = probe.try_lock_exclusive();
-    FileExt::unlock(&same_description).unwrap();
+    let exclusion = probe.try_lock(FileLockMode::Exclusive);
+    same_description.unlock().unwrap();
     assert!(
-        exclusion.as_ref().is_err_and(acyclic_native_runtime::is_exclusive_lock_contention),
+        exclusion
+            .as_ref()
+            .is_err_and(acyclic_native_runtime::is_exclusive_lock_contention),
         "ordinary released drop must not unlock a new holder: {exclusion:?}"
     );
-    probe.try_lock_exclusive().unwrap();
-    FileExt::unlock(&probe).unwrap();
+    probe.try_lock(FileLockMode::Exclusive).unwrap();
+    probe.unlock().unwrap();
 }

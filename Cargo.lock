@@ -183,7 +183,6 @@ dependencies = [
  "crc-fast",
  "dirs",
  "divan",
- "fs2",
  "fuser",
  "futures",
  "getrandom 0.3.4",
@@ -762,7 +761,6 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
- "fs2",
  "futures",
  "getrandom 0.4.3",
  "hex",
@@ -820,7 +818,6 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "bytes",
- "fs2",
  "futures",
  "hex",
  "libc",
@@ -880,7 +877,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bytes",
- "fs2",
  "futures",
  "getrandom 0.3.4",
  "h2",
@@ -2729,16 +2725,6 @@ dependencies = [
  "io-lifetimes 2.0.4",
  "rustix 1.1.5",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]

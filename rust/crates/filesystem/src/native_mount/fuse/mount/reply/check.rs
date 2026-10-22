@@ -1,14 +1,13 @@
 //! Shared socket round-trip and descriptor-custody oracle for properties and fuzzing.
-use rustix::{
-    fs::{FlockOperation, flock},
-    net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags},
-};
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
 use std::{
     fs::File,
-    io::{IoSlice, Read},
+    io::{IoSlice, Read, Seek, SeekFrom},
     mem::MaybeUninit,
     os::{fd::AsFd, unix::net::UnixStream},
 };
+
+const SENT_OFFSET: u64 = 7;
 
 pub fn check(input: &[u8]) {
     let count = usize::from(input.first().copied().unwrap_or(0) % 5);
@@ -18,9 +17,11 @@ pub fn check(input: &[u8]) {
     let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
     let expected = b"the received descriptor retains the complete original bytes";
     std::fs::write(&path, expected).unwrap();
-    let source = File::open(&path).unwrap();
+    let mut source = File::open(&path).unwrap();
     let probe = File::open(&path).unwrap();
-    flock(&source, FlockOperation::NonBlockingLockExclusive).unwrap();
+    // The file offset belongs to the open file description, so only a
+    // descriptor for the sent description observes this position.
+    source.seek(SeekFrom::Start(SENT_OFFSET)).unwrap();
     let files = (0..count)
         .map(|_| source.try_clone().unwrap())
         .collect::<Vec<_>>();
@@ -57,11 +58,9 @@ pub fn check(input: &[u8]) {
                 .unwrap()
                 .contains(rustix::io::FdFlags::CLOEXEC)
         );
-        assert_eq!(
-            flock(&probe, FlockOperation::NonBlockingLockExclusive),
-            Err(rustix::io::Errno::AGAIN)
-        );
         let mut file = File::from(fd);
+        assert_eq!(file.stream_position().unwrap(), SENT_OFFSET);
+        file.rewind().unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, expected);
@@ -70,7 +69,7 @@ pub fn check(input: &[u8]) {
     // ancillary messages. Census this process's own descriptor table for the
     // unique inode: that is immune to descriptor-number reuse by other tests,
     // and to their forked children, which hold copies of every descriptor
-    // until exec and would keep an open-file-description lock held.
+    // until exec.
     assert_eq!(descriptors_for(&probe), 1, "only the probe remains open");
 }
 

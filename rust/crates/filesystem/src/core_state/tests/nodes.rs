@@ -11,14 +11,17 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
         .record(MATERIALIZATION_FAMILY, &held_id.into_bytes())
         .unwrap();
     std::fs::create_dir_all(paths.directory()).unwrap();
-    let held = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&paths.lock)
-        .unwrap();
-    held.lock_exclusive().unwrap();
+    let held = FileLock::acquire(
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&paths.lock)
+            .unwrap(),
+        FileLockMode::Exclusive,
+    )
+    .unwrap();
 
     let (waiting, wait_started) = tokio::sync::oneshot::channel();
     let (resume, resumed) = std::sync::mpsc::sync_channel(1);
@@ -59,7 +62,7 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
         contender.await.unwrap(),
         Err(LocalCoreStateStoreError::LockTimeout(path)) if path == paths.lock
     ));
-    FileExt::unlock(&held).unwrap();
+    held.unlock().unwrap();
     assert!(
         MaterializationJournalStore::load(&unrelated, held_id)
             .await

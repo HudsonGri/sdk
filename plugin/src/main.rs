@@ -97,7 +97,6 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
 use control_protocol::{ControlEnvelope, ControlLedger, LedgerDecision};
 use control_status::{ControlStatus, incomplete_outcome};
-use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_native_runtime::{FileLock, FileLockMode};
 
 struct Fixture {
     packet: crate::native_mount::startup::NativeMountRetirement,
@@ -73,7 +74,7 @@ impl Fixture {
     }
 
     fn registry_is_unlocked(&self) -> Result<bool, std::io::Error> {
-        is_unlocked(&self.open_registry()?)
+        is_unlocked(self.open_registry()?)
     }
 
     fn open_registry(&self) -> Result<std::fs::File, std::io::Error> {
@@ -116,13 +117,12 @@ impl Fixture {
 }
 
 /// Whether `file`'s lock is free, leaving it free. A probe that takes the lock
-/// releases it explicitly: closing the probe releases it only once every copy
-/// of its open file description is closed, and a process another test spawns
-/// meanwhile holds a copy until it execs, so the next probe would find this
-/// probe's own lock still held.
-fn is_unlocked(file: &std::fs::File) -> Result<bool, std::io::Error> {
-    match fs2::FileExt::try_lock_exclusive(file) {
-        Ok(()) => fs2::FileExt::unlock(file).map(|()| true),
+/// releases it through [`FileLock`]'s explicit unlock: closing the probe would
+/// release it only once every copy of its open file description is closed, and
+/// a process another test spawns meanwhile holds a copy until it execs.
+fn is_unlocked(file: std::fs::File) -> Result<bool, std::io::Error> {
+    match FileLock::try_acquire(file, FileLockMode::Exclusive) {
+        Ok(probe) => probe.unlock().map(|()| true),
         Err(error) if lock_is_contended(&error) => Ok(false),
         Err(error) => Err(error),
     }
@@ -176,11 +176,13 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new(false)?;
     let global_path = registry::path()?;
-    let global = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&global_path)?;
-    fs2::FileExt::lock_exclusive(&global)?;
+    let global = FileLock::acquire(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&global_path)?,
+        FileLockMode::Exclusive,
+    )?;
     // Negative control: the former user-wide probe mistakes this unrelated
     // owner for a leaked retirement lock, even though the fixture is unlocked.
     let old_probe = std::fs::OpenOptions::new()
@@ -188,7 +190,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
         .write(true)
         .open(&global_path)?;
     assert!(lock_is_contended(
-        &fs2::FileExt::try_lock_exclusive(&old_probe).unwrap_err()
+        &FileLock::try_acquire(old_probe, FileLockMode::Exclusive).unwrap_err()
     ));
     assert!(fixture.registry_is_unlocked()?);
     let private = fixture
@@ -204,7 +206,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
     fence_io::unlock(private)?;
     assert!(fixture.registry_is_unlocked()?);
     // Released explicitly, like every probe: other tests use this registry.
-    fs2::FileExt::unlock(&global)?;
+    global.unlock()?;
     Ok(())
 }
 
@@ -217,41 +219,25 @@ impl Drop for Sharing {
     }
 }
 
-/// A probe leaves no lock behind in a process spawned while it was open. Such
-/// a process shares the probe's open file description until it execs, as any
-/// process spawned by a concurrent test does; the `sleep` child holds it for
-/// the whole test. Negative control: a probe released by closing it, as before,
-/// leaves the next probe finding the registry locked, which failed
+/// A probe leaves no lock behind in a process spawned while it held the lock.
+/// Such a process shares the probe's open file description until it execs, as
+/// any process spawned by a concurrent test does; the `sleep` child holds it
+/// for the whole test. A probe released by closing it, as before, left the next
+/// probe finding the registry locked, which failed
 /// `arbitrary_failed_removes_and_unlinks_keep_exact_original_work` under gate
-/// load.
+/// load; `FileLock`'s own tests keep that close-to-release negative control.
 #[test]
 fn a_registry_probe_leaves_no_lock_in_a_concurrently_spawned_process()
 -> Result<(), Box<dyn std::error::Error>> {
-    let spawn_sharing = |probe: &std::fs::File| -> std::io::Result<Sharing> {
+    let fixture = Fixture::new(false)?;
+    let probe = FileLock::try_acquire(fixture.open_registry()?, FileLockMode::Exclusive)?;
+    let _sharing = Sharing(
         std::process::Command::new("sleep")
             .arg("60")
             .stdin(probe.try_clone()?)
-            .spawn()
-            .map(Sharing)
-    };
-
-    // The control locks its own registry: a lock released only by close may
-    // linger in any process a concurrent test forks meanwhile, so it must not
-    // reach the registry the fixed probe checks below.
-    let control = Fixture::new(false)?;
-    let closed = control.open_registry()?;
-    let _control_sharing = spawn_sharing(&closed)?;
-    fs2::FileExt::try_lock_exclusive(&closed)?;
-    drop(closed);
-    assert!(
-        !control.registry_is_unlocked()?,
-        "control: a closed probe's lock outlives it"
+            .spawn()?,
     );
-
-    let fixture = Fixture::new(false)?;
-    let probe = fixture.open_registry()?;
-    let _sharing = spawn_sharing(&probe)?;
-    assert!(is_unlocked(&probe)?);
+    assert!(!fixture.registry_is_unlocked()?);
     drop(probe);
     assert!(fixture.registry_is_unlocked()?);
     Ok(())

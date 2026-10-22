@@ -24,7 +24,6 @@ acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", features 
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
 base64 = "0.23.1"
 blake3.workspace = true
-fs2.workspace = true
 hex.workspace = true
 libc = "0.2.177"
 notify.workspace = true

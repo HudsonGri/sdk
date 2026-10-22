@@ -179,22 +179,24 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     // Hold the actual destination flock, not a substitute synchronization model.
     // Recovery must reject it without detaching; releasing it permits recovery.
     let controls = acyclic_fs::native_mount_control_paths(&destination)?;
-    let fence = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&controls[0])?;
+    let fence = acyclic_native_runtime::FileLock::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&controls[0])?,
+    );
     // A process spawned while the fence is open shares its open file
     // description until it execs, as processes other tests spawn do; this one
-    // keeps it for the rest of the test. Negative control: releasing the fence
-    // only by closing it leaves the lock held, and recovery below fails with
-    // `DestinationBusy`.
+    // keeps it for the rest of the test. Releasing the fence only by closing
+    // it would leave the lock held and recovery below would fail with
+    // `DestinationBusy`; `FileLock` unlocks explicitly before closing.
     let _sharing = Sharing(
         Command::new("sleep")
             .arg("60")
             .stdin(fence.try_clone()?)
             .spawn()?,
     );
-    fence.try_lock()?;
+    fence.try_lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
     assert!(
         recover_after_crash(&root).is_err(),
         "recovery bypassed the fence"
@@ -205,7 +207,6 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .kind(),
         std::io::ErrorKind::NotConnected
     );
-    fence.unlock()?;
     drop(fence);
     require_recovered(&root, recover_after_crash)?;
     assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());

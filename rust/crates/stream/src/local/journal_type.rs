@@ -1,6 +1,7 @@
 struct Journal {
-    /// Held locked for as long as the provider is open.
-    lock: File,
+    /// Held locked for as long as the provider is open; unlocked explicitly
+    /// when dropped, even if a child inherited the descriptor.
+    _lock: FileLock,
     /// Shared with flushes that run without holding the journal, so the
     /// journal costs one descriptor.
     file: Arc<File>,
@@ -24,10 +25,4 @@ struct Journal {
     #[cfg(feature = "test-support")]
     flushed: u64,
     _ownership_anchor: Option<OwnershipAnchor>,
-}
-
-impl Drop for Journal {
-    fn drop(&mut self) {
-        let _ = self.lock.unlock();
-    }
 }
