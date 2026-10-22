@@ -654,9 +654,22 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
 
 #[tokio::test]
 async fn volume_search_rejects_a_durable_index_changed_while_the_source_was_closed() -> Result<()> {
+    restart_changed_native_index(false).await
+}
+
+#[tokio::test]
+async fn volume_search_rejects_offline_ignore_edits_without_a_directory_change() -> Result<()> {
+    restart_changed_native_index(true).await
+}
+
+async fn restart_changed_native_index(edit_policy: bool) -> Result<()> {
     let (_temp, root, _fs, store, main) = fixture_native(false).await?;
     std::fs::create_dir(root.join("nested"))?;
     std::fs::write(root.join("nested/removed-offline.txt"), b"unread")?;
+    if edit_policy {
+        std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+        std::fs::write(root.join("nested/.gitignore"), b"created-offline.txt\n")?;
+    }
     let ignore = git::search_ignore((&main).into()).await?;
     let mut walk = git::walk_names((&main).into(), None, ignore).await?;
     let stop = CancellationToken::new();
@@ -703,8 +716,15 @@ async fn volume_search_rejects_a_durable_index_changed_while_the_source_was_clos
     let workspace = main.workspace().clone();
     drop(main);
     // No producer or source subscription exists during this offline mutation.
-    std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
-    std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+    if edit_policy {
+        let before = std::fs::metadata(root.join("nested"))?.modified()?;
+        std::fs::write(root.join("nested/.gitignore"), b"removed-offline.txt\n")?;
+        // Negative control: directory-only restart tokens certify stale rules.
+        assert_eq!(std::fs::metadata(root.join("nested"))?.modified()?, before);
+    } else {
+        std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
+        std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+    }
     let config = VolumeConfig::native(Lifecycle::Durable);
     let source = NativeDemandSource::open(
         Cow::Borrowed(&root),

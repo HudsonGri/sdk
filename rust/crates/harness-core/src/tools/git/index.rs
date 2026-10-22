@@ -319,9 +319,9 @@ async fn restore_watches(view: &OwnedView, index: Option<&Index>) -> crate::Resu
             work: &work,
             cancellation: &cancellation,
         };
-        for (path, expected) in index.manifest.checkpoint.native_directories() {
+        for (path, expected) in index.manifest.checkpoint.source_versions() {
             let observed = lazy
-                .observe_indexed_native_directory(*snapshot, &format!("/{path}"), &mut accounting)
+                .observe_indexed_native_metadata(*snapshot, &format!("/{path}"), &mut accounting)
                 .await?;
             fresh &= observed == expected;
         }

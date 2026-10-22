@@ -146,9 +146,14 @@ async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() 
         .unwrap()
         .unwrap();
     let tokens: std::collections::BTreeMap<_, _> =
-        reopened.manifest.checkpoint.native_directories().collect();
-    assert_eq!(tokens.len(), 3);
-    assert!(tokens.values().all(Option::is_some));
+        reopened.manifest.checkpoint.source_versions().collect();
+    assert_eq!(tokens.len(), 9);
+    assert!(
+        tokens
+            .iter()
+            .filter(|(path, _)| !path.ends_with("ignore"))
+            .all(|(_, token)| token.is_some())
+    );
     assert_eq!(
         serde_json::to_vec(&original.manifest.checkpoint).unwrap(),
         serde_json::to_vec(&reopened.manifest.checkpoint).unwrap()
@@ -160,7 +165,7 @@ async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() 
         .unwrap();
     for (path, token) in &tokens {
         let current = lazy
-            .source_directory_version_at_snapshot(
+            .source_metadata_version_at_snapshot(
                 snapshot,
                 &format!("/{path}"),
                 &mut WorkBudget::UNBOUNDED.accounting(&stop),
@@ -173,7 +178,7 @@ async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() 
     std::fs::write(root.path().join("changed/created-offline"), b"unread").unwrap();
     for (path, token) in tokens {
         let current = lazy
-            .source_directory_version_at_snapshot(
+            .source_metadata_version_at_snapshot(
                 snapshot,
                 &format!("/{path}"),
                 &mut WorkBudget::UNBOUNDED.accounting(&stop),

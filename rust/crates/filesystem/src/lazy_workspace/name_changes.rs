@@ -327,16 +327,16 @@ impl NativeNameChanges {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, NativeDemandSource, S>
 {
-    /// Reinstalls native observation from an indexed directory name. This
+    /// Reinstalls native observation from an indexed metadata name. This
     /// deliberately bypasses authored directory bindings, which can coexist
     /// with unindexed native children. It performs no directory enumeration.
-    pub async fn observe_indexed_native_directory(
+    pub async fn observe_indexed_native_metadata(
         &self,
         snapshot: LazySnapshotRef,
         path: &str,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::demand::SourceVersion>, LazyWorkspaceError> {
-        self.source_directory_version_at_snapshot(snapshot, path, accounting)
+        self.source_metadata_version_at_snapshot(snapshot, path, accounting)
             .await
     }
 

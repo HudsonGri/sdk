@@ -79,9 +79,9 @@ pub struct NameCheckpoint {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NameCheckpoint {
-    /// Native directory metadata captured during enumeration. A missing
-    /// directory is also a token: its later creation invalidates this cut.
-    pub fn native_directories(
+    /// Native directories and ignore-policy metadata captured during discovery.
+    /// Absence is also a token: later creation invalidates this cut.
+    pub fn source_versions(
         &self,
     ) -> impl Iterator<Item = (&str, Option<crate::demand::SourceVersion>)> {
         self.directory_versions.iter()
@@ -772,7 +772,7 @@ impl<
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
                 if cursor.is_none() {
                     let version = lazy
-                        .source_directory_version_at_snapshot(*snapshot, &directory, &mut ctx)
+                        .source_metadata_version_at_snapshot(*snapshot, &directory, &mut ctx)
                         .await?;
                     self.directory_versions
                         .insert(directory.trim_matches('/').to_owned(), version);
@@ -928,6 +928,37 @@ impl<
     }
 
     async fn load_directory_ignore(&mut self, directory: &str) -> Result<(), SearchError> {
+        if let Cut::Lazy(lazy, snapshot) = &self.cut {
+            for name in [".gitignore", ".ignore"] {
+                let path = format!("{directory}/{name}")
+                    .trim_start_matches('/')
+                    .to_owned();
+                if self.directory_versions.contains_key(&path) {
+                    continue;
+                }
+                let stop = CancellationToken::new();
+                let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
+                let (entry, _, guard) = lazy
+                    .lookup_at_snapshot(*snapshot, &format!("/{path}"), &mut ctx)
+                    .await?;
+                // Use the pinned observation that supplies the policy bytes,
+                // rather than recording a newer version after reading them.
+                // Authored policy content is fenced by the SDK generation.
+                match &entry {
+                    Some(crate::LazyLookup::Source { node, .. }) => {
+                        self.directory_versions.insert(path, Some(node.version));
+                    }
+                    None => self.directory_versions.insert(path, None),
+                    Some(crate::LazyLookup::Authored { .. } | crate::LazyLookup::Shadow { .. }) => {
+                    }
+                }
+                if let Some(entry) = entry {
+                    lazy.retire_lookup((entry, guard), &mut ctx)?;
+                } else {
+                    crate::kernel::retire_allocation(guard, 0, &mut ctx)?;
+                }
+            }
+        }
         // Root rules were supplied by the owner. Only policy files are read;
         // listing and classifying candidate files never opens their contents.
         if directory.is_empty() || self.ignore_policies.contains_key(directory) {
