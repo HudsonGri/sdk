@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             write_page(&mut transaction, ordinal, &page, &stop).await?;
         }
         let manifest = NameIndexManifest {
-            schema: 4,
+            schema: 5,
             names_cut: if names_changed {
                 cut.clone()
             } else {
@@ -310,7 +310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             complete: checkpoint.pending_directories() == 0,
             checkpoint,
         };
-        let (_policy_records, _metadata_records) =
+        let (_policy_records, _metadata_records, _frontier_records) =
             super::checkpoint::write_manifest(&mut transaction, expected, &manifest, Some(self))
                 .await?;
         let outcome = transaction
@@ -339,6 +339,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                     checkpoint_policy_records: _policy_records,
                     #[cfg(test)]
                     checkpoint_metadata_records: _metadata_records,
+                    #[cfg(test)]
+                    checkpoint_frontier_records: _frontier_records,
                 }))
             }
             TransactionCommit::Conflict { .. } => Ok(NameIndexRefresh::Conflict),
@@ -396,7 +398,7 @@ mod byte_page_tests {
         .unwrap();
         while walk.next_page().await.unwrap().is_some() {}
         let manifest = NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

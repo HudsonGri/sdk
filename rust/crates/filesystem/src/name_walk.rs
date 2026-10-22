@@ -10,6 +10,12 @@ mod policies;
 use policies::Policies;
 mod versions;
 use versions::DirectoryVersions;
+#[cfg(not(target_arch = "wasm32"))]
+mod frontier;
+#[cfg(not(target_arch = "wasm32"))]
+use frontier::{Frontier, SavedFrontier};
+#[cfg(target_arch = "wasm32")]
+type Frontier = Vec<(String, Continuation)>;
 const PAGE_ENTRIES: u32 = 128;
 pub(crate) const NAME_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -70,7 +76,7 @@ pub enum NameCut {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct NameCheckpoint {
     cut: NameCut,
-    pending: Vec<(String, SavedCursor)>,
+    pending: SavedFrontier,
     single: Option<SearchName>,
     ignore_policies: Policies,
     directory_versions: DirectoryVersions,
@@ -142,12 +148,34 @@ impl NameCheckpoint {
             single: &self.single,
             unavailable_entries: self.unavailable_entries,
         })
-        .chain(
-            self.pending
-                .iter()
-                .map(|(path, cursor)| CheckpointRecordRef::Pending(path, cursor)),
-        )
         .map(|record| serde_json::to_vec(&record))
+    }
+
+    pub(crate) fn frontier_blocks(&self) -> usize {
+        self.pending.block_count()
+    }
+
+    pub(crate) fn frontier_records_since<'a>(
+        &'a self,
+        previous: Option<&'a Self>,
+    ) -> impl Iterator<
+        Item = (
+            usize,
+            Option<impl Iterator<Item = Result<Vec<u8>, serde_json::Error>> + 'a>,
+        ),
+    > + 'a {
+        self.pending
+            .changes(previous.map(|old| &old.pending))
+            .map(|(ordinal, block)| {
+                (
+                    ordinal,
+                    block.map(|block| {
+                        block.iter().map(|(path, cursor)| {
+                            serde_json::to_vec(&CheckpointRecordRef::Pending(path, cursor))
+                        })
+                    }),
+                )
+            })
     }
 
     pub(crate) fn policy_records_since<'a>(
@@ -171,6 +199,16 @@ impl NameCheckpoint {
                     .transpose()?,
             ))
         })
+    }
+
+    pub(crate) fn restore_frontier_record(&mut self, record: &[u8]) -> Result<(), SearchError> {
+        let CheckpointRecord::Pending(path, cursor) = serde_json::from_slice(record)? else {
+            return Err(SearchError::Invalid(
+                "expected directory continuation".into(),
+            ));
+        };
+        self.pending.push((path, cursor));
+        Ok(())
     }
 
     pub(crate) fn restore_record(&mut self, record: &[u8]) -> Result<(), SearchError> {
@@ -220,7 +258,7 @@ impl NameCheckpoint {
                 cut,
                 single,
                 unavailable_entries,
-                pending: Vec::new(),
+                pending: SavedFrontier::default(),
                 ignore_policies: Policies::default(),
                 directory_versions: DirectoryVersions::default(),
             }),
@@ -308,7 +346,7 @@ pub(crate) fn within_subtree(path: &str, root: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum SavedCursor {
     Lazy(Option<Vec<u8>>),
     Exact(Option<(u8, Vec<u8>)>),
@@ -346,7 +384,7 @@ enum Continuation {
 /// continuations, never file contents or the complete set of regular names.
 pub struct NameWalk<'a, A, O, D, S> {
     cut: Cut<'a, A, O, D, S>,
-    pending: Vec<(String, Continuation)>,
+    pending: Frontier,
     single: Option<SearchName>,
     ignore: GitIgnorePolicy,
     // Existing authored metadata is cheap and available before native listing.
@@ -379,25 +417,7 @@ impl<
     /// Captures the bounded frontier without retaining emitted candidates.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn checkpoint(&self) -> Result<NameCheckpoint, SearchError> {
-        let pending = self
-            .pending
-            .iter()
-            .map(|(path, cursor)| {
-                let cursor = match cursor {
-                    Continuation::Lazy(cursor) => SavedCursor::Lazy(
-                        cursor
-                            .as_ref()
-                            .map(LazyDirectoryCursor::checkpoint)
-                            .transpose()?,
-                    ),
-                    Continuation::Exact(name) => SavedCursor::Exact(
-                        name.as_ref()
-                            .map(|name| (name.encoding().tag(), name.as_bytes().to_vec())),
-                    ),
-                };
-                Ok((path.clone(), cursor))
-            })
-            .collect::<Result<_, SearchError>>()?;
+        let pending = self.pending.checkpoint()?;
         Ok(NameCheckpoint {
             cut: self.cut(),
             pending,
@@ -460,11 +480,12 @@ impl<
         };
         let pending: Vec<(String, Continuation)> = checkpoint
             .pending
-            .into_iter()
+            .iter()
             .map(|(path, cursor)| {
                 let cursor = match cursor {
                     SavedCursor::Lazy(cursor) => Continuation::Lazy(
                         cursor
+                            .as_ref()
                             .map(|bytes| {
                                 LazyDirectoryCursor::restore_checkpoint(
                                     &bytes,
@@ -475,18 +496,19 @@ impl<
                             .transpose()?,
                     ),
                     SavedCursor::Exact(name) => Continuation::Exact(
-                        name.map(|(encoding, bytes)| {
-                            crate::kernel::LogicalName::new(
-                                crate::kernel::NameEncoding::from_tag(encoding)?,
-                                bytes,
-                                workspace.limits().maximum_component_bytes,
-                            )
-                        })
-                        .transpose()
-                        .map_err(|error| SearchError::Invalid(error.to_string()))?,
+                        name.as_ref()
+                            .map(|(encoding, bytes)| {
+                                crate::kernel::LogicalName::new(
+                                    crate::kernel::NameEncoding::from_tag(*encoding)?,
+                                    bytes.clone(),
+                                    workspace.limits().maximum_component_bytes,
+                                )
+                            })
+                            .transpose()
+                            .map_err(|error| SearchError::Invalid(error.to_string()))?,
                     ),
                 };
-                Ok((path, cursor))
+                Ok((path.clone(), cursor))
             })
             .collect::<Result<_, SearchError>>()?;
         let authored = match &cut {
@@ -505,7 +527,7 @@ impl<
         };
         Ok(Self {
             cut,
-            pending,
+            pending: Frontier::restored(pending, checkpoint.pending),
             single: checkpoint.single,
             ignore,
             authored,
@@ -601,7 +623,7 @@ impl<
         };
         let mut walk = Self {
             cut,
-            pending: Vec::new(),
+            pending: Frontier::default(),
             single: None,
             ignore,
             authored,
@@ -693,6 +715,9 @@ impl<
             start -= 1;
         }
         if let Some(query) = &self.directory_query {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.pending.sort_by_query(start, query);
+            #[cfg(target_arch = "wasm32")]
             self.pending[start..].sort_by_cached_key(|(path, _)| directory_matches(path, query));
         }
     }

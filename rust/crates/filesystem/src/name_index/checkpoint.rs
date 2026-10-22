@@ -16,6 +16,7 @@ pub(super) struct StoredManifest {
     pending_directories: usize,
     complete: bool,
     checkpoint_chunks: u64,
+    frontier_blocks: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -60,6 +61,37 @@ impl StoredManifest {
         }
         let mut checkpoint =
             checkpoint.ok_or_else(|| SearchError::Invalid("empty pathname checkpoint".into()))?;
+        for ordinal in 0..self.frontier_blocks {
+            let path = frontier_path(ordinal);
+            let header = read_policy_header(generation, &path).await?;
+            for chunk in 0..header.chunks {
+                let bytes = generation
+                    .read(
+                        &policy_chunk(&path, chunk),
+                        CHUNK_BYTES as u64,
+                        WorkBudget::UNBOUNDED,
+                        &stop,
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value;
+                for part in bytes.split_inclusive(|byte| *byte == b'\n') {
+                    record.extend_from_slice(part);
+                    if record.len() as u64 > MAXIMUM_INDEX_FILE_BYTES {
+                        return Err(SearchError::Invalid(
+                            "oversized directory continuation".into(),
+                        ));
+                    }
+                    if record.last() == Some(&b'\n') {
+                        checkpoint.restore_frontier_record(&record)?;
+                        record.clear();
+                    }
+                }
+            }
+            if !record.is_empty() {
+                return Err(SearchError::Invalid("truncated frontier block".into()));
+            }
+        }
         let root = policy_root();
         let mut after = None;
         loop {
@@ -174,7 +206,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     expected: &Generation<A, O>,
     manifest: &NameIndexManifest,
     previous: Option<&NameIndex<A, O>>,
-) -> Result<(usize, usize), SearchError> {
+) -> Result<(usize, usize, usize), SearchError> {
     let mut buffer = Vec::with_capacity(CHUNK_BYTES);
     let mut chunks = 0;
     for record in manifest.checkpoint.records() {
@@ -224,6 +256,93 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     } else {
         None
     };
+    let frontier_root = format!("{ROOT}/frontier");
+    if previous.is_none() {
+        clear_directory(transaction, expected, &frontier_root).await?;
+    }
+    transaction
+        .write_batch(
+            &[&frontier_root],
+            &[],
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    let mut frontier_records = 0;
+    for (ordinal, records) in manifest
+        .checkpoint
+        .frontier_records_since(previous.map(|previous| &previous.manifest.checkpoint))
+    {
+        let path = frontier_path(ordinal);
+        let old_chunks = if previous.is_some() {
+            match read_policy_header(expected, &path).await {
+                Ok(header) => header.chunks,
+                Err(SearchError::Workspace(WorkspaceError::NotFound)) => 0,
+                Err(error) => return Err(error),
+            }
+        } else {
+            0
+        };
+        let mut chunks = 0;
+        if let Some(records) = records {
+            buffer.clear();
+            for record in records {
+                frontier_records += 1;
+                let mut record = record?;
+                record.push(b'\n');
+                if record.len() as u64 > MAXIMUM_INDEX_FILE_BYTES {
+                    return Err(SearchError::Invalid(
+                        "oversized directory continuation".into(),
+                    ));
+                }
+                let mut remaining = record.as_slice();
+                while !remaining.is_empty() {
+                    let count = remaining.len().min(CHUNK_BYTES - buffer.len());
+                    buffer.extend_from_slice(&remaining[..count]);
+                    remaining = &remaining[count..];
+                    if buffer.len() == CHUNK_BYTES {
+                        write_piece(transaction, expected, &policy_chunk(&path, chunks), &buffer)
+                            .await?;
+                        chunks += 1;
+                        buffer.clear();
+                    }
+                }
+            }
+            if !buffer.is_empty() {
+                write_piece(transaction, expected, &policy_chunk(&path, chunks), &buffer).await?;
+                chunks += 1;
+            }
+            transaction
+                .write(
+                    &format!("{path}.json"),
+                    serde_json::to_vec(&PolicyFile { chunks })?,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?;
+        } else {
+            transaction
+                .remove(
+                    &format!("{path}.json"),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?;
+        }
+        for chunk in chunks..old_chunks {
+            transaction
+                .remove(
+                    &policy_chunk(&path, chunk),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?;
+        }
+    }
     let root = policy_root();
     if previous.is_none() {
         clear_directory(transaction, expected, &root).await?;
@@ -346,7 +465,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     }
     let stored = StoredManifest {
-        schema: 4,
+        schema: 5,
         cut: manifest.cut.clone(),
         names_cut: manifest.names_cut.clone(),
         observed_generation: manifest.observed_generation,
@@ -354,6 +473,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         pending_directories: manifest.pending_directories,
         complete: manifest.complete,
         checkpoint_chunks: chunks,
+        frontier_blocks: manifest.checkpoint.frontier_blocks(),
     };
     transaction
         .write(
@@ -364,7 +484,11 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map_err(|failure| failure.error)?;
-    Ok((policy_records, metadata_records))
+    Ok((policy_records, metadata_records, frontier_records))
+}
+
+fn frontier_path(ordinal: usize) -> String {
+    format!("{ROOT}/frontier/{ordinal:016x}")
 }
 
 fn policy_root() -> String {
@@ -436,10 +560,18 @@ async fn write_chunk<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     ordinal: u64,
     bytes: &[u8],
 ) -> Result<(), SearchError> {
-    let path = chunk_path(ordinal);
+    write_piece(transaction, expected, &chunk_path(ordinal), bytes).await
+}
+
+async fn write_piece<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    transaction: &mut crate::Transaction<A, O>,
+    expected: &Generation<A, O>,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), SearchError> {
     let stop = CancellationToken::new();
     match expected
-        .read(&path, CHUNK_BYTES as u64, WorkBudget::UNBOUNDED, &stop)
+        .read(path, CHUNK_BYTES as u64, WorkBudget::UNBOUNDED, &stop)
         .await
     {
         Ok(receipt) if receipt.value.as_ref() == bytes => return Ok(()),
@@ -448,7 +580,7 @@ async fn write_chunk<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Err(failure) => return Err(failure.error.into()),
     }
     transaction
-        .write(&path, bytes.to_vec(), WorkBudget::UNBOUNDED, &stop)
+        .write(path, bytes.to_vec(), WorkBudget::UNBOUNDED, &stop)
         .await
         .map_err(|failure| failure.error)?;
     Ok(())
@@ -504,7 +636,7 @@ mod tests {
             checkpoint.restore_record(&metadata).unwrap();
         }
         let manifest = NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -714,7 +846,7 @@ mod tests {
             checkpoint.restore_record(&record).unwrap();
         }
         let manifest = NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -730,6 +862,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(published.checkpoint_frontier_records, 5000);
         let opened = NameIndex::open(&workspace).await.unwrap().unwrap();
         assert_eq!(opened.manifest.pending_directories, 5000);
         assert_eq!(
@@ -743,8 +876,11 @@ mod tests {
             .unwrap()
             .value;
         let stored: StoredManifest = serde_json::from_slice(&root).unwrap();
-        assert!(stored.checkpoint_chunks > 32);
+        assert_eq!(stored.checkpoint_chunks, 1);
+        assert!(stored.frontier_blocks > 32);
+        let mut checkpoint_paths = Vec::new();
         for ordinal in 0..stored.checkpoint_chunks {
+            checkpoint_paths.push(chunk_path(ordinal));
             let chunk = generation
                 .read(
                     &chunk_path(ordinal),
@@ -756,6 +892,21 @@ mod tests {
                 .unwrap()
                 .value;
             assert!(chunk.len() <= CHUNK_BYTES);
+        }
+        for ordinal in 0..stored.frontier_blocks {
+            let path = frontier_path(ordinal);
+            checkpoint_paths.push(format!("{path}.json"));
+            let header = read_policy_header(&generation, &path).await.unwrap();
+            for chunk in 0..header.chunks {
+                let path = policy_chunk(&path, chunk);
+                let bytes = generation
+                    .read(&path, CHUNK_BYTES as u64, WorkBudget::UNBOUNDED, &stop)
+                    .await
+                    .unwrap()
+                    .value;
+                assert!(bytes.len() <= CHUNK_BYTES);
+                checkpoint_paths.push(path);
+            }
         }
         let resumed = crate::NameWalk::<
             _,
@@ -781,12 +932,13 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(republished.checkpoint_policy_records, 0);
+        assert_eq!(republished.checkpoint_frontier_records, 0);
         // Inspect each checkpoint binding directly. A whole-generation diff
         // spends its join budget traversing unrelated bindings as well.
-        for ordinal in 0..stored.checkpoint_chunks {
+        for path in &checkpoint_paths {
             let mut ctx = crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &stop);
             let (path, _) = crate::kernel::NamespacePath::parse_in_profile(
-                &chunk_path(ordinal),
+                path,
                 workspace.profile(),
                 workspace.limits(),
                 &mut ctx,
@@ -808,5 +960,72 @@ mod tests {
             assert!(before[0].is_some());
             assert_eq!(before, after);
         }
+        let mut extended = republished.manifest.clone();
+        extended
+            .checkpoint
+            .discover_directory("new-directory", true);
+        extended.pending_directories += 1;
+        let updated = NameIndex::publish(
+            &workspace,
+            &republished.generation(),
+            extended,
+            None,
+            Some(&republished),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(updated.checkpoint_frontier_records <= 32);
+        assert!(updated.checkpoint_frontier_records > 0);
+        // Negative control: the old inline continuation stream visits 5001
+        // rows after this single append. The counter above sits at encoding.
+        assert_eq!(updated.manifest.checkpoint.pending_directories(), 5001);
+        assert_eq!(
+            serde_json::to_vec(&updated.manifest.checkpoint).unwrap(),
+            serde_json::to_vec(
+                &NameIndex::open(&workspace)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .manifest
+                    .checkpoint
+            )
+            .unwrap()
+        );
+        // A fresh traversal retires all continuation blocks in the live cut;
+        // the earlier generation keeps its pinned restart frontier.
+        let mut reset = updated.manifest.clone();
+        reset.checkpoint = walk.checkpoint().unwrap();
+        reset.pending_directories = 0;
+        reset.complete = true;
+        let reset = NameIndex::publish(&workspace, &updated.generation(), reset, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let frontier_files = reset
+            .generation()
+            .list_directory(
+                &format!("{ROOT}/frontier"),
+                None,
+                128,
+                WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .unwrap()
+            .value
+            .0;
+        assert!(frontier_files.entries.is_empty());
+        assert_eq!(reset.checkpoint_frontier_records, 0);
+        assert_eq!(
+            NameIndex::open(&workspace)
+                .await
+                .unwrap()
+                .unwrap()
+                .manifest
+                .pending_directories,
+            0
+        );
+        assert_eq!(opened.manifest.pending_directories, 5000);
     }
 }

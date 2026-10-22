@@ -210,7 +210,7 @@ where
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = crate::NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -810,7 +810,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 4,
+        schema: 5,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1199,7 +1199,7 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 4,
+        schema: 5,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1274,7 +1274,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1494,7 +1494,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     .unwrap();
     while walk.next_page().await.unwrap().is_some() {}
     let manifest = NameIndexManifest {
-        schema: 4,
+        schema: 5,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1605,7 +1605,7 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

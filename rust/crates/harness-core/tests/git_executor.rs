@@ -598,7 +598,7 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
         let page = walk.next_page().await?;
         pages += u64::from(page.is_some());
         let manifest = acyclic_fs::NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -695,7 +695,7 @@ async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
         let page = walk.next_page().await?;
         pages += u64::from(page.is_some());
         let manifest = acyclic_fs::NameIndexManifest {
-            schema: 4,
+            schema: 5,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

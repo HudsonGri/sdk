@@ -46,6 +46,8 @@ pub struct NameIndex<A, O> {
     checkpoint_policy_records: usize,
     #[cfg(test)]
     checkpoint_metadata_records: usize,
+    #[cfg(test)]
+    checkpoint_frontier_records: usize,
     /// Follow clients fold progress from this file and stream the numbered pages.
     pub manifest: NameIndexManifest,
 }
@@ -73,7 +75,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         let stored: checkpoint::StoredManifest = serde_json::from_slice(&bytes)?;
-        if stored.schema != 4 {
+        if stored.schema != 5 {
             return Err(SearchError::Invalid(
                 "unsupported pathname index schema".into(),
             ));
@@ -86,6 +88,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             checkpoint_policy_records: 0,
             #[cfg(test)]
             checkpoint_metadata_records: 0,
+            #[cfg(test)]
+            checkpoint_frontier_records: 0,
         }))
     }
 
@@ -151,7 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             )
             .await
             .map_err(|failure| failure.error)?;
-        let (_policy_records, _metadata_records) =
+        let (_policy_records, _metadata_records, _frontier_records) =
             checkpoint::write_manifest(&mut transaction, expected, &manifest, previous).await?;
         let outcome = transaction
             .commit(
@@ -178,6 +182,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 checkpoint_policy_records: _policy_records,
                 #[cfg(test)]
                 checkpoint_metadata_records: _metadata_records,
+                #[cfg(test)]
+                checkpoint_frontier_records: _frontier_records,
             })),
             TransactionCommit::Conflict { .. } => Ok(None),
             TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => Err(
