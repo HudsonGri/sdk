@@ -40,7 +40,12 @@ where
         tree: GitTreeRef,
     ) -> Result<GitFilesystemResult, Self::Error> {
         self.validate().await?;
-        let GitFilesystemAction::Join { tracked_paths, .. } = action else {
+        let GitFilesystemAction::Join {
+            target_tree,
+            tracked_paths,
+            ..
+        } = action
+        else {
             return Err(Error::Invalid("merge continuation requires a join".into()));
         };
         let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
@@ -59,13 +64,41 @@ where
             ));
         };
         let current = self.generation(tree).await?;
-        let Some(tracked_paths) =
+        let Some(resolved) =
             acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
         else {
             return Err(Self::error(
                 "Git merge still contains unresolved conflict markers",
             ));
         };
+        // A continued join tracks the paths the join itself published, as an
+        // unconflicted join does: never a reserved path, and never a file the
+        // resolution added or edited. The joined generation is the immutable
+        // one this operation published, so later source writes cannot change
+        // what the merge tracks. A transition that never published admits no
+        // new paths.
+        let before = self.generation(*target_tree).await?;
+        let joined = self
+            .current
+            .operation_generation(
+                IdempotencyKey::from_bytes(operation.into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| Error::from(failure.error))?;
+        let tracked_paths = acyclic_fs::git_tracked_paths_after(
+            &before,
+            joined.as_ref().unwrap_or(&before),
+            &current,
+            &self.repository,
+            &resolved,
+            u32::MAX,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(Error::from)?;
         self.validate().await?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(tree),
@@ -252,6 +285,7 @@ where
                     let diff = git_compatible_diff_counts(
                         &from,
                         &to,
+                        &self.repository,
                         tracked_paths,
                         100_000,
                         &CancellationToken::new(),
@@ -332,13 +366,14 @@ where
                 self.restore_paths(operation_id, *tree, paths).await
             }
             GitFilesystemAction::Join {
-                source_workspace,
+                target_tree,
+                source_workspace: source,
                 rebase,
-                tracked_paths,
-                ..
+                tracked_paths: tracked,
             } => {
-                self.join(operation_id, *source_workspace, *rebase, tracked_paths)
-                    .await
+                // The join is the deepest facade action; its state lives on
+                // the heap so it never sizes every other command's future.
+                Box::pin(self.join(operation_id, *target_tree, *source, *rebase, tracked)).await
             }
             GitFilesystemAction::ApplyCommit {
                 base,

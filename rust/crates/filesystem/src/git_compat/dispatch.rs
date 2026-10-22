@@ -227,6 +227,36 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 },
             )
         }
+        GitCommand::Discard { branch } => {
+            // Discarding retires only this repository's reference to the
+            // branch workspace; that workspace stays with its owner, so the
+            // discarded changes can no longer be diffed or merged from here.
+            if branch == state.current_branch {
+                return Err(GitCompatError::InvalidCommand(format!(
+                    "cannot discard the checked-out branch '{branch}'"
+                )));
+            }
+            let retired = state
+                .branches
+                .remove(&branch)
+                .ok_or(GitCompatError::UnknownObject(branch))?
+                .workspace_id;
+            // Commits (possibly already merged elsewhere) and stashes recorded
+            // in that workspace stay valid history, so its ownership is kept.
+            if state
+                .commits
+                .values()
+                .map(|commit| commit.workspace_tree)
+                .chain(state.stash.iter().copied())
+                .any(|tree| tree.workspace_id() == retired)
+            {
+                state.retired_workspaces.insert(retired);
+            }
+            GitCommandOutput::Branches {
+                current: state.current_branch.clone(),
+                branches: state.branches.values().cloned().collect(),
+            }
+        }
         GitCommand::Rebase { branch } => {
             let source = state
                 .branches

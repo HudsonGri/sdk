@@ -17,7 +17,155 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         let cut = self.snapshot(ctx).await?;
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
-        let (mut paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
+        let (paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
+        let start = crate::Generation {
+            workspace: self.workspace.clone(),
+            id: cut.authored_generation,
+            publication_closure: None,
+        };
+        self.exactify_into(root, cut, paths, start, permit, ctx)
+            .await
+    }
+
+    /// Materializes `paths` of an immutable cut of this view, with their
+    /// ancestor directories, into a plain fork of the cut's authored
+    /// generation, reading each path at the source version `witness` -- a
+    /// view forked from `cut` -- first observed it.
+    ///
+    /// Unlike [`Self::exactify_snapshot`], the cut need not still be this
+    /// view's current state: the fork carries no lazy binding, so it never
+    /// claims the cut as a live view. Each promoted entry binds the same
+    /// source-derived identity that materializing any view of the cut binds,
+    /// which is what a merge base of two such views needs.
+    ///
+    /// A cut leaves unobserved files live, so the source as it is now is not
+    /// the cut's content: an in-place edit after the fork would read as the
+    /// base and erase itself from a merge. Only the witness's observation
+    /// pins what the forked side started from. A path it never observed, or
+    /// whose source has since changed version, has no recoverable base, and
+    /// the result is `None`. Reads stay pinned to the observed version, so a
+    /// change racing this call fails it rather than supplying a base.
+    ///
+    /// The scratch fork is named by the pinned cut and path set, so a retry
+    /// resumes it and a different observation never reuses it.
+    pub async fn exactify_cut(
+        &self,
+        cut: LazySnapshotRef,
+        paths: &[String],
+        witness: &Self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<crate::Generation<A, O>>, LazyWorkspaceError> {
+        self.validate_snapshot(cut, ctx).await?;
+        let witnessed = witness.state(ctx).await?;
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+            return Ok(None);
+        }
+        let live = self.source.reference();
+        let mut overlay = cut.overlay;
+        for path in paths {
+            let Some(LazyOverlayChange::Observe { source, node }) =
+                witness.overlay_fact(witnessed.overlay, path, ctx).await?
+            else {
+                return Ok(None);
+            };
+            if node.kind != SourceNodeKind::RegularFile
+                || self
+                    .source_lookup(live, path, ctx)
+                    .await?
+                    .is_none_or(|current| {
+                        current.version != node.version
+                            || current.file_identity != node.file_identity
+                    })
+            {
+                return Ok(None);
+            }
+            overlay = self
+                .insert_overlay(
+                    overlay,
+                    path,
+                    LazyOverlayChange::Observe { source, node },
+                    ctx,
+                )
+                .await?;
+        }
+        let pinned = LazySnapshotRef::new(
+            cut.workspace_id,
+            cut.authored_generation,
+            cut.source,
+            overlay,
+            cut.shadows,
+        );
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-lazy-cut-base-v1\0");
+        hash.update(&pinned.id.into_bytes());
+        for path in paths {
+            hash.update(&(path.len() as u64).to_le_bytes());
+            hash.update(path.as_bytes());
+        }
+        let hash = hash.finalize();
+        let mut key = [0; 16];
+        key.copy_from_slice(&hash.as_bytes()[..16]);
+        let key = IdempotencyKey::from_bytes(key);
+        let destination = format!("lazy-base-{}", hex::encode(&hash.as_bytes()[..12]));
+        let mut selected = std::collections::BTreeSet::new();
+        for path in paths {
+            selected.insert(path.as_str());
+            let mut child = path.as_str();
+            while let Some((parent, _)) = child.rsplit_once('/') {
+                if parent.is_empty() || !selected.insert(parent) {
+                    break;
+                }
+                child = parent;
+            }
+        }
+        let mut owned = Owned::allocate(selected.len(), ctx)?;
+        for path in &selected {
+            let path = self.canonical_path(path, ctx)?;
+            crate::Transaction::<A, O>::push_mutation(&mut owned, path, ctx)?;
+        }
+        let generation = crate::Generation {
+            workspace: self.workspace.clone(),
+            id: cut.authored_generation,
+            publication_closure: None,
+        };
+        let fork = accounted!(ctx, |work, cancel| self
+            .workspace
+            .fork::<_, _, WorkspaceError>(
+                &destination,
+                ForkOptions::from_generation(generation, key),
+                crate::PublicationPermit::Unrestricted,
+                work,
+                cancel,
+                (),
+            ))?;
+        // A retry resumes from the fork's head: promoted paths read as
+        // authored and the remaining batches commit under their own keys.
+        let head = accounted!(ctx, |work, cancel| fork.head(work, cancel))?;
+        self.exactify_into(
+            "/",
+            pinned,
+            owned,
+            head,
+            crate::PublicationPermit::Unrestricted,
+            ctx,
+        )
+        .await
+        .map(Some)
+    }
+
+    /// Promotes `paths` of the cut, under `root`'s batch keys, on top of
+    /// `start`, a generation holding the cut's authored entries.
+    async fn exactify_into(
+        &self,
+        root: &str,
+        cut: LazySnapshotRef,
+        mut paths: Owned<Vec<String>>,
+        start: crate::Generation<A, O>,
+        permit: crate::PublicationPermit,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let workspace = &start.workspace;
         paths
             .value
             .sort_unstable_by(|a, b| exactify_path_order(a, b));
@@ -27,11 +175,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 / (limits.maximum_path_depth as usize + 4))
                 .min(limits.maximum_mutations_per_batch as usize / 4)
                 .max(1);
-            let mut generation = cut.authored_generation;
+            let mut generation = start.id;
             for (batch, chunk) in paths.value.chunks(maximum).enumerate() {
                 ctx.check()?;
-                let checkout = self
-                    .workspace
+                let checkout = workspace
                     .checkout_accounted(
                         crate::model::GenerationSelector::Exact(generation),
                         crate::model::CheckoutMode::tracking_transaction(),
@@ -40,7 +187,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     )
                     .await?;
                 let mut transaction = crate::Transaction::from_checkout(
-                    &self.workspace,
+                    workspace,
                     checkout,
                     exactify_batch_key(cut.id, root, batch as u64),
                     false,
@@ -84,8 +231,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     _ => return Err(LazyWorkspaceError::Concurrent),
                 };
             }
-            accounted!(ctx, |work, cancel| self
-                .workspace
+            accounted!(ctx, |work, cancel| workspace
                 .generation(generation, work, cancel))
         }
         .await;

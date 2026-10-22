@@ -10,9 +10,14 @@ pub struct GitDiffCounts {
 }
 
 /// Compares exact generations using the ignore policy belonging to each side.
+///
+/// `repository` is the repository-level policy, Git's `info/exclude`: it
+/// applies beneath every side's own `.gitignore` files, and the host paths it
+/// reserves are never counted.
 pub async fn git_compatible_diff_counts<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
+    repository: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
     maximum_changes: u32,
     cancellation: &CancellationToken,
@@ -31,8 +36,8 @@ where
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
-    let mut before_policies = BTreeMap::new();
-    let mut after_policies = BTreeMap::new();
+    let mut before = (BTreeMap::new(), None);
+    let mut after = (BTreeMap::new(), None);
     let mut files = BTreeSet::new();
     let mut bindings = 0_usize;
     for change in paths {
@@ -43,17 +48,19 @@ where
         if record.kind == FileKind::Directory {
             continue;
         }
-        let (generation, policies) = if change.after.is_some() {
-            (to, &mut after_policies)
+        let (generation, (policies, root)) = if change.after.is_some() {
+            (to, &mut after)
         } else {
-            (from, &mut before_policies)
+            (from, &mut before)
         };
-        load_git_ignore_policy(generation, policies, "").await?;
-        let root = policies.get("").cloned().unwrap_or_default();
+        let root = match root {
+            Some(root) => root,
+            None => root.insert(repository_root(generation, policies, repository).await?),
+        };
         if !git_path_eligible_with_root_at(
             generation,
             policies,
-            &root,
+            root,
             &path,
             false,
             already_tracked,
@@ -81,6 +88,106 @@ where
     })
 }
 
+/// Returns the Git-visible tracked paths after a workspace transition that
+/// publishes another tree's authored changes, such as a join.
+///
+/// `published` is the generation the transition itself wrote over `before`,
+/// and `current` is the tree being committed: the same generation for a clean
+/// join, or the resolved tree when a conflicted join is continued. Every
+/// non-directory path the transition added or changed becomes a candidate
+/// exactly when `current`'s ignore policy admits it, the same rule a capture
+/// applies to a newly authored file. Previously tracked paths are candidates
+/// too. A candidate is tracked while `current` holds it as a non-directory
+/// entry. Paths the target writes after the transition, such as an untracked
+/// file edited while resolving a conflict, never become tracked here.
+/// `repository` is the repository-level policy, as in
+/// [`git_compatible_diff_counts`]; a path it reserves is never tracked.
+pub async fn git_tracked_paths_after<A, O>(
+    before: &Generation<A, O>,
+    published: &Generation<A, O>,
+    current: &Generation<A, O>,
+    repository: &GitIgnorePolicy,
+    already_tracked: &BTreeSet<String>,
+    maximum_changes: u32,
+    cancellation: &CancellationToken,
+) -> Result<BTreeSet<String>, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let changes = before
+        .diff_to(
+            published,
+            maximum_changes,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)?
+        .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+        .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)?;
+    let mut published_paths = BTreeSet::new();
+    for change in changes {
+        if change
+            .after
+            .is_some_and(|record| record.kind != FileKind::Directory)
+        {
+            published_paths.insert(portable_changed_path(&change.path)?);
+        }
+    }
+    let mut policies = BTreeMap::new();
+    let root = repository_root(current, &mut policies, repository).await?;
+    let mut tracked = BTreeSet::new();
+    for path in already_tracked.union(&published_paths) {
+        cancellation.check().map_err(WorkspaceError::from)?;
+        if repository.reserves(path) {
+            continue;
+        }
+        match current
+            .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
+            .await
+        {
+            Ok(receipt) if receipt.value.kind != FileKind::Directory => {}
+            Ok(_) => continue,
+            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => continue,
+            Err(failure) => return Err(failure.error.into()),
+        }
+        if already_tracked.contains(path)
+            || git_path_eligible_with_root_at(
+                current,
+                &mut policies,
+                &root,
+                path,
+                false,
+                already_tracked,
+            )
+            .await?
+        {
+            tracked.insert(path.clone());
+        }
+    }
+    Ok(tracked)
+}
+
+/// One generation's root `.gitignore` layered over the repository policy.
+async fn repository_root<A, O>(
+    generation: &Generation<A, O>,
+    policies: &mut BTreeMap<String, GitIgnorePolicy>,
+    repository: &GitIgnorePolicy,
+) -> Result<GitIgnorePolicy, GitCaptureError>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    load_git_ignore_policy(generation, policies, "").await?;
+    Ok(policies
+        .get("")
+        .map_or_else(|| repository.clone(), |root| repository.followed_by(root)))
+}
+
 pub(super) async fn git_path_eligible_with_root_at<A, O>(
     generation: &Generation<A, O>,
     policies: &mut BTreeMap<String, GitIgnorePolicy>,
@@ -93,6 +200,9 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
+    if root.reserves(path) {
+        return Ok(false);
+    }
     if already_tracked.contains(path) {
         return Ok(true);
     }
