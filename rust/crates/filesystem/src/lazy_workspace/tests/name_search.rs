@@ -1,5 +1,54 @@
 use super::*;
 
+#[cfg(all(unix, feature = "native-watch"))]
+#[tokio::test]
+async fn name_search_native_symlink_cycles_are_leaves_and_cannot_escape_the_volume() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("nested")).unwrap();
+    std::fs::write(root.path().join("healthy.rs"), b"unread").unwrap();
+    std::fs::write(root.path().join("nested/child.rs"), b"unread").unwrap();
+    std::fs::write(outside.path().join("private.rs"), b"must not be mentioned").unwrap();
+    std::os::unix::fs::symlink("self", root.path().join("self")).unwrap();
+    std::os::unix::fs::symlink("..", root.path().join("nested/up")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
+    // Negative controls establish both a real cycle and a traversable escape.
+    assert!(std::fs::metadata(root.path().join("self")).is_err());
+    assert!(
+        std::fs::metadata(root.path().join("outside/private.rs"))
+            .unwrap()
+            .is_file()
+    );
+    let fs = Fs::memory();
+    let lazy = attach(
+        &fs,
+        native_source(root.path(), crate::FilesystemProfile::Portable).await,
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut pages = 0;
+    let mut names = std::collections::BTreeMap::new();
+    while let Some(page) = walk.next_page().await.unwrap() {
+        pages += 1;
+        assert!(pages < 12, "directory traversal followed a symlink cycle");
+        for name in page {
+            names.insert(name.path.clone(), name);
+        }
+    }
+    assert!(names["healthy.rs"].regular);
+    assert!(names["nested/child.rs"].regular);
+    for link in ["self", "nested/up", "outside"] {
+        assert!(!names[link].regular);
+        assert!(!names[link].directory);
+    }
+    assert_eq!(names.len(), 6);
+    assert_eq!(walk.unavailable_entries(), 0);
+}
+
 #[cfg(all(target_os = "linux", feature = "native-watch"))]
 #[tokio::test]
 async fn name_search_lazy_checkpoint_reopens_native_directory_after_restart() {
