@@ -27,6 +27,21 @@ impl Shared {
         self.latest.lock().await.clone()
     }
 
+    async fn retire_failed(&self, message: String) {
+        let mut registered = self.registration.lock().await;
+        *self
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
+        if registered
+            .upgrade()
+            .is_some_and(|current| std::ptr::eq(current.as_ref(), self))
+        {
+            *registered = Weak::new();
+        }
+        self.changed.send_modify(|revision| *revision += 1);
+    }
+
     async fn retire_if_unobserved(&self) -> bool {
         // Opening a reader holds this same lock until it subscribes. A
         // resolved closed() future is only a hint: a replacement query may
@@ -153,10 +168,9 @@ impl IndexedNames {
         let producer = Arc::clone(&shared);
         tokio::spawn(async move {
             if let Err(error) = maintain(&owned, &producer, native, restart_delta).await {
-                if let Ok(mut failure) = producer.failure.lock() {
-                    *failure = Some(error.to_string());
-                }
-                producer.changed.send_modify(|revision| *revision += 1);
+                // Existing followers retain a visibly failed snapshot. They
+                // must not keep later queries attached to a dead producer.
+                producer.retire_failed(error.to_string()).await;
             }
         });
         Ok(Self {
@@ -937,6 +951,45 @@ mod tests {
         let next = probe.wait();
         tokio::pin!(next);
         assert!(futures::poll!(&mut next).is_pending());
+    }
+
+    #[tokio::test]
+    async fn volume_search_failed_producer_does_not_poison_later_queries() {
+        let registration = Arc::new(AsyncMutex::new(Weak::new()));
+        let make = || {
+            let (changed, receiver) = watch::channel(0);
+            (
+                Arc::new(Shared {
+                    registration: Arc::clone(&registration),
+                    latest: AsyncMutex::new(None),
+                    changed,
+                    failure: Mutex::new(None),
+                    directory_query: Mutex::new(None),
+                    refresh: tokio::sync::Notify::new(),
+                }),
+                receiver,
+            )
+        };
+        let (failed, mut old_reader) = make();
+        *registration.lock().await = Arc::downgrade(&failed);
+        let retained_old_query = Arc::clone(&failed);
+        failed
+            .retire_failed("source temporarily unavailable".into())
+            .await;
+        old_reader.changed().await.unwrap();
+        assert!(failed.failure.lock().unwrap().is_some());
+        // Negative control: retaining the failed query keeps its Weak alive;
+        // waiting for the last client to drop would reuse this dead producer.
+        assert!(Arc::downgrade(&retained_old_query).upgrade().is_some());
+        assert!(registration.lock().await.upgrade().is_none());
+        let (replacement, _new_reader) = make();
+        *registration.lock().await = Arc::downgrade(&replacement);
+        failed.retire_failed("late old failure".into()).await;
+        assert!(Arc::ptr_eq(
+            &registration.lock().await.upgrade().unwrap(),
+            &replacement
+        ));
+        assert!(replacement.failure.lock().unwrap().is_none());
     }
 
     #[tokio::test]
