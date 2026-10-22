@@ -297,6 +297,7 @@ impl DemandSource for CountingSource {
             let next = (end < self.directory_entries).then_some(SourceCursor {
                 source,
                 token: end as u64,
+                resume: None,
             });
             SourceDirectoryPage::stateless(entries, next, SourceVersion([4; 32]), &mut ctx)
         })();

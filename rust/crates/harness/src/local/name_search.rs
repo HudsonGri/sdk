@@ -440,7 +440,7 @@ mod tests {
         assert!(workspace.selected_view().await?.0.is_none());
         assert_ne!(selected.workspace().id(), workspace.view.workspace().id());
         assert!(workspace.mounted.is_none());
-        assert!(workspace.state.lock().await.children.is_empty());
+        assert!(!workspace.state.lock().await.initialized);
         Ok(())
     }
 

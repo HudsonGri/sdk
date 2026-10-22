@@ -45,6 +45,114 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
     )?)
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn name_search_native_cookie_resumes_after_source_restart_without_replaying_entries()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    for ordinal in 0..47 {
+        std::fs::write(
+            root.path().join(format!("file-{ordinal:03}")),
+            b"never read",
+        )?;
+    }
+    let stop = CancellationToken::new();
+    let directory = path("/")?;
+    let mut provider = native_source(root.path()).await?;
+    let reference = provider.reference();
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut last_cursor = None;
+    loop {
+        if seen.len() == 3 {
+            // Cancellation can retain a larger retry page. A smaller retry
+            // must checkpoint the accepted slice, not the reader's lookahead.
+            let mut abandoned = provider
+                .list_page(
+                    reference,
+                    &directory,
+                    cursor.clone(),
+                    7,
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                )
+                .await?;
+            abandoned
+                .value
+                .publication
+                .as_mut()
+                .ok_or("publication missing")?
+                .abort(&mut crate::kernel::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                ))?;
+        }
+        let mut page = provider
+            .list_page(
+                reference,
+                &directory,
+                cursor,
+                3,
+                WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await?;
+        assert!(page.work.source_entries_visited <= 4);
+        assert_eq!(page.work.source_bytes_read, 0);
+        for entry in &page.value.entries {
+            assert!(
+                seen.insert(entry.name.as_bytes().to_vec()),
+                "replayed a prior entry"
+            );
+        }
+        page.value
+            .publication
+            .as_mut()
+            .ok_or("publication missing")?
+            .accept(&mut crate::kernel::KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &stop,
+            ))?;
+        cursor = page.value.next.take();
+        if cursor.is_none() {
+            break;
+        }
+        last_cursor = cursor.clone();
+        drop(page);
+        drop(provider);
+        provider = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(root.path()),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            Some(reference),
+            None,
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await?
+        .value;
+    }
+    assert_eq!(seen.len(), 47);
+
+    // Without a durable cookie the old in-memory handle cannot be resumed.
+    let mut missing = last_cursor.clone().ok_or("continuation missing")?;
+    missing.resume = None;
+    assert!(
+        matches!(provider.list_page(reference, &directory, Some(missing), 3,
+        WorkBudget::UNBOUNDED, &stop).await, Err(failure)
+        if matches!(failure.error, DemandError::StaleCursor))
+    );
+
+    // Directory mutation invalidates the cookie, including an offline write.
+    std::fs::write(root.path().join("offline-new"), b"new")?;
+    assert!(
+        matches!(provider.list_page(reference, &directory, last_cursor, 3,
+        WorkBudget::UNBOUNDED, &stop).await, Err(failure)
+        if matches!(failure.error, DemandError::StaleCursor))
+    );
+    Ok(())
+}
+
 async fn native_source(
     path: impl AsRef<std::path::Path>,
 ) -> Result<NativeDemandSource, DemandError> {

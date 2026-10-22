@@ -4,7 +4,7 @@ use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
     Encoder, ReadAllocationStep,
 };
-const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v1\0";
+const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v2\0";
 impl LazyDirectoryCursor {
     /// Freezes a continuation for a durable metadata-index checkpoint.
     pub(crate) fn checkpoint(&self) -> Result<Vec<u8>, LazyWorkspaceError> {
@@ -115,7 +115,9 @@ fn encode_fields(
         + 141
         + directory.len()
         + match &cursor.phase {
-            LazyDirectoryPhase::Source(Some(_)) => 32,
+            LazyDirectoryPhase::Source(Some(cursor)) => {
+                33 + usize::from(cursor.resume.is_some()) * 40
+            }
             LazyDirectoryPhase::Authored(Some(name)) => 5 + name.as_bytes().len(),
             _ => 0,
         };
@@ -165,6 +167,11 @@ fn encode_fields(
                 encoder.fixed(&cursor.source.identity);
                 encoder.u64(cursor.source.epoch);
                 encoder.u64(cursor.token);
+                encoder.u8(u8::from(cursor.resume.is_some()));
+                if let Some(resume) = &cursor.resume {
+                    encoder.fixed(&resume.version.0);
+                    encoder.u64(resume.position);
+                }
             }
             LazyDirectoryPhase::Authored(None) => encoder.u8(2),
             LazyDirectoryPhase::Authored(Some(name)) => {
@@ -185,7 +192,7 @@ fn decode_fields(
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
     let maximum = DOMAIN.len() as u64
-        + 175
+        + 216
         + u64::from(limits.maximum_path_bytes)
         + u64::from(limits.maximum_component_bytes);
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
@@ -218,6 +225,21 @@ fn decode_fields(
                 epoch: decoder.u64(observe)?,
             },
             token: decoder.u64(observe)?,
+            resume: match decoder.u8(observe)? {
+                0 => None,
+                1 => Some(crate::demand::SourceDirectoryResume {
+                    version: crate::demand::SourceVersion(
+                        decoder.fixed::<32, crate::FsError>(observe)?,
+                    ),
+                    position: decoder.u64(observe)?,
+                }),
+                _ => {
+                    return Err(CanonicalDecodeError::Invariant(CanonicalInvariant::Static(
+                        "invalid source resume tag",
+                    ))
+                    .into());
+                }
+            },
         })),
         2 => LazyDirectoryPhase::Authored(None),
         3 => {

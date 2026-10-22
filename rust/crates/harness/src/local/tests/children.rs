@@ -233,7 +233,7 @@ async fn child_pre_tool_hook(search_only: bool) -> Result<()> {
         let project_write = project.capability(VolumeOperation::Write, &mut None)?;
         let private_only = Arc::new(
             child_context.scoped(
-                Capabilities::new(
+                acyclic_harness::Capabilities::new(
                     child_context
                         .scope()
                         .grants()

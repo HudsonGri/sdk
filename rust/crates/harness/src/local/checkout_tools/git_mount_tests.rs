@@ -85,7 +85,16 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
             .await?,
     );
     let workspace = harness.workspace.as_ref().unwrap().clone();
-    let before = head(workspace.view().into()).await?;
+    let before = workspace
+        .view()
+        .workspace()
+        .head(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value;
     let startup_pending = (
         acyclic_fs::OperationId::from_bytes(OperationId::new().into_bytes()),
         acyclic_fs::GitGenerationRef {

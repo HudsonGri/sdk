@@ -13,6 +13,7 @@ mod model;
 pub use model::*;
 mod cursor;
 pub use cursor::SourceCursor;
+pub(crate) use cursor::SourceDirectoryResume;
 mod page;
 pub use page::*;
 mod contracts;
