@@ -6,6 +6,7 @@ use crate::sync::atomic::{AtomicBool, Ordering, Ordering::SeqCst, fence};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, PoisonError, Weak};
 
 /// The operations the cache needs from its platform.
@@ -44,7 +45,7 @@ type Victims<F> = [Option<(Arc<Entry<F>>, crate::sync::Arc<Handle<F>>)>; BATCH];
 /// Open descriptors of one process, at most `capacity` of them idle.
 pub(super) struct Cache<F: Files> {
     files: F,
-    capacity: AtomicUsize,
+    capacity: usize,
     ring: Mutex<Ring<F>>,
     /// The ring's length, written under its lock, so that a released lease
     /// can tell without the lock whether the cache is over capacity.
@@ -62,11 +63,18 @@ struct Ring<F: Files> {
 
 impl<F: Files> Cache<F> {
     pub(super) fn new(files: F, capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        // Sized for the capacity and the file being listed past it, so that
+        // the ring grows only while more files are in use than the capacity.
+        // Grown on demand instead, its growth would fall to whichever file
+        // first passed a size every file in the process had reached.
+        let mut entries = Vec::new();
+        let _ = entries.try_reserve_exact(capacity.saturating_add(1));
         Self {
             files,
-            capacity: AtomicUsize::new(capacity.max(1)),
+            capacity,
             ring: Mutex::new(Ring {
-                entries: Vec::new(),
+                entries,
                 hand: 0,
                 reserved: 0,
             }),
@@ -75,13 +83,7 @@ impl<F: Files> Cache<F> {
     }
 
     pub(super) fn capacity(&self) -> usize {
-        self.capacity.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Bounds the idle descriptors; the bound applies from the next reopen.
-    pub(super) fn set_capacity(&self, capacity: usize) {
         self.capacity
-            .store(capacity.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     fn ring(&self) -> crate::sync::MutexGuard<'_, Ring<F>> {
@@ -99,6 +101,12 @@ impl<F: Files> Cache<F> {
     }
 
     /// Files whose descriptor the cache holds.
+    /// The files the ring lists, wanted or not.
+    #[cfg(all(test, not(acyclic_native_runtime_loom)))]
+    pub(super) fn listed(&self) -> usize {
+        self.listed.load(SeqCst)
+    }
+
     pub(super) fn cached(&self) -> usize {
         self.ring()
             .entries
@@ -134,8 +142,18 @@ impl<F: Files> Cache<F> {
     fn list(&self, entry: &Arc<Entry<F>>) {
         let mut ring = self.ring();
         ring.reserved -= 1;
+        entry.slot.store(ring.entries.len(), Relaxed);
         ring.entries.push(Arc::downgrade(entry));
         self.note(&ring);
+    }
+
+    /// Unlists the file at `index`, moving the last file into its slot.
+    fn unlist(&self, ring: &mut Ring<F>, index: usize) {
+        ring.entries.swap_remove(index);
+        if let Some(moved) = ring.entries.get(index).and_then(Weak::upgrade) {
+            moved.slot.store(index, Relaxed);
+        }
+        self.note(ring);
     }
 
     /// Closes the idle descriptors of files that went unused longest until
@@ -161,8 +179,8 @@ impl<F: Files> Cache<F> {
         let mut ring = self.ring();
         // Pairs with the fence a released lease runs before it reads
         // `listed`: either that release is seen below, so its descriptor is
-        // idle here, or the release sees this ring over capacity and shrinks
-        // it again. A lock it fails to take is likewise released only after
+        // idle here, or the release sees this ring over capacity and closes
+        // its descriptor itself. A file lock held here is released after
         // this fence, so its holder's release sees the ring too.
         fence(SeqCst);
         let capacity = self.capacity();
@@ -178,8 +196,7 @@ impl<F: Files> Cache<F> {
             let hand = ring.hand;
             let Some(candidate) = ring.entries.get(hand).and_then(Weak::upgrade) else {
                 // A file that was dropped closed its own descriptor.
-                ring.entries.swap_remove(hand);
-                self.note(&ring);
+                self.unlist(&mut ring, hand);
                 continue;
             };
             // Never waits while holding the ring: a file whose lock is held
@@ -208,8 +225,7 @@ impl<F: Files> Cache<F> {
             };
             state.cached = false;
             drop(state);
-            ring.entries.swap_remove(hand);
-            self.note(&ring);
+            self.unlist(&mut ring, hand);
             if let Some(handle) = victim
                 && let Some(slot) = victims.get_mut(taken)
             {
@@ -236,24 +252,17 @@ impl<F: Files> std::ops::Deref for Lease<F> {
     }
 }
 
-/// Retries eviction as a lease is released. An eviction skips leased
-/// descriptors, so one that ran while this lease was held may have left the
-/// cache over capacity; once released, this lease's descriptor can close.
-struct Settle<F: Files>(Arc<Cache<F>>);
+/// Closes the released descriptor when the cache is over capacity. An
+/// eviction skips leased descriptors, so one that ran while this lease was
+/// held may have left the cache over capacity; once released, this lease's
+/// descriptor is the excess, and closing it takes no sweep of the cache.
+struct Settle<F: Files>(Arc<Entry<F>>);
 
 impl<F: Files> Drop for Settle<F> {
     fn drop(&mut self) {
         // Pairs with the fence in `Cache::evict`.
         fence(SeqCst);
-        if self.0.over() {
-            // A release has no meter to charge, so it closes only idle
-            // descriptors with nothing to flush; the next lease pays for the
-            // rest.
-            self.0.shrink(&mut |cost| match cost {
-                Cost::Flush => Err(io::Error::from(io::ErrorKind::WouldBlock)),
-                Cost::Reopen | Cost::Allocation(_) => Ok(()),
-            });
-        }
+        self.0.settle();
     }
 }
 
@@ -265,6 +274,9 @@ pub(super) struct Entry<F: Files> {
     /// Whether closing a written descriptor flushes it.
     durable: bool,
     state: Mutex<State<F>>,
+    /// The file's index in the cache's ring while listed, kept under the
+    /// ring's lock.
+    slot: AtomicUsize,
     /// A write that no flush could make durable before its descriptor
     /// closed. Kept apart from `state`, since a descriptor may close while
     /// `state` is held.
@@ -405,6 +417,7 @@ impl<F: Files> Entry<F> {
                 referenced: true,
                 cached: false,
             }),
+            slot: AtomicUsize::new(0),
             lost,
         });
         entry.install(file, charge)?;
@@ -480,17 +493,66 @@ impl<F: Files> Entry<F> {
             }
             (handle, listing)
         };
-        // Over capacity also after a listing that found every other file in
-        // use: the lease that left its file's descriptor open retries
-        // without charge as it is released, and this one pays to retry any
-        // written descriptors that retry left.
-        if listed || self.cache.over() {
+        if listed {
             self.cache.shrink(charge);
         }
         Ok(Lease {
             handle,
-            _settle: Settle(Arc::clone(&self.cache)),
+            _settle: Settle(Arc::clone(self)),
         })
+    }
+
+    /// Closes this file's descriptor, just released, if the cache is over
+    /// capacity and nothing else uses it. A release has no meter to charge,
+    /// so a descriptor with writes to flush stays for a lease that lists a
+    /// file, which pays to evict it.
+    fn settle(&self) {
+        if !self.cache.over() {
+            return;
+        }
+        // Takes the ring, then the file, as an eviction does. A file whose
+        // lock is held is in use by a lease that settles as it is released.
+        let mut ring = self.cache.ring();
+        let slot = self.slot.load(Relaxed);
+        if !ring
+            .entries
+            .get(slot)
+            .is_some_and(|listed| std::ptr::eq(listed.as_ptr(), self))
+        {
+            return;
+        }
+        let Ok(mut state) = self.state.try_lock() else {
+            return;
+        };
+        match &state.open {
+            Some(open) if crate::sync::Arc::strong_count(open) == 1 && !open.dirty() => {}
+            _ => return,
+        }
+        state.cached = false;
+        let handle = state.open.take();
+        drop(state);
+        self.cache.unlist(&mut ring, slot);
+        drop(ring);
+        drop(handle);
+    }
+
+    /// Unlists this file as its owner drops it, so that the ring holds only
+    /// files that are still wanted. Not in `Drop`: an eviction can drop the
+    /// last reference to a file while it holds the ring.
+    pub(super) fn forget(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !std::mem::take(&mut state.cached) {
+            return;
+        }
+        let mut ring = self.cache.ring();
+        let slot = self.slot.load(Relaxed);
+        if ring
+            .entries
+            .get(slot)
+            .is_some_and(|listed| std::ptr::eq(listed.as_ptr(), self))
+        {
+            self.cache.unlist(&mut ring, slot);
+        }
     }
 
     /// Closes `handle`, an idle descriptor of this file that an eviction

@@ -58,9 +58,22 @@ impl Files for Native {
     }
 }
 
-/// The idle descriptors one process keeps by default: a quarter of its
+/// The environment variable that bounds the idle descriptors a process
+/// keeps, read once as the process first caches a file.
+pub const CACHED_DESCRIPTORS_VARIABLE: &str = "ACYCLIC_CACHED_DESCRIPTORS";
+
+/// The idle descriptors this process keeps: [`CACHED_DESCRIPTORS_VARIABLE`]
+/// when it is a positive integer, or otherwise a quarter of the process's
 /// descriptor limit, leaving the rest to sockets, pipes, directories and
-/// files in use.
+/// files in use. It is fixed for the process's life, so that no part of it
+/// changes another's cost.
+fn configured_capacity() -> usize {
+    std::env::var_os(CACHED_DESCRIPTORS_VARIABLE)
+        .and_then(|value| value.to_str()?.parse::<usize>().ok())
+        .filter(|capacity| *capacity > 0)
+        .unwrap_or_else(default_capacity)
+}
+
 fn default_capacity() -> usize {
     const FLOOR: usize = 16;
     const CEILING: usize = 1 << 16;
@@ -92,7 +105,7 @@ fn descriptor_limit() -> u64 {
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 fn cache() -> &'static Arc<Cache<Native>> {
     static CACHE: OnceLock<Arc<Cache<Native>>> = OnceLock::new();
-    CACHE.get_or_init(|| Arc::new(Cache::new(Native, default_capacity())))
+    CACHE.get_or_init(|| Arc::new(Cache::new(Native, configured_capacity())))
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
@@ -101,19 +114,13 @@ fn cache() -> &'static Arc<Cache<Native>> {
     CACHE.get_or_init(|| Arc::new(Cache::new(Native, usize::MAX)))
 }
 
-/// Bounds the descriptors this process keeps open for idle [`CachedFile`]s.
-/// The default is a quarter of the process's descriptor limit. Files in use
-/// keep theirs regardless.
-pub fn limit_cached_descriptors(capacity: usize) {
-    cache().set_capacity(capacity);
-}
-
 /// How many [`CachedFile`]s hold a descriptor now.
 pub fn cached_descriptors() -> usize {
     cache().cached()
 }
 
-/// The capacity [`limit_cached_descriptors`] last set, or the default.
+/// The idle descriptors this process keeps; files in use keep theirs
+/// regardless. See [`CACHED_DESCRIPTORS_VARIABLE`].
 pub fn cached_descriptor_capacity() -> usize {
     cache().capacity()
 }
@@ -121,6 +128,12 @@ pub fn cached_descriptor_capacity() -> usize {
 /// An open file that holds a descriptor only while recently used.
 pub struct CachedFile {
     entry: Arc<Entry<Native>>,
+}
+
+impl Drop for CachedFile {
+    fn drop(&mut self) {
+        self.entry.forget();
+    }
 }
 
 impl std::fmt::Debug for CachedFile {

@@ -652,7 +652,7 @@ fn per_agent_cost_is_bounded() -> Result<()> {
         .env("ACYCLIC_SCALE_CHILDREN", "0")
         .env("ACYCLIC_SCALE_IDLE_MS", "300")
         .env("ACYCLIC_SCALE_BOUNDS", "1")
-        .env("ACYCLIC_SCALE_DESCRIPTORS", "16")
+        .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "16")
         .env_remove("ACYCLIC_SCALE_DIAG")
         .output()
         .map_err(storage)?;
@@ -682,11 +682,9 @@ fn ramp() -> Result<()> {
     let agents = crate::native_environment::variable("ACYCLIC_SCALE_AGENTS")
         .and_then(|agents| agents.into_string().ok())
         .unwrap_or_else(|| "100,1000".into());
-    // Idle stores' journals and logs hold descriptors only within this
-    // process-wide bound, so it bounds their total at any agent count.
-    if let Some(capacity) = setting("ACYCLIC_SCALE_DESCRIPTORS") {
-        acyclic_native_runtime::limit_cached_descriptors(capacity);
-    }
+    // Idle stores' journals and logs hold descriptors only within the
+    // process-wide bound `ACYCLIC_CACHED_DESCRIPTORS` sets, so it bounds
+    // their total at any agent count.
     for count in agents.split(',') {
         let children = setting("ACYCLIC_SCALE_CHILDREN").unwrap_or(0);
         let report = measure(count.trim().parse().map_err(storage)?, children)?;

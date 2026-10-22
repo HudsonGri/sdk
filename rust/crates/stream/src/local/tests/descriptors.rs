@@ -43,16 +43,28 @@ fn append(path: &str, tail: u64) -> Result<AppendRequest, Box<dyn std::error::Er
 #[tokio::test]
 async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
 -> Result<(), Box<dyn std::error::Error>> {
+    // The bound is the process's, so the test runs in its own process,
+    // where its evictions cannot change other tests' work.
+    if acyclic_native_runtime::cached_descriptor_capacity() != 1 {
+        let module = module_path!();
+        let test = format!(
+            "{}::an_idle_journal_closes_its_descriptor_and_appends_after_reopening",
+            module.split_once("::").map_or(module, |(_, path)| path)
+        );
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([test.as_str(), "--exact", "--nocapture"])
+            .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "1")
+            .status()?;
+        assert!(status.success(), "child test failed: {status}");
+        return Ok(());
+    }
     let first = tempfile::tempdir()?;
     let second = tempfile::tempdir()?;
     let journal = first.path().canonicalize()?.join(JOURNAL_FILE);
     let idle = LocalStream::open(first.path(), LocalStreamLimits::default()).await?;
     idle.append(append("agents", 0)?).await?;
     // The process keeps one idle descriptor, so opening another stream
-    // closes the idle journal's. Other tests in this process share the
-    // bound for its duration and only reopen more often.
-    let capacity = acyclic_native_runtime::cached_descriptor_capacity();
-    acyclic_native_runtime::limit_cached_descriptors(1);
+    // closes the idle journal's.
     let busy = LocalStream::open(second.path(), LocalStreamLimits::default()).await;
     // A flush that finished may still hold the descriptor for a moment.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -62,7 +74,6 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
         closed = descriptors_naming(&journal);
     }
     let appended = idle.append(append("agents", 1)?).await;
-    acyclic_native_runtime::limit_cached_descriptors(capacity);
     busy?.append(append("agents", 0)?).await?;
     assert_eq!(closed?, 0, "an idle journal kept its descriptor");
     // The append after reopening lands after the first, not over the header.

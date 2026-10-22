@@ -102,7 +102,7 @@ fn a_file_replaced_or_removed_while_closed_is_refused() -> io::Result<()> {
 
 /// An eviction skips files in use, so leases held together leave the cache
 /// over capacity; their release brings it back. A written descriptor waits
-/// for the next lease, which pays for its flush.
+/// for the next lease that lists a file, which pays for its flush.
 #[test]
 fn released_leases_return_the_cache_to_capacity() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
@@ -123,10 +123,12 @@ fn released_leases_return_the_cache_to_capacity() -> io::Result<()> {
     drop(held);
     drop(other);
     assert_eq!(cache.cached(), 2, "a release flushes nothing");
-    let (lease, costs) = charged(|charge| second.lease(charge))?;
-    assert_eq!(costs, [Cost::Flush]);
-    drop(lease);
-    assert_eq!(cache.cached(), 1, "the next lease paid");
+    let path = directory.path().join("third");
+    let (third, costs) =
+        charged(|charge| Entry::new(&cache, create(&path)?, &path, true, true, charge))?;
+    assert!(costs.contains(&Cost::Flush), "{costs:?}");
+    assert_eq!(cache.cached(), 1, "the listing paid");
+    drop(third);
     Ok(())
 }
 
@@ -164,8 +166,9 @@ fn a_lease_charges_the_cache_work_it_causes() -> io::Result<()> {
     let path = directory.path().join("log");
     let (file, costs) =
         charged(|charge| Entry::new(&cache, create(&path)?, &path, true, true, charge))?;
-    // The entry, its failure slot, its descriptor, its path and the ring.
-    assert_eq!(costs.len(), 5, "{costs:?}");
+    // The entry, its failure slot, its descriptor and its path: a ring
+    // within its capacity never grows.
+    assert_eq!(costs.len(), 4, "{costs:?}");
     assert!(costs.iter().all(|cost| matches!(cost, Cost::Allocation(_))));
     // An open file: nothing to charge.
     let (lease, costs) = charged(|charge| file.lease(charge))?;
@@ -193,6 +196,31 @@ fn a_lease_charges_the_cache_work_it_causes() -> io::Result<()> {
     let lease = file.lease(&mut refused)?;
     assert_eq!(cache.cached(), 2);
     drop(lease);
+    Ok(())
+}
+
+/// A file its owner drops leaves the ring at once, rather than when an
+/// eviction next passes it, so that the ring holds only wanted files.
+#[test]
+fn a_forgotten_file_leaves_the_ring() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = private_cache(4);
+    let first = cached(&cache, &directory.path().join("first"))?;
+    let second = cached(&cache, &directory.path().join("second"))?;
+    let third = cached(&cache, &directory.path().join("third"))?;
+    assert_eq!(cache.listed(), 3);
+    // The first file's slot goes to the last, which must still find it.
+    first.forget();
+    drop(first);
+    assert_eq!(cache.listed(), 2);
+    third.forget();
+    second.forget();
+    assert_eq!(cache.listed(), 0);
+    // A file listed again after it was forgotten leaves again.
+    drop(second.lease(&mut |_| Ok(()))?);
+    assert_eq!(cache.listed(), 1);
+    second.forget();
+    assert_eq!(cache.listed(), 0);
     Ok(())
 }
 
