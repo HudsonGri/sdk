@@ -498,8 +498,9 @@ impl LocalMount {
     /// failure leaves every route mounted and publishing again.
     pub(crate) async fn unmount(&self) -> Result<(), String> {
         self.sync().await?;
-        // Each route's own unmount is exactly this publication followed by
-        // its detach; publishing once per route is enough.
+        for mount in self.routes.values() {
+            mount.prepare_unmount_cleanup().map_err(display)?;
+        }
         self.abandon()
     }
 
@@ -511,5 +512,126 @@ impl LocalMount {
                 .map_err(display)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod unmount_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multi_root_unmount_publishes_each_route_once_before_detaching() {
+        acyclic_native_runtime::initialize_native_io_services().unwrap();
+        acyclic_fs::initialize_native_mount_services().unwrap();
+        let mut controls = Vec::new();
+        let mut fixtures = Vec::new();
+        let mut sources = Vec::new();
+        for name in ["left", "right"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("source");
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("source.txt"), name.as_bytes()).unwrap();
+            let mut control = ControlPlane::open(directory.path().join("state"))
+                .await
+                .unwrap();
+            control
+                .session_start(json!({"session_id":name,"cwd":root}))
+                .await
+                .unwrap();
+            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            controls.push(control);
+            fixtures.push(directory);
+        }
+        let destination = tempfile::tempdir().unwrap();
+        let mounted = LocalMount::mount(sources, destination.path())
+            .await
+            .unwrap();
+        // Admit cleanup before narrowing the second route's remaining original
+        // allocation allowance. Exactly one further publication fits, while the old
+        // extra publication fails only after detaching the first route.
+        for mount in mounted.routes.values() {
+            mount.sync().await.unwrap();
+            mount.prepare_unmount_cleanup().unwrap();
+            mount.sync().await.unwrap();
+        }
+        let second = mounted.routes.get("right").unwrap();
+        let work = second.native_work().unwrap();
+        let before = work.receipt().allocation_operations;
+        second.sync().await.unwrap();
+        let publication_allocations = work.receipt().allocation_operations - before;
+        assert!(
+            publication_allocations > 0,
+            "real publication must allocate its native controls"
+        );
+        let remaining = work.remaining().unwrap().allocation_operations;
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: remaining - publication_allocations,
+            ..Default::default()
+        })
+        .unwrap();
+        mounted
+            .unmount()
+            .await
+            .expect("one publication per route must fit");
+        assert_eq!(work.remaining().unwrap().allocation_operations, 0);
+        drop(mounted);
+        for control in controls {
+            control.shutdown().await.unwrap();
+        }
+        drop(fixtures);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multi_root_unmount_cleanup_failure_keeps_every_route_retryable() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        acyclic_native_runtime::initialize_native_io_services().unwrap();
+        acyclic_fs::initialize_native_mount_services().unwrap();
+        let fixtures = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let mut controls = Vec::new();
+        let mut sources = Vec::new();
+        for (name, directory) in ["left", "right"].into_iter().zip(&fixtures) {
+            let root = directory.path().join("source");
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("source.txt"), name).unwrap();
+            let mut control = ControlPlane::open(directory.path().join("state"))
+                .await
+                .unwrap();
+            control
+                .session_start(json!({"session_id":name,"cwd":root}))
+                .await
+                .unwrap();
+            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            controls.push(control);
+        }
+        let destination = tempfile::tempdir().unwrap();
+        let mounted = LocalMount::mount(sources, destination.path())
+            .await
+            .unwrap();
+        let left = destination.path().join("left/source.txt");
+        let right = destination.path().join("right/source.txt");
+        assert_eq!(fs::read(&left).unwrap(), b"left");
+        // Allow ordinary publication reads/writes but deny DELETE access on the
+        // second route, so preparing its held cleanup handles really fails.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&right)
+            .unwrap();
+        assert!(mounted.unmount().await.is_err(), "second cleanup must fail");
+        assert_eq!(
+            fs::read(&left).unwrap(),
+            b"left",
+            "first route detached early"
+        );
+        assert_eq!(fs::read(&right).unwrap(), b"right");
+        drop(held);
+        mounted
+            .unmount()
+            .await
+            .expect("all routes remain retryable");
+        drop(mounted);
+        for control in controls {
+            control.shutdown().await.unwrap();
+        }
     }
 }

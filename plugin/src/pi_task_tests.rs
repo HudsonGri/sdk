@@ -499,6 +499,17 @@ fn root_selection_rejects_unselected_paths_and_invalid_identity() {
 
 #[tokio::test]
 async fn native_reply_survives_concurrent_settlement_and_reopen() {
+    native_reply_replay_case(128 * 1024, 0).await;
+}
+
+#[tokio::test]
+async fn native_repeated_replay_releases_page_custody() {
+    // Keep repeated ownership checks inside the original cumulative hashing
+    // allowance. The separate large-reply case retains its original payload.
+    native_reply_replay_case(16 * 1024, 8).await;
+}
+
+async fn native_reply_replay_case(payload_bytes: usize, additional_replays: usize) {
     use acyclic_harness::{IdempotencyKey, workflow::WorkflowJournal};
     let fixture = crate::pi_root_provider::tests::Fixture::new(PiRootIntent::ScratchOnly {}).await;
     let runtime = &fixture.runtime.runtime;
@@ -585,7 +596,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .await
         .unwrap();
     let prior = first.checkpoint().clone();
-    let input = json!({"commands":[{"operation_id":operation,"value":"q".repeat(128 * 1024)}]});
+    let input = json!({"commands":[{"operation_id":operation,"value":"q".repeat(payload_bytes)}]});
     let left = guard(&input, &work);
     let right = guard(&input, &work);
     let left_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(left.1);
@@ -616,7 +627,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     );
     let accepted = accepted.unwrap();
     let reply = control_reply(accepted.0.state, &work).unwrap();
-    assert_eq!(reply.0.unwrap().value, json!("q".repeat(128 * 1024)));
+    assert_eq!(reply.0.unwrap().value, json!("q".repeat(payload_bytes)));
     drop(reply.1);
     assert_eq!(stale.checkpoint(), &prior);
     let next = guard(&input, &work);
@@ -653,8 +664,64 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .await
         .unwrap();
     assert_eq!(retried.0.state, checkpoint.state);
+    assert!(
+        retried
+            .1
+            .as_ref()
+            .expect("native retry retains custody")
+            .bytes()
+            < 2 * payload_bytes as u64,
+        "retry retained the discarded input body and page: {}",
+        retried
+            .1
+            .as_ref()
+            .expect("native retry retains custody")
+            .bytes()
+    );
+    assert!(
+        retried
+            .1
+            .as_ref()
+            .expect("native retry retains custody")
+            .bytes()
+            >= payload_bytes as u64,
+        "retry released the live transition body"
+    );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     drop(retried);
+    // Replaying repeatedly on this same finite ledger must charge only each
+    // live transition, and release that charge when the returned owner drops.
+    let baseline = work.live_allocation_bytes();
+    for _ in 0..additional_replays {
+        let retry = guard(&input, &work);
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1);
+        let replayed = recovered
+            .step(
+                OperationId::from_bytes([operation; 16]),
+                IdempotencyKey::new(key).unwrap(),
+                retry.0,
+                Some(&io),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replayed.0.state, checkpoint.state);
+        let live = replayed
+            .1
+            .as_ref()
+            .expect("live transition custody")
+            .bytes();
+        assert!(
+            (payload_bytes as u64..2 * payload_bytes as u64).contains(&live),
+            "discarded replay bytes retained: {live}"
+        );
+        drop(replayed);
+        drop(io);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "replay leaked page custody"
+        );
+    }
     let journal = runtime
         .workflow_journal_with_native_work(task, &fence, &work)
         .await
@@ -693,6 +760,16 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     let query = crate::pi_fork::tests::work();
+    assert!(
+        runtime
+            .open_task_with_native_work(task, &fence, context, &query)
+            .await
+            .is_err()
+    );
+    let context = runtime
+        .task_context_with_native_work(task, &fence, &query)
+        .await
+        .unwrap();
     let mut current = runtime
         .open_task_with_native_work(task, &fence, context, &query)
         .await
@@ -752,4 +829,65 @@ fn malformed_task_inputs_and_cancelled_work_are_denied() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn native_reply_validation_borrows_body_and_rejects_tampering() {
+    let allocation = preparation().payload;
+    let operation = OperationId::from_bytes([178; 16]);
+    let body = json!("q".repeat(128 * 1024));
+    let state = json!({"state":"controlling", "allocation":allocation, "operation":operation});
+    let input = json!({"commands":[{"operation_id":operation, "value":body}]});
+    let machine_work = work();
+    let machine = PiTaskMachine::new(&machine_work).unwrap();
+    let (expected, _custody) = machine
+        .transition_with_native_work(&state, input.clone(), &machine_work)
+        .unwrap();
+    for (prior, input) in [(&state, &input), (&expected.state, &Value::Null)] {
+        let verification = work();
+        machine
+            .validate_transition_with_native_work(prior, input, &expected, &verification)
+            .unwrap();
+        assert!(
+            verification.receipt().bytes_copied < 128 * 1024,
+            "borrowed reply validation copied its body: {:?}",
+            verification.receipt()
+        );
+        for mutation in 0..5 {
+            let mut forged = expected.clone();
+            match mutation {
+                0 => {
+                    *forged
+                        .state
+                        .get_mut("reply")
+                        .unwrap()
+                        .get_mut("value")
+                        .unwrap() = json!("r".repeat(128 * 1024));
+                }
+                1 => {
+                    *forged
+                        .state
+                        .get_mut("reply")
+                        .unwrap()
+                        .get_mut("operation_id")
+                        .unwrap() = json!(OperationId::from_bytes([179; 16]));
+                }
+                2 => {
+                    forged
+                        .state
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("extra".into(), Value::Null);
+                }
+                3 => forged.status = MachineStatus::Completed { value: Value::Null },
+                _ => forged.commands.push(preparation()),
+            }
+            assert!(
+                machine
+                    .validate_transition_with_native_work(prior, input, &forged, &work())
+                    .is_err(),
+                "accepted forged native transition {mutation}"
+            );
+        }
+    }
 }

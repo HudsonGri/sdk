@@ -586,6 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_json_gateway_failures_retain_approval_until_success() {
+        let _clock = crate::identity::tests::poll_clock::Clock::start();
         use axum::response::IntoResponse as _;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = std::sync::Arc::new(AtomicUsize::new(0));
@@ -640,6 +641,7 @@ mod tests {
 
     #[tokio::test]
     async fn slowdown_survives_cancelled_completion_and_retry() {
+        let _clock = crate::identity::tests::poll_clock::Clock::start();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = std::sync::Arc::new(AtomicUsize::new(0));
         let second_poll = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -848,6 +850,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_output_keeps_consumed_device_and_refresh_exchanges_progressing() {
+        let _clock = crate::identity::tests::poll_clock::Clock::start();
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -957,7 +960,7 @@ mod tests {
                     {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::task::yield_now().await;
                 }
             })
             .await
@@ -1008,6 +1011,7 @@ mod tests {
 
     #[tokio::test]
     async fn transport_errors_drain_consumed_device_and_refresh_exchanges() {
+        let _clock = crate::identity::tests::poll_clock::Clock::start();
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1143,6 +1147,7 @@ mod tests {
     }
     #[tokio::test]
     async fn interrupted_pending_response_keeps_approval_for_retry() {
+        let _clock = crate::identity::tests::poll_clock::Clock::start();
         use tokio::io::AsyncReadExt as _;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

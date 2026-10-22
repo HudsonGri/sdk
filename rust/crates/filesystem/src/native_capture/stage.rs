@@ -2,18 +2,19 @@ use super::*;
 use crate::kernel::allocation::KernelOwnedAllocation;
 use acyclic_native_runtime::ReadAllocationReservation;
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct StagedRegularBody {
+    pub(super) ranges: Vec<(HostDataRange, StagedContent)>,
+    pub(super) inline: Option<[u8; crate::kernel::MAXIMUM_INLINE_FILE_BYTES]>,
+}
+
 type NativeSourceStorage = (Vec<u8>, (KernelOwnedAllocation, ReadAllocationReservation));
 
-pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &Checkout<A, O>,
+fn open_capture_file(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
-    snapshot: &HostStat,
-    maximum_extent_spans: u32,
     meter: &NativeMaterializationWork,
-    staged_file_bytes: &mut u64,
-) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
-    meter.cancellation().check()?;
+) -> Result<std::fs::File, CaptureError> {
     #[cfg(unix)]
     let file = source_root
         .open_file(host_path, &mut meter.clone())
@@ -26,7 +27,20 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             &mut meter.clone(),
         )
         .map_err(capture_demand_error)?;
-    let file = file.into_std();
+    Ok(file.into_std())
+}
+
+pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    maximum_extent_spans: u32,
+    meter: &NativeMaterializationWork,
+    staged_file_bytes: &mut u64,
+) -> Result<StagedRegularBody, CaptureError> {
+    meter.cancellation().check()?;
+    let file = open_capture_file(source_root, host_path, meter)?;
     let metadata = source_root
         .stat_file_metadata(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
@@ -46,6 +60,8 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     .map_err(capture_demand_error)?;
     #[cfg(windows)]
     let ranges = regular_data_ranges(&file, &metadata, maximum_extent_spans, meter)?;
+    let mut inline = (metadata.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES as u64)
+        .then_some([0; crate::kernel::MAXIMUM_INLINE_FILE_BYTES]);
     let skip_import = ranges.as_ref().is_some_and(Vec::is_empty);
     #[cfg(all(test, feature = "memory"))]
     let skip_import = super::empty_stage_tests::after_ranges(skip_import);
@@ -56,7 +72,10 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         drop(ranges);
         drop(file);
         meter.clone().release(bytes).map_err(capture_demand_error)?;
-        return Ok(staged);
+        return Ok(StagedRegularBody {
+            ranges: staged,
+            inline,
+        });
     }
     let native = native_positional_file(file, meter)?;
     #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
@@ -75,11 +94,11 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let data_ranges = ranges.as_deref().unwrap_or(&full);
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
-        let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
+        let mut bounded = super::inline_reuse::observed_range(
             std::borrow::Borrow::<acyclic_native_runtime::NativeFile>::borrow(&native),
-            range.offset,
-            range.length,
-        );
+            range,
+            &mut inline,
+        )?;
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
         let content = stager
             .stage_content_with_accounting(
@@ -105,7 +124,10 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     drop(ranges);
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
-    Ok(staged)
+    Ok(StagedRegularBody {
+        ranges: staged,
+        inline,
+    })
 }
 
 pub(super) fn finish_regular_capture(

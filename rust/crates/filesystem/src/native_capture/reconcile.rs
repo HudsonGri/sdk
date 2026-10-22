@@ -402,18 +402,27 @@ impl CaptureBatch<'_> {
         .await?;
         capture_drop_host_path(host_path, self.meter)?;
         let logical_bytes = metadata.len();
-        let ranges = staged;
+        let ranges = staged.ranges;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let unchanged = if logical_bytes == 0
-            && ranges.is_empty()
-            && existing.1
-            && existing.0.is_some_and(|record| record.link_count == 1)
-            && existing.0.is_some_and(|record| match record.payload {
-                crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
-                _ => false,
-            }) {
-            true
+        let unchanged = if let (Some(record), true) = existing
+            && record.link_count == 1
+            && let crate::kernel::FilePayload::InlineRegular(data) = record.payload
+        {
+            if logical_bytes == data.as_bytes().len() as u64
+                && let Some(bytes) = staged
+                    .inline
+                    .as_ref()
+                    .and_then(|bytes| bytes.get(..data.as_bytes().len()))
+            {
+                self.meter.charge(WorkCounters {
+                    items_examined: logical_bytes,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                bytes == data.as_bytes()
+            } else {
+                false
+            }
         } else if let (Some(record), true, [(range, content)]) =
             (existing.0, existing.1, ranges.as_slice())
             && matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
