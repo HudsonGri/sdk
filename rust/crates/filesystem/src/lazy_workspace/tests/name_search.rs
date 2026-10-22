@@ -195,6 +195,30 @@ impl AsyncObjectStore for NameIndexReadCounter {
         self.inner.put(id, bytes, work).await
     }
 
+    async fn put_many(
+        &self,
+        writes: &[crate::ObjectWrite],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put_many(writes, work).await
+    }
+
+    async fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put_hashed(object, work).await
+    }
+
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put_many_hashed(objects, work).await
+    }
+
     async fn contains(
         &self,
         id: crate::ObjectId,
