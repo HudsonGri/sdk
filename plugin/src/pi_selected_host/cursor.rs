@@ -75,7 +75,6 @@ pub(super) fn decode_cursor(
     crate::pi_root_provider::guarded_pi_decode(
         &bytes,
         (crate::MAXIMUM_CONTROL_MESSAGE_BYTES / 2) as u64,
-        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
         acyclic_harness::wire::ErrorCode::Invalid,
         acyclic_harness::JsonValueSchema::None,
         SELECTED_DIAGNOSTIC_LABEL_BYTES,

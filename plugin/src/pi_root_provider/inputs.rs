@@ -329,7 +329,6 @@ pub(super) fn decode_root_artifact<T: DeserializeOwned + Serialize>(
     let decoded = guarded_pi_decode(
         bytes,
         maximum(owner),
-        std::mem::size_of::<T>() as u64,
         ErrorCode::Invalid,
         schema,
         ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
