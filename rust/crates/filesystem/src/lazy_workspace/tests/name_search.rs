@@ -405,6 +405,7 @@ async fn name_search_same_generation_follow_does_not_restore_checkpoint_files() 
         .rename(
             "/.acyclic-sdk",
             "/detached-sdk",
+            false,
             WorkBudget::UNBOUNDED,
             &stop,
         )
@@ -463,7 +464,7 @@ async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() 
     assert!(
         tokens
             .iter()
-            .filter(|(path, _)| !path.ends_with("ignore") && *path != ".git/info/exclude")
+            .filter(|(path, _)| !path.ends_with("ignore") && path.as_bytes() != b".git/info/exclude")
             .all(|(_, token)| token.is_some())
     );
     assert_eq!(
