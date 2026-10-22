@@ -17,6 +17,15 @@ impl Drop for Owner {
     }
 }
 
+// A process holding a copy of a test's descriptor, reaped on every exit path.
+struct Sharing(Child);
+impl Drop for Sharing {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn scratch_mount_owner() -> TestResult {
     let Some(root) = crate::native_environment::variable(OWNER_ROOT) else {
@@ -174,6 +183,17 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         .read(true)
         .write(true)
         .open(&controls[0])?;
+    // A process spawned while the fence is open shares its open file
+    // description until it execs, as processes other tests spawn do; this one
+    // keeps it for the rest of the test. Negative control: releasing the fence
+    // only by closing it leaves the lock held, and recovery below fails with
+    // `DestinationBusy`.
+    let _sharing = Sharing(
+        Command::new("sleep")
+            .arg("60")
+            .stdin(fence.try_clone()?)
+            .spawn()?,
+    );
     fence.try_lock()?;
     assert!(
         recover_after_crash(&root).is_err(),
@@ -185,6 +205,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .kind(),
         std::io::ErrorKind::NotConnected
     );
+    fence.unlock()?;
     drop(fence);
     require_recovered(&root, recover_after_crash)?;
     assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
