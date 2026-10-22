@@ -100,7 +100,7 @@ pub(crate) fn directory_path<W: NativeHostWork>(
             return clone_directory(parent, work);
         };
         work.started_io(ITEM)?;
-        open_windows_directory(parent, name, create, work)?.0
+        open_windows_directory_handle(parent, name, create, work)?
     };
     for component in components {
         work.started_io(ITEM)?;
@@ -116,7 +116,7 @@ pub(crate) fn directory_path<W: NativeHostWork>(
         }
         #[cfg(windows)]
         {
-            current = open_windows_directory(&current, name, create, work)?.0;
+            current = open_windows_directory_handle(&current, name, create, work)?;
         }
     }
     Ok(current)
@@ -145,21 +145,14 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         } else {
             fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
         };
-        let file = open_windows_at(
+        open_windows_at_without_reparse(
             parent,
             name,
             access,
             disposition,
             nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
             work,
-        )?;
-        if windows_stat_information(&file, work)?.FileAttributes
-            & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
-            != 0
-        {
-            return Err(W::invalid_request());
-        }
-        Ok(file)
+        )
     });
     #[cfg(unix)]
     unix_name(name.as_os_str(), work, |name, work| {
