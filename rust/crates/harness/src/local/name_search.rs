@@ -368,13 +368,52 @@ mod tests {
         )
         .await?;
         let workspace = harness.workspace.as_ref().unwrap();
-        workspace
+        let stop = acyclic_fs::CancellationToken::new();
+        let mut transaction = workspace
             .view
             .workspace()
+            .begin_transaction(
+                acyclic_fs::IdempotencyKey::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        transaction
+            .create_dir_all(
+                "/.acyclic-sdk/name-index",
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .map_err(storage)?;
+        transaction
             .write_text("/.acyclic-sdk/name-index/manifest.json", "invalid JSON")
             .await
             .map_err(storage)?;
-        let stop = acyclic_fs::CancellationToken::new();
+        let outcome = transaction
+            .commit(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &stop,
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                        acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        assert!(matches!(
+            outcome,
+            acyclic_fs::TransactionCommit::Committed(_)
+        ));
         let scratch = workspace
             .filesystem
             .open_workspace(
@@ -530,6 +569,19 @@ mod tests {
                 },
             )
             .await?;
+        // Negative control: ordinary sparse task forks have no Git lineage
+        // registration, so an ID-only Git resolver cannot open this view.
+        assert!(
+            acyclic_fs::WorkspaceResolver::resolve(
+                &(
+                    workspace.filesystem.clone(),
+                    acyclic_fs::WorkspaceGraph::new(workspace.store.clone())
+                ),
+                fork.workspace().id(),
+            )
+            .await
+            .is_err()
+        );
         let selected = selected_view(workspace, &harness.runtime, Some(task_id))
             .await?
             .expect("saved task fork");

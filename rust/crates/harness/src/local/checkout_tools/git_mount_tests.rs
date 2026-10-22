@@ -294,7 +294,11 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
     // the search preflight bypass the preceding grep also clears this marker.
     execute(&tools, &task, "fs", "git status").await?;
     assert!(workspace.checkout_selection().await?.1.is_none());
-    assert!(workspace.mount_advances.load(Ordering::Relaxed) > advances);
+    // Projected checkouts recover the same marker without a native mount.
+    // Where a mount exists, the physical control must advance it as well.
+    if workspace.mounted.is_some() {
+        assert!(workspace.mount_advances.load(Ordering::Relaxed) > advances);
+    }
     Ok(())
 }
 

@@ -78,10 +78,8 @@ impl LocalWorkspace {
     /// Opens an existing task fork and its selected branch without mounting,
     /// recovering, or creating a checkout.
     pub(super) async fn existing_task_view(&self, task: TaskId) -> Result<Option<View>> {
-        let id = self
-            .filesystem
-            .workspace_id(&format!("task-{task}"))
-            .map_err(storage)?;
+        let name = format!("task-{task}");
+        let id = self.filesystem.workspace_id(&name).map_err(storage)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
         if self
@@ -93,25 +91,53 @@ impl LocalWorkspace {
         {
             return Ok(None);
         }
-        self.existing_volume_view(id).await.map(Some)
+        // Sparse task forks are authenticated by their saved lazy state and
+        // canonical task name. They need not have a Git lineage registration.
+        let original = self
+            .filesystem
+            .open_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        self.selected_existing_view(original).await.map(Some)
     }
 
     /// Opens an allocated lazy project's selected logical branch without a
     /// native projection or checkout recovery.
     pub(super) async fn existing_volume_view(&self, id: acyclic_fs::WorkspaceId) -> Result<View> {
-        let (selected, _) = acyclic_fs::GitCompatRepository::new(id, self.store.clone())
-            .checkout_selection()
-            .await
-            .map_err(storage)?;
-        let selected = acyclic_fs::WorkspaceResolver::resolve(
+        let original = acyclic_fs::WorkspaceResolver::resolve(
             &(
                 self.filesystem.clone(),
                 acyclic_fs::WorkspaceGraph::new(self.store.clone()),
             ),
-            selected,
+            id,
         )
         .await
         .map_err(storage)?;
+        self.selected_existing_view(original).await
+    }
+
+    async fn selected_existing_view(
+        &self,
+        original: acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<View> {
+        let (selected, _) = acyclic_fs::GitCompatRepository::new(original.id(), self.store.clone())
+            .checkout_selection()
+            .await
+            .map_err(storage)?;
+        let selected = if selected == original.id() {
+            original
+        } else {
+            acyclic_fs::WorkspaceResolver::resolve(
+                &(
+                    self.filesystem.clone(),
+                    acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+                ),
+                selected,
+            )
+            .await
+            .map_err(storage)?
+        };
         self.view
             .open_related(
                 selected,
