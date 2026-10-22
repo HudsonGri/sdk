@@ -1341,3 +1341,70 @@ async fn staged_durable_inputs_are_canonical_json() {
         })
     ));
 }
+
+#[tokio::test]
+async fn created_source_checks_reprove_only_live_state_after_one_full_observation() {
+    let fixture = Fixture::new(project()).await;
+    assert!(matches!(
+        fixture.execute().await.unwrap().0,
+        EffectStatus::Succeeded { .. }
+    ));
+    let dispatch = fixture.dispatch().await;
+    let key = fixture
+        .request
+        .binding
+        .project_volumes
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    let examined = || fixture.startup.receipt().items_examined;
+    let before = examined();
+    let observed = fixture
+        .provider
+        .observe_allocation_with_native_work(dispatch.attempt_id, &fixture.startup)
+        .await
+        .unwrap()
+        .unwrap();
+    let observing = examined() - before;
+    let before = examined();
+    fixture
+        .provider
+        .verify_created_source(&key, &observed.0.1, &fixture.startup)
+        .await
+        .unwrap();
+    let verifying = examined() - before;
+    assert!(
+        verifying * 4 < observing,
+        "a check after one full observation re-proves only live state ({verifying} of {observing} items)"
+    );
+    // Negative control: a provider that never observed the allocation pays in full.
+    let reopened = fixture.reopen().await;
+    let before = examined();
+    reopened
+        .verify_created_source(&key, &observed.0.1, &fixture.startup)
+        .await
+        .unwrap();
+    assert!(examined() - before >= observing / 2);
+    // The memo serves only the allocation it observed.
+    let mut substituted = observed.0.1.clone();
+    substituted.roots.get_mut(&key).unwrap().source_epoch += 1;
+    assert!(
+        fixture
+            .provider
+            .verify_created_source(&key, &substituted, &fixture.startup)
+            .await
+            .is_err()
+    );
+    // And it never skips the live proof: a replaced native root is refused.
+    let retained = fixture.directory.path().join("retained-project");
+    std::fs::rename(&fixture.native, &retained).unwrap();
+    std::fs::create_dir(&fixture.native).unwrap();
+    assert!(
+        fixture
+            .provider
+            .verify_created_source(&key, &observed.0.1, &fixture.startup)
+            .await
+            .is_err()
+    );
+}

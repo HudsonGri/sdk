@@ -251,7 +251,6 @@ fn decode<T: serde::de::DeserializeOwned>(
     guarded_pi_decode(
         bytes,
         MAXIMUM_PI_MAIL_BYTES,
-        std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid,
         acyclic_harness::JsonValueSchema::None,
         MAIL_DIAGNOSTIC_LABEL_BYTES,

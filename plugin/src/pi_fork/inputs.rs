@@ -91,7 +91,6 @@ impl PiForkCoordinator<'_> {
         crate::pi_root_provider::guarded_pi_decode(
             bytes,
             maximum,
-            maximum,
             acyclic_harness::wire::ErrorCode::Invalid,
             schema,
             labels,
