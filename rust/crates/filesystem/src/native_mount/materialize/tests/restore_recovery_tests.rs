@@ -982,3 +982,53 @@ fn absent_restore_moves_then_reclaims_the_old_entry() -> Result<(), Box<dyn std:
     );
     Ok(())
 }
+
+/// A standalone reader: its source reads always take the measured legacy path.
+struct StandaloneOnly;
+
+impl StandaloneOnly {
+    fn validate_native_work<T>(&self, _: T) -> Result<(), ()> {
+        Err(())
+    }
+}
+
+async fn standalone_read_allowance(
+    reader: &StandaloneOnly,
+    receipt: &mut GenerationReceipt,
+) -> Result<u64, MaterializeError> {
+    let allowance = read_source!(reader, receipt, remaining, value,
+        std::future::ready(Err::<u64, _>(MaterializeError::InvalidOptions)) => value,
+        async move {
+            Ok::<_, OperationFailure<crate::FsError>>(OperationReceipt {
+                value: remaining.peak_allocation_bytes,
+                work: WorkCounters::UNCHARGED,
+            })
+        } => value,
+    );
+    Ok(allowance)
+}
+
+#[tokio::test]
+async fn standalone_read_budget_excludes_its_own_live_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut receipt = GenerationReceipt::from_work(&work)?;
+    let available =
+        SourceDemandReadWork::remaining(&mut receipt.custody.work().clone())?.peak_allocation_bytes;
+    let allowance = standalone_read_allowance(&StandaloneOnly, &mut receipt).await?;
+    // The read runs inside a boxed frame that is live on the same ledger: its
+    // allowance must already exclude that frame, or the two together could
+    // exceed the budget while the reported peak still appears within it.
+    assert!(
+        allowance < available,
+        "the read was offered {allowance} of {available} bytes beside its live frame"
+    );
+    // The frame's claim retires with the frame.
+    assert_eq!(
+        SourceDemandReadWork::remaining(&mut receipt.custody.work().clone())?.peak_allocation_bytes,
+        available
+    );
+    Ok(())
+}

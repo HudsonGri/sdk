@@ -37,18 +37,27 @@ macro_rules! read_source {
                 .map_err(MaterializeError::from)?;
             $accept_native
         } else {
-            let $remaining = SourceDemandReadWork::remaining(&mut $receipt.custody.work().clone())
-                .map_err(MaterializeError::from)?;
-            let result = in_receipt_frame(&mut *$receipt, |_| $legacy)
-                .await?
-                .map_err(|failure| $receipt.engine_failure(failure))?;
-            $receipt
-                .custody
-                .work()
-                .clone()
-                .merge(result.work)
-                .map_err(MaterializeError::from)?;
-            let $value = result.value;
+            // The frame is admitted on the custody before the read's budget is
+            // taken, and its claim is held until the read's work is merged, so
+            // the read can never spend the bytes of the frame it runs in.
+            let $value = in_receipt_frame(&mut *$receipt, |$receipt| {
+                let legacy = SourceDemandReadWork::remaining(&mut $receipt.custody.work().clone())
+                    .map(|$remaining| $legacy);
+                async move {
+                    let result = legacy
+                        .map_err(MaterializeError::from)?
+                        .await
+                        .map_err(|failure| $receipt.engine_failure(failure))?;
+                    $receipt
+                        .custody
+                        .work()
+                        .clone()
+                        .merge(result.work)
+                        .map_err(MaterializeError::from)?;
+                    Ok::<_, MaterializeError>(result.value)
+                }
+            })
+            .await??;
             $accept_legacy
         }
     };
