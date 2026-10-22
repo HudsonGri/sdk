@@ -377,3 +377,10 @@ pub(super) fn check_request(
     }
     Ok(())
 }
+
+/// Responses that complete a model step; refused or stalled ones fail or are redelivered.
+fn completed_steps(case: &ProviderCase) -> usize {
+    (0..case.responses.len())
+        .filter(|&index| case.completes(index))
+        .count()
+}
