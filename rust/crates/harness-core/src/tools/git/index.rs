@@ -553,6 +553,37 @@ impl MetadataProbe {
         tokio::time::sleep_until(self.next).await;
         self.next = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
     }
+
+    async fn scan<'a, F, Fut>(
+        &mut self,
+        versions: impl Iterator<Item = (&'a str, Option<acyclic_fs::demand::SourceVersion>)>,
+        complete: bool,
+        mut observe: F,
+    ) -> crate::Result<acyclic_fs::lazy_workspace::NativeNameDelta>
+    where
+        F: FnMut(&'a str) -> Fut,
+        Fut: Future<Output = crate::Result<Option<acyclic_fs::demand::SourceVersion>>>,
+    {
+        let mut count = 0;
+        for (path, expected) in versions.take(128) {
+            let observed = observe(path).await?;
+            // Another authority record can cancel this scan at its next I/O.
+            // Retain each completed observation, rather than repeating the
+            // first part of a large range after every unrelated revision.
+            self.after = Some(path.to_owned());
+            count += 1;
+            if observed != expected {
+                let mut delta = acyclic_fs::lazy_workspace::NativeNameDelta::default();
+                metadata_changed(&mut delta, path, complete);
+                // Return before another await can discard a detected change.
+                return Ok(delta);
+            }
+        }
+        if count < 128 {
+            self.after = None;
+        }
+        Ok(Default::default())
+    }
 }
 
 async fn metadata_changed_without_feed(
@@ -581,29 +612,31 @@ async fn metadata_changed_without_feed(
         let stop = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &stop)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &stop,
-        };
-        let mut delta = acyclic_fs::lazy_workspace::NativeNameDelta::default();
-        let mut count = 0;
-        let mut last = None;
-        for (path, expected) in index
-            .manifest
-            .checkpoint
-            .source_versions_after(probe.after.as_deref())
-            .take(128)
-        {
-            let observed = lazy
-                .observe_indexed_native_metadata(*snapshot, &format!("/{path}"), &mut accounting)
-                .await?;
-            if observed != expected {
-                metadata_changed(&mut delta, path, index.manifest.complete);
-            }
-            count += 1;
-            last = Some(path.to_owned());
-        }
-        probe.after = if count == 128 { last } else { None };
+        let after = probe.after.clone();
+        let work = &work;
+        let stop = &stop;
+        let delta = probe
+            .scan(
+                index
+                    .manifest
+                    .checkpoint
+                    .source_versions_after(after.as_deref()),
+                index.manifest.complete,
+                |path| async move {
+                    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: stop,
+                    };
+                    lazy.observe_indexed_native_metadata(
+                        *snapshot,
+                        &format!("/{path}"),
+                        &mut accounting,
+                    )
+                    .await
+                    .map_err(Error::from)
+                },
+            )
+            .await?;
         if delta.all || !delta.paths.is_empty() {
             lazy.invalidate_indexed_native_metadata();
             return Ok(delta);
@@ -833,6 +866,50 @@ async fn fill_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn volume_search_cancelled_metadata_batch_keeps_progress_and_returns_changes()
+    -> crate::Result<()> {
+        use futures::future::{Either, pending, ready};
+        let paths = ["a", "b", "c"];
+        let mut probe = MetadataProbe::new();
+        {
+            let scanning = probe.scan(paths.into_iter().map(|path| (path, None)), true, |path| {
+                if path == "a" {
+                    Either::Left(ready(Ok(None)))
+                } else {
+                    Either::Right(pending())
+                }
+            });
+            tokio::pin!(scanning);
+            assert!(futures::poll!(&mut scanning).is_pending());
+            // Drop while b's metadata I/O is pending, as select! does when
+            // an unrelated authority revision arrives.
+        }
+        // Negative control: committing only after the entire batch leaves
+        // this cursor empty and repeatedly observes a on every cancellation.
+        assert_eq!(probe.after.as_deref(), Some("a"));
+        let after = probe.after.clone();
+        let observed = std::cell::RefCell::new(Vec::new());
+        let delta = probe
+            .scan(
+                paths
+                    .into_iter()
+                    .filter(|path| Some(*path) > after.as_deref())
+                    .map(|path| (path, None)),
+                true,
+                |path| {
+                    observed.borrow_mut().push(path);
+                    ready(Ok(Some(acyclic_fs::demand::SourceVersion([1; 32]))))
+                },
+            )
+            .await?;
+        assert_eq!(*observed.borrow(), ["b"]);
+        assert_eq!(probe.after.as_deref(), Some("b"));
+        assert_eq!(delta.paths, BTreeSet::from(["b".to_owned()]));
+        assert!(!delta.all);
+        Ok(())
+    }
 
     #[tokio::test(start_paused = true)]
     async fn volume_search_metadata_deadline_survives_unrelated_file_revisions() {
