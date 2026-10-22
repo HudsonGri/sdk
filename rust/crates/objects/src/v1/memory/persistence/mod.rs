@@ -3,7 +3,6 @@ use super::*;
 use crate::LocalObjectsLimits;
 use crate::body::LocalBodyLocation;
 use crate::physical::native_durability;
-use fs2::FileExt;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -46,7 +45,8 @@ pub(super) struct Journal {
     limits: LocalObjectsLimits,
     header: Header,
     poisoned: AtomicBool,
-    _owner: File,
+    /// Unlocked explicitly when dropped, even if a child inherited it.
+    _owner: acyclic_native_runtime::FileLock,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     #[cfg(test)]
     fault_bytes: std::sync::atomic::AtomicU64,
@@ -54,13 +54,6 @@ pub(super) struct Journal {
     fault_sync: AtomicBool,
     #[cfg(test)]
     fault_checkpoint: std::sync::atomic::AtomicU64,
-}
-
-impl Drop for Journal {
-    fn drop(&mut self) {
-        // Release ownership even if a child inherited the descriptor.
-        let _ = FileExt::unlock(&self._owner);
-    }
 }
 
 mod checkpoint;

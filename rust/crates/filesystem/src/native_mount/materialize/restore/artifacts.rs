@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_host::NativeHostWork as _;
 
 pub(in crate::native_mount::materialize) fn restore_artifact_name(
     prefix: &str,
@@ -66,25 +67,46 @@ pub(in crate::native_mount::materialize) fn with_restore_artifact<
     result
 }
 
+pub(in crate::native_mount::materialize) struct RestoreLock {
+    file: acyclic_native_runtime::FileLock,
+    cleanup: Option<crate::materializer::NativeCleanupWrite>,
+}
+
+impl Drop for RestoreLock {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            let _ = cleanup.attempt(|| self.file.unlock());
+        }
+    }
+}
+
 pub(in crate::native_mount::materialize) fn acquire_restore_lock(
     parent: &HostRoot,
     relative: &Path,
     blocking: bool,
-    work: &mut impl crate::demand::SourceDemandReadWork,
-) -> Result<File, MaterializeError> {
+    work: &mut crate::NativeMaterializationWork,
+) -> Result<RestoreLock, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
-        let file = crate::native_host::open_leaf(
-            &parent.directory,
-            name,
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-            work,
-        )
-        .map_err(MaterializeError::from)?;
+        let cleanup = crate::NativeMaterializationWork::reserve_cleanup_write(work)?;
+        let file = acyclic_native_runtime::FileLock::new(
+            crate::native_host::open_leaf(
+                &parent.directory,
+                name,
+                &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                work,
+            )
+            .map_err(MaterializeError::from)?,
+        );
         loop {
             work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
                 .map_err(MaterializeError::from)?;
-            match fs2::FileExt::try_lock_exclusive(&file) {
-                Ok(()) => return Ok(file),
+            match file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive) {
+                Ok(()) => {
+                    return Ok(RestoreLock {
+                        file,
+                        cleanup: Some(cleanup),
+                    });
+                }
                 Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }

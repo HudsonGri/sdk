@@ -12,7 +12,7 @@ use crate::{
     WorkspaceContextId, WorkspaceContextStore, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceLineageStore,
 };
-use fs2::FileExt;
+use acyclic_native_runtime::{FileLock, FileLockMode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -78,7 +78,7 @@ struct Owner {
 
 /// One held `owner.lock`, released when dropped.
 #[derive(Debug)]
-struct OwnerLock(File, OwnerLockRelease);
+struct OwnerLock(FileLock, OwnerLockRelease);
 
 #[derive(Debug)]
 enum OwnerLockRelease {
@@ -88,7 +88,7 @@ enum OwnerLockRelease {
 }
 
 impl OwnerLock {
-    fn new(file: File, cleanup: Option<crate::materializer::NativeCleanupWrite>) -> Self {
+    fn new(file: FileLock, cleanup: Option<crate::materializer::NativeCleanupWrite>) -> Self {
         Self(
             file,
             match cleanup {
@@ -100,12 +100,11 @@ impl OwnerLock {
 
     fn unlock(&mut self) -> Result<(), LocalCoreStateStoreError> {
         // One release attempt per acquisition, even when recording its native
-        // work fails. File close alone does not release an inherited Linux
-        // open-file-description lock while a forked child waits to exec.
+        // work fails.
         match std::mem::replace(&mut self.1, OwnerLockRelease::Released) {
-            OwnerLockRelease::Ordinary => FileExt::unlock(&self.0)?,
+            OwnerLockRelease::Ordinary => self.0.unlock()?,
             OwnerLockRelease::Native(cleanup) => {
-                let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&self.0));
+                let (unlocked, recorded) = cleanup.attempt(|| self.0.unlock());
                 recorded?;
                 unlocked?;
             }
@@ -122,12 +121,8 @@ impl OwnerLock {
             .read(true)
             .write(true)
             .open(root.join(OWNER_LOCK))?;
-        let locked = match mode {
-            LockMode::Shared => FileExt::try_lock_shared(&lock),
-            LockMode::Exclusive => lock.try_lock_exclusive(),
-        };
-        match locked {
-            Ok(()) => Ok(Self::new(lock, None)),
+        match FileLock::try_acquire(lock, mode.into()) {
+            Ok(lock) => Ok(Self::new(lock, None)),
             Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Err(
                 LocalCoreStateStoreError::OwnershipConflict(root.to_path_buf()),
             ),
@@ -262,16 +257,11 @@ impl LocalCoreStateStore {
                     ..crate::WorkCounters::UNCHARGED
                 };
                 work.admit(read)?;
-                let acquired = FileExt::try_lock_shared(&lock);
-                let owner_lock = acquired
-                    .as_ref()
-                    .is_ok()
-                    .then(|| OwnerLock::new(lock, Some(cleanup)));
+                let acquired = FileLock::try_acquire(lock, FileLockMode::Shared)
+                    .map(|lock| OwnerLock::new(lock, Some(cleanup)));
                 work.spent(read)?;
                 match acquired {
-                    Ok(()) => Admission::Shared {
-                        _lock: owner_lock.ok_or(LocalCoreStateStoreError::Integrity)?,
-                    },
+                    Ok(owner_lock) => Admission::Shared { _lock: owner_lock },
                     Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                         return Err(LocalCoreStateStoreError::LazyWork(
                             crate::LazyWorkspaceError::NativeRecordOwnershipConflict(

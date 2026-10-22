@@ -4,8 +4,6 @@ use super::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_reopens_durable_volume_and_exact_generation()
 -> Result<(), Box<dyn std::error::Error>> {
-    use fs2::FileExt as _;
-
     let directory = tempfile::tempdir()?;
     let volume_id = VolumeId::from_bytes([48; 16]);
     let cancellation = CancellationToken::new();
@@ -43,8 +41,11 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
             .read(true)
             .write(true)
             .open(directory.path().join(relative))?;
-        lock.try_lock_exclusive()?;
-        lock.unlock()?;
+        acyclic_native_runtime::FileLock::try_acquire(
+            lock,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )?
+        .unlock()?;
     }
     let objects_journal = directory.path().join("objects").join("mutations.log");
     let journal_bytes_before_reopen = std::fs::metadata(&objects_journal)?.len();

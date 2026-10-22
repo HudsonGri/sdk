@@ -42,6 +42,20 @@ disallowed-methods = [
     { path = "directories::UserDirs::new", reason = "use the isolated native environment seam", allow-invalid = true },
 
     { path = "std::env::set_current_dir", reason = "process-wide; use Command::current_dir for a child" },
+    # OS file locks belong to the open file description, which a concurrently
+    # spawned child shares until exec; close alone may never release them.
+    { path = "std::fs::File::lock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::lock_shared", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::try_lock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::try_lock_shared", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "std::fs::File::unlock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing" },
+    { path = "libc::flock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "rustix::fs::flock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "nix::fcntl::flock", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows_sys::Win32::Storage::FileSystem::LockFile", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows_sys::Win32::Storage::FileSystem::LockFileEx", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows::Win32::Storage::FileSystem::LockFile", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
+    { path = "windows::Win32::Storage::FileSystem::LockFileEx", reason = "use acyclic_native_runtime::FileLock, which unlocks before closing", allow-invalid = true },
 ]
 
 # Resolve macro aliases through the compiler, just like environment methods.

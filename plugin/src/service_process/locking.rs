@@ -2,23 +2,16 @@
 
 use super::*;
 
+/// Both locks unlock explicitly when dropped, before their files close.
 pub(crate) struct ServiceLock {
-    pub(crate) lifecycle_file: fs::File,
-    pub(crate) data_file: Option<fs::File>,
+    // Field order releases the data lock before the lifecycle lock.
+    pub(crate) data_file: Option<acyclic_native_runtime::FileLock>,
+    pub(crate) _lifecycle_file: acyclic_native_runtime::FileLock,
 }
 
 impl ServiceLock {
     pub(crate) fn prepare_purge(&mut self) {
-        if let Some(file) = self.data_file.take() {
-            let _ = file.unlock();
-        }
-    }
-}
-
-impl Drop for ServiceLock {
-    fn drop(&mut self) {
-        self.prepare_purge();
-        let _ = self.lifecycle_file.unlock();
+        drop(self.data_file.take());
     }
 }
 
@@ -270,11 +263,14 @@ pub(crate) fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, S
         .truncate(false)
         .open(parent.join(".acyclic-service-lifecycle.lock"))
         .map_err(display)?;
-    match lifecycle_file.try_lock_exclusive() {
-        Ok(()) => {}
+    let lifecycle_file = match acyclic_native_runtime::FileLock::try_acquire(
+        lifecycle_file,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    ) {
+        Ok(lock) => lock,
         Err(error) if service_lock_is_contended(&error) => return Ok(None),
         Err(error) => return Err(display(error)),
-    }
+    };
     fs::create_dir_all(data).map_err(display)?;
     #[cfg(unix)]
     {
@@ -288,10 +284,13 @@ pub(crate) fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, S
         .truncate(false)
         .open(data.join("service.lock"))
         .map_err(display)?;
-    match file.try_lock_exclusive() {
-        Ok(()) => Ok(Some(ServiceLock {
-            lifecycle_file,
+    match acyclic_native_runtime::FileLock::try_acquire(
+        file,
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    ) {
+        Ok(file) => Ok(Some(ServiceLock {
             data_file: Some(file),
+            _lifecycle_file: lifecycle_file,
         })),
         Err(error) if service_lock_is_contended(&error) => Ok(None),
         Err(error) => Err(display(error)),

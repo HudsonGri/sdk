@@ -21,6 +21,10 @@ impl Drop for Entered {
 struct Held<'a>(&'a Lock);
 #[cfg(not(acyclic_sdk_docs_loom))]
 impl Drop for Held<'_> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its own workspace, without acyclic_native_runtime::FileLock; Held unlocks explicitly"
+    )]
     fn drop(&mut self) {
         let _ = self.0.unlock();
     }
@@ -57,6 +61,10 @@ fn cached<const FAST: bool, T>(
     #[cfg(acyclic_sdk_docs_loom)]
     let _held = lock.lock().unwrap();
     #[cfg(not(acyclic_sdk_docs_loom))]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its own workspace, without acyclic_native_runtime::FileLock; Held unlocks explicitly"
+    )]
     let _held = {
         if lock.lock().is_err() {
             return compute();

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
-    lock: Option<File>,
+    lock: Option<RestoreLock>,
     mut work: crate::NativeMaterializationWork,
     operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, E> + Send + 'static,
 ) -> Result<Result<T, E>, crate::NativeTreeMaterializationError> {
@@ -26,7 +26,7 @@ pub(super) struct PreparedRestore {
     pub(super) stage_path: (PathBuf, crate::NativeAllocation),
     pub(super) destination_root: (PathBuf, crate::NativeAllocation),
     pub(super) relative: (PathBuf, crate::NativeAllocation),
-    pub(super) lock: File,
+    pub(super) lock: RestoreLock,
 }
 
 pub(super) async fn finish_restore(
@@ -113,7 +113,7 @@ pub(super) fn prepare_restore(
     relative: (PathBuf, crate::NativeAllocation),
     expected_root_identity: Option<crate::NativeRootIdentity>,
     replacement: HostPathReplacement,
-    work: &mut impl crate::demand::SourceDemandReadWork,
+    work: &mut crate::NativeMaterializationWork,
 ) -> Result<PreparedRestore, MaterializeError> {
     let allocation_work = destination_root.1.work().clone();
     let root = HostRoot::open(&destination_root.0, work).map_err(MaterializeError::from)?;

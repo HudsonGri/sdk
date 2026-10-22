@@ -833,16 +833,18 @@ fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
     let root = temporary.path().join("root");
     std::fs::create_dir(&root)?;
     let relative = Path::new("entry");
-    let mut work = restoration_work();
+    let mut work = crate::NativeMaterializationWork::from_meter(Arc::new(
+        NativeDemandReadMeter::new(restoration_work()),
+    ));
     let held_root = HostRoot::open(&root, &mut work)?;
     let parent = held_parent(&held_root, relative, &mut work)?;
     let first = acquire_restore_lock(&parent, relative, true, &mut work)?;
 
     assert!(acquire_restore_lock(&parent, relative, false, &mut work).is_err());
     drop(first);
-    // Blocking: a child another test forks shares the lock's open file
-    // until it execs, so a release can take a moment to be observed.
-    let _next = acquire_restore_lock(&parent, relative, true, &mut work)?;
+    // Non-blocking: dropping unlocks explicitly, so a child another test
+    // forks cannot keep the lock while it shares the open file until exec.
+    let _next = acquire_restore_lock(&parent, relative, false, &mut work)?;
     Ok(())
 }
 
@@ -851,7 +853,9 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let relative = Path::new("entry");
-    let mut work = restoration_work();
+    let mut work = crate::NativeMaterializationWork::from_meter(Arc::new(
+        NativeDemandReadMeter::new(restoration_work()),
+    ));
     let held_root = HostRoot::open(temporary.path(), &mut work)?;
     let parent = held_parent(&held_root, relative, &mut work)?;
     let lock = acquire_restore_lock(&parent, relative, true, &mut work)?;
@@ -888,7 +892,7 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
     let fenced = matches!(
         &competing,
         Err(MaterializeError::Io(error))
-            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            if acyclic_native_runtime::is_exclusive_lock_contention(error)
     );
     drop(competing);
     // Release before assertions: even the broken-lock mutation must finish.
@@ -900,6 +904,57 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
     assert!(
         fenced,
         "cancelled waiter released a still-running restore's lock"
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_lock_release_is_funded_after_cancellation_and_budget_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let relative = Path::new("entry");
+    let cancellation = CancellationToken::new();
+    let mut work =
+        crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+    let parent = HostRoot::open(temporary.path(), &mut work)?;
+    let lock = acquire_restore_lock(&parent, relative, false, &mut work)?;
+    let before = work.receipt();
+    let withheld = work.reserve_work(WorkCounters {
+        backend_write_operations: work.remaining()?.backend_write_operations,
+        ..WorkCounters::UNCHARGED
+    })?;
+    cancellation.cancel();
+    drop(lock);
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations + 1,
+        "the reserved unlock is recorded even after cancellation and exhaustion"
+    );
+    drop(withheld);
+    let mut next = crate::NativeMaterializationWork::from_meter(Arc::new(
+        NativeDemandReadMeter::new(restoration_work()),
+    ));
+    let _next = acquire_restore_lock(&parent, relative, false, &mut next)?;
+    Ok(())
+}
+
+#[test]
+fn contended_restore_lock_refunds_its_unused_release() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let mut work = crate::NativeMaterializationWork::from_meter(Arc::new(
+        NativeDemandReadMeter::new(restoration_work()),
+    ));
+    let parent = HostRoot::open(temporary.path(), &mut work)?;
+    let relative = Path::new("entry");
+    let _held = acquire_restore_lock(&parent, relative, false, &mut work)?;
+    let before = work.receipt();
+    let available = work.remaining()?.backend_write_operations;
+    assert!(acquire_restore_lock(&parent, relative, false, &mut work).is_err());
+    assert_eq!(
+        available - work.remaining()?.backend_write_operations,
+        work.receipt().backend_write_operations - before.backend_write_operations,
+        "a failed acquisition retains no unused unlock reservation"
     );
     Ok(())
 }
