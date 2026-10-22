@@ -100,6 +100,36 @@ fn a_file_replaced_or_removed_while_closed_is_refused() -> io::Result<()> {
     Ok(())
 }
 
+/// An eviction skips files in use, so leases held together leave the cache
+/// over capacity; their release brings it back. A written descriptor waits
+/// for the next lease, which pays for its flush.
+#[test]
+fn released_leases_return_the_cache_to_capacity() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = private_cache(1);
+    let first = cached(&cache, &directory.path().join("first"))?;
+    let second = cached(&cache, &directory.path().join("second"))?;
+    let held = first.lease(&mut |_| Ok(()))?;
+    let other = second.lease(&mut |_| Ok(()))?;
+    assert_eq!(cache.cached(), 2, "both in use");
+    drop(held);
+    drop(other);
+    assert_eq!(cache.cached(), 1, "released");
+
+    let held = first.lease(&mut |_| Ok(()))?;
+    let other = second.lease(&mut |_| Ok(()))?;
+    held.write(|file| crate::write_all_at(file, 0, b"held", None))?;
+    other.write(|file| crate::write_all_at(file, 0, b"other", None))?;
+    drop(held);
+    drop(other);
+    assert_eq!(cache.cached(), 2, "a release flushes nothing");
+    let (lease, costs) = charged(|charge| second.lease(charge))?;
+    assert_eq!(costs, [Cost::Flush]);
+    drop(lease);
+    assert_eq!(cache.cached(), 1, "the next lease paid");
+    Ok(())
+}
+
 #[test]
 fn the_default_capacity_is_a_quarter_of_the_descriptor_limit() {
     let capacity = default_capacity();

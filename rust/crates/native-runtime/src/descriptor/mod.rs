@@ -20,7 +20,7 @@ mod model;
 #[cfg(all(test, not(acyclic_native_runtime_loom)))]
 mod tests;
 
-use cache::{Cache, Cost, Entry, Files, Handle};
+use cache::{Cache, Cost, Entry, Files, Lease};
 
 /// The cache on this machine's files.
 struct Native;
@@ -205,7 +205,7 @@ fn charge(meter: Option<&dyn crate::NativeReadMeter>) -> impl FnMut(Cost) -> io:
 /// Writes go through [`FileLease::write`], so that a descriptor never closes
 /// with writes it has not flushed; [`FileLease::file`] is for reading.
 pub struct FileLease {
-    handle: crate::sync::Arc<Handle<Native>>,
+    handle: Lease<Native>,
 }
 
 impl std::fmt::Debug for FileLease {

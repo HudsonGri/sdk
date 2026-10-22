@@ -175,6 +175,29 @@ fn join<T>(thread: loom::thread::JoinHandle<T>) -> Result<T, String> {
         .map_err(|_| "a model thread panicked".to_owned())
 }
 
+/// Two files' leases race at capacity 1. An eviction skips a file in use,
+/// so whichever finds the other leased leaves the cache over capacity, and
+/// that lease's release must bring it back.
+#[test]
+fn released_leases_return_the_cache_to_capacity() {
+    explore(|| {
+        let sim = Sim::default();
+        let cache = cache(&sim, 1);
+        let first = entry(&cache, &sim, "/a")?;
+        let second = entry(&cache, &sim, "/b")?;
+        let racing = {
+            let first = Arc::clone(&first);
+            loom::thread::spawn(move || first.lease(&mut |_| Ok(())).map(drop))
+        };
+        second.lease(&mut |_| Ok(())).map(drop).map_err(failed)?;
+        join(racing)?.map_err(failed)?;
+        check(
+            cache.cached() <= 1,
+            "released leases left the cache over capacity",
+        )
+    });
+}
+
 /// A write and an eviction of its descriptor race: the descriptor flushes
 /// the write before it closes, whichever side closes it.
 #[test]

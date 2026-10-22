@@ -2,7 +2,7 @@
 //! the model run the same code.
 
 use crate::sync::Mutex;
-use crate::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::atomic::{AtomicBool, Ordering, Ordering::SeqCst, fence};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -46,6 +46,9 @@ pub(super) struct Cache<F: Files> {
     files: F,
     capacity: AtomicUsize,
     ring: Mutex<Ring<F>>,
+    /// The ring's length, written under its lock, so that a released lease
+    /// can tell without the lock whether the cache is over capacity.
+    listed: crate::sync::atomic::AtomicUsize,
 }
 
 /// Files holding a cached descriptor, swept by a clock hand.
@@ -67,6 +70,7 @@ impl<F: Files> Cache<F> {
                 hand: 0,
                 reserved: 0,
             }),
+            listed: crate::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -82,6 +86,16 @@ impl<F: Files> Cache<F> {
 
     fn ring(&self) -> crate::sync::MutexGuard<'_, Ring<F>> {
         self.ring.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Publishes the ring's length after it changed, under its lock.
+    fn note(&self, ring: &Ring<F>) {
+        self.listed.store(ring.entries.len(), SeqCst);
+    }
+
+    /// Whether more files hold a descriptor than the capacity allows.
+    fn over(&self) -> bool {
+        self.listed.load(SeqCst) > self.capacity()
     }
 
     /// Files whose descriptor the cache holds.
@@ -121,6 +135,7 @@ impl<F: Files> Cache<F> {
         let mut ring = self.ring();
         ring.reserved -= 1;
         ring.entries.push(Arc::downgrade(entry));
+        self.note(&ring);
     }
 
     /// Closes the idle descriptors of files that went unused longest until
@@ -144,6 +159,12 @@ impl<F: Files> Cache<F> {
         let mut victims: Victims<F> = std::array::from_fn(|_| None);
         let mut taken = 0;
         let mut ring = self.ring();
+        // Pairs with the fence a released lease runs before it reads
+        // `listed`: either that release is seen below, so its descriptor is
+        // idle here, or the release sees this ring over capacity and shrinks
+        // it again. A lock it fails to take is likewise released only after
+        // this fence, so its holder's release sees the ring too.
+        fence(SeqCst);
         let capacity = self.capacity();
         // A file's reference bit clears on the hand's first pass, so the
         // second finds every idle victim; a sweep that finds none leaves the
@@ -158,6 +179,7 @@ impl<F: Files> Cache<F> {
             let Some(candidate) = ring.entries.get(hand).and_then(Weak::upgrade) else {
                 // A file that was dropped closed its own descriptor.
                 ring.entries.swap_remove(hand);
+                self.note(&ring);
                 continue;
             };
             // Never waits while holding the ring: a file whose lock is held
@@ -187,6 +209,7 @@ impl<F: Files> Cache<F> {
             state.cached = false;
             drop(state);
             ring.entries.swap_remove(hand);
+            self.note(&ring);
             if let Some(handle) = victim
                 && let Some(slot) = victims.get_mut(taken)
             {
@@ -195,6 +218,42 @@ impl<F: Files> Cache<F> {
             }
         }
         victims
+    }
+}
+
+/// A leased descriptor, open while the lease lives.
+pub(super) struct Lease<F: Files> {
+    /// Declared first, so that it is released before `_settle` runs.
+    handle: crate::sync::Arc<Handle<F>>,
+    _settle: Settle<F>,
+}
+
+impl<F: Files> std::ops::Deref for Lease<F> {
+    type Target = Handle<F>;
+
+    fn deref(&self) -> &Handle<F> {
+        &self.handle
+    }
+}
+
+/// Retries eviction as a lease is released. An eviction skips leased
+/// descriptors, so one that ran while this lease was held may have left the
+/// cache over capacity; once released, this lease's descriptor can close.
+struct Settle<F: Files>(Arc<Cache<F>>);
+
+impl<F: Files> Drop for Settle<F> {
+    fn drop(&mut self) {
+        // Pairs with the fence in `Cache::evict`.
+        fence(SeqCst);
+        if self.0.over() {
+            // A release has no meter to charge, so it closes only idle
+            // descriptors with nothing to flush; the next lease pays for the
+            // rest.
+            self.0.shrink(&mut |cost| match cost {
+                Cost::Flush => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+                Cost::Reopen | Cost::Allocation(_) => Ok(()),
+            });
+        }
     }
 }
 
@@ -389,10 +448,7 @@ impl<F: Files> Entry<F> {
     /// The file's descriptor, reopened by path when the cache closed it. The
     /// work the cache does for it (a reopen, the allocations it makes and
     /// the flushes of other files it evicts) is charged before it is done.
-    pub(super) fn lease(
-        self: &Arc<Self>,
-        charge: Charge<'_>,
-    ) -> io::Result<crate::sync::Arc<Handle<F>>> {
+    pub(super) fn lease(self: &Arc<Self>, charge: Charge<'_>) -> io::Result<Lease<F>> {
         let (handle, listed) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             // Checked under the lock: an evicted descriptor leaves `open`
@@ -424,10 +480,17 @@ impl<F: Files> Entry<F> {
             }
             (handle, listing)
         };
-        if listed {
+        // Over capacity also after a listing that found every other file in
+        // use: the lease that left its file's descriptor open retries
+        // without charge as it is released, and this one pays to retry any
+        // written descriptors that retry left.
+        if listed || self.cache.over() {
             self.cache.shrink(charge);
         }
-        Ok(handle)
+        Ok(Lease {
+            handle,
+            _settle: Settle(Arc::clone(&self.cache)),
+        })
     }
 
     /// Closes `handle`, an idle descriptor of this file that an eviction
