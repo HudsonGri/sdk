@@ -44,6 +44,8 @@ pub struct NameIndex<A, O> {
     generation: Generation<A, O>,
     #[cfg(test)]
     checkpoint_policy_records: usize,
+    #[cfg(test)]
+    checkpoint_metadata_records: usize,
     /// Follow clients fold progress from this file and stream the numbered pages.
     pub manifest: NameIndexManifest,
 }
@@ -82,6 +84,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             manifest,
             #[cfg(test)]
             checkpoint_policy_records: 0,
+            #[cfg(test)]
+            checkpoint_metadata_records: 0,
         }))
     }
 
@@ -147,7 +151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             )
             .await
             .map_err(|failure| failure.error)?;
-        let _policy_records =
+        let (_policy_records, _metadata_records) =
             checkpoint::write_manifest(&mut transaction, expected, &manifest, previous).await?;
         let outcome = transaction
             .commit(
@@ -172,6 +176,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 manifest,
                 #[cfg(test)]
                 checkpoint_policy_records: _policy_records,
+                #[cfg(test)]
+                checkpoint_metadata_records: _metadata_records,
             })),
             TransactionCommit::Conflict { .. } => Ok(None),
             TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => Err(

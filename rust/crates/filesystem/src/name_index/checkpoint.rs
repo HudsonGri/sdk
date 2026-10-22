@@ -174,7 +174,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     expected: &Generation<A, O>,
     manifest: &NameIndexManifest,
     previous: Option<&NameIndex<A, O>>,
-) -> Result<usize, SearchError> {
+) -> Result<(usize, usize), SearchError> {
     let mut buffer = Vec::with_capacity(CHUNK_BYTES);
     let mut chunks = 0;
     for record in manifest.checkpoint.records() {
@@ -312,11 +312,13 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map_err(|failure| failure.error)?;
+    let mut metadata_records = 0;
     for record in manifest
         .checkpoint
         .directory_records_since(previous.map(|previous| &previous.manifest.checkpoint))
     {
         let (directory, record) = record?;
+        metadata_records += 1;
         let path = format!(
             "{directory_root}/{}.json",
             blake3::hash(directory.as_bytes()).to_hex()
@@ -362,7 +364,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map_err(|failure| failure.error)?;
-    Ok(policy_records)
+    Ok((policy_records, metadata_records))
 }
 
 fn policy_root() -> String {
@@ -461,7 +463,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn name_search_checkpoint_persists_only_changed_policies_and_removes_retired_files() {
+    async fn name_search_checkpoint_persists_only_changed_policies_and_metadata() {
         let fs = crate::Fs::memory();
         let stop = CancellationToken::new();
         let workspace = fs
@@ -495,6 +497,11 @@ mod tests {
             )
             .unwrap();
             checkpoint.restore_record(&record).unwrap();
+            let metadata = serde_json::to_vec(
+                &serde_json::json!({"Directory": [format!("d{ordinal:02}"), null]}),
+            )
+            .unwrap();
+            checkpoint.restore_record(&metadata).unwrap();
         }
         let manifest = NameIndexManifest {
             schema: 4,
@@ -511,6 +518,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(initial.checkpoint_policy_records, 66);
+        assert_eq!(initial.checkpoint_metadata_records, 66);
         let mut manifest = initial.manifest.clone();
         manifest.checkpoint.forget_subtree("d00");
         let record = serde_json::to_vec(
@@ -518,6 +526,11 @@ mod tests {
         )
         .unwrap();
         manifest.checkpoint.restore_record(&record).unwrap();
+        let metadata = serde_json::to_vec(&serde_json::json!({"Directory": [
+            "d01", crate::demand::SourceVersion([2; 32])
+        ]}))
+        .unwrap();
+        manifest.checkpoint.restore_record(&metadata).unwrap();
         assert_eq!(
             manifest
                 .checkpoint
@@ -527,6 +540,17 @@ mod tests {
         );
         // Negative control: a complete rewrite serializes every remaining policy.
         assert_eq!(manifest.checkpoint.policy_records_since(None).count(), 65);
+        assert_eq!(
+            manifest
+                .checkpoint
+                .directory_records_since(Some(&initial.manifest.checkpoint))
+                .count(),
+            2
+        );
+        assert_eq!(
+            manifest.checkpoint.directory_records_since(None).count(),
+            65
+        );
         let updated = NameIndex::publish(
             &workspace,
             &initial.generation(),
@@ -539,6 +563,7 @@ mod tests {
         .unwrap();
         let reopened = NameIndex::open(&workspace).await.unwrap().unwrap();
         assert_eq!(updated.checkpoint_policy_records, 2);
+        assert_eq!(updated.checkpoint_metadata_records, 2);
         assert_eq!(
             serde_json::to_vec(&updated.manifest.checkpoint).unwrap(),
             serde_json::to_vec(&reopened.manifest.checkpoint).unwrap()
@@ -574,7 +599,15 @@ mod tests {
                 policy_root(),
                 blake3::hash(directory.as_bytes()).to_hex()
             );
-            for path in [format!("{path}.json"), policy_chunk(&path, 0)] {
+            for path in [
+                format!("{path}.json"),
+                policy_chunk(&path, 0),
+                format!(
+                    "{}/{}.json",
+                    directory_root(),
+                    blake3::hash(directory.as_bytes()).to_hex()
+                ),
+            ] {
                 let mut ctx =
                     crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &stop);
                 let (path, _) = crate::kernel::NamespacePath::parse_in_profile(
@@ -599,7 +632,7 @@ mod tests {
                     .unwrap()
                     .value;
                 assert!(before[0].is_some());
-                assert_eq!(before, after, "rewrote an unchanged policy file");
+                assert_eq!(before, after, "rewrote unchanged checkpoint metadata");
             }
         }
         // A fresh traversal replaces the current policy set. Older snapshots
@@ -614,6 +647,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reset.checkpoint_policy_records, 0);
+        assert_eq!(reset.checkpoint_metadata_records, 0);
         let files = reset
             .generation()
             .list_directory(&policy_root(), None, 128, WorkBudget::UNBOUNDED, &stop)
