@@ -37,6 +37,8 @@ fn streamed_keystroke_work(broken: bool) {
         }
     }
     menu.refresh(&input);
+    let started = std::time::Instant::now();
+    let before_keystrokes = menu.work.candidates;
     for text in ["x", "y", "z"] {
         let before = menu.work.candidates;
         input.insert(text, 1);
@@ -46,6 +48,11 @@ fn streamed_keystroke_work(broken: bool) {
             "keystroke scored the namespace"
         );
     }
+    eprintln!(
+        "volume-search benchmark component=editor-keystrokes namespace_entries=1000000 keystrokes=3 elapsed_us={} scored_candidates={}",
+        started.elapsed().as_micros(),
+        menu.work.candidates - before_keystrokes,
+    );
 }
 
 #[test]

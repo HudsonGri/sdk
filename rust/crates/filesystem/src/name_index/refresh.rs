@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             write_page(&mut transaction, ordinal, &page, &stop).await?;
         }
         let manifest = NameIndexManifest {
-            schema: 1,
+            schema: 2,
             names_cut: if names_changed {
                 cut.clone()
             } else {
@@ -310,16 +310,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             complete: checkpoint.pending_directories() == 0,
             checkpoint,
         };
-        let bytes = serde_json::to_vec(&manifest)?;
-        if bytes.len() as u64 > MAXIMUM_INDEX_FILE_BYTES {
-            return Err(SearchError::Invalid(
-                "pathname index frontier exceeds its file budget".into(),
-            ));
-        }
-        transaction
-            .write(MANIFEST, bytes, WorkBudget::UNBOUNDED, &stop)
-            .await
-            .map_err(|failure| failure.error)?;
+        super::checkpoint::write_manifest(&mut transaction, expected, &manifest).await?;
         let outcome = transaction
             .commit(
                 None,
@@ -399,7 +390,7 @@ mod byte_page_tests {
         .unwrap();
         while walk.next_page().await.unwrap().is_some() {}
         let manifest = NameIndexManifest {
-            schema: 1,
+            schema: 2,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

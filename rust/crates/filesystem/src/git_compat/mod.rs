@@ -1,13 +1,11 @@
 //! Git-shaped compatibility state over filesystem generations.
 
-use crate::kernel::{FileKind, NamespacePath};
-use crate::model::VolumeLimits;
+use crate::kernel::FileKind;
 use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
-use crate::workspace::customer_path;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GenerationId,
-    IdempotencyKey, OperationId, ResolvedFile, TransactionCommit, WorkBudget, Workspace,
-    WorkspaceError, WorkspaceId,
+    IdempotencyKey, OperationId, TransactionCommit, WorkBudget, Workspace, WorkspaceError,
+    WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

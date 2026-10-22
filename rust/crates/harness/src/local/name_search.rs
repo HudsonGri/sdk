@@ -51,7 +51,16 @@ impl LocalHarness {
                 tokio::select! {
                     biased;
                     newer = request(&mut changes) => { query = newer?; }
-                    done = &mut search => { done?; query = request(&mut changes).await?; }
+                    done = &mut search => {
+                        if done.is_err() {
+                            // A failed source, admission or policy read cannot
+                            // certify an empty namespace. Clear its candidates
+                            // and end this request visibly partial; retain the
+                            // query follower so another request can recover.
+                            results(&writer, &active, &crate::tui::PathMatches::new(&active.query), 0, true, 1).await?;
+                        }
+                        query = request(&mut changes).await?;
+                    }
                 }
             }
         });
@@ -314,6 +323,72 @@ fn name_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn name_search_failed_request_is_visibly_partial_and_the_next_request_runs() -> Result<()>
+    {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let project = super::super::tests::volume(directory.path()).await?;
+        let harness = LocalHarness::open(
+            super::super::tests::volume_config(
+                directory.path(),
+                project,
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            )?
+            .without_default_tools(),
+        )
+        .await?;
+        let mut input = crate::tui::PromptInput::new(crate::tui::Editor::new("@unavailable"));
+        let mut completion = crate::tui_files::CompletionFiles::observe_authorized(
+            harness.task_files(),
+            &mut input,
+            None,
+        )
+        .await?;
+        harness
+            .bind_name_search(&mut completion, &mut input)
+            .await?;
+        completion
+            .refresh_query(&mut input, Some(TaskId::from_bytes([99; 16])))
+            .await?;
+        // A nonexistent admission fails in the production request worker.
+        // Previously this stopped the follower with no terminal publication.
+        async fn terminal(
+            completion: &mut crate::tui_files::CompletionFiles,
+            input: &mut crate::tui::PromptInput,
+        ) -> Result<()> {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let change = completion.read_change().await?;
+                    let complete = change.file.iter().chain(&change.files).any(|file| {
+                        file.key.path() == "search/progress.json"
+                            && serde_json::from_slice::<serde_json::Value>(&file.bytes)
+                                .is_ok_and(|value| value["complete"] == true)
+                    });
+                    completion.apply_change(change, input)?;
+                    if complete {
+                        return Ok(());
+                    }
+                }
+            })
+            .await
+            .map_err(storage)?
+        }
+        terminal(&mut completion, &mut input).await?;
+        assert!(input.completion.indexing().is_none());
+        assert_eq!(input.completion.unavailable_entries(), 1);
+        assert!(
+            input.completion.active(&input.editor),
+            "partial empty popup was hidden"
+        );
+        input.editor = crate::tui::Editor::new("@recovered");
+        input.refresh_completions();
+        completion.refresh_query(&mut input, None).await?;
+        terminal(&mut completion, &mut input).await?;
+        assert_eq!(input.completion.unavailable_entries(), 0);
+        assert!(input.completion.indexing().is_none());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn name_search_selects_the_tasks_durable_fork_without_mounting_it() -> Result<()> {

@@ -5,6 +5,7 @@ use crate::{
     IdempotencyKey, NameCheckpoint, NameCut, PublicationPermit, SearchError, SearchName,
     TransactionCommit, WorkBudget, Workspace, WorkspaceError,
 };
+mod checkpoint;
 mod refresh;
 #[cfg(feature = "native-mount")]
 mod refresh_native;
@@ -67,12 +68,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => return Ok(None),
             Err(failure) => return Err(failure.error.into()),
         };
-        let manifest: NameIndexManifest = serde_json::from_slice(&bytes)?;
-        if manifest.schema != 1 {
+        let stored: checkpoint::StoredManifest = serde_json::from_slice(&bytes)?;
+        if stored.schema != 2 {
             return Err(SearchError::Invalid(
                 "unsupported pathname index schema".into(),
             ));
         }
+        let manifest = stored.restore(&generation).await?;
         Ok(Some(Self {
             generation,
             manifest,
@@ -116,12 +118,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         page: Option<&[SearchName]>,
     ) -> Result<Option<Self>, SearchError> {
         manifest.observed_generation = expected.id();
-        let manifest_bytes = serde_json::to_vec(&manifest)?;
-        if manifest_bytes.len() as u64 > MAXIMUM_INDEX_FILE_BYTES {
-            return Err(SearchError::Invalid(
-                "pathname index frontier exceeds its file budget".into(),
-            ));
-        }
         let Some(mut transaction) = begin_at(workspace, expected).await? else {
             return Ok(None);
         };
@@ -136,7 +132,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             }
             files.push((path.as_str(), bytes.into()));
         }
-        files.push((MANIFEST, manifest_bytes.into()));
         transaction
             .write_batch(
                 &["/.acyclic-sdk", ROOT],
@@ -146,6 +141,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             )
             .await
             .map_err(|failure| failure.error)?;
+        checkpoint::write_manifest(&mut transaction, expected, &manifest).await?;
         let outcome = transaction
             .commit(
                 None,

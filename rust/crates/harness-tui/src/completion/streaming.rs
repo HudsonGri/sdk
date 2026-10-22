@@ -46,6 +46,7 @@ mod tests {
     fn generated(count: usize, broken: bool) {
         let mut matches = PathMatches::new("rs");
         let mut retained = Vec::new();
+        let started = std::time::Instant::now();
         let memory = acyclic_test_support::measure(|| {
             for i in 0..count {
                 let path = format!("generated/{i:06}.rs");
@@ -59,6 +60,13 @@ mod tests {
         assert!(
             memory.bytes_max < 64 * 1024,
             "stream retained the namespace: {memory:?}"
+        );
+        eprintln!(
+            "volume-search benchmark component=streaming-top-k entries={count} elapsed_us={} peak_bytes={} allocations={} retained_results={}",
+            started.elapsed().as_micros(),
+            memory.bytes_max,
+            memory.count_total,
+            matches.paths().len(),
         );
         std::hint::black_box(retained);
     }

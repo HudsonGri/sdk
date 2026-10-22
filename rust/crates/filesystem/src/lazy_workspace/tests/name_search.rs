@@ -23,7 +23,7 @@ where
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = crate::NameIndexManifest {
-            schema: 1,
+            schema: 2,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -523,6 +523,7 @@ async fn name_search_million_generated_entries_are_paged_without_retaining_the_t
         .unwrap();
     let mut total = 0;
     let mut largest = 0;
+    let started = std::time::Instant::now();
     while let Some(page) = walk.next_page().await.unwrap() {
         total += page.len();
         largest = largest.max(page.len());
@@ -534,6 +535,11 @@ async fn name_search_million_generated_entries_are_paged_without_retaining_the_t
     assert_eq!(total, 1_000_000);
     assert_eq!(largest, 128);
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+    eprintln!(
+        "volume-search benchmark component=name-walk entries={total} elapsed_us={} maximum_page_entries={largest} hydration_calls={}",
+        started.elapsed().as_micros(),
+        source.counts.ranges.load(Ordering::Relaxed),
+    );
 }
 
 #[tokio::test]
@@ -615,7 +621,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 1,
+        schema: 2,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1004,7 +1010,7 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 1,
+        schema: 2,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1073,7 +1079,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 1,
+            schema: 2,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1292,7 +1298,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     .unwrap();
     while walk.next_page().await.unwrap().is_some() {}
     let manifest = NameIndexManifest {
-        schema: 1,
+        schema: 2,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1403,7 +1409,7 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 1,
+            schema: 2,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

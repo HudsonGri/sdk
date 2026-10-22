@@ -75,6 +75,55 @@ pub struct NameCheckpoint {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NameCheckpoint {
+    pub(crate) fn records(&self) -> impl Iterator<Item = Result<Vec<u8>, serde_json::Error>> + '_ {
+        std::iter::once(CheckpointRecordRef::Header {
+            cut: &self.cut,
+            single: &self.single,
+            unavailable_entries: self.unavailable_entries,
+        })
+        .chain(
+            self.pending
+                .iter()
+                .map(|(path, cursor)| CheckpointRecordRef::Pending(path, cursor)),
+        )
+        .chain(
+            self.ignore_policies
+                .iter()
+                .map(|(path, policy)| CheckpointRecordRef::Policy(path, policy)),
+        )
+        .map(|record| serde_json::to_vec(&record))
+    }
+
+    pub(crate) fn restore_record(&mut self, record: &[u8]) -> Result<(), SearchError> {
+        match serde_json::from_slice::<CheckpointRecord>(record)? {
+            CheckpointRecord::Header { .. } => {
+                return Err(SearchError::Invalid("duplicate checkpoint header".into()));
+            }
+            CheckpointRecord::Pending(path, cursor) => self.pending.push((path, cursor)),
+            CheckpointRecord::Policy(path, policy) => {
+                self.ignore_policies.insert(path, policy);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn from_header(record: &[u8]) -> Result<Self, SearchError> {
+        match serde_json::from_slice::<CheckpointRecord>(record)? {
+            CheckpointRecord::Header {
+                cut,
+                single,
+                unavailable_entries,
+            } => Ok(Self {
+                cut,
+                single,
+                unavailable_entries,
+                pending: Vec::new(),
+                ignore_policies: BTreeMap::new(),
+            }),
+            _ => Err(SearchError::Invalid("missing checkpoint header".into())),
+        }
+    }
+
     /// Entries or subtrees unavailable to this traversal. A terminal walk
     /// with a nonzero count cannot certify the absence of further matches.
     pub fn unavailable_entries(&self) -> usize {
@@ -121,6 +170,28 @@ impl NameCheckpoint {
     pub(crate) fn record_unavailable(&mut self) {
         self.unavailable_entries += 1;
     }
+}
+
+#[derive(serde::Serialize)]
+enum CheckpointRecordRef<'a> {
+    Header {
+        cut: &'a NameCut,
+        single: &'a Option<SearchName>,
+        unavailable_entries: usize,
+    },
+    Pending(&'a str, &'a SavedCursor),
+    Policy(&'a str, &'a GitIgnorePolicy),
+}
+
+#[derive(serde::Deserialize)]
+enum CheckpointRecord {
+    Header {
+        cut: NameCut,
+        single: Option<SearchName>,
+        unavailable_entries: usize,
+    },
+    Pending(String, SavedCursor),
+    Policy(String, GitIgnorePolicy),
 }
 
 pub(crate) fn within_subtree(path: &str, root: &str) -> bool {
