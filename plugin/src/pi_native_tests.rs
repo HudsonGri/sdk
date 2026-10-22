@@ -284,3 +284,54 @@ fn capture_limits_respect_caller_byte_limits_and_deny_empty_allowances() {
         .is_err()
     );
 }
+
+#[test]
+fn windows_environment_keys_that_differ_only_in_case_are_one_variable() {
+    let root = root_path();
+    let runtime = |environment: BTreeMap<String, String>| PiNativeHostRuntime {
+        version: PI_NATIVE_VERSION.into(),
+        executable: root.join("node"),
+        executable_prefix: vec![root.join("pi-cli.js").to_str().unwrap().into()],
+        extension: root.join("acyclic.ts"),
+        provider_extension: None,
+        environment,
+    };
+    const KEYS: u64 = 512;
+    let distinct: BTreeMap<String, String> = (0..KEYS)
+        .map(|index| (format!("KEY_{index:04}"), "v".into()))
+        .collect();
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            items_examined: 1 << 20,
+            ..super::super::native_root_source::budget()
+        },
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert!(
+        !runtime(distinct.clone())
+            .case_folded_duplicate(&work)
+            .unwrap()
+    );
+    let examined = work.receipt().items_examined;
+    // Sorting by the folded key is O(n log n) comparisons of at most 9 bytes each.
+    // Negative control: the pairwise scan it replaces examines n(n-1)/2 pairs.
+    let sorted = KEYS * 9 * 2 * 10;
+    let pairwise = KEYS * (KEYS - 1) / 2 * 9;
+    assert!(
+        examined < sorted && sorted < pairwise,
+        "{examined} items for {KEYS} keys"
+    );
+    let mut folded = distinct;
+    folded.insert("key_0007".into(), "shadow".into());
+    assert!(
+        runtime(folded.clone())
+            .case_folded_duplicate(&work)
+            .unwrap()
+    );
+    // Only Windows reads environment keys case-insensitively.
+    let small: BTreeMap<String, String> = [("KEY", "v"), ("key", "shadow")]
+        .map(|(key, value)| (key.into(), value.into()))
+        .into();
+    assert_eq!(runtime(small).validate(&work).is_err(), cfg!(windows));
+}

@@ -442,7 +442,6 @@ where
             super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
                 bytes.as_ref(),
                 super::MAXIMUM_ADAPTER_STATE_BYTES,
-                std::mem::size_of::<super::pi_native::PiNativeLaunchIntent>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,
                 acyclic_harness::JsonValueSchema::None,
                 super::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,
@@ -672,37 +671,15 @@ fn recovery_conversion_quota<T>(
     shape: acyclic_harness::JsonValueShape,
     borrowed: bool,
 ) -> Result<(u64, u64)> {
-    let slot = [
-        std::mem::size_of::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(),
-        std::mem::size_of::<acyclic_harness::runtime::TaskAdmissionRecord>(),
-        std::mem::size_of::<acyclic_harness::resource_preparation::ResourceCreationProofRef>(),
-        std::mem::size_of::<acyclic_harness::resources::ResourceRef>(),
-        std::mem::size_of::<acyclic_harness::resources::ProviderRef>(),
-        std::mem::size_of::<acyclic_harness::source_authorization::ProjectSourceAuthorization>(),
-        std::mem::size_of::<acyclic_harness::workflow::WorkflowCommand>(),
-        std::mem::size_of::<PiTaskInput>(),
-        std::mem::size_of::<PiTaskBinding>(),
-        std::mem::size_of::<FileRef>(),
-        std::mem::size_of::<(String, serde_json::Value)>(),
-    ]
-    .into_iter()
-    .fold(0, usize::max) as u64;
     let nodes = checked_quota(shape.lexical_items(), shape.virtual_items())?;
-    let typed = if borrowed {
-        super::pi_task::native_metadata_quota::<T>(
-            shape.input_bytes(),
-            checked_quota(nodes, nodes)?,
-        )?
-    } else {
-        nodes
-            .checked_mul(8)
-            .and_then(|nodes| nodes.checked_mul(slot))
-            .ok_or_else(|| {
-                acyclic_harness::Error::from(NativeTreeMaterializationError::Work(
-                    WorkError::Overflow,
-                ))
-            })?
-    };
+    // The typed result is bounded by this input's own nodes and string bytes. A
+    // consuming conversion moves strings out of the source, so the bound of the
+    // borrowed conversion holds for both; no node is charged as the largest type
+    // any recovery may decode.
+    let typed = super::pi_task::native_metadata_quota::<T>(
+        shape.input_bytes(),
+        checked_quota(nodes, nodes)?,
+    )?;
     let additional = if borrowed {
         acyclic_harness::json_value_decode_owned_bytes(shape)?
     } else {
