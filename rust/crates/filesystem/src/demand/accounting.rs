@@ -58,7 +58,7 @@ impl DemandWork {
         }
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
-    pub(crate) fn original_budget(&self) -> WorkBudget {
+    pub(crate) const fn original_budget(&self) -> WorkBudget {
         self.initial_budget
     }
     #[cfg(any(test, feature = "native-watch"))]

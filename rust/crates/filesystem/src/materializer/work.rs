@@ -9,9 +9,9 @@ pub struct NativeMaterializationWork {
     pub(crate) resource: Option<Arc<NativeResourceAllowance>>,
     pub(crate) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
     pub(crate) invocation: Option<Arc<NativeInvocationView>>,
+    pub(crate) window: Option<Arc<NativeWorkWindow>>,
     #[cfg(feature = "native-mount")]
     pub(crate) execution: Option<Arc<NativeSourceExecutionView>>,
-    cancellation: crate::CancellationToken,
     recheck_items: bool,
 }
 impl std::fmt::Debug for NativeMaterializationWork {
@@ -33,7 +33,8 @@ impl NativeMaterializationWork {
     pub fn cancellation_wait(
         &self,
     ) -> Result<crate::Cancelled<'static>, NativeTreeMaterializationError> {
-        self.cancellation
+        self.state
+            .cancellation()
             .prepare_cancelled_with_native_work(self)
             .map_err(|cause| match cause {
                 crate::cancellation::CancellationWaitError::Work(cause) => cause.into(),
@@ -71,35 +72,34 @@ impl NativeMaterializationWork {
                 )
             })?;
         Ok(Self {
-            cancellation: cancellation.clone(),
             state: Arc::new(crate::demand::NativeDemandReadMeter::new(state)),
             resource: None,
             recheck_items: false,
             capture_origin: None,
             invocation: None,
+            window: None,
             #[cfg(feature = "native-mount")]
             execution: None,
         })
     }
     #[cfg(feature = "native-mount")]
     pub(crate) fn from_meter(state: Arc<crate::demand::NativeDemandReadMeter>) -> Self {
-        let cancellation = state.lock().cancellation().clone();
         Self {
             state,
             resource: None,
             recheck_items: false,
             capture_origin: None,
             invocation: None,
+            window: None,
             #[cfg(feature = "native-mount")]
             execution: None,
-            cancellation,
         }
     }
     /// Current invocation cancellation.
     pub fn cancellation(&self) -> &crate::CancellationToken {
         self.invocation
             .as_ref()
-            .map_or(&self.cancellation, |view| &view.cancellation)
+            .map_or(self.state.cancellation(), |view| &view.cancellation)
     }
     // The leaf stays locked through operation. Do not re-enter demand or drop
     // owners whose destruction releases through this leaf.
@@ -108,29 +108,31 @@ impl NativeMaterializationWork {
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
         self.state.with_original_leaf(|state| {
-            state.scope(
-                |work| &mut work.native_invocation,
-                self.invocation.as_ref().map(Arc::downgrade),
-                |state| {
-                    state.scope(
-                        |work| &mut work.native_resource,
-                        self.resource.as_ref().map(Arc::downgrade),
-                        |state| {
-                            state.scope(
-                                |work| &mut work.capture_custody,
-                                None,
-                                |state| {
-                                    state.scope(
-                                        |work| &mut work.recheck_items,
-                                        self.recheck_items,
-                                        operation,
-                                    )
-                                },
-                            )
-                        },
-                    )
-                },
-            )
+            state.within_window(self.window.as_deref(), |state| {
+                state.scope(
+                    |work| &mut work.native_invocation,
+                    self.invocation.as_ref().map(Arc::downgrade),
+                    |state| {
+                        state.scope(
+                            |work| &mut work.native_resource,
+                            self.resource.as_ref().map(Arc::downgrade),
+                            |state| {
+                                state.scope(
+                                    |work| &mut work.capture_custody,
+                                    None,
+                                    |state| {
+                                        state.scope(
+                                            |work| &mut work.recheck_items,
+                                            self.recheck_items,
+                                            operation,
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            })
         })
     }
     pub(crate) fn with_original_leaf<T>(
@@ -182,20 +184,40 @@ impl NativeMaterializationWork {
         )
     }
     /// Existing runtime meter for this context.
+    ///
+    /// Inside an invocation window, native I/O is charged exactly like a direct charge
+    /// on this context: through the window, under the invocation cancellation, resource
+    /// allowance and read credit of the view the window was opened on.
     pub fn runtime_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
+        let view = self.view_meter();
+        match &self.window {
+            Some(window) if window.binds(&view) => window.clone(),
+            _ => view,
+        }
+    }
+    /// The meter of the innermost view on this context, which a window binds.
+    pub(super) fn view_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         #[cfg(feature = "native-mount")]
         if let Some(execution) = &self.execution {
             return execution.clone();
         }
-        if let Some(invocation) = &self.invocation
-            && invocation.owns_resource(self.resource.as_ref())
-        {
+        if let Some(invocation) = self.metering_invocation() {
             return invocation.clone();
         }
-        self.resource.as_ref().map_or_else(
-            || self.state.clone() as Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-            |resource| resource.clone(),
-        )
+        if let Some(resource) = &self.resource {
+            return resource.clone();
+        }
+        self.state.clone()
+    }
+    /// The invocation view whose read credit meters this context's native reads.
+    pub(super) fn metering_invocation(&self) -> Option<&Arc<NativeInvocationView>> {
+        #[cfg(feature = "native-mount")]
+        if self.execution.is_some() {
+            return None;
+        }
+        self.invocation
+            .as_ref()
+            .filter(|invocation| invocation.owns_resource(self.resource.as_ref()))
     }
     /// Original typed runtime failure.
     pub fn runtime_error(&self, error: std::io::Error) -> NativeTreeMaterializationError {

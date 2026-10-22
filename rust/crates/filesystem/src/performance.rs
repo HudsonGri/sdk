@@ -209,6 +209,69 @@ impl WorkCounters {
         additive_counters!(intersect)
     }
 
+    /// Exact `self + other` per additive counter. An unbounded (`u64::MAX`) counter of
+    /// `self` stays unbounded; any other overflow is an error. The peak allocation keeps
+    /// `self`'s value.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn checked_add_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
+        self.exact_cumulative(other, self, u64::checked_add)
+    }
+
+    /// Exact `self + other` on every additive counter `limit` bounds. A counter `limit`
+    /// leaves unbounded (`u64::MAX`) keeps `self`'s value, since nothing is ever charged
+    /// against it. Any other overflow is an error. The peak allocation keeps `self`'s value.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn checked_add_bounded(
+        &self,
+        other: &Self,
+        limit: &Self,
+    ) -> Result<Self, WorkError> {
+        self.exact_cumulative(other, limit, u64::checked_add)
+    }
+
+    /// Exact `self - other` per additive counter, unbounded counters included: an
+    /// unbounded counter that holds a reservation has exactly that much less left, so
+    /// refunding it restores the limit. Any underflow is an error, never clamped. The
+    /// peak allocation keeps `self`'s value.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn checked_sub_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
+        self.exact_cumulative(other, &Self::default(), u64::checked_sub)
+    }
+
+    /// `apply` on every additive counter, except that a counter `unbounded` leaves at
+    /// `u64::MAX` keeps `self`'s value.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exact_cumulative(
+        &self,
+        other: &Self,
+        unbounded: &Self,
+        apply: fn(u64, u64) -> Option<u64>,
+    ) -> Result<Self, WorkError> {
+        let mut inexact = false;
+        let mut exact = |left: u64, right: u64, unbounded: u64| {
+            if unbounded == u64::MAX {
+                return left;
+            }
+            apply(left, right).unwrap_or_else(|| {
+                inexact = true;
+                0
+            })
+        };
+        macro_rules! combine {
+            ($($field:ident),* $(,)?) => {
+                Self {
+                    $($field: exact(self.$field, other.$field, unbounded.$field),)*
+                    peak_allocation_bytes: self.peak_allocation_bytes,
+                }
+            };
+        }
+        let combined = additive_counters!(combine);
+        if inexact {
+            return Err(WorkError::Overflow);
+        }
+        Ok(combined)
+    }
+
     /// No work at all, as a constant: [`WorkCounters::default`] usable in `const` charges such as one page read.
     pub const UNCHARGED: Self = Self {
         authority_records_read: 0,

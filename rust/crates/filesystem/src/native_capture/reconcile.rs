@@ -200,6 +200,31 @@ impl CaptureBatch<'_> {
         Ok(None)
     }
 
+    /// Records a metadata-only change of an existing same-kind node; an unchanged record
+    /// stages nothing. Returns whether the node changed.
+    fn metadata_only(
+        &mut self,
+        path: NamespacePath,
+        host_path: CaptureHostPath,
+        metadata: &HostStat,
+        canonical_metadata: FileMetadata,
+        prior_metadata: Option<FileMetadata>,
+    ) -> Result<bool, CaptureError> {
+        if prior_metadata == Some(canonical_metadata) {
+            capture_drop_path(path, self.meter)?;
+            capture_drop_host_path(host_path, self.meter)?;
+            return Ok(false);
+        }
+        ensure_current_host_node(self.source_root, &host_path, metadata, self.meter)?;
+        capture_reserve(&mut self.mutations, 1, self.meter)?;
+        self.mutations.push(AuthoredMutation::SetMetadata {
+            path,
+            metadata: canonical_metadata,
+        });
+        capture_drop_host_path(host_path, self.meter)?;
+        Ok(true)
+    }
+
     async fn present<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self,
         checkout: &mut Checkout<A, O>,
@@ -269,14 +294,13 @@ impl CaptureBatch<'_> {
             None
         };
         let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
-            ensure_current_host_node(self.source_root, &host_path, &metadata, self.meter)?;
-            capture_reserve(&mut self.mutations, 1, self.meter)?;
-            self.mutations.push(AuthoredMutation::SetMetadata {
+            self.metadata_only(
                 path,
-                metadata: canonical_metadata,
-            });
-            capture_drop_host_path(host_path, self.meter)?;
-            true
+                host_path,
+                &metadata,
+                canonical_metadata,
+                prior_metadata,
+            )?
         } else if host_kind == FileKind::Regular {
             self.regular(
                 checkout,
@@ -375,6 +399,10 @@ impl CaptureBatch<'_> {
                     prior,
                     &mut canonical_metadata,
                 );
+            }
+            // A read advances the access time, and an inode change capture does not represent, such as macOS adding `com.apple.provenance`, advances the status-change time: those stamps alone never make a new version, so a rescan of unchanged content stages nothing. A stamp moved backwards was set explicitly and is captured.
+            if canonical_metadata.only_advanced_derived_stamps(&prior) {
+                canonical_metadata = prior;
             }
         }
         Ok((canonical_metadata, prior_metadata))

@@ -235,8 +235,9 @@ impl Fixture {
             labels: Default::default(),
         };
         let (first, custody) = {
-            let io =
-                acyclic_harness::filesystem::PreparationIo::from_native_work(&startup).unwrap();
+            // Like every production run, the worker run is its own invocation window.
+            let run = startup.invocation_window().unwrap();
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&run).unwrap();
             let value = runtime
                 .runtime
                 .run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io))
@@ -1271,4 +1272,66 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
             .status,
         result.0.status
     );
+}
+
+#[tokio::test]
+async fn staged_durable_inputs_are_canonical_json() {
+    let fixture = Fixture::new(PiRootIntent::ScratchOnly {}).await;
+    let operation = OperationId::from_bytes([118; 16]);
+    let timer = stage_pi_input(
+        &fixture.owner,
+        &fixture.filesystem,
+        operation,
+        "canonical-timer",
+        &serde_json::json!({"deadline_unix_ms": 0}),
+        &fixture.startup,
+    )
+    .await
+    .unwrap();
+    // Declared field order (operation_id, kind, payload) differs from sorted key order.
+    let control = crate::pi_task::PiControlInput {
+        command: acyclic_harness::workflow::WorkflowCommand {
+            operation_id: operation,
+            kind: "acyclic.timer.v1".into(),
+            payload: timer.0,
+        },
+    };
+    let staged = stage_pi_input(
+        &fixture.owner,
+        &fixture.filesystem,
+        operation,
+        "canonical-control",
+        &control,
+        &fixture.startup,
+    )
+    .await
+    .unwrap();
+    let declared = serde_json::to_vec(&control).unwrap();
+    let canonical = acyclic_harness::contract::canonical_json_bytes(&control).unwrap();
+    assert_ne!(declared, canonical);
+    staged.0.descriptor().verify(&canonical, &mut None).unwrap();
+    assert!(staged.0.descriptor().verify(&declared, &mut None).is_err());
+
+    // The unreleased declared-order encoding has no read path: it is a typed boundary
+    // error, never a panic or a silently re-encoded value.
+    let reopened = super::inputs::decode_root_artifact::<crate::pi_task::PiControlInput>(
+        &fixture.owner,
+        &canonical,
+        JsonValueSchema::None,
+        &fixture.startup,
+    )
+    .unwrap();
+    assert_eq!(reopened.0.command.operation_id, operation);
+    assert!(matches!(
+        super::inputs::decode_root_artifact::<crate::pi_task::PiControlInput>(
+            &fixture.owner,
+            &declared,
+            JsonValueSchema::None,
+            &fixture.startup,
+        ),
+        Err(Error::NativeBoundary {
+            code: ErrorCode::Invalid,
+            reason: "root artifact is not its immutable first-party encoding",
+        })
+    ));
 }
