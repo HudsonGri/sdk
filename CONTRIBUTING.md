@@ -9,6 +9,31 @@ an entry to `provenance/manifest.json` before it is merged.
 
 ## Build and test
 
+Native x86_64 Linux Rust builds use clang and mold. On Debian or Ubuntu, install
+them before running Cargo:
+
+```sh
+sudo apt-get update
+sudo apt-get install --no-install-recommends clang mold
+```
+
+To use the system C linker instead, override the workspace linker for the command:
+
+```sh
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc cargo build --locked -p acyclic-plugin
+```
+
+For isolated identity or filesystem protocol changes, validate the owning crate:
+
+```sh
+cargo test --locked -p acyclic-plugin-identity
+cargo test --locked -p acyclic-fs-wire
+```
+
+Identity's unit tests and main-thread entry contract live in the identity crate;
+CLI integration tests exercise its executable. The filesystem wire crate owns
+the protocol descriptor and message tests. Qualification also covers consumers.
+
 ```sh
 bun install --frozen-lockfile
 bun run check   # tsc -b --force, project-wide type-check (also emits build output)
@@ -31,8 +56,11 @@ service metadata. Full TypeScript generation subsequently projects the metadata
 into `actors-service.ts`. Rust qualification generates these files before its
 workspace tests; drift checks only compare and never rewrite their inputs.
 
-The `dev` and `test` profiles build at `opt-level = 1`, which keeps backtraces
-usable while the heavy fork tests run several times faster. `--release` stays a
+The `dev` and `test` profiles use LLVM, panic unwinding and line tables for
+backtraces. The independent `acyclic-fs-wire` and `acyclic-plugin-identity` crates
+build at `opt-level = 0`; other crates retain `opt-level = 1` because their
+unoptimized async state machines exceed default thread stacks. SHA-2 and BLAKE3
+retain targeted optimization for executable readiness. `--release` stays a
 fast incremental build for development; the shipped `acyclic` executable comes
 from `node scripts/build-product.mjs`, which uses the `dist` profile (fat LTO,
 one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.
