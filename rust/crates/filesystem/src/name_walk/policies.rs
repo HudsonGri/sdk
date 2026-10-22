@@ -23,6 +23,20 @@ impl Policies {
             .map(|(path, policy)| (path.as_str(), policy.as_ref()))
     }
 
+    pub(super) fn changes<'a>(
+        &'a self,
+        previous: &'a Self,
+    ) -> impl Iterator<Item = (&'a str, Option<&'a GitIgnorePolicy>)> {
+        previous.0.diff(&self.0).map(|change| match change {
+            imbl::ordmap::DiffItem::Add(path, policy) => (path.as_str(), Some(policy.as_ref())),
+            imbl::ordmap::DiffItem::Update {
+                new: (path, policy),
+                ..
+            } => (path.as_str(), Some(policy.as_ref())),
+            imbl::ordmap::DiffItem::Remove(path, _) => (path.as_str(), None),
+        })
+    }
+
     pub(super) fn forget_subtree(&mut self, path: &str) {
         // Only visit the affected key range. Shared nodes outside this subtree
         // survive both in this snapshot and in older, generation-pinned ones.

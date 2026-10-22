@@ -93,7 +93,7 @@ where
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = crate::NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -102,10 +102,11 @@ where
             complete: page.is_none(),
             checkpoint: walk.checkpoint().unwrap(),
         };
-        let index = crate::NameIndex::publish(workspace, &expected, manifest, page.as_deref())
-            .await
-            .unwrap()
-            .unwrap();
+        let index =
+            crate::NameIndex::publish(workspace, &expected, manifest, page.as_deref(), None)
+                .await
+                .unwrap()
+                .unwrap();
         expected = index.generation();
         if page.is_none() {
             return index;
@@ -692,7 +693,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 2,
+        schema: 3,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -701,7 +702,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
         complete: false,
         checkpoint: walk.checkpoint().unwrap(),
     };
-    NameIndex::publish(lazy.workspace(), &expected, manifest, Some(&page))
+    NameIndex::publish(lazy.workspace(), &expected, manifest, Some(&page), None)
         .await
         .unwrap()
         .unwrap();
@@ -1081,7 +1082,7 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 2,
+        schema: 3,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1107,14 +1108,20 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
         .value;
     assert_ne!(expected.id(), current.id());
     assert!(
-        NameIndex::publish(lazy.workspace(), &expected, manifest.clone(), Some(&page))
-            .await
-            .unwrap()
-            .is_none()
+        NameIndex::publish(
+            lazy.workspace(),
+            &expected,
+            manifest.clone(),
+            Some(&page),
+            None
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     // Negative control: the same index bytes are valid under the current head.
     assert!(
-        NameIndex::publish(lazy.workspace(), &current, manifest, Some(&page))
+        NameIndex::publish(lazy.workspace(), &current, manifest, Some(&page), None)
             .await
             .unwrap()
             .is_some()
@@ -1150,7 +1157,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1159,10 +1166,11 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
             complete: page.is_none(),
             checkpoint: walk.checkpoint().unwrap(),
         };
-        let index = NameIndex::publish(lazy.workspace(), &expected, manifest, page.as_deref())
-            .await
-            .unwrap()
-            .unwrap();
+        let index =
+            NameIndex::publish(lazy.workspace(), &expected, manifest, page.as_deref(), None)
+                .await
+                .unwrap()
+                .unwrap();
         expected = index.generation();
         if page.is_none() {
             break index;
@@ -1369,7 +1377,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     .unwrap();
     while walk.next_page().await.unwrap().is_some() {}
     let manifest = NameIndexManifest {
-        schema: 2,
+        schema: 3,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1378,7 +1386,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
         complete: true,
         checkpoint: walk.checkpoint().unwrap(),
     };
-    let index = NameIndex::publish(&workspace, &expected, manifest, None)
+    let index = NameIndex::publish(&workspace, &expected, manifest, None, None)
         .await
         .unwrap()
         .unwrap();
@@ -1480,7 +1488,7 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1489,10 +1497,11 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
             complete: page.is_none(),
             checkpoint: walk.checkpoint().unwrap(),
         };
-        let index = NameIndex::publish(lazy.workspace(), &expected, manifest, page.as_deref())
-            .await
-            .unwrap()
-            .unwrap();
+        let index =
+            NameIndex::publish(lazy.workspace(), &expected, manifest, page.as_deref(), None)
+                .await
+                .unwrap()
+                .unwrap();
         expected = index.generation();
         if page.is_none() {
             break index;

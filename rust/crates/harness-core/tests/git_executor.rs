@@ -598,7 +598,7 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
         let page = walk.next_page().await?;
         pages += u64::from(page.is_some());
         let manifest = acyclic_fs::NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -607,10 +607,15 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
             complete: page.is_none(),
             checkpoint: walk.checkpoint()?,
         };
-        let index =
-            acyclic_fs::NameIndex::publish(main.workspace(), &expected, manifest, page.as_deref())
-                .await?
-                .unwrap();
+        let index = acyclic_fs::NameIndex::publish(
+            main.workspace(),
+            &expected,
+            manifest,
+            page.as_deref(),
+            None,
+        )
+        .await?
+        .unwrap();
         expected = index.generation();
         if page.is_none() {
             break index;

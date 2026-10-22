@@ -69,7 +69,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         let stored: checkpoint::StoredManifest = serde_json::from_slice(&bytes)?;
-        if stored.schema != 2 {
+        if stored.schema != 3 {
             return Err(SearchError::Invalid(
                 "unsupported pathname index schema".into(),
             ));
@@ -111,11 +111,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
     /// Compare-and-publish a bounded page and checkpoint together. Competing
     /// owners cannot overwrite progress derived from a different observed head.
     /// A caller retries a conflict by following the winning manifest.
+    /// Supplying the previous pinned index persists only changed policies.
     pub async fn publish(
         workspace: &Workspace<A, O>,
         expected: &Generation<A, O>,
         mut manifest: NameIndexManifest,
         page: Option<&[SearchName]>,
+        previous: Option<&Self>,
     ) -> Result<Option<Self>, SearchError> {
         manifest.observed_generation = expected.id();
         let Some(mut transaction) = begin_at(workspace, expected).await? else {
@@ -141,7 +143,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             )
             .await
             .map_err(|failure| failure.error)?;
-        checkpoint::write_manifest(&mut transaction, expected, &manifest).await?;
+        checkpoint::write_manifest(&mut transaction, expected, &manifest, previous).await?;
         let outcome = transaction
             .commit(
                 None,

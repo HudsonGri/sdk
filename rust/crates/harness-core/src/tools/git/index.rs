@@ -583,8 +583,8 @@ async fn fill_pass(
     shared: &Shared,
 ) -> crate::Result<bool> {
     let workspace = view.workspace();
-    let prior = shared.snapshot().await;
-    let (mut walk, mut pages, mut expected) = if let Some(index) = prior {
+    let mut prior = shared.snapshot().await;
+    let (mut walk, mut pages, mut expected) = if let Some(index) = &prior {
         if index.manifest.complete {
             return Ok(true);
         }
@@ -631,7 +631,7 @@ async fn fill_pass(
         let complete = page.is_none();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -640,14 +640,21 @@ async fn fill_pass(
             complete,
             checkpoint: walk.checkpoint().map_err(super::search::search_error)?,
         };
-        let index = Index::publish(workspace, &expected, manifest, page.as_deref())
-            .await
-            .map_err(super::search::search_error)?;
+        let index = Index::publish(
+            workspace,
+            &expected,
+            manifest,
+            page.as_deref(),
+            prior.as_deref(),
+        )
+        .await
+        .map_err(super::search::search_error)?;
         let Some(index) = index else {
             return Ok(false);
         };
         expected = index.generation();
-        *shared.latest.lock().await = Some(Arc::new(index));
+        prior = Some(Arc::new(index));
+        *shared.latest.lock().await = prior.clone();
         shared.changed.send_modify(|revision| *revision += 1);
         if complete {
             return Ok(true);
@@ -735,7 +742,7 @@ mod tests {
                 .is_none()
         );
         let manifest = NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -746,7 +753,7 @@ mod tests {
                 .checkpoint()
                 .map_err(super::super::search::search_error)?,
         };
-        let index = Index::publish(&workspace, &expected, manifest, Some(&page))
+        let index = Index::publish(&workspace, &expected, manifest, Some(&page), None)
             .await
             .map_err(super::super::search::search_error)?
             .unwrap();

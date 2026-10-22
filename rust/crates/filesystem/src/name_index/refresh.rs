@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             write_page(&mut transaction, ordinal, &page, &stop).await?;
         }
         let manifest = NameIndexManifest {
-            schema: 2,
+            schema: 3,
             names_cut: if names_changed {
                 cut.clone()
             } else {
@@ -310,7 +310,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             complete: checkpoint.pending_directories() == 0,
             checkpoint,
         };
-        super::checkpoint::write_manifest(&mut transaction, expected, &manifest).await?;
+        super::checkpoint::write_manifest(&mut transaction, expected, &manifest, Some(self))
+            .await?;
         let outcome = transaction
             .commit(
                 None,
@@ -390,7 +391,7 @@ mod byte_page_tests {
         .unwrap();
         while walk.next_page().await.unwrap().is_some() {}
         let manifest = NameIndexManifest {
-            schema: 2,
+            schema: 3,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -399,7 +400,7 @@ mod byte_page_tests {
             complete: true,
             checkpoint: walk.checkpoint().unwrap(),
         };
-        let index = NameIndex::publish(&workspace, &expected, manifest, None)
+        let index = NameIndex::publish(&workspace, &expected, manifest, None, None)
             .await
             .unwrap()
             .unwrap();

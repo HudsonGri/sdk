@@ -87,12 +87,30 @@ impl NameCheckpoint {
                 .iter()
                 .map(|(path, cursor)| CheckpointRecordRef::Pending(path, cursor)),
         )
-        .chain(
-            self.ignore_policies
-                .iter()
-                .map(|(path, policy)| CheckpointRecordRef::Policy(path, policy)),
-        )
         .map(|record| serde_json::to_vec(&record))
+    }
+
+    pub(crate) fn policy_records_since<'a>(
+        &'a self,
+        previous: Option<&'a Self>,
+    ) -> impl Iterator<Item = Result<(&'a str, Option<Vec<u8>>), serde_json::Error>> + 'a {
+        let changes: Box<dyn Iterator<Item = (&str, Option<&GitIgnorePolicy>)> + Send + 'a> =
+            match previous {
+                Some(previous) => Box::new(self.ignore_policies.changes(&previous.ignore_policies)),
+                None => Box::new(
+                    self.ignore_policies
+                        .iter()
+                        .map(|(path, policy)| (path, Some(policy))),
+                ),
+            };
+        changes.map(|(path, policy)| {
+            Ok((
+                path,
+                policy
+                    .map(|policy| serde_json::to_vec(&CheckpointRecordRef::Policy(path, policy)))
+                    .transpose()?,
+            ))
+        })
     }
 
     pub(crate) fn restore_record(&mut self, record: &[u8]) -> Result<(), SearchError> {
@@ -105,6 +123,27 @@ impl NameCheckpoint {
                 self.ignore_policies.insert(path, policy);
             }
         }
+        Ok(())
+    }
+
+    pub(crate) fn restore_policy_record(
+        &mut self,
+        record: &[u8],
+        hash: &str,
+    ) -> Result<(), SearchError> {
+        let CheckpointRecord::Policy(path, policy) = serde_json::from_slice(record)? else {
+            return Err(SearchError::Invalid(
+                "expected checkpoint policy record".into(),
+            ));
+        };
+        if blake3::hash(path.as_bytes()).to_hex().as_str() != hash
+            || self.ignore_policies.contains_key(&path)
+        {
+            return Err(SearchError::Invalid(
+                "checkpoint policy identity mismatch".into(),
+            ));
+        }
+        self.ignore_policies.insert(path, policy);
         Ok(())
     }
 
