@@ -342,4 +342,40 @@ mod tests {
                 .unwrap()
         );
     }
+
+    #[test]
+    fn name_search_colliding_watch_paths_remain_distinct_after_removal() {
+        let mut work = crate::native_host::ordinary_work();
+        let ownership = SourcePayloadOwnership::new(&mut work).unwrap();
+        let retained = AtomicU64::new(0);
+        let mut registrations = Registrations::default();
+        let paths: Vec<_> = (0..)
+            .map(|ordinal| PathBuf::from(format!("collision-{ordinal}")))
+            .filter(|path| registrations.hash_path(path, &mut work).unwrap() & 7 == 0)
+            .take(4)
+            .collect();
+        for path in paths.iter().take(3) {
+            insert(&mut registrations, path, &mut work, &retained, &ownership);
+        }
+        assert_eq!(registrations.slots.len(), 8);
+        // A fingerprint alone would incorrectly claim this fourth path exists.
+        assert!(!registrations.contains(&paths[3], &mut work).unwrap());
+        let slots = registrations.prepare_remove(0, &mut work).unwrap();
+        let (removed, _) = registrations.remove(0, slots);
+        retained.fetch_sub(removed.capacity() as u64, Ordering::AcqRel);
+        assert!(!registrations.contains(&paths[0], &mut work).unwrap());
+        assert!(registrations.contains(&paths[1], &mut work).unwrap());
+        assert!(registrations.contains(&paths[2], &mut work).unwrap());
+        let used = registrations.used;
+        insert(
+            &mut registrations,
+            &paths[3],
+            &mut work,
+            &retained,
+            &ownership,
+        );
+        assert_eq!(registrations.used, used, "reuse the deleted collision slot");
+        assert!(registrations.contains(&paths[3], &mut work).unwrap());
+        assert_eq!(work.live_allocation_bytes(), 0);
+    }
 }
