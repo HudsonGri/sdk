@@ -79,26 +79,29 @@ where
         // one this operation published, so later source writes cannot change
         // what the merge tracks. A transition that never published admits no
         // new paths.
-        let before = self.generation(*target_tree).await?;
-        let joined = self
-            .current
-            .operation_generation(
+        let before = acyclic_fs::in_heap(|| self.generation(*target_tree)).await?;
+        let cancellation = CancellationToken::new();
+        let joined = acyclic_fs::in_heap(|| {
+            self.current.operation_generation(
                 IdempotencyKey::from_bytes(operation.into_bytes()),
                 WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
+                &cancellation,
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| Error::from(failure.error))?;
-        let tracked_paths = acyclic_fs::git_tracked_paths_after(
-            &before,
-            joined.as_ref().unwrap_or(&before),
-            &current,
-            &self.repository,
-            &resolved,
-            u32::MAX,
-            &CancellationToken::new(),
-        )
+        })
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| Error::from(failure.error))?;
+        let tracked_paths = acyclic_fs::in_heap(|| {
+            acyclic_fs::git_tracked_paths_after(
+                &before,
+                joined.as_ref().unwrap_or(&before),
+                &current,
+                &self.repository,
+                &resolved,
+                u32::MAX,
+                &cancellation,
+            )
+        })
         .await
         .map_err(Error::from)?;
         self.validate().await?;

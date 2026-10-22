@@ -27,52 +27,42 @@ where
                         "volume repository refers to a foreign native source".into(),
                     ));
                 };
-                let lazy = acyclic_fs::in_heap(|| async {
-                    current
-                        .open_related(
-                            workspace,
-                            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                        )
-                        .await
-                })
-                .await
-                .map_err(Error::from)?;
+                // Each step's future is built inside its own heap frame, never
+                // as a temporary of an async block's poll frame.
+                let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+                let lazy = acyclic_fs::in_heap(|| current.open_related(workspace, &mut accounting))
+                    .await
+                    .map_err(Error::from)?;
                 let snapshot_bytes = snapshot.id.into_bytes();
                 let destination = format!("git-exact-{}", hex::encode(&snapshot_bytes[..12]));
                 let mut identity = [0; 16];
                 identity.copy_from_slice(&snapshot_bytes[..16]);
-                let (child, initial) = acyclic_fs::in_heap(|| async {
+                let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+                let (child, initial) = acyclic_fs::in_heap(|| {
                     lazy.fork_snapshot(
                         &destination,
                         snapshot,
                         IdempotencyKey::from_bytes(identity),
                         PublicationPermit::Unrestricted,
-                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                        &mut accounting,
                     )
-                    .await
                 })
                 .await
                 .map_err(Error::from)?;
-                acyclic_fs::in_heap(|| async {
-                    WorkspaceGraph::new(self.store.clone())
-                        .register_existing_child_at_generation(
-                            lazy.workspace(),
-                            child.workspace(),
-                            snapshot.authored_generation,
-                            initial.authored_generation,
-                        )
-                        .await
+                let graph = WorkspaceGraph::new(self.store.clone());
+                acyclic_fs::in_heap(|| {
+                    graph.register_existing_child_at_generation(
+                        lazy.workspace(),
+                        child.workspace(),
+                        snapshot.authored_generation,
+                        initial.authored_generation,
+                    )
                 })
                 .await
                 .map_err(Error::from)?;
-                acyclic_fs::in_heap(|| async {
-                    child
-                        .exactify(
-                            "/",
-                            PublicationPermit::Unrestricted,
-                            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                        )
-                        .await
+                let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+                acyclic_fs::in_heap(|| {
+                    child.exactify("/", PublicationPermit::Unrestricted, &mut accounting)
                 })
                 .await
                 .map_err(Error::from)
