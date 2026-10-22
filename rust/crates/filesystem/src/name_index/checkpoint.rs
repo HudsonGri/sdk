@@ -70,14 +70,12 @@ impl StoredManifest {
                 .value
                 .0;
             for entry in &page.entries {
-                let Some(name) = entry.name.unicode_utf8_bytes() else {
-                    return Err(SearchError::Invalid(
-                        "invalid checkpoint policy filename".into(),
-                    ));
-                };
-                let name = std::str::from_utf8(name).map_err(|_| {
-                    SearchError::Invalid("invalid checkpoint policy filename".into())
-                })?;
+                let name = entry
+                    .name
+                    .unicode_text(WorkBudget::UNBOUNDED, &stop)
+                    .map_err(|failure| failure.error)?
+                    .value
+                    .to_string();
                 let Some(hash) = name.strip_suffix(".json") else {
                     continue;
                 };
