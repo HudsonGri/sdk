@@ -172,6 +172,20 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
         .stat("/zz-changed", BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
+    // Run the negative control before either candidate query warms the path
+    // cache. An output bound used as a cold scan bound cannot find this path.
+    let old = current
+        .paths_for_file_id(stat.file_id, maximum_changes, BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value;
+    assert!(old.is_empty());
+    let mut stream = fixture
+        .source
+        .observe_diff(base.id(), maximum_changes)
+        .await?;
+    let snapshot = stream.next().await.ok_or("snapshot")??;
+    assert_eq!(snapshot.paths.len(), 1);
+    assert_eq!(snapshot.paths[0].path, "zz-changed");
     // Semantic records and rendered paths have separate bounds: the host also
     // changes directory/metadata records when replacing this one visible file.
     let changes = base
@@ -185,19 +199,6 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
         .value
         .0;
     assert_eq!(paths.len(), 1);
-    // Negative control: an output bound used as a cold scan bound cannot find it.
-    let old = current
-        .paths_for_file_id(stat.file_id, maximum_changes, BOUNDARY_BUDGET, &cancel)
-        .await?
-        .value;
-    assert!(old.is_empty());
-    let mut stream = fixture
-        .source
-        .observe_diff(base.id(), maximum_changes)
-        .await?;
-    let snapshot = stream.next().await.ok_or("snapshot")??;
-    assert_eq!(snapshot.paths.len(), 1);
-    assert_eq!(snapshot.paths[0].path, "zz-changed");
     let mut view = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
     view.apply(&snapshot, fixture.reader.as_ref(), LIMITS)
         .await?;
