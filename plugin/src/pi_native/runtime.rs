@@ -55,6 +55,39 @@ impl PiNativeHostRuntime {
         Ok(self)
     }
 
+    /// Whether two keys name one Windows variable: they differ only in ASCII case.
+    /// Sorting by the folded key leaves such keys adjacent, so the check costs
+    /// O(n log n) key comparisons, each charged by the bytes it examined.
+    pub(super) fn case_folded_duplicate(&self, work: &NativeMaterializationWork) -> Result<bool> {
+        let keys = self.environment.len();
+        let _keys_custody = work.claim(
+            (keys * std::mem::size_of::<&str>()) as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        )?;
+        let mut folded: Vec<&str> = self.environment.keys().map(String::as_str).collect();
+        let examined = std::cell::Cell::new(0_u64);
+        fn fold(key: &str) -> impl Iterator<Item = u8> + '_ {
+            key.bytes().map(|byte| byte.to_ascii_lowercase())
+        }
+        folded.sort_unstable_by(|left, right| {
+            examined.set(examined.get() + left.len().min(right.len()) as u64 + 1);
+            fold(left).cmp(fold(right))
+        });
+        let duplicate = folded
+            .iter()
+            .zip(folded.iter().skip(1))
+            .any(|(left, right)| {
+                examined.set(examined.get() + left.len().min(right.len()) as u64 + 1);
+                left.eq_ignore_ascii_case(right)
+            });
+        work.charge(WorkCounters {
+            items_examined: examined.get(),
+            ..WorkCounters::default()
+        })?;
+        Ok(duplicate)
+    }
+
     pub(crate) fn validate(&self, work: &NativeMaterializationWork) -> Result<()> {
         work.remaining()?;
         let reject = |reason| Error::NativeBoundary {
@@ -69,7 +102,12 @@ impl PiNativeHostRuntime {
             .map_err(acyclic_harness::Error::from)
         };
         let mut environment_bytes = 0_u64;
-        for (index, (key, value)) in self.environment.iter().enumerate() {
+        if cfg!(windows) && self.case_folded_duplicate(work)? {
+            return Err(reject(
+                "Pi original host environment is invalid or contains a recursive credential",
+            ));
+        }
+        for (key, value) in &self.environment {
             inspect(1)?;
             inspect(key.len())?;
             inspect(value.len())?;
@@ -82,18 +120,6 @@ impl PiNativeHostRuntime {
                 || value.contains('\0')
                 || pi_caller::is_environment_key(key)
                 || environment_bytes > crate::MAXIMUM_ADAPTER_STATE_BYTES
-                || (cfg!(windows) && {
-                    let mut duplicate = false;
-                    for prior in self.environment.keys().take(index) {
-                        inspect(prior.len())?;
-                        inspect(key.len())?;
-                        if prior.eq_ignore_ascii_case(key) {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-                    duplicate
-                })
             {
                 return Err(reject(
                     "Pi original host environment is invalid or contains a recursive credential",
@@ -145,7 +171,6 @@ impl PiNativeHostRuntime {
         crate::pi_root_provider::guarded_pi_decode(
             &bytes.0,
             crate::MAXIMUM_ADAPTER_STATE_BYTES,
-            std::mem::size_of::<Self>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::None,
             PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,
@@ -261,7 +286,6 @@ impl PiBoundInvocation<'_> {
         crate::pi_root_provider::guarded_pi_decode(
             &bytes.0,
             crate::MAXIMUM_ADAPTER_STATE_BYTES,
-            std::mem::size_of::<PiNativeInvocation>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::None,
             PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,

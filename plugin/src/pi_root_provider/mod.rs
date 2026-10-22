@@ -57,8 +57,8 @@ mod preparation;
 mod sources;
 
 pub(crate) use codec::{
-    canonical_pi_value, digest_pi_value, guarded_pi_bytes, guarded_pi_decode, guarded_pi_value,
-    native_buffer_codec_charge, read_pi_input,
+    canonical_pi_value, digest_pi_value, guarded_pi_bytes, guarded_pi_decode,
+    guarded_pi_decode_measured, guarded_pi_value, native_buffer_codec_charge, read_pi_input,
 };
 use inputs::{
     NativeInputCoordinates, observe_pi_input_at, publish_pi_input_with_native_coordinates,
@@ -161,6 +161,10 @@ pub(crate) struct PiRootProvider {
     journal_owner: Option<Arc<TaskJournalOwner<LocalStream>>>,
     original: NativeMaterializationWork,
     state: Mutex<ProviderState>,
+    /// The allocation this provider last observed in full from its durable effect.
+    /// Its result, attachments and creations are immutable once recorded, so a
+    /// later source check re-proves only the live root binding and identity.
+    observed: std::sync::OnceLock<(PiRootAllocation, NativeAllocation)>,
     #[cfg(test)]
     fault: std::sync::atomic::AtomicU8,
     _custody: NativeAllocation,
@@ -317,6 +321,7 @@ pub(crate) fn root_provider(
             dispatched: false,
             handles: BTreeMap::new(),
         }),
+        observed: std::sync::OnceLock::new(),
         #[cfg(test)]
         fault: std::sync::atomic::AtomicU8::new(0),
         _custody: custody,
