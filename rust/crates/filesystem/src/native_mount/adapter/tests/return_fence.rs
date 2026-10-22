@@ -3,6 +3,7 @@ use std::cell::Cell;
 use std::sync::{atomic::AtomicUsize, mpsc};
 
 thread_local! {
+    static OMIT_DEADLINE: Cell<bool> = const { Cell::new(false) };
     static OMIT: Cell<bool> = const { Cell::new(false) };
     static NOW: Cell<Option<u64>> = const { Cell::new(None) };
     static SKIP_RETRY: Cell<bool> = const { Cell::new(false) };
@@ -491,4 +492,102 @@ fn policy_observation_retries_data_only_publication_without_rereading_data()
 #[should_panic(expected = "data-only commit invalidated native result")]
 fn missing_policy_observation_retry_negative_control() {
     revoked_return(Read::Bytes, true, Change::Data).unwrap();
+}
+
+pub(in crate::native_mount::adapter) fn omitted_deadline() -> bool {
+    OMIT_DEADLINE.get()
+}
+
+struct ClockRestore(Option<u64>);
+impl Drop for ClockRestore {
+    fn drop(&mut self) {
+        NOW.set(self.0);
+    }
+}
+
+fn queued_expiry(kind: usize, omitted: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let _restore = ClockRestore(NOW.replace(Some(100)));
+    let (source, _, file) = fixture(Some(200))?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    match kind {
+        0 => file.write_range(0, Bytes::from_static(b"changed"))?,
+        1 => file.write_range_with_meter(
+            0,
+            crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
+            &work,
+        )?,
+        2 => file.append_range(PAYLOAD_BYTES as u64, Bytes::from_static(b"changed"))?,
+        3 => file.append_range_with_meter(
+            PAYLOAD_BYTES as u64,
+            crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
+            &work,
+        )?,
+        4 => file.resize(1)?,
+        5 => file.resize_with_meter(1, &work)?,
+        6 => file.allocate_range(0, 1, MountRangeAllocation::ZeroRange { extend: false })?,
+        7 => file.allocate_range_with_meter(
+            0,
+            1,
+            MountRangeAllocation::ZeroRange { extend: false },
+            &work,
+        )?,
+        8 => {
+            let metadata = file.lookup()?.metadata;
+            file.set_attributes(metadata, Some(1), &work)?;
+        }
+        9 => source.write_range(&native_test_path("file"), 0, Bytes::from_static(b"changed"))?,
+        10 => source.resize(&native_test_path("file"), 1)?,
+        11 => {
+            let range = file.read_sparse_range(0, 1, &work)?;
+            file.write_sparse_range(0, range, &work)?;
+        }
+        12 => file.clone_range_from(file.as_ref(), 0, 1, 1, &work)?,
+        #[cfg(unix)]
+        13 => file.write_attribute(
+            b"user.secret",
+            crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
+            MountAttributeWriteMode::Replace,
+            &work,
+        )?,
+        #[cfg(unix)]
+        14 => file.remove_attribute(b"user.secret", &work)?,
+        _ => unreachable!(),
+    }
+    NOW.set(Some(200));
+    OMIT_DEADLINE.set(omitted);
+    let result = source.sync();
+    OMIT_DEADLINE.set(false);
+    assert!(
+        matches!(result, Err(MountSourceError::AccessDenied)),
+        "expired queued mutation published: {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn manual_publication_retains_original_write_deadlines() -> Result<(), Box<dyn std::error::Error>> {
+    for kind in 0..13 {
+        queued_expiry(kind, false)?;
+    }
+    #[cfg(unix)]
+    for kind in 13..15 {
+        queued_expiry(kind, false)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "expired queued mutation published")]
+fn removed_pending_deadline_negative_control() {
+    queued_expiry(0, true).unwrap();
+}
+
+#[test]
+fn unexpired_queued_mutation_can_publish() -> Result<(), Box<dyn std::error::Error>> {
+    let _restore = ClockRestore(NOW.replace(Some(100)));
+    let (source, _, file) = fixture(Some(200))?;
+    file.write_range(0, Bytes::from_static(b"changed"))?;
+    source.sync()?;
+    assert_eq!(file.read_range(0, 7)?.as_ref(), b"changed");
+    Ok(())
 }

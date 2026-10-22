@@ -89,6 +89,18 @@ pub(in crate::native_mount) fn require_open(
 }
 
 impl<A, O> CheckoutMountSource<A, O> {
+    pub(in crate::native_mount) fn mutation_deadline(
+        &self,
+    ) -> Result<Option<u64>, MountSourceError> {
+        Ok(self
+            .access_view
+            .as_ref()
+            .ok_or(MountSourceError::AccessDenied)?
+            .current()
+            .map_err(|_| MountSourceError::AccessDenied)?
+            .valid_until())
+    }
+
     /// Bind the authenticated policy/capability view used by every callback.
     pub fn with_access_view(mut self, view: Arc<AccessView>) -> Result<Self, NativeMountError> {
         let current = view.current().map_err(|_| MountSourceError::AccessDenied)?;

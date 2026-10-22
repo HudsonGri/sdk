@@ -1,4 +1,5 @@
 struct ContentChangeContext<'a> {
+    deadline: Option<u64>,
     work: &'a crate::NativeMaterializationWork,
     lifetime: &'a CancellationToken,
     clock: &'a super::clock::Clock,
@@ -15,6 +16,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
     ) -> Result<(), MountSourceError> {
         let ContentChangeContext {
             work,
+            deadline,
             lifetime,
             clock,
             guard,
@@ -47,6 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let mut candidate = self
             .file_candidate(file_id, &mut carrier, cancellation, Some(lifetime))
             .await?;
+        candidate.deadline = deadline;
         if let crate::facade::ContentAddress::Path(path) = file.address() {
             let current = candidate
                 .checkout

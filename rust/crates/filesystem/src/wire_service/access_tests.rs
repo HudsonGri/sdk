@@ -135,3 +135,102 @@ async fn credential_deadlines_are_intersected_and_a_wider_issuer_is_rejected()
     }
     Ok(())
 }
+
+thread_local! {
+    static OMIT_EXPORT_FENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(super) fn omitted_export_fence() -> bool {
+    OMIT_EXPORT_FENCE.get()
+}
+
+async fn export_revocation_cut(
+    cut: usize,
+    resumed: bool,
+    omitted: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+    let created = service
+        .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+            name: "export-revocation".into(),
+            profile: wire::FilesystemProfile::Portable as i32,
+            operation: operation(1),
+        }))
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("workspace")?;
+    let generation = service
+        .apply_transaction(Request::new(wire::ApplyTransactionRequest {
+            base: created.head,
+            mutations: vec![mutation(wire::mutation::Mutation::CreateFile(
+                wire::CreateFile {
+                    path: "/secret".into(),
+                    contents: vec![17; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1],
+                    metadata: None,
+                },
+            ))],
+            operation: operation(2),
+            maximum_conflicts: 8,
+        }))
+        .await?
+        .into_inner()
+        .generation
+        .ok_or("generation")?;
+    let owner = service
+        .filesystem
+        .open_workspace(
+            "export-revocation",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let mut output = service
+        .export(Request::new(wire::ExportRequest {
+            generation: Some(generation),
+            after: if resumed {
+                1_u64.to_le_bytes().to_vec()
+            } else {
+                vec![]
+            },
+            maximum_objects: 64,
+            maximum_bytes: 1024 * 1024,
+        }))
+        .await?
+        .into_inner();
+    for _ in 0..cut {
+        output
+            .next()
+            .await
+            .ok_or("export ended before revocation")??;
+    }
+    crate::access::fixtures::publish_policy(
+        &owner,
+        &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
+    )
+    .await?;
+    OMIT_EXPORT_FENCE.set(omitted);
+    let next = output.next().await;
+    OMIT_EXPORT_FENCE.set(false);
+    assert!(
+        matches!(next, Some(Err(ref error)) if error.code() == tonic::Code::PermissionDenied),
+        "export disclosed a chunk after revocation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_checks_manifest_objects_and_resumed_streams_after_revocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cut in [0, 1, 2] {
+        export_revocation_cut(cut, false, false).await?;
+    }
+    export_revocation_cut(0, true, false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "export disclosed a chunk after revocation")]
+async fn removed_export_fence_negative_control() {
+    export_revocation_cut(1, false, true).await.unwrap();
+}

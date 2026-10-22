@@ -159,6 +159,7 @@ where
         let attached: Arc<dyn MountOpenFile> = Arc::new(CheckoutAttachedFile {
             checkout: Arc::clone(&self.checkout),
             file_id,
+            deadline: self.mutation_deadline()?,
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.config.profile,

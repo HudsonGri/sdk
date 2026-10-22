@@ -36,6 +36,7 @@ pub struct SharedCheckoutState<A, O> {
         acyclic_stream::OwnedBytes,
     )>,
     publication: MountPublication,
+    pending_deadline: Option<u64>,
     ledger: Arc<ViewLedger>,
     recorded_view: ObjectId,
 }
@@ -62,6 +63,7 @@ impl<A, O> SharedCheckout<A, O> {
                 checkout,
                 publication_operation: None,
                 publication_evidence: None,
+                pending_deadline: None,
                 publication,
                 ledger: Arc::clone(&ledger),
             }),
@@ -99,6 +101,7 @@ impl<A, O> SharedCheckout<A, O> {
                 checkout,
                 publication_operation: None,
                 publication_evidence: None,
+                pending_deadline: None,
                 publication,
                 ledger: Arc::clone(&ledger),
             }),
@@ -202,6 +205,7 @@ impl<A, O> SharedCheckout<A, O> {
             ))?;
         Ok(CheckoutCandidate {
             _publication: publication,
+            deadline: None,
             _file_mutation: None,
             base: state
                 .checkout

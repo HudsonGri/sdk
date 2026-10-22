@@ -63,6 +63,7 @@ where
             if lookup.node.file_id != file {
                 return Err(MountSourceError::Stale);
             }
+            candidate.deadline = self.mutation_deadline()?;
             require_attribute_root(metadata, lookup.metadata)?;
             candidate
                 .checkout

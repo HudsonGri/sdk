@@ -1,6 +1,7 @@
 struct CheckoutAttachedFile<A, O> {
     checkout: Arc<SharedCheckout<A, O>>,
     file_id: FileId,
+    deadline: Option<u64>,
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
     profile: FilesystemProfile,
@@ -55,6 +56,7 @@ where
                 Some(&self.cancellation),
             )
             .await?;
+        candidate.deadline = self.deadline;
         candidate
             .checkout
             .change_named_attribute(self.file_id, &name, value, work, cancellation)
@@ -92,6 +94,7 @@ where
                 append_only,
                 ContentChangeContext {
                     work,
+                    deadline: self.deadline,
                     lifetime: &self.cancellation,
                     clock: &self.runtime.clock,
                     guard: self.native_callback_guard.clone(),
@@ -344,6 +347,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
+            candidate.deadline = self.deadline;
             let record = candidate
                 .checkout
                 .read_file_record_by_id(self.file_id, work, cancellation)
@@ -458,6 +462,7 @@ where
                 .read_metadata(self.file_id, work, cancellation)
                 .await?;
             require_attribute_root(metadata, current)?;
+            candidate.deadline = self.deadline;
             candidate
                 .checkout
                 .set_attributes(self.file_id, metadata, logical_bytes, work, cancellation)

@@ -177,6 +177,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         if lookup.node.file_id != file {
             return Err(MountSourceError::Stale);
         }
+        candidate.deadline = self.mutation_deadline()?;
         candidate
             .checkout
             .change_named_attribute(lookup.node.file_id, &name, value, work, cancellation)
@@ -695,6 +696,7 @@ where
                     append_only,
                     ContentChangeContext {
                         work,
+                        deadline: view.valid_until(),
                         lifetime: &self.cancellation,
                         clock: &self.runtime.clock,
                         guard: self.native_callback_guard.clone(),

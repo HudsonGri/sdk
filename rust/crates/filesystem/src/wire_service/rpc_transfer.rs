@@ -30,7 +30,9 @@ where
             .value;
         let manifest = checkout
             .export_manifest(crate::WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
+            .await;
+        check_export_workspace(&generation.workspace).await?;
+        let manifest = manifest
             .map_err(|failure| Status::unavailable(failure.error.to_string()))?
             .value;
         let encoded = crate::encode_generation_export_manifest(&manifest)
@@ -54,12 +56,40 @@ where
             terminal: manifest.objects.is_empty(),
         });
         let filesystem = self.filesystem.clone();
+        let workspace = generation.workspace;
         let objects = manifest.objects;
         let maximum_objects = request.maximum_objects;
         let maximum_bytes = request.maximum_bytes;
         let object_stream = stream::try_unfold(
-            (filesystem, objects, start_index, start, retained, 0_u32),
-            move |(filesystem, objects, index, cursor, retained, emitted)| async move {
+            (
+                filesystem,
+                workspace,
+                manifest_chunk,
+                objects,
+                start_index,
+                start,
+                retained,
+                0_u32,
+            ),
+            move |(
+                filesystem,
+                workspace,
+                manifest_chunk,
+                objects,
+                index,
+                cursor,
+                retained,
+                emitted,
+            )| async move {
+                check_export_workspace(&workspace).await?;
+                if let Some(chunk) = manifest_chunk {
+                    return Ok(Some((
+                        chunk,
+                        (
+                            filesystem, workspace, None, objects, index, cursor, retained, emitted,
+                        ),
+                    )));
+                }
                 if index == objects.len() || emitted == maximum_objects || retained == maximum_bytes
                 {
                     return Ok(None);
@@ -75,7 +105,9 @@ where
                         crate::WorkBudget::UNBOUNDED,
                         &CancellationToken::new(),
                     )
-                    .await
+                    .await;
+                check_export_workspace(&workspace).await?;
+                let body = body
                     .map_err(|failure| Status::resource_exhausted(failure.error.to_string()))?
                     .value
                     .bytes;
@@ -94,6 +126,8 @@ where
                     chunk,
                     (
                         filesystem,
+                        workspace,
+                        None,
                         objects,
                         next_index,
                         next_cursor,
@@ -103,8 +137,7 @@ where
                 )))
             },
         );
-        let output = stream::iter(manifest_chunk.map(Ok)).chain(object_stream);
-        Ok(Response::new(Box::pin(output)))
+        Ok(Response::new(Box::pin(object_stream)))
     }
 
     async fn rpc_import(
@@ -225,4 +258,20 @@ where
             )),
         }))
     }
+}
+
+async fn check_export_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &crate::Workspace<A, O>,
+) -> Result<(), Status> {
+    #[cfg(test)]
+    if tests::omitted_export_fence() {
+        return Ok(());
+    }
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    workspace
+        .check_current_access(&mut accounting, &cancellation)
+        .await
+        .map_err(|error| status(&error))
 }
