@@ -453,7 +453,17 @@ async fn maintain(
                     }
                 },
                 changed = source_changed(&mut native) => { native_delta = Some(changed?); },
-                filled = fill(view, ignore, shared) => { filled?; },
+                filled = fill(view, ignore, shared) => {
+                    if let Err(error) = filled {
+                        if !restart_stale_walk(view, &error) {
+                            return Err(error);
+                        }
+                        native_delta = Some(acyclic_fs::lazy_workspace::NativeNameDelta {
+                            all: true,
+                            ..Default::default()
+                        });
+                    }
+                },
             }
             // Coalesce our own page publications. Reading a million-name
             // index must not make its producer replay thousands of its own
@@ -477,6 +487,33 @@ async fn maintain(
             }
         }
     }
+}
+
+fn restart_stale_walk(view: &OwnedView, error: &Error) -> bool {
+    let OwnedView::Checkout(lazy) = view else {
+        return false;
+    };
+    let Error::NativeSource { source, .. } = error else {
+        return false;
+    };
+    if !matches!(
+        source.semantic_error(),
+        acyclic_fs::LazyWorkspaceError::StaleSource
+            | acyclic_fs::LazyWorkspaceError::StaleIdentity
+            | acyclic_fs::LazyWorkspaceError::StaleCursor
+            | acyclic_fs::LazyWorkspaceError::Demand(
+                acyclic_fs::demand::DemandError::StaleSource
+                    | acyclic_fs::demand::DemandError::StaleVersion
+                    | acyclic_fs::demand::DemandError::StaleCursor
+            )
+    ) {
+        return false;
+    }
+    // A mutation can invalidate a continuation before a native callback is
+    // delivered, or on a mount with no feed. Keep discovery live at a new cut
+    // instead of leaving every later query on the same unusable checkpoint.
+    lazy.invalidate_indexed_native_metadata();
+    true
 }
 
 fn metadata_changed(
@@ -860,23 +897,17 @@ mod tests {
         assert_eq!(Arc::strong_count(&shared), 1);
     }
 
-    #[tokio::test]
-    async fn volume_search_unwatched_mount_follows_metadata_changes() -> crate::Result<()> {
+    async fn unwatched_checkout(root: &Path, storage: &Path) -> crate::Result<LocalLazyWorkspace> {
         use acyclic_fs::{Lifecycle, LocalOptions, VolumeConfig};
         acyclic_native_runtime::initialize_native_io_services().map_err(storage_index)?;
-        let temp = tempfile::tempdir().map_err(storage_index)?;
-        let root = temp.path().join("root");
-        std::fs::create_dir_all(root.join("nested")).map_err(storage_index)?;
-        std::fs::write(root.join("nested/before.txt"), b"unread content").map_err(storage_index)?;
-        let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
+        let fs = LocalFs::local(LocalOptions::new(storage.join("fs")))
             .await
             .map_err(storage_index)?;
-        let store =
-            LocalCoreStateStore::open_owned(temp.path().join("core")).map_err(storage_index)?;
+        let store = LocalCoreStateStore::open_owned(storage.join("core")).map_err(storage_index)?;
         let config = VolumeConfig::native(Lifecycle::Durable);
         let stop = CancellationToken::new();
         let source = NativeDemandSource::open(
-            std::borrow::Cow::Borrowed(&root),
+            std::borrow::Cow::Borrowed(root),
             config.profile,
             config.limits,
             None,
@@ -897,6 +928,127 @@ mod tests {
             &mut WorkBudget::UNBOUNDED.accounting(&stop),
         )
         .await?;
+        Ok(lazy)
+    }
+
+    #[tokio::test]
+    async fn volume_search_stale_directory_checkpoint_recovers_without_a_feed() -> crate::Result<()>
+    {
+        let temp = tempfile::tempdir().map_err(storage_index)?;
+        let root = temp.path().join("root");
+        std::fs::create_dir(&root).map_err(storage_index)?;
+        for ordinal in 0..300 {
+            std::fs::write(root.join(format!("before-{ordinal:03}.txt")), b"unread")
+                .map_err(storage_index)?;
+        }
+        let lazy = unwatched_checkout(&root, temp.path()).await?;
+        let view = Arc::new(OwnedView::Checkout(lazy));
+        let ignore = super::super::search::search_ignore(view.view()).await?;
+        let mut walk = walk_names(view.view(), None, ignore.clone()).await?;
+        let first = loop {
+            let page = walk
+                .next_page()
+                .await
+                .map_err(super::super::search::search_error)?
+                .expect("unfinished native directory");
+            if !page.is_empty() {
+                break page;
+            }
+        };
+        let checkpoint = walk
+            .checkpoint()
+            .map_err(super::super::search::search_error)?;
+        let cut = walk.cut();
+        let expected = view
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let manifest = NameIndexManifest {
+            schema: 5,
+            cut: cut.clone(),
+            names_cut: cut.clone(),
+            observed_generation: expected.id(),
+            pages: 1,
+            pending_directories: walk.pending_directories(),
+            complete: false,
+            checkpoint: checkpoint.clone(),
+        };
+        let partial = Index::publish(view.workspace(), &expected, manifest, Some(&first), None)
+            .await
+            .map_err(super::super::search::search_error)?
+            .unwrap();
+        std::fs::rename(root.join("before-000.txt"), root.join("after.txt"))
+            .map_err(storage_index)?;
+        let OwnedView::Checkout(lazy) = view.as_ref() else {
+            unreachable!()
+        };
+        let mut stale = NameWalk::resume(lazy, checkpoint, ignore)
+            .await
+            .map_err(super::super::search::search_error)?;
+        // Negative control: resuming the persisted native cookie at its old
+        // directory version fails before the producer's recovery is applied.
+        let rejected = stale.next_page().await.err().expect("stale continuation");
+        assert!(matches!(
+            rejected,
+            acyclic_fs::SearchError::Lazy(
+                acyclic_fs::LazyWorkspaceError::StaleCursor
+                    | acyclic_fs::LazyWorkspaceError::Demand(
+                        acyclic_fs::demand::DemandError::StaleCursor
+                    )
+            )
+        ));
+        let (changed, receiver) = watch::channel(0);
+        let shared = Arc::new(Shared {
+            registration: Arc::new(AsyncMutex::new(Weak::new())),
+            latest: AsyncMutex::new(Some(Arc::new(partial))),
+            changed,
+            failure: Mutex::new(None),
+            directory_query: Mutex::new(None),
+            refresh: tokio::sync::Notify::new(),
+        });
+        let mut names = IndexedNames {
+            shared: Arc::clone(&shared),
+            changed: receiver,
+            next: 1,
+            cut: Some(cut),
+        };
+        let producer_view = Arc::clone(&view);
+        let producer_shared = Arc::clone(&shared);
+        let producer = tokio::spawn(async move {
+            maintain(&producer_view, &producer_shared, None, Default::default()).await
+        });
+        let scenario = async {
+            let mut found = BTreeSet::new();
+            while let Some(page) = names.next_page().await? {
+                if page.reset {
+                    found.clear();
+                }
+                found.extend(
+                    page.names
+                        .into_iter()
+                        .filter(|name| name.regular)
+                        .map(|name| name.path),
+                );
+            }
+            assert_eq!(found.len(), 300);
+            assert!(found.contains("after.txt"));
+            assert!(!found.contains("before-000.txt"));
+            Ok::<_, Error>(())
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), scenario).await;
+        producer.abort();
+        result.map_err(storage_index)?
+    }
+
+    #[tokio::test]
+    async fn volume_search_unwatched_mount_follows_metadata_changes() -> crate::Result<()> {
+        let temp = tempfile::tempdir().map_err(storage_index)?;
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(root.join("nested")).map_err(storage_index)?;
+        std::fs::write(root.join("nested/before.txt"), b"unread content").map_err(storage_index)?;
+        let lazy = unwatched_checkout(&root, temp.path()).await?;
         let view = Arc::new(OwnedView::Checkout(lazy));
         let (changed, receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
