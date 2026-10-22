@@ -167,7 +167,7 @@ impl LocalWorkspace {
         #[cfg(any(target_os = "linux", windows))]
         volumes::link(path, &mut mounts)?;
         #[cfg(not(any(target_os = "linux", windows)))]
-        volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
+        volumes::attach(&self.filesystem, &self.store, path, &mut mounts, true).await?;
         Ok(Arc::new(mounts))
     }
     pub(super) async fn created_mounts(
@@ -212,7 +212,7 @@ impl LocalWorkspace {
             None,
             private.map(|volume| ("scratch".into(), volume, None)),
         )?;
-        volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
+        volumes::attach(&self.filesystem, &self.store, &root, &mut mounts, true).await?;
         Ok(Arc::new(mounts))
     }
 
@@ -365,7 +365,8 @@ pub(super) async fn open(
             "local checkout root was replaced during open".into(),
         ));
     }
-    let exclusions = if native_mounts {
+    let has_scratch = scratch != volume;
+    let exclusions = if has_scratch {
         volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
     } else {
         Vec::new()
@@ -407,10 +408,12 @@ pub(super) async fn open(
         &path,
         volume,
         None,
-        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
+        has_scratch.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
+    // Logical files remain available without a shell or a projection provider.
+    // Binding their source must not create directories in the native checkout.
+    volumes::attach(filesystem, &store, &path, &mut mounts, native_mounts).await?;
     if native_mounts {
-        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
         Box::pin(volumes::parents::bind(
             &view,
             &path,

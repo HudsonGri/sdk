@@ -254,6 +254,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         &workspace.store,
         task.path(),
         &mut rebound,
+        true,
     )
     .await?;
     let rebound = rebound.named(Some("scratch"))?.1;

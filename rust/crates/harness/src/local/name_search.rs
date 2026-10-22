@@ -368,6 +368,16 @@ mod tests {
         )
         .await?;
         let workspace = harness.workspace.as_ref().unwrap();
+        assert!(
+            workspace
+                .mounts
+                .named(Some("scratch"))?
+                .1
+                .view
+                .source
+                .is_some()
+        );
+        assert!(!workspace.path.join(".volumes").exists());
         let stop = acyclic_fs::CancellationToken::new();
         let mut transaction = workspace
             .view
@@ -458,6 +468,7 @@ mod tests {
         assert_eq!(input.completion.unavailable_entries(), 1);
         assert!(input.completion.accept(&mut input.editor, 1));
         assert_eq!(input.editor.text(), "@.volumes/scratch/healthy.rs ");
+        assert!(!workspace.path.join(".volumes").exists());
         Ok(())
     }
 
@@ -546,6 +557,10 @@ mod tests {
             panic!("search admission")
         };
         let workspace = harness.workspace.as_ref().unwrap();
+        // Runtime tool binding initializes passive bookkeeping during open.
+        // Clear this marker so an accidental executor construction by search
+        // is observable independently of that initial binding.
+        workspace.state.lock().await.initialized = false;
         assert!(
             selected_view(workspace, &harness.runtime, Some(task_id))
                 .await?

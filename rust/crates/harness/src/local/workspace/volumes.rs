@@ -71,6 +71,7 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &Path,
     mounts: &mut Mounts,
+    native_parents: bool,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     for (relative, mount) in mounts.mounts_mut() {
@@ -87,10 +88,9 @@ pub(super) async fn attach(
             .map_err(|failure| Error::from(failure.error))?
             .value;
         let destination = root.join(relative);
-        // Bind the namespace before the initial source/watch cut. Creating its
-        // parent during the first shell command would author a project change
-        // even when that command only reads. The projection itself stays absent.
-        if let Some(parent) = Path::new(relative).parent() {
+        // Physical mounts bind parents before the initial source/watch cut.
+        // Logical-only bindings need no native directories or projection.
+        if native_parents && let Some(parent) = Path::new(relative).parent() {
             create_mount_directory(root, parent)?;
         }
         acyclic_fs::WorkspaceGraph::new(store.clone())
