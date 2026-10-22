@@ -75,6 +75,12 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// The allocation budget live while this host's commands advance, which
+    /// pays for the frames that drive them; `None` where no budget is live.
+    fn frame_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        None
+    }
+
     /// Executes on the original work ledger without constructing a legacy future.
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(

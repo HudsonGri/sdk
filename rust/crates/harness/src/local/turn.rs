@@ -205,7 +205,7 @@ impl LocalHarness {
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
         let manifest = self
-            .turn_manifest(operation, question, publisher.as_ref())
+            .turn_manifest(operation, question, publisher.as_ref(), None)
             .await?;
         let prompt = self.prompt_context(Some(task), question).await?;
         self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())
@@ -308,7 +308,7 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)
+            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher, None)
             .await?;
         Ok((receive, model))
     }
@@ -321,7 +321,7 @@ impl LocalHarness {
         limits: Limits,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output(operation, prompt, limits, None)
+            .stage_turn_with_output(operation, prompt, limits, None, None)
             .await?;
         Ok((receive, model))
     }
@@ -332,13 +332,14 @@ impl LocalHarness {
         prompt: &str,
         limits: Limits,
         output: Option<&VolumeRef>,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(
         WorkflowCommand,
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
         let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
-        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref())
+        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref(), io)
             .await
     }
 
@@ -349,12 +350,13 @@ impl LocalHarness {
         limits: Limits,
         output: Option<&VolumeRef>,
         publisher: &dyn ContentPublisher,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(
         WorkflowCommand,
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
-        let manifest = self.turn_manifest(operation, prompt, publisher).await?;
+        let manifest = self.turn_manifest(operation, prompt, publisher, io).await?;
         let (receive, model) = self
             .stage_bound_turn_using(
                 operation,
@@ -373,11 +375,12 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &str,
         publisher: &dyn ContentPublisher,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<crate::conversation::FileRef> {
         Ok(match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
-                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                self.stage_context_manifest_with(operation, Some(prompt), publisher, io)
                     .await?
             }
         })
@@ -585,37 +588,41 @@ impl LocalHarness {
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = Result<bool>> + Send,
     {
+        // Every frame below is paid for on the commands' live budget, if any.
+        let io = commands.frame_io();
         let worker = crate::distributed::Worker {
             id: format!("local-{}", crate::identity::fresh_uuid()),
             available: Default::default(),
             labels: Default::default(),
         };
-        let mut attempt = match acyclic_fs::in_heap(|| async {
+        let mut attempt = match crate::conversation::BoundedOperationFuture::new(io, || async {
             self.runtime.task_host().recover_work(task, &mut None).await
-        })
+        })?
         .await?
         {
             crate::distributed::WorkPull::Claimed(lease) => Some(
-                acyclic_fs::in_heap(|| {
+                crate::conversation::BoundedOperationFuture::new(io, || {
                     self.runtime
                         .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                })
+                })?
                 .await,
             ),
             crate::distributed::WorkPull::Unresolved { error, .. } => {
-                if acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
-                    .await?
-                    .is_none()
+                if crate::conversation::BoundedOperationFuture::new(io, || {
+                    self.runtime.task_host().outcome(task)
+                })?
+                .await?
+                .is_none()
                 {
                     return Err(error);
                 }
                 None
             }
             crate::distributed::WorkPull::Idle => {
-                acyclic_fs::in_heap(|| {
+                crate::conversation::BoundedOperationFuture::new(io, || {
                     self.runtime
                         .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                })
+                })?
                 .await?
             }
         };
@@ -628,22 +635,24 @@ impl LocalHarness {
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
                     attempt = Some(
-                        acyclic_fs::in_heap(|| {
+                        crate::conversation::BoundedOperationFuture::new(io, || {
                             self.runtime
                                 .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                        })
+                        })?
                         .await,
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    if !acyclic_fs::in_heap(&continue_work).await? {
+                    if !crate::conversation::BoundedOperationFuture::new(io, &continue_work)?
+                        .await?
+                    {
                         break;
                     }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
-                    attempt = acyclic_fs::in_heap(|| {
+                    attempt = crate::conversation::BoundedOperationFuture::new(io, || {
                         self.runtime.run_operation(
                             &worker,
                             task,
@@ -651,13 +660,14 @@ impl LocalHarness {
                             TRANSITIONS_PER_SLICE,
                             None,
                         )
-                    })
+                    })?
                     .await?;
                 }
                 _ => break,
             }
         }
-        acyclic_fs::in_heap(|| self.refresh_command_task(task)).await?;
+        crate::conversation::BoundedOperationFuture::new(io, || self.refresh_command_task(task))?
+            .await?;
         Ok(())
     }
 

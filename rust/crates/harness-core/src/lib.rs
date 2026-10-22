@@ -52,6 +52,7 @@ mod accounting_trace {
 }
 pub mod agent_loop;
 pub mod bundle;
+pub mod charged_box;
 #[doc(hidden)]
 pub mod command_request;
 pub mod context;

@@ -4,6 +4,7 @@
 //! link, and a dependency would silently replace the allocator of every
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
+pub mod boxes;
 pub mod differential;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod stack;

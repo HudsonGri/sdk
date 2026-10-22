@@ -158,6 +158,9 @@ impl CheckoutTransition<'_> {
         let frame_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         // Boxed, and the journal with it: neither stays in this frame, which is
         // live under the whole publication below.
+        let slot = crate::charged_box::ChargedBox::<acyclic_fs::MaterializationJournal>::reserve(
+            Some(&frame_io),
+        )?;
         let journal =
             crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || async {
                 acyclic_fs::load_native_materialization_journal(
@@ -167,7 +170,7 @@ impl CheckoutTransition<'_> {
                     cancellation,
                 )
                 .await
-                .map(|loaded| loaded.value.map(Box::new))
+                .map(|loaded| loaded.value.map(|journal| slot.fill(journal)))
             })?
             .await
             .map_err(|(cause, _)| Error::from(cause))?;

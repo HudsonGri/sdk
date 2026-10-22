@@ -127,6 +127,7 @@ where
         turn: OperationId,
         admission: &TaskAdmissionRecord,
     ) -> Result<Box<FilesystemExecutionJournal<P, A, O>>> {
+        // Unbudgeted: the owner is opened with no `io`.
         let owner = acyclic_fs::in_heap(|| self.host.journal_owner(task, &fence, None)).await?;
         self.bind_execution_journal(owner, task, turn, admission)
     }
@@ -167,8 +168,11 @@ where
                     &owner.volume,
                     None,
                 )
+                // Unbudgeted: the journal is opened with no allocation budget
+                // (`io: None` above).
                 .map(Box::new);
         }
+        // Unbudgeted: the journal is opened with no allocation budget.
         Ok(Box::new(journal))
     }
 

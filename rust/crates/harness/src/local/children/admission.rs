@@ -38,10 +38,13 @@ impl LocalHarness {
     ) -> Result<TaskId> {
         // Staging runs in its own heap future: none of its temporaries stay
         // reserved in this frame while the preparation task advances.
+        // Unbudgeted: staging creates its budget inside this frame.
         let staged = match acyclic_fs::in_heap(|| self.stage_child_task(files, file)).await? {
             Ok(staged) => staged,
             Err(task) => return Ok(task),
         };
+        // The charge is bound first, so it returns only after the box is freed.
+        let (_charge, staged) = staged.into_box();
         let FileKey::Child { reference, .. } = &file.key else {
             return Err(Error::Invalid(
                 "child admission requires a request file".into(),
@@ -63,9 +66,18 @@ impl LocalHarness {
         };
         let preparation_operation = staged.preparation_operation;
         let preparation_task = TaskId::from_bytes(preparation_operation.into_bytes());
-        acyclic_fs::in_heap(|| self.advance(preparation_task, &commands)).await?;
+        // Every frame below is paid for on the staged preparation's budget,
+        // which stays live until this admission returns.
+        let io = Some(&staged.io);
+        crate::conversation::BoundedOperationFuture::new(io, || {
+            self.advance(preparation_task, &commands)
+        })?
+        .await?;
         if !matches!(
-            acyclic_fs::in_heap(|| host.terminal_status(preparation_task)).await?,
+            crate::conversation::BoundedOperationFuture::new(io, || {
+                host.terminal_status(preparation_task)
+            })?
+            .await?,
             Some(crate::Outcome::Succeeded(_))
         ) {
             return Err(Error::Indeterminate(preparation_operation));
@@ -81,12 +93,18 @@ impl LocalHarness {
             workspace.store.clone(),
         );
         let branch = format!("agents/{}", reference.as_str());
-        acyclic_fs::in_heap(|| repository.register_branch_workspace(branch, child_id, None, false))
-            .await
-            .map_err(storage)?;
+        crate::conversation::BoundedOperationFuture::new(io, || {
+            repository.register_branch_workspace(branch, child_id, None, false)
+        })?
+        .await
+        .map_err(storage)?;
         let child = staged.request.child;
         let fence = staged.fence;
-        let task = match acyclic_fs::in_heap(|| host.admit_owned(child, fence)).await? {
+        let task = match crate::conversation::BoundedOperationFuture::new(io, || {
+            host.admit_owned(child, fence)
+        })?
+        .await?
+        {
             Admission::Accepted(task) => task,
             Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
             Admission::Indeterminate { operation_id } => {
@@ -104,7 +122,7 @@ impl LocalHarness {
         &self,
         files: &TaskFiles<P>,
         file: &FileValue,
-    ) -> Result<std::result::Result<Box<StagedChild>, TaskId>> {
+    ) -> Result<std::result::Result<crate::charged_box::ChargedBox<StagedChild>, TaskId>> {
         let FileKey::Child {
             reference,
             file: ChildFile::Request,
@@ -116,6 +134,7 @@ impl LocalHarness {
         };
         let keys = [file.key.clone()];
         let query = Query::File(file.key.clone());
+        // Unbudgeted: no preparation budget exists before staging.
         let observed = acyclic_fs::in_heap(|| files.inner.snapshot_files(&keys, &query))
             .await
             .map_err(storage)?;
@@ -128,6 +147,7 @@ impl LocalHarness {
             Error::Unauthorized("child request has no authenticated parent".into())
         })?;
         let operation = child_operation(files.volume(), reference.as_str(), b"child")?;
+        // Unbudgeted: no preparation budget exists before staging.
         let admitted = match acyclic_fs::in_heap(|| {
             self.runtime
                 .task_host()
@@ -432,6 +452,7 @@ impl LocalHarness {
                                             "Follow the received child request.",
                                             narrowed.limits(),
                                             Some(&project),
+                                            Some(io_ref),
                                         )
                                     },
                                 )?
@@ -580,7 +601,9 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(operation_id));
             }
         }
-        Ok(Ok(Box::new(StagedChild {
+        // The box is paid for on the budget it carries, before it is made.
+        let slot = crate::charged_box::ChargedBox::<StagedChild>::reserve(Some(&io))?;
+        Ok(Ok(slot.fill(StagedChild {
             source,
             request: preparation_request,
             cut,

@@ -1,5 +1,6 @@
 //! Fork journal serialization and immutable record checks.
 use super::*;
+use crate::charged_box::ChargedBox;
 pub(super) fn preparation_journal(
     provider: &ProviderRef,
     operation: OperationId,
@@ -112,7 +113,7 @@ pub(super) async fn write_once<A, O, T>(
     operation: OperationId,
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<TaskResourcePreparation>>,
-) -> Result<Box<T>>
+) -> Result<ChargedBox<T>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -167,7 +168,7 @@ pub(super) async fn read_report<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         read_report_boxed(host, journal, request, maximum_bytes, io)
     })?
     .await
-    .map(|report| report.map(|report| *report))
+    .map(|report| report.map(ChargedBox::into_inner))
 }
 
 /// Reads the report as a box: its decoded value never passes through the
@@ -178,7 +179,7 @@ pub(super) async fn read_report_boxed<A: AsyncAuthorityStore, O: AsyncObjectStor
     request: &ForkRequest,
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
-) -> Result<Option<Box<ForkReport>>> {
+) -> Result<Option<ChargedBox<ForkReport>>> {
     let report = crate::conversation::BoundedOperationFuture::new(io, || {
         read_record_boxed::<A, O, ForkReport>(host, journal, "/report.json", maximum_bytes, io)
     })?
@@ -279,7 +280,7 @@ pub(super) async fn read_record<
         read_record_boxed::<A, O, T>(host, journal, path, maximum_bytes, io)
     })?
     .await
-    .map(|record| record.map(|record| *record))
+    .map(|record| record.map(ChargedBox::into_inner))
 }
 
 /// Reads a record as a box, decoded in a frame of its own, so no poll frame
@@ -294,7 +295,7 @@ pub(super) async fn read_record_boxed<
     path: &str,
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
-) -> Result<Option<Box<T>>> {
+) -> Result<Option<ChargedBox<T>>> {
     read_record_decoded_bounded(
         host,
         journal,
@@ -310,7 +311,7 @@ pub(super) async fn read_record_boxed<
 fn decode_record_boxed<T: bounded_io::PreparationRecord>(
     bytes: &acyclic_stream::OwnedBytes,
     io: Option<&PreparationIo>,
-) -> Result<Box<T>> {
+) -> Result<ChargedBox<T>> {
     match io {
         Some(io) => decode_record_measured(bytes, io),
         None => decode_record_unmeasured(bytes),
@@ -321,16 +322,15 @@ fn decode_record_boxed<T: bounded_io::PreparationRecord>(
 fn decode_record_measured<T: bounded_io::PreparationRecord>(
     bytes: &acyclic_stream::OwnedBytes,
     io: &PreparationIo,
-) -> Result<Box<T>> {
+) -> Result<ChargedBox<T>> {
     let (value, reservation) = io.decode(
         std::marker::PhantomData::<T>,
         bytes,
         crate::wire::ErrorCode::Storage,
     )?;
     // Boxed before the reservation settles: one copy of the value here. The
-    // box is one more allocation operation than the decoder charged.
-    io.box_attempt::<T>()?;
-    let value = Box::new(value);
+    // box is charged on its own, beyond what the decoder reserved.
+    let value = crate::charged_box::ChargedBox::new(Some(io), value)?;
     reservation.into_retained()?;
     Ok(value)
 }
@@ -338,9 +338,10 @@ fn decode_record_measured<T: bounded_io::PreparationRecord>(
 #[inline(never)]
 fn decode_record_unmeasured<T: bounded_io::PreparationRecord>(
     bytes: &acyclic_stream::OwnedBytes,
-) -> Result<Box<T>> {
+) -> Result<ChargedBox<T>> {
     crate::contract::json_from_slice(bytes)
-        .map(Box::new)
+        // Unbudgeted: the read was given no preparation ledger.
+        .map(crate::charged_box::ChargedBox::unbudgeted)
         .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}")))
 }
 
@@ -387,6 +388,55 @@ use crate::executor::{stock_boundary, stock_string_copy};
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
+
+    /// A measured record's box is one real allocation, and the ledger holds
+    /// exactly its bytes and its attempt beyond what the decoder retained.
+    #[test]
+    fn measured_record_box_is_exactly_on_the_ledger() -> Result<()> {
+        type Record = crate::Outcome<serde_json::Value>;
+        let encoded = serde_json::to_vec(&Record::Succeeded(serde_json::json!({"a": [1, 2]})))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let bytes = acyclic_stream::OwnedBytes::from(encoded);
+        let ledger = || {
+            PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(1_000_000, 32_000_000),
+                &acyclic_fs::CancellationToken::new(),
+            )
+        };
+        let (bare, boxed) = (ledger()?, ledger()?);
+        let mut decoded = None;
+        let unboxed = acyclic_test_support::measure(|| {
+            decoded = Some(
+                bare.decode(
+                    std::marker::PhantomData::<Record>,
+                    &bytes,
+                    crate::wire::ErrorCode::Storage,
+                )
+                .and_then(|(value, reservation)| reservation.into_retained().map(|()| value)),
+            );
+        });
+        let value = decoded.take().expect("bare decode ran")?;
+        let mut record = None;
+        let physical = acyclic_test_support::measure(|| {
+            record = Some(decode_record_measured::<Record>(&bytes, &boxed));
+        });
+        let record = record.expect("measured decode ran")?;
+        assert_eq!(*record, value);
+        let size = std::mem::size_of::<Record>() as u64;
+        assert_eq!(
+            physical.count_total,
+            unboxed.count_total + 1,
+            "the box is one allocation"
+        );
+        assert_eq!(boxed.owned_bytes()?, bare.owned_bytes()? + size);
+        assert_eq!(
+            boxed.receipt().allocation_operations,
+            bare.receipt().allocation_operations + 1
+        );
+        drop(record);
+        assert_eq!(boxed.owned_bytes()?, bare.owned_bytes()?);
+        Ok(())
+    }
 
     async fn first_publication_wins(metered: bool) -> Result<()> {
         let provider = ProviderRef::new(

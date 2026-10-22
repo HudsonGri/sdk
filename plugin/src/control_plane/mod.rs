@@ -12,6 +12,8 @@ const GIT_OPERATION_LEASE_MILLIS: u64 = 15 * 60 * 1_000;
 pub(crate) fn fs_call<'a, T>(
     future: impl std::future::Future<Output = T> + Send + 'a,
 ) -> acyclic_stream::BoxProviderFuture<'a, T> {
+    // Unbudgeted: the control plane holds no allocation budget; each
+    // filesystem command opens its own inside this frame.
     Box::pin(future)
 }
 
@@ -42,3 +44,16 @@ pub(crate) use state::*;
 #[cfg(test)]
 #[path = "../root_allocation_tests.rs"]
 mod root_allocation_tests;
+
+/// Served requests spend the original native budget; each box is charged or says why not.
+#[cfg(test)]
+#[test]
+fn dispatch_makes_no_unpaid_box() {
+    acyclic_test_support::boxes::assert_all_paid(&[
+        (
+            "service/dispatch.rs",
+            include_str!("../service/dispatch.rs"),
+        ),
+        ("control_plane/mod.rs", include_str!("mod.rs")),
+    ]);
+}

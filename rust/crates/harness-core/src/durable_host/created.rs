@@ -106,7 +106,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         preparation: &TaskAdmissionRecord,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(
-        Box<crate::resource_preparation::ResourcePreparationRequest>,
+        crate::charged_box::ChargedBox<crate::resource_preparation::ResourcePreparationRequest>,
         u64,
     )> {
         let (request, held) = crate::resource_preparation::ResourcePreparationRequest::decode(

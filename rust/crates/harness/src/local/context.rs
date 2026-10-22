@@ -80,7 +80,7 @@ impl LocalHarness {
 
     #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())
+        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref(), None)
             .await
     }
 
@@ -90,10 +90,14 @@ impl LocalHarness {
         operation: OperationId,
         prompt: Option<&str>,
         publisher: &dyn ContentPublisher,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<FileRef> {
-        // Each step runs in a heap frame of its own; this frame holds none.
-        if let Some(reference) =
-            acyclic_fs::in_heap(|| self.observe_context_manifest(operation, publisher)).await?
+        // Each step runs in a heap frame of its own, paid for on `io` when a
+        // budget is live; this frame holds none.
+        if let Some(reference) = crate::conversation::BoundedOperationFuture::new(io, || {
+            self.observe_context_manifest(operation, publisher)
+        })?
+        .await?
         {
             return Ok(reference);
         }
@@ -104,25 +108,32 @@ impl LocalHarness {
             ));
         }
         #[cfg(feature = "hooks")]
-        let hooks = acyclic_fs::in_heap(|| {
+        let hooks = crate::conversation::BoundedOperationFuture::new(io, || {
             crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings))
-        })
+        })?
         .await?;
         #[cfg(feature = "hooks")]
         let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(acyclic_fs::in_heap(|| hooks.publish(publisher, self.limits)).await?)
+            Some(
+                crate::conversation::BoundedOperationFuture::new(io, || {
+                    hooks.publish(publisher, self.limits)
+                })?
+                .await?,
+            )
         };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-        let discovery = acyclic_fs::in_heap(|| {
+        let discovery = crate::conversation::BoundedOperationFuture::new(io, || {
             self.instructions(&policy.instruction_names, maximum, publisher)
-        })
+        })?
         .await?;
-        let (goal, plans) =
-            acyclic_fs::in_heap(|| self.file_guidance(prompt.unwrap_or_default())).await?;
+        let (goal, plans) = crate::conversation::BoundedOperationFuture::new(io, || {
+            self.file_guidance(prompt.unwrap_or_default())
+        })?
+        .await?;
         let manifest =
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
         #[cfg(any(feature = "native-execution", feature = "hooks"))]

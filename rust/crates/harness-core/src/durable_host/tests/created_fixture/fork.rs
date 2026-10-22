@@ -252,9 +252,10 @@ impl CreationFixture {
             read_authorization: fork.authorized_source.clone(),
         };
         let (preparation, _lease, _invocation) = self.prepare(&request).await?;
-        let report = *preparer
+        let report = preparer
             .prepare_for_task(&fork, &Arc::new(preparation), None)
-            .await?;
+            .await?
+            .into_inner();
         let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild {
             request,

@@ -104,7 +104,7 @@ fn sessions_are_independent_and_old_handles_are_fenced() {
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         for (session, root) in [("a", &fixture.root), ("b", &other)] {
             service
-                .dispatch_request(
+                .dispatch_now(
                     native_hook_request("claude-code", "SessionStart", session, root, json!({})),
                     &mut None,
                 )
@@ -123,7 +123,7 @@ fn sessions_are_independent_and_old_handles_are_fenced() {
         };
         tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            service.dispatch_request(request, &mut None),
+            service.dispatch_now(request, &mut None),
         )
         .await
         .unwrap()
@@ -134,7 +134,7 @@ fn sessions_are_independent_and_old_handles_are_fenced() {
             SessionCloseState::Closed
         );
         service
-            .dispatch_request(
+            .dispatch_now(
                 native_hook_request("claude-code", "SessionStart", "a", &fixture.root, json!({})),
                 &mut None,
             )
@@ -156,7 +156,7 @@ fn accepted_operation_survives_waiter_cancellation() {
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let service = Arc::new(service);
         service
-            .dispatch_request(
+            .dispatch_now(
                 native_hook_request("codex", "SessionStart", "session", &fixture.root, json!({})),
                 &mut None,
             )
@@ -168,7 +168,7 @@ fn accepted_operation_survives_waiter_cancellation() {
         let root = fixture.root.clone();
         let waiter = tokio::spawn(async move {
             request_service
-                .dispatch_request(
+                .dispatch_now(
                     native_hook_request(
                         "codex",
                         "UserPromptSubmit",
@@ -203,7 +203,7 @@ fn close_is_fifo_idempotent_and_durable() {
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let service = Arc::new(service);
         service
-            .dispatch_request(
+            .dispatch_now(
                 native_hook_request("codex", "SessionStart", "session", &fixture.root, json!({})),
                 &mut None,
             )
@@ -215,7 +215,7 @@ fn close_is_fifo_idempotent_and_durable() {
         let root = fixture.root.clone();
         let operation = tokio::spawn(async move {
             operation_service
-                .dispatch_request(
+                .dispatch_now(
                     native_hook_request(
                         "codex",
                         "UserPromptSubmit",
@@ -270,7 +270,7 @@ fn saturated_data_queue_still_accepts_close() {
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let service = Arc::new(service);
         service
-            .dispatch_request(
+            .dispatch_now(
                 native_hook_request("codex", "SessionStart", "session", &fixture.root, json!({})),
                 &mut None,
             )
@@ -319,7 +319,7 @@ fn drain_waits_for_busy_sessions_and_saves_terminal_state() {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         service
-            .dispatch_request(
+            .dispatch_now(
                 native_hook_request("codex", "SessionStart", "session", &fixture.root, json!({})),
                 &mut None,
             )
