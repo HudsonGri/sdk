@@ -10,6 +10,9 @@ pub struct NativeNameDelta {
     pub paths: std::collections::BTreeSet<String>,
     /// Some affected names are unknown.
     pub all: bool,
+    /// Accepted replay progress, published atomically with this delta and any
+    /// resulting discovery continuations. Live callback hints leave this unset.
+    pub journal: Option<crate::NameJournalCheckpoint>,
 }
 
 struct NameSignal {
@@ -34,6 +37,7 @@ impl PendingNames {
     fn into_delta(self) -> NativeNameDelta {
         NativeNameDelta {
             all: self.all,
+            journal: None,
             paths: self.paths.map_or_else(Default::default, |paths| {
                 paths.value.iter().map(|path| path.value.clone()).collect()
             }),

@@ -41,8 +41,8 @@ pub struct NameIndexManifest {
 
 impl NameIndexManifest {
     /// Current on-volume format. Directory observations include stable source
-    /// identities, so earlier version-only checkpoints cannot drive replay.
-    pub const SCHEMA: u32 = 6;
+    /// identities and source-bound journal evidence for atomic replay progress.
+    pub const SCHEMA: u32 = 7;
 }
 
 /// A pinned file-query snapshot of the index. Reading pages never lists source

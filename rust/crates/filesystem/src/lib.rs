@@ -145,7 +145,7 @@ mod path_index;
 #[cfg(not(target_arch = "wasm32"))]
 pub use name_index::{NameIndex, NameIndexManifest, NameIndexRefresh};
 #[cfg(not(target_arch = "wasm32"))]
-pub use name_walk::NameCheckpoint;
+pub use name_walk::{NameCheckpoint, NameJournalCheckpoint};
 pub use name_walk::{NameCut, NameWalk, SearchError, SearchName};
 pub mod performance;
 mod record_store;

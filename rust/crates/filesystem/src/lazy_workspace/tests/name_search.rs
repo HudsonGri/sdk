@@ -1,5 +1,137 @@
 use super::*;
 
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn name_search_journal_cursor_and_delta_publish_atomically_across_restart() {
+    use crate::{NameIndex, NameIndexRefresh, NameJournalCheckpoint};
+    let fs = Fs::memory();
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"unread")));
+    let lazy = attach(&fs, source.clone(), MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let ignore = GitIgnorePolicy::default();
+    let walk = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();
+    let initial = publish_name_walk(lazy.workspace(), walk).await;
+    let crate::NameCut::Lazy(snapshot) = initial.manifest.cut.clone() else {
+        panic!("lazy cut required")
+    };
+    let marker = |root, journal, usn| {
+        NameJournalCheckpoint::windows_usn(snapshot.source.identity, root, journal, usn).unwrap()
+    };
+    let baseline = marker([1; 16], 2, 10);
+    let mut manifest = initial.manifest.clone();
+    manifest
+        .checkpoint
+        .record_journal_checkpoint(baseline)
+        .unwrap();
+    let baseline_index = NameIndex::publish(
+        lazy.workspace(),
+        &initial.generation(),
+        manifest,
+        None,
+        Some(&initial),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let restored = NameIndex::open(lazy.workspace()).await.unwrap().unwrap();
+    assert_eq!(
+        restored.manifest.checkpoint.journal_checkpoint(),
+        Some(baseline)
+    );
+
+    let mut losing_manifest = restored.manifest.clone();
+    losing_manifest
+        .checkpoint
+        .record_journal_checkpoint(marker([1; 16], 2, 30))
+        .unwrap();
+    losing_manifest.pages += 1;
+    let losing_page = [crate::SearchName {
+        path: "loser.txt".into(),
+        regular: true,
+        directory: false,
+    }];
+    source.replace(Bytes::from_static(b"changed"));
+    let next = marker([1; 16], 2, 20);
+    let winner = match baseline_index
+        .refresh_native(
+            &lazy,
+            lazy.snapshot(accounting!()).await.unwrap(),
+            crate::lazy_workspace::NativeNameDelta {
+                paths: ["winner.txt".into()].into(),
+                all: false,
+                journal: Some(next),
+            },
+            &ignore,
+        )
+        .await
+        .unwrap()
+    {
+        NameIndexRefresh::Published(index) => index,
+        _ => panic!("journal leaf delta must publish without rediscovery"),
+    };
+    assert_eq!(winner.manifest.checkpoint.journal_checkpoint(), Some(next));
+    // Negative control: publishing a sidecar cursor before the losing CAS
+    // would leave USN 30 durable while only USN 20's names were committed.
+    assert!(
+        NameIndex::publish(
+            lazy.workspace(),
+            &restored.generation(),
+            losing_manifest,
+            Some(&losing_page),
+            Some(&restored),
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    drop(winner);
+    let reopened = NameIndex::open(lazy.workspace()).await.unwrap().unwrap();
+    assert_eq!(
+        reopened.manifest.checkpoint.journal_checkpoint(),
+        Some(next)
+    );
+    let mut names = Vec::new();
+    for page in 0..reopened.manifest.pages {
+        names.extend(
+            reopened
+                .page(page)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|name| name.path),
+        );
+    }
+    assert!(names.iter().any(|path| path == "winner.txt"));
+    assert!(!names.iter().any(|path| path == "loser.txt"));
+    let resumed = NameWalk::resume(&lazy, reopened.manifest.checkpoint.clone(), ignore)
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.checkpoint().unwrap().journal_checkpoint(),
+        Some(next)
+    );
+
+    let mut checkpoint = reopened.manifest.checkpoint.clone();
+    for invalid in [
+        marker([9; 16], 2, 21),
+        marker([1; 16], 9, 21),
+        marker([1; 16], 2, 19),
+        NameJournalCheckpoint::windows_usn([9; 16], [1; 16], 2, 21).unwrap(),
+    ] {
+        assert!(checkpoint.record_journal_checkpoint(invalid).is_err());
+        assert_eq!(checkpoint.journal_checkpoint(), Some(next));
+    }
+    let encoded = serde_json::to_value(&checkpoint).unwrap();
+    let mut wrong_source = encoded.clone();
+    wrong_source["journal"]["source_identity"] = serde_json::to_value([9u8; 16]).unwrap();
+    assert!(serde_json::from_value::<crate::NameCheckpoint>(wrong_source).is_err());
+    let mut impossible = encoded;
+    impossible["journal"]["next_usn"] = serde_json::json!(u64::MAX);
+    assert!(serde_json::from_value::<crate::NameCheckpoint>(impossible).is_err());
+    assert!(NameJournalCheckpoint::windows_usn([7; 16], [1; 16], 2, u64::MAX).is_err());
+}
+
 #[cfg(feature = "native-watch")]
 #[tokio::test]
 async fn name_search_directory_identities_survive_file_backed_restore_and_offline_rename() {
@@ -1976,6 +2108,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
                 crate::lazy_workspace::NativeNameDelta {
                     paths: std::collections::BTreeSet::from(["host-new.txt".into()]),
                     all: false,
+                    journal: None,
                 },
                 &ignore,
             )
@@ -2200,6 +2333,7 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
             crate::lazy_workspace::NativeNameDelta {
                 paths: ["changed".into()].into(),
                 all: false,
+                journal: None,
             },
             &ignore,
         )

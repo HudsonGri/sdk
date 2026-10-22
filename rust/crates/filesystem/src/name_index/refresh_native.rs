@@ -31,6 +31,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         let Some(mut checkpoint) = self.manifest.checkpoint.completed_at(cut.clone()) else {
             return Ok(NameIndexRefresh::Ineligible);
         };
+        if let Some(journal) = delta.journal {
+            checkpoint.record_journal_checkpoint(journal)?;
+        }
         let stop = CancellationToken::new();
         let workspace = lazy.workspace();
         let expected = workspace

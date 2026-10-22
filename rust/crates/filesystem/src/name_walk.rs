@@ -11,6 +11,10 @@ use policies::Policies;
 mod versions;
 use versions::{DirectoryVersions, Observation};
 #[cfg(not(target_arch = "wasm32"))]
+mod journal;
+#[cfg(not(target_arch = "wasm32"))]
+pub use journal::NameJournalCheckpoint;
+#[cfg(not(target_arch = "wasm32"))]
 mod frontier;
 #[cfg(not(target_arch = "wasm32"))]
 use frontier::{Frontier, SavedFrontier};
@@ -111,17 +115,75 @@ pub enum NameCut {
 /// Bounded unfinished traversal, stored alongside index pages.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "StoredNameCheckpoint")]
 pub struct NameCheckpoint {
     cut: NameCut,
     pending: SavedFrontier,
     single: Option<SearchName>,
     ignore_policies: Policies,
     directory_versions: DirectoryVersions,
+    journal: Option<NameJournalCheckpoint>,
     unavailable_entries: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredNameCheckpoint {
+    cut: NameCut,
+    pending: SavedFrontier,
+    single: Option<SearchName>,
+    ignore_policies: Policies,
+    directory_versions: DirectoryVersions,
+    journal: Option<NameJournalCheckpoint>,
+    unavailable_entries: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl TryFrom<StoredNameCheckpoint> for NameCheckpoint {
+    type Error = SearchError;
+    fn try_from(value: StoredNameCheckpoint) -> Result<Self, Self::Error> {
+        if let Some(journal) = value.journal {
+            journal.validate_cut(&value.cut)?;
+        }
+        Ok(Self {
+            cut: value.cut,
+            pending: value.pending,
+            single: value.single,
+            ignore_policies: value.ignore_policies,
+            directory_versions: value.directory_versions,
+            journal: value.journal,
+            unavailable_entries: value.unavailable_entries,
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl NameCheckpoint {
+    /// The journal position committed with these names and continuations.
+    pub fn journal_checkpoint(&self) -> Option<NameJournalCheckpoint> {
+        self.journal
+    }
+
+    /// Attaches accepted journal progress to the next atomic publication.
+    /// A new baseline must create a fresh checkpoint after root/journal changes.
+    ///
+    /// # Errors
+    /// Rejects another source, a changed root/journal, or a regressing cursor.
+    pub fn record_journal_checkpoint(
+        &mut self,
+        journal: NameJournalCheckpoint,
+    ) -> Result<(), SearchError> {
+        journal.validate_cut(&self.cut)?;
+        if self.journal.is_some_and(|old| !journal.follows(old)) {
+            return Err(SearchError::Invalid(
+                "journal checkpoint requires a new baseline".into(),
+            ));
+        }
+        self.journal = Some(journal);
+        Ok(())
+    }
+
     /// Native directories and ignore-policy metadata captured during discovery.
     /// Absence is also a token: later creation invalidates this cut.
     pub fn source_versions(
@@ -204,6 +266,7 @@ impl NameCheckpoint {
             cut: &self.cut,
             single: &self.single,
             unavailable_entries: self.unavailable_entries,
+            journal: self.journal,
         })
         .map(|record| serde_json::to_vec(&record))
     }
@@ -311,14 +374,21 @@ impl NameCheckpoint {
                 cut,
                 single,
                 unavailable_entries,
-            } => Ok(Self {
-                cut,
-                single,
-                unavailable_entries,
-                pending: SavedFrontier::default(),
-                ignore_policies: Policies::default(),
-                directory_versions: DirectoryVersions::default(),
-            }),
+                journal,
+            } => {
+                if let Some(journal) = journal {
+                    journal.validate_cut(&cut)?;
+                }
+                Ok(Self {
+                    cut,
+                    single,
+                    unavailable_entries,
+                    pending: SavedFrontier::default(),
+                    ignore_policies: Policies::default(),
+                    directory_versions: DirectoryVersions::default(),
+                    journal,
+                })
+            }
             _ => Err(SearchError::Invalid("missing checkpoint header".into())),
         }
     }
@@ -331,6 +401,12 @@ impl NameCheckpoint {
 
     pub(crate) fn completed_at(&self, cut: NameCut) -> Option<Self> {
         if !self.pending.is_empty() || self.single.is_some() {
+            return None;
+        }
+        if self
+            .journal
+            .is_some_and(|journal| journal.validate_cut(&cut).is_err())
+        {
             return None;
         }
         let mut checkpoint = self.clone();
@@ -371,24 +447,28 @@ impl NameCheckpoint {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(serde::Serialize)]
 enum CheckpointRecordRef<'a> {
     Header {
         cut: &'a NameCut,
         single: &'a Option<SearchName>,
         unavailable_entries: usize,
+        journal: Option<NameJournalCheckpoint>,
     },
     Pending(&'a str, &'a SavedCursor),
     Policy(&'a str, &'a GitIgnorePolicy),
     Directory(&'a str, Observation),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(serde::Deserialize)]
 enum CheckpointRecord {
     Header {
         cut: NameCut,
         single: Option<SearchName>,
         unavailable_entries: usize,
+        journal: Option<NameJournalCheckpoint>,
     },
     Pending(String, SavedCursor),
     Policy(String, GitIgnorePolicy),
@@ -448,6 +528,8 @@ pub struct NameWalk<'a, A, O, D, S> {
     authored: Option<Generation<A, O>>,
     ignore_policies: Policies,
     directory_versions: DirectoryVersions,
+    #[cfg(not(target_arch = "wasm32"))]
+    journal: Option<NameJournalCheckpoint>,
     unavailable_entries: usize,
     directory_query: Option<String>,
 }
@@ -481,6 +563,7 @@ impl<
             single: self.single.clone(),
             ignore_policies: self.ignore_policies.clone(),
             directory_versions: self.directory_versions.clone(),
+            journal: self.journal,
             unavailable_entries: self.unavailable_entries,
         })
     }
@@ -590,6 +673,7 @@ impl<
             authored,
             ignore_policies: checkpoint.ignore_policies,
             directory_versions: checkpoint.directory_versions,
+            journal: checkpoint.journal,
             unavailable_entries: checkpoint.unavailable_entries,
             directory_query: None,
         })
@@ -686,6 +770,8 @@ impl<
             authored,
             ignore_policies: Policies::default(),
             directory_versions: DirectoryVersions::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            journal: None,
             unavailable_entries: 0,
             directory_query: None,
         };

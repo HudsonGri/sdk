@@ -38,6 +38,34 @@ pub struct WindowsUsnCheckpoint {
 }
 
 impl WindowsUsnCheckpoint {
+    /// Binds native evidence to the logical source before atomic index
+    /// publication. This does not itself apply or publish any journal records.
+    ///
+    /// # Errors
+    /// Rejects a cursor outside the signed native USN domain.
+    pub fn name_checkpoint(
+        self,
+        source_identity: [u8; 16],
+    ) -> Result<crate::NameJournalCheckpoint, crate::SearchError> {
+        crate::NameJournalCheckpoint::windows_usn(
+            source_identity,
+            self.root_identity.to_bytes(),
+            self.journal_id,
+            self.next_usn,
+        )
+    }
+
+    /// Restores validated native replay evidence from an index checkpoint.
+    /// The reader still verifies the current held root and journal at open.
+    pub fn from_name_checkpoint(checkpoint: crate::NameJournalCheckpoint) -> Self {
+        let (root_identity, journal_id, next_usn) = checkpoint.windows_usn_position();
+        Self {
+            root_identity: NativeRootIdentity::from_bytes(root_identity),
+            journal_id,
+            next_usn,
+        }
+    }
+
     /// Returns the root identity to which this marker is confined.
     #[must_use]
     pub const fn root_identity(self) -> NativeRootIdentity {
@@ -406,6 +434,12 @@ mod tests {
             next_usn: 23,
         };
         let bytes = checkpoint.to_bytes();
+        assert_eq!(
+            WindowsUsnCheckpoint::from_name_checkpoint(
+                checkpoint.name_checkpoint([3; 16]).unwrap()
+            ),
+            checkpoint
+        );
         assert!(matches!(
             WindowsUsnCheckpoint::from_bytes(&bytes),
             Ok(decoded) if decoded == checkpoint
