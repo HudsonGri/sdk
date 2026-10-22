@@ -24,7 +24,8 @@ mod process;
 pub use process::{ProcessCapture, capture_process};
 mod resources;
 pub use resources::{
-    ProcessResources, descriptors_naming, process_resources, sample_process_resources,
+    Descriptor, ProcessResources, descriptors, descriptors_naming, process_resources,
+    sample_process_resources,
 };
 mod metadata;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
