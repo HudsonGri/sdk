@@ -71,19 +71,21 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
     relative: &Path,
     blocking: bool,
     work: &mut impl crate::demand::SourceDemandReadWork,
-) -> Result<File, MaterializeError> {
+) -> Result<acyclic_native_runtime::FileLock, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
-        let file = crate::native_host::open_leaf(
-            &parent.directory,
-            name,
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-            work,
-        )
-        .map_err(MaterializeError::from)?;
+        let file = acyclic_native_runtime::FileLock::new(
+            crate::native_host::open_leaf(
+                &parent.directory,
+                name,
+                &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                work,
+            )
+            .map_err(MaterializeError::from)?,
+        );
         loop {
             work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
                 .map_err(MaterializeError::from)?;
-            match fs2::FileExt::try_lock_exclusive(&file) {
+            match file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive) {
                 Ok(()) => return Ok(file),
                 Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(1));

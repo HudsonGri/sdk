@@ -170,6 +170,15 @@ pub(super) enum LockMode {
     Exclusive,
 }
 
+impl From<LockMode> for FileLockMode {
+    fn from(mode: LockMode) -> Self {
+        match mode {
+            LockMode::Shared => Self::Shared,
+            LockMode::Exclusive => Self::Exclusive,
+        }
+    }
+}
+
 pub(super) fn with_lock<T>(
     paths: &mut RecordPaths,
     action: impl FnOnce(&RecordPaths) -> Result<T, LocalCoreStateStoreError>,
@@ -248,7 +257,7 @@ fn acquire_lock_with_retry(
         .allocation
         .as_ref()
         .map(|allocation| allocation.work().clone());
-    let lock = if let Some(work) = &work {
+    let lock = FileLock::new(if let Some(work) = &work {
         crate::native_host::create_directories(paths.directory(), &mut &*work)?;
         materialization_open_options(
             &paths.lock,
@@ -263,7 +272,7 @@ fn acquire_lock_with_retry(
             .read(true)
             .write(true)
             .open(&paths.lock)?
-    };
+    });
     let cleanup = work
         .as_ref()
         .map(|work| work.reserve_cleanup_write())
@@ -276,11 +285,7 @@ fn acquire_lock_with_retry(
                 ..Default::default()
             })?;
         }
-        let locked = match mode {
-            LockMode::Shared => FileExt::try_lock_shared(&lock),
-            LockMode::Exclusive => lock.try_lock_exclusive(),
-        };
-        match locked {
+        match lock.try_lock(mode.into()) {
             Ok(()) => break,
             Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                 if !retry(deadline) {

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
-    lock: Option<File>,
+    lock: Option<acyclic_native_runtime::FileLock>,
     mut work: crate::NativeMaterializationWork,
     operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, E> + Send + 'static,
 ) -> Result<Result<T, E>, crate::NativeTreeMaterializationError> {
@@ -26,7 +26,7 @@ pub(super) struct PreparedRestore {
     pub(super) stage_path: (PathBuf, crate::NativeAllocation),
     pub(super) destination_root: (PathBuf, crate::NativeAllocation),
     pub(super) relative: (PathBuf, crate::NativeAllocation),
-    pub(super) lock: File,
+    pub(super) lock: acyclic_native_runtime::FileLock,
 }
 
 pub(super) async fn finish_restore(

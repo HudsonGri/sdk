@@ -4,7 +4,6 @@ mod agent;
 mod mcp;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use fs2::FileExt as _;
 use reqwest::{Client, StatusCode, Url};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -114,14 +113,9 @@ struct Credentials {
 
 struct Store {
     path: PathBuf,
-    _lock: File,
-}
-
-impl Drop for Store {
-    fn drop(&mut self) {
-        // A forked child can retain the open file description until exec.
-        let _ = fs2::FileExt::unlock(&self._lock);
-    }
+    /// Unlocked explicitly when dropped: a forked child can retain the open
+    /// file description until exec.
+    _lock: acyclic_native_runtime::FileLock,
 }
 
 impl Store {
@@ -164,8 +158,11 @@ impl Store {
                 "credential filenames must not end in a space or dot",
             ));
         }
-        let lock = private_file(&sidecar(&path, ".lock"), false)?;
-        lock.try_lock_exclusive().map_err(|_| {
+        let lock = acyclic_native_runtime::FileLock::try_acquire(
+            private_file(&sidecar(&path, ".lock"), false)?,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(|_| {
             Error::new(
                 "credentials_busy",
                 "another identity operation holds the credential lock; retry after it completes",

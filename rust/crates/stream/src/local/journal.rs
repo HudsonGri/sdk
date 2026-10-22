@@ -30,7 +30,7 @@ impl Journal {
         );
         let mut journal = Self {
             _ownership_anchor: None,
-            lock,
+            _lock: lock,
             file,
             epoch,
             operations: 0,

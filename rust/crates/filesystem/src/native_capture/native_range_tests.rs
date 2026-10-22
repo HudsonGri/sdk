@@ -24,30 +24,33 @@ fn fixture_file(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Counts this process's descriptors open on `path`'s file. Unlike an
+/// advisory-lock probe, a census is exact while a concurrently spawned child
+/// shares those descriptions until it execs.
+#[cfg(unix)]
+fn descriptors_open_on(path: &Path) -> std::io::Result<usize> {
+    use std::os::unix::fs::MetadataExt as _;
+    let target = std::fs::metadata(path)?;
+    let mut count = 0;
+    for entry in std::fs::read_dir("/dev/fd")? {
+        // Entries such as the listing's own directory may close meanwhile.
+        let Ok(found) = std::fs::metadata(entry?.path()) else {
+            continue;
+        };
+        count += usize::from(found.dev() == target.dev() && found.ino() == target.ino());
+    }
+    Ok(count)
+}
+
 #[cfg(unix)]
 #[test]
-#[allow(
-    unsafe_code,
-    reason = "advisory locks observe the real imported descriptor's physical retirement"
-)]
 fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::fd::AsRawFd as _;
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("cancelled-import");
     std::fs::write(&path, b"actual")?;
     let file = fixture_file(&path)?;
-    let contender = fixture_file(&path)?;
-    assert_eq!(
-        // SAFETY: file owns a live descriptor and flock takes no pointers.
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
-    assert_ne!(
-        // SAFETY: contender owns a live descriptor and flock takes no pointers.
-        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    assert_eq!(descriptors_open_on(&path)?, 1);
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
         .map_err(|(error, _)| error)?;
@@ -57,11 +60,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
         native_positional_file(file, &scope.native),
         Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
-    assert_eq!(
-        // SAFETY: contender remains open after the imported file is retired.
-        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    assert_eq!(descriptors_open_on(&path)?, 0);
     scope.release()?;
     Ok(())
 }

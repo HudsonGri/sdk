@@ -31,7 +31,11 @@ pub(crate) fn open(
             .read(true)
             .write(true)
             .open(root.join("owner.lock"))?;
-        owner.try_lock_exclusive().map_err(|error| {
+        let owner = acyclic_native_runtime::FileLock::try_acquire(
+            owner,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(|error| {
             if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
                 LocalOpenError::AlreadyOwned
             } else {

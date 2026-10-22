@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_native_runtime::{FileLock, FileLockMode};
 
 struct Fixture {
     packet: crate::native_mount::startup::NativeMountRetirement,
@@ -85,8 +86,7 @@ impl Fixture {
             .write(true)
             .open(&self.registry)?
             .into();
-        let registry_file: &std::fs::File = &registry;
-        match fs2::FileExt::try_lock_exclusive(registry_file) {
+        match registry.try_lock(FileLockMode::Exclusive) {
             Ok(()) => {
                 inspect(&registry)?;
                 Ok(true)
@@ -195,11 +195,13 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new(false)?;
     let global_path = registry::path()?;
-    let global = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&global_path)?;
-    fs2::FileExt::lock_exclusive(&global)?;
+    let global = FileLock::acquire(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&global_path)?,
+        FileLockMode::Exclusive,
+    )?;
     // Negative control: the former user-wide probe mistakes this unrelated
     // owner for a leaked retirement lock, even though the fixture is unlocked.
     let old_probe = std::fs::OpenOptions::new()
@@ -207,7 +209,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
         .write(true)
         .open(&global_path)?;
     assert!(lock_is_contended(
-        &fs2::FileExt::try_lock_exclusive(&old_probe).unwrap_err()
+        &FileLock::try_acquire(old_probe, FileLockMode::Exclusive).unwrap_err()
     ));
     assert!(fixture.registry_is_unlocked()?);
     let private = fixture
@@ -222,6 +224,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
     assert!(!fixture.registry_is_unlocked()?);
     fence_io::unlock(private)?;
     assert!(fixture.registry_is_unlocked()?);
+    global.unlock()?;
     Ok(())
 }
 

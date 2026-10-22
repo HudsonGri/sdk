@@ -1,5 +1,5 @@
 /// Creates `root` if it is missing and takes its exclusive lock.
-fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<File, LocalStreamError> {
+fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<FileLock, LocalStreamError> {
     std::fs::create_dir_all(root)?;
     sync_directory(root, limits.durability)?;
     let lock = OpenOptions::new()
@@ -8,14 +8,13 @@ fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<File, LocalStream
         .read(true)
         .write(true)
         .open(root.join(LOCK_FILE))?;
-    lock.try_lock_exclusive().map_err(|error| {
+    FileLock::try_acquire(lock, FileLockMode::Exclusive).map_err(|error| {
         if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
             LocalStreamError::AlreadyOpen
         } else {
             LocalStreamError::Io(error)
         }
-    })?;
-    Ok(lock)
+    })
 }
 
 /// The largest frame the journal holds: length prefix, commit timestamp, command

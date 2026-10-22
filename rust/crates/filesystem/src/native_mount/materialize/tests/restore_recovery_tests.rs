@@ -840,9 +840,9 @@ fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
 
     assert!(acquire_restore_lock(&parent, relative, false, &mut work).is_err());
     drop(first);
-    // Blocking: a child another test forks shares the lock's open file
-    // until it execs, so a release can take a moment to be observed.
-    let _next = acquire_restore_lock(&parent, relative, true, &mut work)?;
+    // Non-blocking: dropping unlocks explicitly, so a child another test
+    // forks cannot keep the lock while it shares the open file until exec.
+    let _next = acquire_restore_lock(&parent, relative, false, &mut work)?;
     Ok(())
 }
 
@@ -888,7 +888,7 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
     let fenced = matches!(
         &competing,
         Err(MaterializeError::Io(error))
-            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            if acyclic_native_runtime::is_exclusive_lock_contention(error)
     );
     drop(competing);
     // Release before assertions: even the broken-lock mutation must finish.

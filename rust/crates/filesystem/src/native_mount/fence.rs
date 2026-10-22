@@ -702,7 +702,7 @@ pub(super) fn lock_is_contended(error: &std::io::Error) -> bool {
     }
     #[cfg(windows)]
     {
-        // LockFileEx reports ERROR_LOCK_VIOLATION rather than WouldBlock.
+        // Windows reports ERROR_LOCK_VIOLATION rather than WouldBlock.
         error.raw_os_error() == Some(33)
     }
     #[cfg(not(windows))]
