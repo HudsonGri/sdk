@@ -265,6 +265,38 @@ async fn name_search_same_generation_follow_does_not_restore_checkpoint_files() 
     )
     .await
     .unwrap();
+    let stop = CancellationToken::new();
+    let directories: Vec<_> = (0..128).map(|ordinal| format!("/d{ordinal:03}")).collect();
+    let mut transaction = lazy
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .write_batch(
+            &directories.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[],
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
     let walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
         .await
         .unwrap();
@@ -294,8 +326,60 @@ async fn name_search_same_generation_follow_does_not_restore_checkpoint_files() 
         .await
         .unwrap()
         .unwrap();
-    assert!(reads.load(Ordering::Relaxed) - before > follow_reads);
+    let cold_reads = reads.load(Ordering::Relaxed) - before;
+    assert!(cold_reads > follow_reads);
     assert_eq!(reopened.manifest.pages, followed.manifest.pages);
+    lazy.workspace()
+        .write_text("/ordinary", "unrelated workspace write")
+        .await
+        .unwrap();
+    let before = reads.load(Ordering::Relaxed);
+    let followed = crate::NameIndex::open_reusing(lazy.workspace(), Some(&original))
+        .await
+        .unwrap()
+        .unwrap();
+    let unrelated_reads = reads.load(Ordering::Relaxed) - before;
+    assert_ne!(followed.generation().id(), original.generation().id());
+    assert!(
+        unrelated_reads < cold_reads,
+        "warm diff read {unrelated_reads} objects, cold restore read {cold_reads}"
+    );
+    assert_eq!(
+        serde_json::to_vec(&followed.manifest.checkpoint).unwrap(),
+        serde_json::to_vec(&original.manifest.checkpoint).unwrap()
+    );
+    // Negative control: a manifest-only cache check misses a direct checkpoint
+    // edit, even when the manifest's bytes and its binding are unchanged.
+    for path in [
+        "/.acyclic-sdk/name-index/checkpoint-0000000000000000.jsonl".to_owned(),
+        format!(
+            "/.acyclic-sdk/name-index/directories/{}.json",
+            blake3::hash(b"d127/.ignore").to_hex()
+        ),
+    ] {
+        let bytes = original
+            .generation()
+            .read(&path, 2 * 1024 * 1024, WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        lazy.workspace().write_text(&path, "{}\n").await.unwrap();
+        assert!(
+            crate::NameIndex::open_reusing(lazy.workspace(), Some(&followed))
+                .await
+                .is_err(),
+            "changed {path} was hidden by reuse"
+        );
+        lazy.workspace()
+            .write(&path, Bytes::copy_from_slice(&bytes))
+            .await
+            .unwrap();
+        assert!(
+            crate::NameIndex::open_reusing(lazy.workspace(), Some(&followed))
+                .await
+                .is_ok()
+        );
+    }
     lazy.write(
         "/.acyclic-sdk/name-index/manifest.json",
         Bytes::from_static(b"{}").into(),
@@ -310,6 +394,42 @@ async fn name_search_same_generation_follow_does_not_restore_checkpoint_files() 
             .await
             .is_err(),
         "a changed generation must query its files rather than reuse stale state"
+    );
+    let mut transaction = lazy
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .rename(
+            "/.acyclic-sdk",
+            "/detached-sdk",
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        crate::NameIndex::open_reusing(lazy.workspace(), Some(&followed))
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -343,7 +463,7 @@ async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() 
     assert!(
         tokens
             .iter()
-            .filter(|(path, _)| !path.ends_with("ignore"))
+            .filter(|(path, _)| !path.ends_with("ignore") && *path != ".git/info/exclude")
             .all(|(_, token)| token.is_some())
     );
     assert_eq!(

@@ -6,6 +6,7 @@ use crate::{
     TransactionCommit, WorkBudget, Workspace, WorkspaceError,
 };
 mod checkpoint;
+mod files;
 mod refresh;
 #[cfg(feature = "native-mount")]
 mod refresh_native;
@@ -42,6 +43,7 @@ pub struct NameIndexManifest {
 /// directories and cannot materialize source-backed file contents.
 pub struct NameIndex<A, O> {
     generation: Generation<A, O>,
+    files: files::IndexFiles,
     #[cfg(test)]
     checkpoint_policy_records: usize,
     #[cfg(test)]
@@ -60,8 +62,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
     }
 
     /// Follows the current publication while retaining an already restored
-    /// checkpoint when its immutable generation is still the exact head.
-    /// A different generation always goes through the file query again.
+    /// checkpoint when the generation is identical or a bounded authenticated
+    /// file-identity diff proves that every index file and binding is unchanged.
     pub async fn open_reusing(
         workspace: &Workspace<A, O>,
         previous: Option<&Self>,
@@ -72,15 +74,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             .map_err(|failure| failure.error)?
             .value;
         if let Some(previous) = previous
-            && generation.id() == previous.generation.id()
             && workspace.id() == previous.generation.workspace_id()
             && workspace
                 .volume
                 .fs
                 .owns_workspace(&previous.generation.workspace())
+            && (generation.id() == previous.generation.id()
+                || files::bounded_diff(&previous.generation, &generation)
+                    .await?
+                    .is_some_and(|diff| previous.files.unchanged(&diff)))
         {
             return Ok(Some(Self {
                 generation,
+                files: previous.files.clone(),
                 manifest: previous.manifest.clone(),
                 #[cfg(test)]
                 checkpoint_policy_records: 0,
@@ -110,8 +116,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             ));
         }
         let manifest = stored.restore(&generation).await?;
+        let files = files::IndexFiles::collect(&generation).await?;
         Ok(Some(Self {
             generation,
+            files,
             manifest,
             #[cfg(test)]
             checkpoint_policy_records: 0,
@@ -204,16 +212,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             .value;
         match outcome {
             TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => Ok(Some(Self {
-                generation,
-                manifest,
-                #[cfg(test)]
-                checkpoint_policy_records: _policy_records,
-                #[cfg(test)]
-                checkpoint_metadata_records: _metadata_records,
-                #[cfg(test)]
-                checkpoint_frontier_records: _frontier_records,
-            })),
+            | TransactionCommit::AlreadyCommitted(generation) => {
+                let files = files::IndexFiles::after_publication(&generation, previous).await?;
+                Ok(Some(Self {
+                    generation,
+                    files,
+                    manifest,
+                    #[cfg(test)]
+                    checkpoint_policy_records: _policy_records,
+                    #[cfg(test)]
+                    checkpoint_metadata_records: _metadata_records,
+                    #[cfg(test)]
+                    checkpoint_frontier_records: _frontier_records,
+                }))
+            }
             TransactionCommit::Conflict { .. } => Ok(None),
             TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => Err(
                 SearchError::Invalid("pathname index publication was fenced".into()),

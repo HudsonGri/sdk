@@ -345,8 +345,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         match outcome {
             TransactionCommit::Committed(generation)
             | TransactionCommit::AlreadyCommitted(generation) => {
+                let files =
+                    super::files::IndexFiles::after_publication(&generation, Some(self)).await?;
                 Ok(NameIndexRefresh::Published(Self {
                     generation,
+                    files,
                     manifest,
                     #[cfg(test)]
                     checkpoint_policy_records: _policy_records,
