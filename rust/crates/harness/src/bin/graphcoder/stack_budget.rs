@@ -564,6 +564,7 @@ const FS_COMMANDS: &[&str] = &[
     "rev-parse HEAD",
     "symbolic-ref HEAD",
     "merge-base HEAD topic",
+    "discard topic",
     "ls-files",
     "check-ignore notes.txt",
     "restore --source HEAD notes.txt",
@@ -658,6 +659,7 @@ fn tool_commands(case: &str) -> &'static [&'static str] {
             "rev-parse HEAD",
             "symbolic-ref HEAD",
             "merge-base HEAD topic",
+            "discard topic",
         ],
         "tools-branches" => &[
             "commit -m first",
@@ -803,6 +805,10 @@ fn tool_result_succeeded(turn: &serde_json::Value, output: &serde_json::Value) -
                     matches!(&result, O::Paths(paths) if paths.iter().any(|path| path == "notes.txt"))
                 }
                 "bisect" => matches!(result, O::Bisect(_)),
+                "discard" => {
+                    matches!(&result, O::Branches { current, branches }
+                        if current == "main" && !branches.iter().any(|branch| branch.name == "topic"))
+                }
                 "apply" | "restore" => matches!(result, O::Filesystem(F::Applied { .. })),
                 inspection @ ("blame" | "grep" | "clean" | "archive" | "check-ignore" | "diff") => {
                     matches!(&result, O::Filesystem(F::Data { kind, .. }) if kind == inspection)
