@@ -660,6 +660,13 @@ impl<
             (Cut::Lazy(lazy, snapshot), Continuation::Lazy(cursor)) => {
                 let stop = CancellationToken::new();
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
+                if let Some(cursor) = &cursor {
+                    // Pages (including restored continuations) have separate
+                    // standalone ledgers. Fund the retained cursor in this
+                    // ledger before the directory reader retires its backing.
+                    let (_, admitted) = ctx.record_actual_owned(cursor.retained_bytes()?)?;
+                    admitted?;
+                }
                 let (page, _, guard) = lazy
                     .list_directory_at_snapshot(*snapshot, &directory, cursor, maximum, &mut ctx)
                     .await?;

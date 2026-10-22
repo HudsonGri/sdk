@@ -456,6 +456,7 @@ async fn name_search_checks_mount_boundaries_before_nested_policy_content_reads(
     async fn read_count(cross_mounts: bool) -> usize {
         let fs = Fs::memory();
         let mut source = CountingSource::new(Bytes::from_static(b"policy\n"));
+        source.policy_files = true;
         source.cross_directory_mounts = cross_mounts;
         let source = Arc::new(source);
         let lazy = attach(

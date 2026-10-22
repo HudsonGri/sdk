@@ -56,6 +56,7 @@ struct CountingSource {
     unreadable_directory: Option<String>,
     non_unicode_entry: bool,
     directory_names: std::collections::BTreeSet<String>,
+    policy_files: bool,
 }
 impl CountingSource {
     fn new(bytes: Bytes) -> Self {
@@ -79,6 +80,7 @@ impl CountingSource {
             unreadable_directory: None,
             non_unicode_entry: false,
             directory_names: Default::default(),
+            policy_files: false,
         }
     }
     fn replace(&self, bytes: Bytes) {
@@ -199,6 +201,14 @@ impl DemandSource for CountingSource {
             })
             .map_err(DemandError::from)?;
             self.counts.lookups.fetch_add(1, Ordering::Relaxed);
+            if !self.policy_files
+                && _path
+                    .components()
+                    .last()
+                    .is_some_and(|name| matches!(name.as_bytes(), b".gitignore" | b".ignore"))
+            {
+                return Ok(None);
+            }
             self.versioned_node(source)
                 .map(|mut node| {
                     if _path.components().last().is_some_and(|name| {

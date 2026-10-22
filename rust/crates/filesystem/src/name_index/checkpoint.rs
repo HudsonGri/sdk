@@ -251,18 +251,32 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let (diff, _) = generation
-            .diff_to(&republished.generation(), 8, WorkBudget::UNBOUNDED, &stop)
-            .await
-            .unwrap()
-            .value;
-        let (changes, _) = diff
-            .changed_paths(8, WorkBudget::UNBOUNDED, &stop)
-            .await
-            .unwrap()
-            .value;
-        // A repeat publication changes only the generation marker in the
-        // manifest. No checkpoint binding is rewritten.
-        assert_eq!(changes.len(), 1);
+        // Inspect each checkpoint binding directly. A whole-generation diff
+        // spends its join budget traversing unrelated bindings as well.
+        for ordinal in 0..stored.checkpoint_chunks {
+            let mut ctx = crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &stop);
+            let (path, _) = crate::kernel::NamespacePath::parse_in_profile(
+                &chunk_path(ordinal),
+                workspace.profile(),
+                workspace.limits(),
+                &mut ctx,
+                &stop,
+            )
+            .unwrap();
+            let paths = [path];
+            let before = generation
+                .lookup_paths(&paths, WorkBudget::UNBOUNDED, &stop)
+                .await
+                .unwrap()
+                .value;
+            let after = republished
+                .generation()
+                .lookup_paths(&paths, WorkBudget::UNBOUNDED, &stop)
+                .await
+                .unwrap()
+                .value;
+            assert!(before[0].is_some());
+            assert_eq!(before, after);
+        }
     }
 }
