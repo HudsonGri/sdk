@@ -57,8 +57,12 @@ fn custody_owner_helper() {
     if mode == "churn" {
         return churn(&root);
     }
+    #[cfg(windows)]
+    if mode == "custodian-alone" {
+        return custodian_alone(&root);
+    }
     let mut command = program(&root);
-    let tree = if mode == "custodied" {
+    let tree = if mode.starts_with("custodied") {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
         Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
     } else {
@@ -78,6 +82,13 @@ fn custody_owner_helper() {
         fs::write(root.join("pid.tmp"), pid.to_string()).expect("pid");
         fs::rename(root.join("pid.tmp"), root.join("pid")).expect("pid");
     }
+    // Ends this owner's own hold on its output while it and its tree live.
+    #[cfg(windows)]
+    if mode == "custodied-closing" {
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+        // SAFETY: this helper never writes its output again.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(GetStdHandle(STD_OUTPUT_HANDLE)) };
+    }
     fs::write(root.join("owner-ready"), b"ready").expect("ready");
     let _tree = tree;
     loop {
@@ -86,6 +97,10 @@ fn custody_owner_helper() {
 }
 
 fn owner(mode: &str, root: &Path) -> std::process::Child {
+    owner_writing_to(mode, root, Stdio::null())
+}
+
+fn owner_writing_to(mode: &str, root: &Path, output: Stdio) -> std::process::Child {
     Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
@@ -95,10 +110,102 @@ fn owner(mode: &str, root: &Path) -> std::process::Child {
         .env(MODE, mode)
         .env(ROOT, root)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(output)
         .stderr(Stdio::null())
         .spawn()
         .expect("owner")
+}
+
+/// Starts a custodian beside an inheritable pipe this owner then lets go
+/// of, and records whether the pipe's reader saw its end while the
+/// custodian ran: a custodian that inherited the pipe holds it open.
+#[cfg(windows)]
+fn custodian_alone(root: &Path) {
+    use std::io::Read as _;
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    let inheritable = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).expect("size"),
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
+    // SAFETY: writable outputs and initialized attributes.
+    let created = unsafe { CreatePipe(&raw mut read, &raw mut write, &raw const inheritable, 0) };
+    assert_ne!(created, 0, "pipe");
+    // SAFETY: the pipe's read end, owned from here.
+    let mut read = unsafe { fs::File::from_raw_handle(read.cast()) };
+    // SAFETY: an unnamed Job, held until this helper exits.
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    assert!(!job.is_null(), "job");
+    let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
+    let (mut record, _) = custody.record().expect("record");
+    let custodian = super::custodian::launch(job, &mut record).expect("custodian");
+    // SAFETY: the pipe's write end; only an inheritor still holds it now.
+    unsafe { CloseHandle(write) };
+    let (ended, end) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = ended.send(read.read_to_end(&mut Vec::new()).map(|_| ()));
+    });
+    // The bound only detects a pipe the custodian still holds.
+    let reached = end.recv_timeout(Duration::from_secs(10));
+    let outcome = if matches!(reached, Ok(Ok(()))) {
+        "ended"
+    } else {
+        "held"
+    };
+    fs::write(root.join("outcome"), outcome).expect("outcome");
+    drop(custodian);
+}
+
+/// A custodian inherits none of its owner's handles, so it never holds an
+/// owner's pipe, or anything else, open past the owner's own hold.
+#[cfg(windows)]
+#[test]
+fn a_custodian_inherits_none_of_its_owners_handles() {
+    let root = tempfile::tempdir().expect("root");
+    let status = owner("custodian-alone", root.path()).wait().expect("owner");
+    assert!(status.success(), "the owner failed: {status}");
+    assert_eq!(
+        fs::read_to_string(root.path().join("outcome")).expect("outcome"),
+        "ended",
+        "the custodian held its owner's pipe"
+    );
+}
+
+/// A reader of an owner's output sees its end once the owner lets go of
+/// it, while the owner's custodied tree still runs: neither the tree nor
+/// its custodian holds the owner's own handles.
+#[cfg(windows)]
+#[test]
+fn an_owners_output_ends_with_the_owner_while_its_tree_runs() {
+    use std::io::Read as _;
+    let root = tempfile::tempdir().expect("root");
+    let mut owner = owner_writing_to("custodied-closing", root.path(), Stdio::piped());
+    let mut output = owner.stdout.take().expect("owner output");
+    let (ended, end) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = ended.send(output.read_to_end(&mut Vec::new()).map(|_| ()));
+    });
+    let tree = Watch::new(published(root.path(), &mut owner)).expect("running tree");
+    // The bound only detects an output some other process still holds.
+    let reached = end.recv_timeout(Duration::from_secs(30));
+    let running = !tree.exited();
+    let custodian = Watch::new(custodian_of(&root.path().join("processes")));
+    owner.kill().expect("kill owner");
+    owner.wait().expect("reap owner");
+    assert!(
+        matches!(reached, Ok(Ok(()))),
+        "the owner's output outlived its hold: {reached:?}"
+    );
+    assert!(running, "the tree ended before the output did");
+    assert!(
+        custodian.is_some(),
+        "the custodian ended before the output did"
+    );
 }
 
 /// Waits for the owner's readiness, then reads the program's PID.
@@ -301,12 +408,12 @@ const CHURNED: u32 = 100;
 
 /// A tree member that starts and ends [`CHURNED`] members one at a time,
 /// marks that it has, and then lives until killed. Each is this executable
-/// started as a custodian with no owner to read, which exits before `main`.
+/// started as a custodian with no owner, which exits before `main`.
 #[cfg(windows)]
 fn churn(root: &Path) {
     for _ in 0..CHURNED {
         let status = Command::new(std::env::current_exe().expect("test executable"))
-            .env("ACYCLIC_PROCESS_CUSTODIAN", "1")
+            .arg("--acyclic-process-custodian")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

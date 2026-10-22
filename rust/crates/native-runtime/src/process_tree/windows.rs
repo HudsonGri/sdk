@@ -202,12 +202,39 @@ pub(super) fn spawn_named(
     spawn_in_job(command, None, custody, Some((name, record)))
 }
 
+/// Keeps this owner's own standard handles out of every process that does
+/// not ask for them, its trees and their custodians alike, so a reader of
+/// the owner's output sees its end when the owner exits, not when the last
+/// of its tool processes does. A child that inherits a standard handle
+/// explicitly gets its own duplicate of it.
+fn withhold_standard_handles() -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: reads this process's standard handle.
+        let handle = unsafe { GetStdHandle(id) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: clears only the inheritance flag of a live handle.
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 fn spawn_in_job(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
     mut named: Option<(&[u16], &mut super::custody::Record)>,
 ) -> io::Result<()> {
+    withhold_standard_handles()?;
     *custody = Some(super::ProcessTree {
         child: None,
         guard: Guard::empty(meter.is_none()),
@@ -232,11 +259,10 @@ fn spawn_in_job(
         .transpose()?;
     let started = start_in_job(command, meter, tree);
     if started.is_err()
-        && let Some(mut custodian) = custodian
+        && let Some(custodian) = custodian
     {
         // Never started, the tree has no member for the custodian to await.
-        let _ = custodian.kill();
-        let _ = custodian.wait();
+        custodian.stop();
     }
     started
 }
