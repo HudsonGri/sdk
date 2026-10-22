@@ -584,8 +584,11 @@ fn measure(agents: u64, children: usize) -> Result<Report> {
 mod bounds {
     /// Resident memory retained per idle agent.
     pub(super) const IDLE_RSS_BYTES: PerAgent = PerAgent::whole(12 * 1024 * 1024);
-    /// Open descriptors retained per idle agent.
-    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(16);
+    /// Open descriptors retained per idle agent. Store ownership holds none
+    /// (store claims), and stream and objects journals only within the
+    /// process's descriptor cache; the core-state log and directory handles
+    /// remain.
+    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(6);
     /// inotify watches retained per idle agent.
     pub(super) const WATCHES: PerAgent = PerAgent::whole(7);
     /// Threads retained per idle agent beyond the process-wide pools: none,
@@ -649,6 +652,7 @@ fn per_agent_cost_is_bounded() -> Result<()> {
         .env("ACYCLIC_SCALE_CHILDREN", "0")
         .env("ACYCLIC_SCALE_IDLE_MS", "300")
         .env("ACYCLIC_SCALE_BOUNDS", "1")
+        .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "16")
         .env_remove("ACYCLIC_SCALE_DIAG")
         .output()
         .map_err(storage)?;
@@ -678,6 +682,9 @@ fn ramp() -> Result<()> {
     let agents = crate::native_environment::variable("ACYCLIC_SCALE_AGENTS")
         .and_then(|agents| agents.into_string().ok())
         .unwrap_or_else(|| "100,1000".into());
+    // Idle stores' journals and logs hold descriptors only within the
+    // process-wide bound `ACYCLIC_CACHED_DESCRIPTORS` sets, so it bounds
+    // their total at any agent count.
     for count in agents.split(',') {
         let children = setting("ACYCLIC_SCALE_CHILDREN").unwrap_or(0);
         let report = measure(count.trim().parse().map_err(storage)?, children)?;
