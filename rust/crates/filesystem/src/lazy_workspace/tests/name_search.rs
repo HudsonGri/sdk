@@ -212,6 +212,15 @@ impl AsyncObjectStore for NameIndexReadCounter {
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.inner.read(id, maximum, work).await
     }
+
+    async fn read_many(
+        &self,
+        requests: &[crate::ObjectReadRequest],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        self.reads.fetch_add(requests.len(), Ordering::Relaxed);
+        self.inner.read_many(requests, work).await
+    }
 }
 
 #[tokio::test]
