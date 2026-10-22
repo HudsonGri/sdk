@@ -290,10 +290,7 @@ impl FileKey {
                     name: id(name)?,
                 });
             }
-            [
-                "commands" | "workspace" | "config" | ".claude" | ".codex" | "skills",
-                ..,
-            ] => {
+            [root, ..] if InputPath::is_source_root(root) => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
