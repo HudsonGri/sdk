@@ -20,7 +20,7 @@ use thiserror::Error;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    GetFinalPathNameByHandleW, OPEN_EXISTING, VOLUME_NAME_GUID,
+    FILE_TRAVERSE, GetFinalPathNameByHandleW, OPEN_EXISTING, VOLUME_NAME_GUID,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
@@ -261,11 +261,14 @@ fn open_journal_volume(root: &HostRoot) -> Result<std::fs::File, WindowsUsnError
     }
     let name = volume_device_name(&path)?;
     // SAFETY: the GUID volume name is terminated and contains no embedded NUL.
+    // FILE_TRAVERSE selects the filesystem's volume object. An access-zero
+    // open can bypass the filesystem and reach the storage device, which
+    // rejects USN controls. No raw file-data read or write access is requested.
     // CreateFileW transfers a new synchronous handle, which File owns below.
     let volume = unsafe {
         CreateFileW(
             windows::core::PCWSTR(name.as_ptr()),
-            0,
+            FILE_TRAVERSE.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
             OPEN_EXISTING,
