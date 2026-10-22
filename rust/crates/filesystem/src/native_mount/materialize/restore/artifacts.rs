@@ -87,7 +87,7 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
     work: &mut crate::NativeMaterializationWork,
 ) -> Result<RestoreLock, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
-        let cleanup = work.reserve_cleanup_write()?;
+        let cleanup = crate::NativeMaterializationWork::reserve_cleanup_write(work)?;
         let file = acyclic_native_runtime::FileLock::new(
             crate::native_host::open_leaf(
                 &parent.directory,
