@@ -112,6 +112,8 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
             stream_bytes: AtomicU64::new(0),
             delivery: Arc::new(Delivery::new(sink.clone(), &mut original)?),
             ownership: SourcePayloadOwnership::default(),
+            progress: Mutex::new(DeliveredEvents::default()),
+            delivered: Condvar::new(),
         };
         if precancel {
             cancellation.cancel();
@@ -586,9 +588,8 @@ fn measured_fence_rejects_denied_reads_and_abandons_a_replaced_root() -> TestRes
     Ok(())
 }
 
-/// `FSEvents` proves no delivery order, so a fence reports everything.
 #[test]
-fn a_fence_reports_everything() -> TestResult {
+fn a_fence_waits_for_pending_event_ids_without_invalidating_unchanged_names() -> TestResult {
     struct Recorded(Mutex<Vec<HostChange>>);
     impl HostChangeSink for Recorded {
         fn logical_owned_bytes(&self) -> u64 {
@@ -613,9 +614,16 @@ fn a_fence_reports_everything() -> TestResult {
         Arc::new(Delivery::new(recorded.clone(), &mut ordinary_work())?),
         &mut ordinary_work(),
     )?;
-    watch.fence()?;
+    std::fs::write(root.path().join("created-before-fence"), b"unread")?;
+    assert!(watch.fence_with_work(Duration::from_secs(1), &mut ordinary_work())?);
     let recorded = recorded.0.lock().map_err(|_| "poisoned")?;
-    assert!(recorded.contains(&HostChange::Unconfirmed));
+    assert!(recorded.iter().any(|change| matches!(change,
+        HostChange::Rebound(path) | HostChange::Altered(path)
+        if path == Path::new("created-before-fence")
+    )));
+    // Negative control: the former fence returned false and dirtied the
+    // entire namespace, even after a complete native delivery barrier.
+    assert!(!recorded.contains(&HostChange::Unconfirmed));
     assert!(!recorded.contains(&HostChange::Everything));
     Ok(())
 }

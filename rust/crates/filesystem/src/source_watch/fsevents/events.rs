@@ -32,7 +32,7 @@ impl Shared {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
+                if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT | 0x0000_0008) != 0 {
                     changes.push(HostChange::Everything);
                 } else if let Some(relative) = relative_path(path, &self.root, work)? {
                     let (relative, bytes) = clone_path(relative, work)?;
