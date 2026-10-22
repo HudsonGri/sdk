@@ -133,7 +133,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     expected: &Generation<A, O>,
     manifest: &NameIndexManifest,
     previous: Option<&NameIndex<A, O>>,
-) -> Result<(), SearchError> {
+) -> Result<usize, SearchError> {
     let mut buffer = Vec::with_capacity(CHUNK_BYTES);
     let mut chunks = 0;
     for record in manifest.checkpoint.records() {
@@ -196,11 +196,13 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map_err(|failure| failure.error)?;
+    let mut policy_records = 0;
     for record in manifest
         .checkpoint
         .policy_records_since(previous.map(|previous| &previous.manifest.checkpoint))
     {
         let (directory, record) = record?;
+        policy_records += 1;
         let path = format!("{root}/{}", blake3::hash(directory.as_bytes()).to_hex());
         let old_chunks = if previous.is_some() {
             match read_policy_header(expected, &path).await {
@@ -275,7 +277,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map_err(|failure| failure.error)?;
-    Ok(())
+    Ok(policy_records)
 }
 
 fn policy_root() -> String {
@@ -419,6 +421,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(initial.checkpoint_policy_records, 66);
         let mut manifest = initial.manifest.clone();
         manifest.checkpoint.forget_subtree("d00");
         let record = serde_json::to_vec(
@@ -446,6 +449,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let reopened = NameIndex::open(&workspace).await.unwrap().unwrap();
+        assert_eq!(updated.checkpoint_policy_records, 2);
         assert_eq!(
             serde_json::to_vec(&updated.manifest.checkpoint).unwrap(),
             serde_json::to_vec(&reopened.manifest.checkpoint).unwrap()
@@ -520,6 +524,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(reset.checkpoint_policy_records, 0);
         let files = reset
             .generation()
             .list_directory(&policy_root(), None, 128, WorkBudget::UNBOUNDED, &stop)
@@ -652,6 +657,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+        assert_eq!(republished.checkpoint_policy_records, 0);
         // Inspect each checkpoint binding directly. A whole-generation diff
         // spends its join budget traversing unrelated bindings as well.
         for ordinal in 0..stored.checkpoint_chunks {

@@ -310,8 +310,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             complete: checkpoint.pending_directories() == 0,
             checkpoint,
         };
-        super::checkpoint::write_manifest(&mut transaction, expected, &manifest, Some(self))
-            .await?;
+        let _policy_records =
+            super::checkpoint::write_manifest(&mut transaction, expected, &manifest, Some(self))
+                .await?;
         let outcome = transaction
             .commit(
                 None,
@@ -334,6 +335,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 Ok(NameIndexRefresh::Published(Self {
                     generation,
                     manifest,
+                    #[cfg(test)]
+                    checkpoint_policy_records: _policy_records,
                 }))
             }
             TransactionCommit::Conflict { .. } => Ok(NameIndexRefresh::Conflict),

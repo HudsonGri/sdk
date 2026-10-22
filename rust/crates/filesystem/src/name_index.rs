@@ -42,6 +42,8 @@ pub struct NameIndexManifest {
 /// directories and cannot materialize source-backed file contents.
 pub struct NameIndex<A, O> {
     generation: Generation<A, O>,
+    #[cfg(test)]
+    checkpoint_policy_records: usize,
     /// Follow clients fold progress from this file and stream the numbered pages.
     pub manifest: NameIndexManifest,
 }
@@ -78,6 +80,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         Ok(Some(Self {
             generation,
             manifest,
+            #[cfg(test)]
+            checkpoint_policy_records: 0,
         }))
     }
 
@@ -143,7 +147,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             )
             .await
             .map_err(|failure| failure.error)?;
-        checkpoint::write_manifest(&mut transaction, expected, &manifest, previous).await?;
+        let _policy_records =
+            checkpoint::write_manifest(&mut transaction, expected, &manifest, previous).await?;
         let outcome = transaction
             .commit(
                 None,
@@ -165,6 +170,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             | TransactionCommit::AlreadyCommitted(generation) => Ok(Some(Self {
                 generation,
                 manifest,
+                #[cfg(test)]
+                checkpoint_policy_records: _policy_records,
             })),
             TransactionCommit::Conflict { .. } => Ok(None),
             TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => Err(
