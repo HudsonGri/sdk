@@ -63,6 +63,7 @@ where
         output: Option<&VolumeRef>,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
         let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
+        // Unbudgeted: assembly holds no allocation budget.
         acyclic_fs::in_heap(|| {
             self.stock_execution_with_context(
                 task_context,
@@ -99,6 +100,7 @@ where
             ));
         }
         task_context.owned_task_binding(None)?;
+        // Unbudgeted: assembly holds no allocation budget.
         let admission = acyclic_fs::in_heap(|| self.host.observe_admission(task)).await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
@@ -111,6 +113,7 @@ where
             ));
         }
         let task_context = match output {
+            // Unbudgeted: assembly holds no allocation budget.
             Some(volume) => acyclic_fs::in_heap(|| task_context.with_output_volume(volume)).await?,
             None => task_context,
         };
@@ -119,6 +122,7 @@ where
         let operation_id = execution_operation(task, turn, None)?;
         let task_files = match &self.task_files {
             Some(files) => {
+                // Unbudgeted: assembly holds no allocation budget.
                 match acyclic_fs::in_heap(|| files.for_created_task(&task_context, &scope)).await? {
                     Some(created) => Some(Arc::new(created)),
                     None => Some(files.clone()),
@@ -126,6 +130,7 @@ where
             }
             None => None,
         };
+        // Unbudgeted: assembly holds no allocation budget.
         let journal = acyclic_fs::in_heap(|| {
             self.open_execution_journal(task, fence.clone(), turn, &admission)
         })
@@ -177,6 +182,7 @@ where
         task: TaskId,
         fence: LeaseFence,
     ) -> Box<Self> {
+        // Unbudgeted: opening a task execution holds no allocation budget.
         Box::new(Self {
             operation_id,
             executor: *executor,
@@ -348,5 +354,6 @@ fn boxed_executor(
     context: ContextPipeline,
     tools: ToolRegistry,
 ) -> Box<StockExecutor> {
+    // Unbudgeted: opening a task execution holds no allocation budget.
     Box::new(StockExecutor::new(model, provider, context, tools))
 }

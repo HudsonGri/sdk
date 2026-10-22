@@ -6,14 +6,12 @@ impl ConcurrentControlRequestDispatcher for Dispatcher {
     fn dispatch_request<'a>(
         &'a self,
         _request: ControlRequest,
-        _work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ControlDispatchResponse>>
-    {
+        work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatch<'a>> {
         let execution = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        Box::pin(std::future::ready(Ok((
-            json!({ "execution": execution }),
-            None,
-        ))))
+        acyclic_harness::conversation::BoundedOperationFuture::on_native_work(work, |_| {
+            std::future::ready(Ok((json!({ "execution": execution }), None)))
+        })
     }
 }
 

@@ -112,7 +112,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 "fork capture has another committed result",
             ));
         }
-        Ok(*committed)
+        Ok(committed.into_inner())
     }
 }
 

@@ -15,7 +15,7 @@ impl LocalWorkspace {
         request: &ForkRequest,
         preparation: &Arc<TaskResourcePreparation>,
         io: &PreparationIo,
-    ) -> Result<(Box<ForkReport>, workspace::View)> {
+    ) -> Result<(crate::charged_box::ChargedBox<ForkReport>, workspace::View)> {
         let selected = request.selections.iter().find_map(|selection| {
             if let ResourceRevision::Project { volume, generation } = &selection.revision {
                 Some((volume, generation))

@@ -36,7 +36,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                 ),
             ] {
                 let request = native_hook_request(host, event, "session", &fixture.root, extra);
-                service.dispatch_request(request, &mut None).await.unwrap();
+                service.dispatch_now(request, &mut None).await.unwrap();
             }
             let child = host_state(&service).await.routes["child"]
                 .active_path()
@@ -45,7 +45,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                 "tool_name":"Bash", "tool_use_id":"tool", "tool_input":{"command":"pwd"}});
             let request =
                 native_hook_request(host, "PreToolUse", "session", &fixture.root, input.clone());
-            let (routed, _) = service.dispatch_request(request, &mut None).await.unwrap();
+            let (routed, _) = service.dispatch_now(request, &mut None).await.unwrap();
             assert!(
                 routed["hookSpecificOutput"]["updatedInput"]["command"]
                     .as_str()
@@ -63,11 +63,11 @@ fn native_hosts_route_children_and_reject_forged_identity() {
             ] {
                 let request =
                     native_hook_request(host, "PreToolUse", "session", &fixture.root, denied);
-                assert!(service.dispatch_request(request, &mut None).await.is_err());
+                assert!(service.dispatch_now(request, &mut None).await.is_err());
             }
             let request =
                 native_hook_request(host, "PostToolUseFailure", "session", &fixture.root, input);
-            service.dispatch_request(request, &mut None).await.unwrap();
+            service.dispatch_now(request, &mut None).await.unwrap();
             let context = host_state(&service).await.root_context_id;
             for (event, cwd, extra) in [
                 (
@@ -90,7 +90,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                 ("SessionStart", &fixture.root, json!({"source":"resume"})),
             ] {
                 let request = native_hook_request(host, event, "session", cwd, extra);
-                service.dispatch_request(request, &mut None).await.unwrap();
+                service.dispatch_now(request, &mut None).await.unwrap();
             }
             assert_eq!(host_state(&service).await.root_context_id, context);
             let _ = service.shutdown().await.unwrap();
@@ -118,7 +118,7 @@ fn concurrent_spawns_from_one_fork_point_start_in_any_order() {
             spawn("left"),
             spawn("right"),
         ] {
-            service.dispatch_request(request, &mut None).await.unwrap();
+            service.dispatch_now(request, &mut None).await.unwrap();
         }
         assert_eq!(host_state(&service).await.pending.len(), 2);
         // The host starts the children in either order, naming neither call.
@@ -127,7 +127,7 @@ fn concurrent_spawns_from_one_fork_point_start_in_any_order() {
                 "SubagentStart",
                 json!({"turn_id":format!("{child}-turn"), "agent_id":child, "agent_type":"general-purpose"}),
             );
-            service.dispatch_request(start, &mut None).await.unwrap();
+            service.dispatch_now(start, &mut None).await.unwrap();
         }
         let state = host_state(&service).await;
         assert!(state.pending.is_empty());
@@ -204,21 +204,21 @@ fn a_parent_write_between_spawns_separates_their_fork_points() {
             start("started"),
             spawn("before"),
         ] {
-            service.dispatch_request(request, &mut None).await.unwrap();
+            service.dispatch_now(request, &mut None).await.unwrap();
         }
         fs::write(fixture.root.join("changed.txt"), "parent edit").unwrap();
-        let refused = service.dispatch_request(spawn("after"), &mut None).await;
+        let refused = service.dispatch_now(spawn("after"), &mut None).await;
         assert!(
             format!("{refused:?}").contains("another fork point is pending"),
             "{refused:?}"
         );
         assert_eq!(host_state(&service).await.pending.len(), 1);
         service
-            .dispatch_request(start("before"), &mut None)
+            .dispatch_now(start("before"), &mut None)
             .await
             .unwrap();
         service
-            .dispatch_request(spawn("after"), &mut None)
+            .dispatch_now(spawn("after"), &mut None)
             .await
             .unwrap();
         assert_eq!(host_state(&service).await.pending.len(), 1);

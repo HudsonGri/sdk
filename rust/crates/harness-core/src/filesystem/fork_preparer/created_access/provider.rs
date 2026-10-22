@@ -11,6 +11,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
         request: &'a ResourcePreparationRequest,
         proof: &'a ResourceCreationProofRef,
     ) -> BoxFuture<'a, Result<CreatedResourceReceipt>> {
+        // Unbudgeted: the attempt's budget is created inside this frame.
         Box::pin(async move {
             let io = boxed_io(request)?;
             self.receipt(request, proof, &io)?.await
@@ -36,6 +37,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
 
 #[inline(never)]
 fn boxed_io(request: &ResourcePreparationRequest) -> Result<Box<PreparationIo>> {
+    // Unbudgeted: this box holds the budget it creates; none is live before it.
     PreparationIo::new(request, &CancellationToken::new()).map(Box::new)
 }
 

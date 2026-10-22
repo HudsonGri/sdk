@@ -102,13 +102,18 @@ impl Commands<'_> {
 }
 
 #[inline(never)]
-fn ready(report: Box<crate::fork::ForkReport>) -> Result<TaskCommandProgress> {
+fn ready(
+    report: crate::charged_box::ChargedBox<crate::fork::ForkReport>,
+) -> Result<TaskCommandProgress> {
     Ok(TaskCommandProgress::Ready(
-        serde_json::to_value(crate::Outcome::Succeeded(*report)).map_err(storage)?,
+        serde_json::to_value(crate::Outcome::Succeeded(report.into_inner())).map_err(storage)?,
     ))
 }
 
 impl TaskCommandHost for Commands<'_> {
+    fn frame_io(&self) -> Option<&PreparationIo> {
+        Some(self.io)
+    }
     fn execute<'a>(
         &'a self,
         context: TaskContext,
@@ -116,7 +121,14 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        acyclic_fs::in_heap(|| self.run(context, fence, command, payload, false))
+        // The frame is paid for on the preparation's budget, which `run` spends.
+        match crate::charged_box::charged_frame(Some(self.io), || {
+            self.run(context, fence, command, payload, false)
+        }) {
+            Ok(frame) => frame,
+            // Unbudgeted: a refused frame holds only its error.
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
     }
     fn reconcile<'a>(
         &'a self,
@@ -125,7 +137,14 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        acyclic_fs::in_heap(|| self.run(context, fence, command, payload, true))
+        // The frame is paid for on the preparation's budget, which `run` spends.
+        match crate::charged_box::charged_frame(Some(self.io), || {
+            self.run(context, fence, command, payload, true)
+        }) {
+            Ok(frame) => frame,
+            // Unbudgeted: a refused frame holds only its error.
+            Err(error) => Box::pin(std::future::ready(Err(error))),
+        }
     }
 }
 
