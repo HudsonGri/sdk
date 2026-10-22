@@ -1,5 +1,64 @@
 use super::*;
 
+#[cfg(feature = "native-watch")]
+#[tokio::test]
+async fn name_search_native_metadata_benchmark_keeps_pages_bounded() {
+    let root = tempfile::tempdir().unwrap();
+    for directory in 0..4 {
+        let path = root.path().join(format!("directory-{directory}"));
+        std::fs::create_dir(&path).unwrap();
+        for file in 0..128 {
+            std::fs::write(
+                path.join(format!("candidate-{file:03}.rs")),
+                b"unread fixture",
+            )
+            .unwrap();
+        }
+        std::fs::write(path.join("excluded.ignored"), b"not a candidate").unwrap();
+    }
+    // The excluded objects exist in the real native tree.
+    assert!(root.path().join("directory-0/excluded.ignored").is_file());
+    let fs = Fs::memory();
+    let lazy = attach(
+        &fs,
+        native_source(root.path(), crate::FilesystemProfile::Portable).await,
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::parse("*.ignored"))
+        .await
+        .unwrap();
+    let mut first_regular = None;
+    let mut maximum_page = 0;
+    let mut names = std::collections::BTreeSet::new();
+    let mut files = 0;
+    while let Some(page) = walk.next_page().await.unwrap() {
+        maximum_page = maximum_page.max(page.len());
+        for name in page {
+            if name.regular {
+                first_regular.get_or_insert_with(|| started.elapsed());
+                files += 1;
+            }
+            assert!(!name.path.ends_with(".ignored"));
+            assert!(
+                names.insert(name.path),
+                "native enumeration repeated a name"
+            );
+        }
+    }
+    assert_eq!(files, 512);
+    assert_eq!(names.len(), 516);
+    assert_eq!(walk.unavailable_entries(), 0);
+    assert!(maximum_page <= 128);
+    eprintln!(
+        "volume-search benchmark component=native-name-walk files={files} directories=4 first_regular_us={} elapsed_us={} maximum_page_entries={maximum_page}",
+        first_regular.unwrap().as_micros(),
+        started.elapsed().as_micros(),
+    );
+}
+
 #[cfg(all(unix, feature = "native-watch"))]
 #[tokio::test]
 async fn name_search_native_symlink_cycles_are_leaves_and_cannot_escape_the_volume() {
