@@ -120,7 +120,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             stop
         ));
         namespace.retire(accounting)?;
-        Ok(observed?.map(|node| node.version))
+        match observed {
+            Ok(node) => Ok(node.map(|node| node.version)),
+            // An indexed directory may have been removed or replaced by a
+            // file while the source was closed. Its former descendants are
+            // absent, rather than an environmental failure of the index.
+            Err(crate::demand::DemandError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Lists the current merged directory.

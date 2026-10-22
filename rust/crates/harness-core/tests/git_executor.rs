@@ -654,19 +654,30 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
 
 #[tokio::test]
 async fn volume_search_rejects_a_durable_index_changed_while_the_source_was_closed() -> Result<()> {
-    restart_changed_native_index(false).await
+    restart_changed_native_index(RestartEdit::LeafBindings).await
 }
 
 #[tokio::test]
 async fn volume_search_rejects_offline_ignore_edits_without_a_directory_change() -> Result<()> {
-    restart_changed_native_index(true).await
+    restart_changed_native_index(RestartEdit::IgnorePolicy).await
 }
 
-async fn restart_changed_native_index(edit_policy: bool) -> Result<()> {
+#[tokio::test]
+async fn volume_search_restarts_when_an_indexed_directory_became_a_file() -> Result<()> {
+    restart_changed_native_index(RestartEdit::DirectoryToFile).await
+}
+
+enum RestartEdit {
+    LeafBindings,
+    IgnorePolicy,
+    DirectoryToFile,
+}
+
+async fn restart_changed_native_index(edit: RestartEdit) -> Result<()> {
     let (_temp, root, _fs, store, main) = fixture_native(false).await?;
     std::fs::create_dir(root.join("nested"))?;
     std::fs::write(root.join("nested/removed-offline.txt"), b"unread")?;
-    if edit_policy {
+    if matches!(edit, RestartEdit::IgnorePolicy) {
         std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
         std::fs::write(root.join("nested/.gitignore"), b"created-offline.txt\n")?;
     }
@@ -716,14 +727,23 @@ async fn restart_changed_native_index(edit_policy: bool) -> Result<()> {
     let workspace = main.workspace().clone();
     drop(main);
     // No producer or source subscription exists during this offline mutation.
-    if edit_policy {
-        let before = std::fs::metadata(root.join("nested"))?.modified()?;
-        std::fs::write(root.join("nested/.gitignore"), b"removed-offline.txt\n")?;
-        // Negative control: directory-only restart tokens certify stale rules.
-        assert_eq!(std::fs::metadata(root.join("nested"))?.modified()?, before);
-    } else {
-        std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
-        std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+    match edit {
+        RestartEdit::IgnorePolicy => {
+            let before = std::fs::metadata(root.join("nested"))?.modified()?;
+            std::fs::write(root.join("nested/.gitignore"), b"removed-offline.txt\n")?;
+            // Negative control: directory-only restart tokens certify stale rules.
+            assert_eq!(std::fs::metadata(root.join("nested"))?.modified()?, before);
+        }
+        RestartEdit::LeafBindings => {
+            std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
+            std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+        }
+        RestartEdit::DirectoryToFile => {
+            std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
+            std::fs::remove_dir(root.join("nested"))?;
+            std::fs::write(root.join("nested"), b"unread")?;
+            assert!(std::fs::symlink_metadata(root.join("nested/.gitignore")).is_err());
+        }
     }
     let config = VolumeConfig::native(Lifecycle::Durable);
     let source = NativeDemandSource::open(
@@ -752,11 +772,13 @@ async fn restart_changed_native_index(edit_policy: bool) -> Result<()> {
         }
         paths.extend(page.names.into_iter().map(|name| name.path));
     }
-    assert!(
-        paths
-            .iter()
-            .any(|path| path == "nested/created-offline.txt")
-    );
+    let arrived = if matches!(edit, RestartEdit::DirectoryToFile) {
+        "nested"
+    } else {
+        "nested/created-offline.txt"
+    };
+    assert!(paths.iter().any(|path| path == arrived));
+    assert_eq!(names.unavailable_entries().await, 0);
     assert!(
         !paths
             .iter()
