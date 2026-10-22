@@ -14,7 +14,7 @@ use crate::{
     Workspace, WorkspaceDelete, WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::stream;
 use prost::Message;
 use std::pin::Pin;
 use std::sync::Arc;

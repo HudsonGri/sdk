@@ -55,88 +55,19 @@ where
             contents: encoded,
             terminal: manifest.objects.is_empty(),
         });
-        let filesystem = self.filesystem.clone();
-        let workspace = generation.workspace;
-        let objects = manifest.objects;
-        let maximum_objects = request.maximum_objects;
-        let maximum_bytes = request.maximum_bytes;
-        let object_stream = stream::try_unfold(
-            (
-                filesystem,
-                workspace,
-                manifest_chunk,
-                objects,
-                start_index,
-                start,
-                retained,
-                0_u32,
-            ),
-            move |(
-                filesystem,
-                workspace,
-                manifest_chunk,
-                objects,
-                index,
-                cursor,
-                retained,
-                emitted,
-            )| async move {
-                check_export_workspace(&workspace).await?;
-                if let Some(chunk) = manifest_chunk {
-                    return Ok(Some((
-                        chunk,
-                        (
-                            filesystem, workspace, None, objects, index, cursor, retained, emitted,
-                        ),
-                    )));
-                }
-                if index == objects.len() || emitted == maximum_objects || retained == maximum_bytes
-                {
-                    return Ok(None);
-                }
-                let Some(&object) = objects.get(index) else {
-                    return Ok(None);
-                };
-                let remaining = maximum_bytes.saturating_sub(retained);
-                let body = filesystem
-                    .export_object(
-                        object,
-                        remaining,
-                        crate::WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await;
-                check_export_workspace(&workspace).await?;
-                let body = body
-                    .map_err(|failure| Status::resource_exhausted(failure.error.to_string()))?
-                    .value
-                    .bytes;
-                let retained = retained
-                    .checked_add(u64::try_from(body.len()).unwrap_or(u64::MAX))
-                    .ok_or_else(|| Status::resource_exhausted("export byte count overflow"))?;
-                let next_index = index.saturating_add(1);
-                let next_cursor = cursor.saturating_add(1);
-                let chunk = wire::ExportChunk {
-                    cursor: next_cursor.to_le_bytes().to_vec(),
-                    object_id: object.to_bytes().to_vec(),
-                    contents: body.to_vec(),
-                    terminal: next_index == objects.len(),
-                };
-                Ok(Some((
-                    chunk,
-                    (
-                        filesystem,
-                        workspace,
-                        None,
-                        objects,
-                        next_index,
-                        next_cursor,
-                        retained,
-                        emitted.saturating_add(1),
-                    ),
-                )))
-            },
-        );
+        let state = ExportState {
+            filesystem: self.filesystem.clone(),
+            workspace: generation.workspace,
+            manifest: manifest_chunk,
+            objects: manifest.objects,
+            index: start_index,
+            cursor: start,
+            retained,
+            emitted: 0,
+            maximum_objects: request.maximum_objects,
+            maximum_bytes: request.maximum_bytes,
+        };
+        let object_stream = stream::try_unfold(state, ExportState::next);
         Ok(Response::new(Box::pin(object_stream)))
     }
 
@@ -274,4 +205,64 @@ async fn check_export_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .check_current_access(&mut accounting, &cancellation)
         .await
         .map_err(|error| status(&error))
+}
+
+struct ExportState<A, O> {
+    filesystem: Fs<A, O>,
+    workspace: Workspace<A, O>,
+    manifest: Option<wire::ExportChunk>,
+    objects: Vec<ObjectId>,
+    index: usize,
+    cursor: u64,
+    retained: u64,
+    emitted: u32,
+    maximum_objects: u32,
+    maximum_bytes: u64,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ExportState<A, O> {
+    async fn next(mut self) -> Result<Option<(wire::ExportChunk, Self)>, Status> {
+        check_export_workspace(&self.workspace).await?;
+        if let Some(chunk) = self.manifest.take() {
+            return Ok(Some((chunk, self)));
+        }
+        if self.index == self.objects.len()
+            || self.emitted == self.maximum_objects
+            || self.retained == self.maximum_bytes
+        {
+            return Ok(None);
+        }
+        let Some(&object) = self.objects.get(self.index) else {
+            return Ok(None);
+        };
+        let remaining = self.maximum_bytes.saturating_sub(self.retained);
+        let body = self
+            .filesystem
+            .export_object(
+                object,
+                remaining,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await;
+        check_export_workspace(&self.workspace).await?;
+        let body = body
+            .map_err(|failure| Status::resource_exhausted(failure.error.to_string()))?
+            .value
+            .bytes;
+        self.retained = self
+            .retained
+            .checked_add(u64::try_from(body.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| Status::resource_exhausted("export byte count overflow"))?;
+        self.index = self.index.saturating_add(1);
+        self.cursor = self.cursor.saturating_add(1);
+        self.emitted = self.emitted.saturating_add(1);
+        let chunk = wire::ExportChunk {
+            cursor: self.cursor.to_le_bytes().to_vec(),
+            object_id: object.to_bytes().to_vec(),
+            contents: body.to_vec(),
+            terminal: self.index == self.objects.len(),
+        };
+        Ok(Some((chunk, self)))
+    }
 }
