@@ -13,8 +13,20 @@ impl DemandSource for NativeDemandSource {
             move |provider, directory, context| {
                 provider.check(source, context)?;
                 let (relative, allocation) = provider.relative(directory, context)?;
+                #[cfg(unix)]
                 let mut existing = relative.as_path();
+                #[cfg(windows)]
+                let mut existing = relative.as_slice();
                 let result = loop {
+                    #[cfg(unix)]
+                    let parent = existing.parent();
+                    #[cfg(windows)]
+                    let parent = (!existing.is_empty()).then(|| {
+                        &existing[..existing
+                            .iter()
+                            .rposition(|unit| *unit == u16::from(b'\\'))
+                            .unwrap_or(0)]
+                    });
                     match provider.inner.root.same_mount(existing, context) {
                         // A missing authored leaf can still have an ancestor
                         // on another mount. Check the nearest existing prefix.
@@ -22,9 +34,9 @@ impl DemandSource for NativeDemandSource {
                             if matches!(
                                 error.kind(),
                                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                            ) && existing.parent().is_some() =>
+                            ) && parent.is_some() =>
                         {
-                            existing = existing.parent().unwrap();
+                            existing = parent.unwrap();
                         }
                         result => break result,
                     }

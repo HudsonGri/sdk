@@ -45,6 +45,44 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
     )?)
 }
 
+#[tokio::test]
+async fn name_search_mount_check_uses_the_nearest_existing_directory() -> Result<(), Box<dyn Error>>
+{
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("nested-🦀"))?;
+    std::fs::write(root.path().join("nested-🦀/file"), b"metadata only")?;
+    let source = native_source(root.path()).await?;
+    let stop = CancellationToken::new();
+    for name in [
+        "/",
+        "/nested-🦀",
+        "/absent/deep/leaf",
+        "/nested-🦀/absent/leaf",
+        "/nested-🦀/file/child",
+    ] {
+        assert!(
+            source
+                .same_volume(
+                    source.reference(),
+                    &path(name)?,
+                    WorkBudget::UNBOUNDED,
+                    &stop
+                )
+                .await?
+                .value
+        );
+    }
+    // Negative control: checking only the requested path cannot classify an
+    // authored directory that does not yet exist in the native source.
+    assert_eq!(
+        std::fs::metadata(root.path().join("absent/deep/leaf"))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn name_search_native_cookie_resumes_after_source_restart_without_replaying_entries()
