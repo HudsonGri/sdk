@@ -241,7 +241,7 @@ where
         options::checkout_source(checkout, (root, root_custody), options, work)
     }
 
-    /// Starts the native session in a frame of its own. The ProjFS start
+    /// Starts the native session in a frame of its own. The `ProjFS` start
     /// materializes the root through callbacks on this thread, beneath it.
     #[inline(never)]
     fn start_mount(
