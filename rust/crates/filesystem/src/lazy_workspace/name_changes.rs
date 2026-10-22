@@ -449,6 +449,20 @@ impl NativeNameChanges {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, NativeDemandSource, S>
 {
+    /// Captures journal evidence from the source's held root before starting
+    /// a fresh name walk. Reopening its path could observe a replacement root.
+    ///
+    /// # Errors
+    /// Returns unavailable-journal, invalid native evidence, or original-work
+    /// errors. A caller must not substitute a later cursor for this baseline.
+    #[cfg(windows)]
+    pub fn capture_indexed_native_journal(
+        &self,
+        work: &mut crate::NativeMaterializationWork,
+    ) -> Result<crate::NameJournalCheckpoint, crate::WindowsUsnError> {
+        self.source.capture_name_journal(work)
+    }
+
     /// Rejects old pinned reads and native cursors after persisted metadata
     /// proves that the source changed while no subscription was running.
     pub fn invalidate_indexed_native_metadata(&self) {

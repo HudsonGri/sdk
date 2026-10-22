@@ -1,5 +1,56 @@
 use super::*;
 
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires a live NTFS volume with a readable USN journal"]
+async fn live_name_index_journal_uses_held_source_before_discovery() {
+    let parent = tempfile::tempdir().unwrap();
+    let selected = parent.path().join("selected");
+    let moved = parent.path().join("moved");
+    std::fs::create_dir(&selected).unwrap();
+    let source = native_source(&selected, crate::FilesystemProfile::Windows).await;
+    let identity = source.root_identity();
+    let fs = Fs::memory();
+    let lazy = attach(&fs, source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    std::fs::rename(&selected, &moved).unwrap();
+    std::fs::create_dir(&selected).unwrap();
+    let stop = CancellationToken::new();
+    let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &stop).unwrap();
+    let journal = lazy.capture_indexed_native_journal(&mut work).unwrap();
+    let native = crate::WindowsUsnCheckpoint::from_name_checkpoint(journal);
+    assert_eq!(native.root_identity(), identity);
+    // Negative control: reopening the source's saved path observes another
+    // root, even though the source still owns the original directory handle.
+    let replacement = crate::capture_windows_usn_checkpoint(&selected, &mut work).unwrap();
+    assert_ne!(replacement.root_identity(), native.root_identity());
+    assert!(work.receipt().backend_read_operations > 0);
+    assert_eq!(work.receipt().source_bytes_read, 0);
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut checkpoint = walk.checkpoint().unwrap();
+    checkpoint.record_journal_checkpoint(journal).unwrap();
+    let resumed = NameWalk::resume(&lazy, checkpoint, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.checkpoint().unwrap().journal_checkpoint(),
+        Some(journal)
+    );
+    // Capturing after discovery would be unsafe: this write belongs after
+    // the baseline marker, whether or not a subsequent scan sees its name.
+    std::fs::write(moved.join("after-capture"), b"unread").unwrap();
+    assert_eq!(
+        crate::validate_windows_usn_checkpoint(&moved, native, &mut work).unwrap(),
+        crate::WindowsUsnContinuity::BaselineRequired(
+            crate::WindowsUsnDiscontinuity::VolumeAdvanced
+        )
+    );
+    while walk.next_page().await.unwrap().is_some() {}
+}
+
 #[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn name_search_journal_cursor_and_delta_publish_atomically_across_restart() {

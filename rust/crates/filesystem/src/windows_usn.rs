@@ -168,9 +168,19 @@ pub fn capture_windows_usn_checkpoint(
     root: &Path,
     work: &mut crate::NativeMaterializationWork,
 ) -> Result<WindowsUsnCheckpoint, WindowsUsnError> {
-    let (root_identity, journal) = observe_root(root, work)?;
+    work.check()?;
+    let root = HostRoot::open(root, work)?;
+    capture_held_checkpoint(&root, work)
+}
+
+pub(crate) fn capture_held_checkpoint<W: SourceDemandReadWork>(
+    root: &HostRoot,
+    work: &mut W,
+) -> Result<WindowsUsnCheckpoint, WindowsUsnError> {
+    work.check()?;
+    let journal = query_journal(root, work)?;
     Ok(WindowsUsnCheckpoint {
-        root_identity,
+        root_identity: root.identity(),
         journal_id: journal.journal_id,
         next_usn: journal.next_usn,
     })

@@ -801,6 +801,13 @@ async fn fill_pass(
 ) -> crate::Result<bool> {
     let workspace = view.workspace();
     let mut prior = shared.snapshot().await;
+    // Capture before opening a fresh walk, including its policy/metadata
+    // reads. Resumed walks retain the evidence captured by their first page.
+    let journal = if prior.is_none() {
+        capture_baseline_journal(view)?
+    } else {
+        None
+    };
     let (mut walk, mut pages, mut expected) = if let Some(index) = &prior {
         if index.manifest.complete {
             return Ok(true);
@@ -847,6 +854,12 @@ async fn fill_pass(
             .map_err(super::search::search_error)?;
         let complete = page.is_none();
         pages += u64::from(page.is_some());
+        let mut checkpoint = walk.checkpoint().map_err(super::search::search_error)?;
+        if let Some(journal) = journal {
+            checkpoint
+                .record_journal_checkpoint(journal)
+                .map_err(super::search::search_error)?;
+        }
         let manifest = NameIndexManifest {
             schema: acyclic_fs::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
@@ -855,7 +868,7 @@ async fn fill_pass(
             pages,
             pending_directories: walk.pending_directories(),
             complete,
-            checkpoint: walk.checkpoint().map_err(super::search::search_error)?,
+            checkpoint,
         };
         let index = Index::publish(
             workspace,
@@ -878,6 +891,28 @@ async fn fill_pass(
         }
         tokio::task::yield_now().await;
     }
+}
+
+fn capture_baseline_journal(
+    view: &OwnedView,
+) -> crate::Result<Option<acyclic_fs::NameJournalCheckpoint>> {
+    #[cfg(windows)]
+    if let OwnedView::Checkout(lazy) = view {
+        let stop = CancellationToken::new();
+        let mut work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &stop)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        return match lazy.capture_indexed_native_journal(&mut work) {
+            Ok(checkpoint) => Ok(Some(checkpoint)),
+            Err(acyclic_fs::WindowsUsnError::Demand(error)) => Err(super::search::search_error(
+                acyclic_fs::SearchError::Lazy(error.into()),
+            )),
+            // A mount without a readable native journal still uses the
+            // metadata-token observer. No journal continuity is claimed.
+            Err(_) => Ok(None),
+        };
+    }
+    let _ = view;
+    Ok(None)
 }
 
 #[cfg(test)]
