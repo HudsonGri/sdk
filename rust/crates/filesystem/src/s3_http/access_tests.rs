@@ -48,7 +48,13 @@ async fn streaming_s3_body_stops_before_the_next_revoked_chunk()
     )
     .await?;
     let mut body = response.output.body.ok_or("missing S3 body")?;
-    assert_eq!(body.next().await.ok_or("missing first chunk")??, "ab");
+    assert_eq!(
+        body.next()
+            .await
+            .ok_or("missing first chunk")?
+            .map_err(std::io::Error::other)?,
+        "ab"
+    );
     crate::access::fixtures::publish_policy(
         workspace,
         &crate::access::fixtures::denied(crate::access::Action::Read, "**"),
