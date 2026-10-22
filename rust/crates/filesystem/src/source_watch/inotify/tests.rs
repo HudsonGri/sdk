@@ -98,7 +98,9 @@ fn name_search_native_file_events_do_not_scan_unrelated_directory_registrations(
     assert!(watch.admit_with_work(Path::new("renamed"), &mut work)?);
     std::fs::write(root.path().join("renamed/after-removal"), b"unread")?;
     assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut work)?);
-    watch.stop_accepted_cleanup()?;
+    // This fixture borrows ordinary caller work rather than retaining a native
+    // owner. Its explicit stop must use that caller's cleanup admission too.
+    watch.stop_with_work(&mut work)?;
     assert!(watch.shared.physically_cleared());
     Ok(())
 }
