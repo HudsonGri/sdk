@@ -12,6 +12,12 @@ use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{Generation, WorkCounters};
 
 /// One transient reader over an existing owner and immutable allocation.
+/// The original ledger context that owner verification charges, beside a reader's I/O.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type OwnerWork = Option<acyclic_fs::NativeMaterializationWork>;
+#[cfg(target_arch = "wasm32")]
+pub(super) type OwnerWork = ();
+
 pub(super) struct ProjectSourceReader<P, A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Arc<TaskJournalOwner<P>>,
@@ -19,6 +25,9 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     generation: Generation<A, O>,
     limits: Limits,
     pub(super) io: PreparationIo,
+    /// The owner's own ledger context, when the reader's I/O runs under a resource
+    /// ceiling of it: owner verification is the owner's work, never the reader's.
+    owner_work: OwnerWork,
     pub(super) serial: tokio::sync::Mutex<()>,
 }
 
@@ -34,6 +43,7 @@ where
         handle: ProjectSourceReadHandle,
         limits: Limits,
         io: PreparationIo,
+        owner_work: OwnerWork,
     ) -> Result<Box<Self>> {
         limits.validate(&mut None)?;
         let authorization = handle.authorization();
@@ -45,14 +55,14 @@ where
         )?;
         let reference =
             bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
-        Self::verify_owner(&owner, &io).await?;
+        Self::verify_owner(&owner, &io, &owner_work).await?;
         let workspace = host.open(&reference, Some(&io)).await?;
-        Self::verify_owner(&owner, &io).await?;
+        Self::verify_owner(&owner, &io, &owner_work).await?;
         io.retain_owned(workspace.name().as_str().len() as u64)?;
         let generation = host
             .generation(&workspace, &authorization.generation, Some(&io))
             .await?;
-        Self::verify_owner(&owner, &io).await?;
+        Self::verify_owner(&owner, &io, &owner_work).await?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         Ok(Box::new(Self {
@@ -62,6 +72,7 @@ where
             generation,
             limits,
             io,
+            owner_work,
             serial: tokio::sync::Mutex::new(()),
         }))
     }
@@ -163,9 +174,15 @@ where
         Ok(())
     }
 
-    async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
+    async fn verify_owner(
+        owner: &TaskJournalOwner<P>,
+        io: &PreparationIo,
+        owner_work: &OwnerWork,
+    ) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let () = owner_work;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
+        if let Some(work) = owner_work.as_ref().or(io.original_native_work()) {
             let cancellation = owner
                 .invocation_cancellation()
                 .ok_or(Error::NativeBoundary {
@@ -255,18 +272,18 @@ where
     }
 
     async fn file_bytes(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let result = self
             .host
             .read_pinned_io(file, self.limits.file_bytes, Some(&self.io))
             .await;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         result
     }
 
     pub(super) async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.file(file)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let _serial = self.serial.lock().await;
         self.file_bytes(file).await
     }
@@ -274,7 +291,7 @@ where
     pub(super) async fn diff(&self, before: &FileRef, after: &FileRef) -> Result<bool> {
         self.file(before)?;
         self.file(after)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let _serial = self.serial.lock().await;
         let _before_hold;
         let before_bytes = self.file_bytes(before).await?;
@@ -297,13 +314,13 @@ where
                 "native selection requires its actual lazy snapshot reader".into(),
             ));
         }
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let _serial = self.serial.lock().await;
         self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let result = self
             .generation
             .read(
@@ -314,14 +331,14 @@ where
             )
             .await;
         let bytes = self.io.receive(result);
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let bytes = bytes?;
         self.io
             .retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
         let metadata_path =
             crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let metadata = self
             .generation
             .read(
@@ -332,7 +349,7 @@ where
             )
             .await;
         let metadata = self.io.receive(metadata);
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
             Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
@@ -404,7 +421,7 @@ where
                 "selected directory page must be finite and positive".into(),
             ));
         }
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let _serial = self.serial.lock().await;
         let after = after
             .map(|name| {
@@ -426,7 +443,7 @@ where
         let engine_maximum = maximum
             .checked_add(u32::from(path.is_empty()))
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let result = self
             .generation
             .list_directory(
@@ -438,7 +455,7 @@ where
             )
             .await;
         let page = self.io.receive(result).map(|(page, _)| page);
-        Self::verify_owner(&self.owner, &self.io).await?;
+        Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
         let page = page?;
         let slots = (page.entries.len() as u64)
             .checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
