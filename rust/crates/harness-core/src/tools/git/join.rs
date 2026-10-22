@@ -369,7 +369,10 @@ where
         let View::Checkout(current) = self.lazy_current else {
             return Ok(None);
         };
-        let described = plan.describe_conflicts(conflicts, truncated).await?;
+        // Each step below resolves paths through the kernel; each is built
+        // in a heap frame of its own so this frame holds only pointers.
+        let described =
+            acyclic_fs::in_heap(|| plan.describe_conflicts(conflicts, truncated)).await?;
         let mut paths = described
             .conflicts
             .iter()
@@ -388,17 +391,17 @@ where
         let cancellation = CancellationToken::new();
         for workspace in [source, &self.current] {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-            let lazy = match current
-                .open_related(workspace.clone(), &mut accounting)
-                .await
+            let lazy = match acyclic_fs::in_heap(|| {
+                current.open_related(workspace.clone(), &mut accounting)
+            })
+            .await
             {
                 Ok(lazy) => lazy,
                 // A workspace without a lazy binding has no unresolved source.
                 Err(acyclic_fs::LazyWorkspaceError::NotFound) => continue,
                 Err(error) => return Err(Error::from(error)),
             };
-            let Some(origin) = lazy
-                .state(&mut accounting)
+            let Some(origin) = acyclic_fs::in_heap(|| lazy.state(&mut accounting))
                 .await
                 .map_err(Error::from)?
                 .fork_origin
@@ -409,14 +412,13 @@ where
             if cut.authored_generation != plan.common_ancestor() {
                 continue;
             }
-            let owner = current
-                .open_related(self.workspace(cut.workspace_id).await?, &mut accounting)
+            let owner = acyclic_fs::in_heap(|| self.workspace(cut.workspace_id)).await?;
+            let owner = acyclic_fs::in_heap(|| current.open_related(owner, &mut accounting))
                 .await
                 .map_err(Error::from)?;
             // The forked side's own observations pin the base; without them
             // the live source would stand in for content it no longer has.
-            return owner
-                .exactify_cut(cut, &paths, &lazy, &mut accounting)
+            return acyclic_fs::in_heap(|| owner.exactify_cut(cut, &paths, &lazy, &mut accounting))
                 .await
                 .map_err(Error::from);
         }
@@ -428,8 +430,8 @@ where
         workspace: &LocalWorkspace,
         generation: acyclic_fs::GenerationId,
     ) -> crate::Result<LocalGeneration> {
-        workspace
-            .generation(generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        let cancellation = CancellationToken::new();
+        acyclic_fs::in_heap(|| workspace.generation(generation, WorkBudget::UNBOUNDED, &cancellation))
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| Error::from(failure.error))
@@ -441,21 +443,22 @@ where
         plan: &LocalJoinPlan,
     ) -> crate::Result<Vec<String>> {
         let sides = [
-            self.join_generation(plan.source(), plan.source_head())
+            acyclic_fs::in_heap(|| self.join_generation(plan.source(), plan.source_head()))
                 .await?,
-            self.join_generation(&self.current, plan.target_head())
+            acyclic_fs::in_heap(|| self.join_generation(&self.current, plan.target_head()))
                 .await?,
         ];
+        let cancellation = CancellationToken::new();
         let mut present = Vec::new();
         for path in self.repository.reserved_paths() {
+            let path_name = format!("/{path}");
             for side in &sides {
-                match side
-                    .stat(
-                        &format!("/{path}"),
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
+                // Each probe is a full path resolution; its frame lives on the
+                // heap so the join's stack holds only the pointer.
+                match acyclic_fs::in_heap(|| {
+                    side.stat(&path_name, WorkBudget::UNBOUNDED, &cancellation)
+                })
+                .await
                 {
                     Ok(_) => {
                         present.push(path.to_owned());
