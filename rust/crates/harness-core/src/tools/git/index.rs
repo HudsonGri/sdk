@@ -229,7 +229,7 @@ impl IndexedNames {
 
     /// Waits for an ordinary index-file revision after a terminal page. The
     /// cursor remains reusable; the next call to `next_page` emits a reset if
-    /// the indexed namespace changed. No source-directory polling is involved.
+    /// the indexed namespace changed. Consumers never poll source directories.
     pub async fn changed(&mut self) -> crate::Result<()> {
         self.changed.changed().await.map_err(storage_index)
     }
@@ -332,17 +332,7 @@ async fn restore_watches(
             if observed != expected {
                 // Policy content can change without touching the directory's
                 // token. Rediscover that policy's subtree, not its siblings.
-                let root = if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
-                    path.rsplit_once('/').map_or("", |(parent, _)| parent)
-                } else {
-                    path
-                };
-                if root.is_empty() || !index.manifest.complete || delta.paths.len() == 512 {
-                    delta.all = true;
-                    delta.paths.clear();
-                } else if !delta.all {
-                    delta.paths.insert(root.to_owned());
-                }
+                metadata_changed(&mut delta, path, index.manifest.complete);
             }
         }
     }
@@ -357,6 +347,8 @@ async fn maintain(
 ) -> crate::Result<()> {
     let mut native_delta =
         (restart_delta.all || !restart_delta.paths.is_empty()).then_some(restart_delta);
+    let probe_metadata = native.is_none() && matches!(view, OwnedView::Checkout(_));
+    let mut metadata_cursor = None;
     let (provider, path) = view
         .workspace()
         .authority_records()
@@ -448,10 +440,87 @@ async fn maintain(
             _ = shared.changed.closed() => return Ok(()),
             _ = shared.refresh.notified() => {},
             changed = source_changed(&mut native) => { native_delta = Some(changed?); },
+            changed = metadata_changed_without_feed(view, shared, &mut metadata_cursor, probe_metadata) => {
+                native_delta = Some(changed?);
+            },
             record = records.next() => {
                 record.ok_or_else(|| Error::Storage("pathname index file follow ended".into()))?
                     .map_err(storage_index)?;
             }
+        }
+    }
+}
+
+fn metadata_changed(
+    delta: &mut acyclic_fs::lazy_workspace::NativeNameDelta,
+    path: &str,
+    complete: bool,
+) {
+    let root = if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
+        path.rsplit_once('/').map_or("", |(parent, _)| parent)
+    } else {
+        path
+    };
+    if root.is_empty() || !complete || delta.paths.len() == 512 {
+        delta.all = true;
+        delta.paths.clear();
+    } else if !delta.all {
+        delta.paths.insert(root.to_owned());
+    }
+}
+
+async fn metadata_changed_without_feed(
+    view: &OwnedView,
+    shared: &Shared,
+    after: &mut Option<String>,
+    enabled: bool,
+) -> crate::Result<acyclic_fs::lazy_workspace::NativeNameDelta> {
+    let OwnedView::Checkout(lazy) = view else {
+        return std::future::pending().await;
+    };
+    if !enabled {
+        return std::future::pending().await;
+    }
+    loop {
+        // Network and externally managed mounts may have no usable native
+        // feed. One producer checks a bounded batch of metadata tokens; it
+        // never periodically lists the tree, nor allocates a cursor per agent.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let Some(index) = shared.snapshot().await else {
+            continue;
+        };
+        let acyclic_fs::NameCut::Lazy(snapshot) = &index.manifest.cut else {
+            continue;
+        };
+        let stop = CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &stop)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &stop,
+        };
+        let mut delta = acyclic_fs::lazy_workspace::NativeNameDelta::default();
+        let mut count = 0;
+        let mut last = None;
+        for (path, expected) in index
+            .manifest
+            .checkpoint
+            .source_versions_after(after.as_deref())
+            .take(128)
+        {
+            let observed = lazy
+                .observe_indexed_native_metadata(*snapshot, &format!("/{path}"), &mut accounting)
+                .await?;
+            if observed != expected {
+                metadata_changed(&mut delta, path, index.manifest.complete);
+            }
+            count += 1;
+            last = Some(path.to_owned());
+        }
+        *after = if count == 128 { last } else { None };
+        if delta.all || !delta.paths.is_empty() {
+            lazy.invalidate_indexed_native_metadata();
+            return Ok(delta);
         }
     }
 }
@@ -678,6 +747,105 @@ async fn fill_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn volume_search_unwatched_mount_follows_metadata_changes() -> crate::Result<()> {
+        use acyclic_fs::{Lifecycle, LocalOptions, VolumeConfig};
+        acyclic_native_runtime::initialize_native_io_services().map_err(storage_index)?;
+        let temp = tempfile::tempdir().map_err(storage_index)?;
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(root.join("nested")).map_err(storage_index)?;
+        std::fs::write(root.join("nested/before.txt"), b"unread content").map_err(storage_index)?;
+        let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
+            .await
+            .map_err(storage_index)?;
+        let store =
+            LocalCoreStateStore::open_owned(temp.path().join("core")).map_err(storage_index)?;
+        let config = VolumeConfig::native(Lifecycle::Durable);
+        let stop = CancellationToken::new();
+        let source = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(&root),
+            config.profile,
+            config.limits,
+            None,
+            None,
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
+        let (lazy, _) = LazyWorkspace::attach(
+            &fs,
+            "unwatched",
+            Arc::new(source),
+            store,
+            config,
+            OperationId::new(),
+            &mut WorkBudget::UNBOUNDED.accounting(&stop),
+        )
+        .await?;
+        let view = Arc::new(OwnedView::Checkout(lazy));
+        let (changed, receiver) = watch::channel(0);
+        let shared = Arc::new(Shared {
+            latest: AsyncMutex::new(None),
+            changed,
+            failure: Mutex::new(None),
+            directory_query: Mutex::new(None),
+            refresh: tokio::sync::Notify::new(),
+        });
+        let mut names = IndexedNames {
+            shared: Arc::clone(&shared),
+            changed: receiver,
+            next: 0,
+            cut: None,
+        };
+        let producer_view = Arc::clone(&view);
+        let producer_shared = Arc::clone(&shared);
+        // This is the same producer used when subscribe() returns no feed.
+        // Do not install a local watcher as an accidental freshness oracle.
+        let producer = tokio::spawn(async move {
+            maintain(&producer_view, &producer_shared, None, Default::default()).await
+        });
+        let scenario = async {
+            let mut found_before = false;
+            while let Some(page) = names.next_page().await? {
+                found_before |= page
+                    .names
+                    .iter()
+                    .any(|name| name.path == "nested/before.txt");
+            }
+            assert!(found_before);
+            let old = shared.snapshot().await.unwrap();
+            std::fs::rename(
+                root.join("nested/before.txt"),
+                root.join("nested/after.txt"),
+            )
+            .map_err(storage_index)?;
+            // Negative control: the source epoch and authored generation have
+            // no signal, so the old implementation accepts these stale pages.
+            assert!(reusable(view.view(), &old).await?);
+            names.changed().await?;
+            let mut found_after = false;
+            while let Some(page) = names.next_page().await? {
+                assert!(
+                    !page
+                        .names
+                        .iter()
+                        .any(|name| name.path == "nested/before.txt")
+                );
+                found_after |= page
+                    .names
+                    .iter()
+                    .any(|name| name.path == "nested/after.txt");
+            }
+            assert!(found_after);
+            Ok::<_, Error>(())
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), scenario).await;
+        producer.abort();
+        result.map_err(storage_index)?
+    }
 
     #[test]
     fn volume_search_index_only_paths_classify_native_names_without_projection() {

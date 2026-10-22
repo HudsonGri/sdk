@@ -21,6 +21,19 @@ impl DirectoryVersions {
             .map(|(path, version)| (path.as_str(), *version))
     }
 
+    pub(super) fn after(
+        &self,
+        after: Option<&str>,
+    ) -> impl Iterator<Item = (&str, Option<SourceVersion>)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.0
+            .range((
+                after.map_or(Unbounded, |path| Excluded(path.to_owned())),
+                Unbounded,
+            ))
+            .map(|(path, version)| (path.as_str(), *version))
+    }
+
     pub(super) fn entries(&self) -> impl Iterator<Item = (&str, &Option<SourceVersion>)> {
         self.0
             .iter()
@@ -114,6 +127,9 @@ mod tests {
         assert_eq!(changed.changes(&original).count(), 2);
         // Negative control: a full snapshot visits all ten thousand keys.
         assert_eq!(changed.iter().count(), 10_000);
+        // Resume by a tree range, without replaying the preceding keys.
+        assert_eq!(changed.after(Some("d09997")).count(), 2);
+        assert_eq!(changed.after(None).take(128).count(), 128);
         let bytes = serde_json::to_vec(&changed).unwrap();
         let restored: DirectoryVersions = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(

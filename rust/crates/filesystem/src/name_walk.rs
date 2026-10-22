@@ -93,6 +93,15 @@ impl NameCheckpoint {
         self.directory_versions.iter()
     }
 
+    /// Resumes metadata-token observation without revisiting preceding keys.
+    /// Callers can bound each batch independently of the volume's directory count.
+    pub fn source_versions_after(
+        &self,
+        after: Option<&str>,
+    ) -> impl Iterator<Item = (&str, Option<crate::demand::SourceVersion>)> {
+        self.directory_versions.after(after)
+    }
+
     pub(crate) fn directory_records_since<'a>(
         &'a self,
         previous: Option<&'a Self>,
