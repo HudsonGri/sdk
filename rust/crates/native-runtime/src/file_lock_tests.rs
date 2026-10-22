@@ -117,9 +117,12 @@ fn a_dropped_lock_is_free_while_a_spawned_process_shares_its_description() -> io
     let raw = open(&path)?;
     raw.try_lock().map_err(io::Error::from)?;
     let sharing = share(&raw)?;
+    let other_sharing = share(&raw)?;
     drop(raw);
     assert!(!is_free(&path)?);
     drop(sharing);
+    assert!(!is_free(&path)?);
+    drop(other_sharing);
 
     // Other tests can fork while the raw description is open too. Their
     // copies survive until exec, so ending our child is not proof that this
