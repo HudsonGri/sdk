@@ -197,7 +197,7 @@ impl AsyncObjectStore for NameIndexReadCounter {
 
     async fn put_many(
         &self,
-        writes: &[crate::ObjectWrite],
+        writes: &[crate::storage::ObjectWrite],
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
         self.inner.put_many(writes, work).await
