@@ -511,60 +511,25 @@ fn write_legacy_owner(state: &std::path::Path, identity: [u8; 16]) -> Result<Vec
     Ok(bytes)
 }
 
-/// Explicit state keeps its location across upgrades, so a record written
-/// before incarnations must reopen. It migrates only when its old witness is
-/// the captured root's, and keeps its credentials.
+/// A record written before checkout incarnations names no incarnation, so
+/// it cannot prove its checkout: reopening fails closed and leaves it as is.
 #[tokio::test]
-async fn a_pre_incarnation_owner_record_in_explicit_state_migrates() -> Result<()> {
+async fn a_pre_incarnation_owner_record_is_refused_and_left_untouched() -> Result<()> {
     let workspace = tempfile::tempdir().map_err(super::super::storage)?;
     let explicit = tempfile::tempdir().map_err(super::super::storage)?;
     let project = LocalProject::Workspace(workspace.path().to_path_buf());
     let state = directory(&explicit.path().join("state"))?;
     let checkout = Checkout::capture(workspace.path())?;
-    let original = Owner::open(&state, &project, Some(&checkout))?;
-    // The witness those records hold, computed as they computed it.
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    assert_eq!(
-        work.root_identity(&checkout.path)?.to_bytes(),
-        checkout.legacy_identity
-    );
-
-    // Another root's old witness is refused, and the record is left as is.
-    let mut other = checkout.legacy_identity;
-    other[15] ^= 1;
-    let foreign = write_legacy_owner(&state, other)?;
-    // The decoder before this fix rejected every such record outright.
-    assert!(serde_json::from_slice::<Owner>(&foreign).is_err());
+    Owner::open(&state, &project, Some(&checkout))?;
+    let old = write_legacy_owner(&state, [7; 16])?;
     assert!(matches!(
         Owner::open(&state, &project, Some(&checkout)),
-        Err(Error::Unauthorized(_))
+        Err(Error::Invalid(_))
     ));
     assert_eq!(
         std::fs::read(state.join("owner.json")).map_err(super::super::storage)?,
-        foreign
+        old
     );
-
-    write_legacy_owner(&state, checkout.legacy_identity)?;
-    let migrated = Owner::open(&state, &project, Some(&checkout))?;
-    assert_eq!(migrated.key, original.key);
-    assert_eq!(migrated.agent, original.agent);
-    assert_eq!(migrated.task, original.task);
-    assert_eq!(migrated.workspace_identity, Some(checkout.identity));
-    assert_eq!(migrated.workspace_incarnation, Some(checkout.incarnation));
-    // The record now holds the current witness and reopens directly.
-    let stored = std::fs::read(state.join("owner.json")).map_err(super::super::storage)?;
-    assert!(serde_json::from_slice::<Owner>(&stored).is_ok());
-    let reopened = Owner::open(
-        &state,
-        &project,
-        Some(&Checkout::capture(workspace.path())?),
-    )?;
-    assert_eq!(reopened.agent, original.agent);
     Ok(())
 }
 

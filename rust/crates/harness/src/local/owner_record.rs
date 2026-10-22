@@ -30,32 +30,6 @@ impl Drop for Owner {
     }
 }
 
-/// An owner record written before checkout incarnations: its checkout witness
-/// is the root's device and object id, and it names no incarnation.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LegacyOwner {
-    pub key: [u8; 32],
-    pub agent: AgentId,
-    pub task: TaskId,
-    pub project: VolumeRef,
-    pub(super) workspace: Option<PathBuf>,
-    pub(super) workspace_identity: Option<[u8; 16]>,
-}
-
-impl Drop for LegacyOwner {
-    fn drop(&mut self) {
-        self.key.fill(0);
-    }
-}
-
-/// Either record format; the legacy one is migrated only after its witness
-/// matches the captured root.
-pub(super) enum StoredOwner {
-    Current(Owner),
-    Legacy(LegacyOwner),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

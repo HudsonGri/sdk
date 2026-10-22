@@ -84,8 +84,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
         publication::SKIP_READER_SYNC.set(false);
         match read {
             Err(Error::NotFound(_)) => assert!(cut < 3),
-            Ok(StoredOwner::Legacy(_)) => panic!("cut {cut}: a current record read as legacy"),
-            Ok(StoredOwner::Current(read)) => {
+            Ok(read) => {
                 assert!(cut >= 3);
                 assert_eq!(read.key, owner.key);
                 assert_eq!(read.task, owner.task);
