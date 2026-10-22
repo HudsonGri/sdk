@@ -86,7 +86,7 @@ impl Fixture {
             .write(true)
             .open(&self.registry)?
             .into();
-        match registry.try_lock(FileLockMode::Exclusive) {
+        match fence_io::try_lock(&registry) {
             Ok(()) => {
                 inspect(&registry)?;
                 Ok(true)

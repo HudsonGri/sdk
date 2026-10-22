@@ -97,10 +97,13 @@ impl FileLock {
     /// Returns [`io::ErrorKind::WouldBlock`] under contention, otherwise the
     /// OS error.
     pub fn try_lock(&self, mode: FileLockMode) -> io::Result<()> {
-        let mut held = self
-            .held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = match self.held.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+        };
         Self::ensure_unheld(*held)?;
         match mode {
             FileLockMode::Shared => self.file.try_lock_shared(),
