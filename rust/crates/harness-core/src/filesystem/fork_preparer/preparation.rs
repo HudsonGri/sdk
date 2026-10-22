@@ -3,7 +3,10 @@ use super::*;
 use crate::executor::{stock_boundary, stock_string_copy, with_history_io};
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
-    pub(super) async fn prepare(&self, request: ForkRequest) -> Result<Box<ForkReport>> {
+    pub(super) async fn prepare(
+        &self,
+        request: ForkRequest,
+    ) -> Result<crate::charged_box::ChargedBox<ForkReport>> {
         let preparer = self.preparer;
         let host = &preparer.host;
         let io = self.io;
@@ -425,11 +428,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     }
 
     #[inline(never)]
-    fn report_seed(&self, report: &mut ForkReport) -> Result<Box<ForkSeed>> {
+    fn report_seed(
+        &self,
+        report: &mut ForkReport,
+    ) -> Result<crate::charged_box::ChargedBox<ForkSeed>> {
         let preparer = self.preparer;
-        if let Some(io) = self.io {
-            io.box_attempt::<ForkSeed>()?;
-        }
         let mut observer = self.io;
         let mut work = observer
             .as_mut()
@@ -443,6 +446,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             )?;
             report.history_witness = seed.history_witness;
         }
-        Ok(Box::new(seed))
+        crate::charged_box::ChargedBox::new(self.io, seed)
     }
 }

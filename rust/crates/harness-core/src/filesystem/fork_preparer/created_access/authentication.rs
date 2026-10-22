@@ -32,7 +32,7 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         digest,
         index,
         journal,
-    } = *admitted;
+    } = admitted.into_inner();
     if !crate::conversation::BoundedOperationFuture::new(Some(io), || {
         read_claim(host, &journal, &fork, maximum, Some(io))
     })?
@@ -48,7 +48,7 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await?
     .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let (seed, canonical_digest, binding) = report_binding(request, report, maximum, io)?;
-    let seed = *seed;
+    let seed = seed.into_inner();
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin = None;
     for (number, volume) in creation_volumes(&fork).enumerate() {
@@ -249,7 +249,7 @@ fn admitted_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     request: &ResourcePreparationRequest,
     proof: &ResourceCreationProofRef,
     io: &PreparationIo,
-) -> Result<Box<AdmittedFork>> {
+) -> Result<crate::charged_box::ChargedBox<AdmittedFork>> {
     request.validate(&mut Some(&mut io.history_io()))?;
     proof.provider.validate(&mut None)?;
     proof.resource.validate(&mut None)?;
@@ -328,24 +328,28 @@ fn admitted_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         ));
     }
     let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
-    io.box_attempt::<AdmittedFork>()?;
-    Ok(Box::new(AdmittedFork {
-        fork,
-        maximum,
-        digest,
-        index,
-        journal,
-    }))
+    crate::charged_box::ChargedBox::new(
+        Some(io),
+        AdmittedFork {
+            fork,
+            maximum,
+            digest,
+            index,
+            journal,
+        },
+    )
 }
 
 #[inline(never)]
 fn report_binding(
     request: &ResourcePreparationRequest,
-    report: Box<ForkReport>,
+    report: crate::charged_box::ChargedBox<ForkReport>,
     maximum: u64,
     io: &PreparationIo,
-) -> Result<(Box<ForkSeed>, [u8; 32], [u8; 32])> {
-    let seed = (*report).into_seed(&mut Some(&mut io.history_io()))?;
+) -> Result<(crate::charged_box::ChargedBox<ForkSeed>, [u8; 32], [u8; 32])> {
+    let seed = report
+        .into_inner()
+        .into_seed(&mut Some(&mut io.history_io()))?;
     let hold;
     let canonical = io.encode(request, request.maximum_bytes, true)?;
     hold = io.guard_bytes(&canonical)?;
@@ -353,8 +357,11 @@ fn report_binding(
     drop(canonical);
     drop(hold);
     let binding = seed_digest(&seed, maximum, Some(io))?;
-    io.box_attempt::<ForkSeed>()?;
-    Ok((Box::new(seed), canonical_digest, binding))
+    Ok((
+        crate::charged_box::ChargedBox::new(Some(io), seed)?,
+        canonical_digest,
+        binding,
+    ))
 }
 
 fn decode_fork(

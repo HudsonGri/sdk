@@ -6,9 +6,13 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
         &'a self,
         request: ControlRequest,
         original_native_work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ControlDispatchResponse>>
-    {
-        Box::pin(self.serve_request(request, original_native_work))
+    ) -> acyclic_harness::Result<ControlDispatch<'a>> {
+        // Paid for on the request's native ledger, when one is live, before
+        // the dispatch frame is made.
+        acyclic_harness::conversation::BoundedOperationFuture::on_native_work(
+            original_native_work,
+            |work| self.serve_request(request, work),
+        )
     }
 }
 

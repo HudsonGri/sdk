@@ -336,7 +336,10 @@ where
                 attempt.io,
                 attempt.task_preparation.map(Arc::as_ref),
             )?;
-            attempt.prepare(request).await.map(|report| *report)
+            attempt
+                .prepare(request)
+                .await
+                .map(crate::charged_box::ChargedBox::into_inner)
         })
     }
 

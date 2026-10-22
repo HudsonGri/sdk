@@ -281,6 +281,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: &crate::scheduler::LeaseFence,
     ) -> Result<(TaskJournalOwner<P>, RuntimeScope)> {
+        // Unbudgeted: the record is read with no `io`.
         acyclic_fs::in_heap(|| self.journal_owner_record(task_id, fence, None, None)).await
     }
 
@@ -312,9 +313,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )?;
                 (admission, Some(custody))
             }
+            // The frame is paid for on a standalone `io`, when one is live.
             _ => (
-                acyclic_fs::in_heap(|| async { self.admission(operation, &mut None).await })
-                    .await?,
+                crate::conversation::BoundedOperationFuture::new(io, || async {
+                    self.admission(operation, &mut None).await
+                })?
+                .await?,
                 None,
             ),
         };
