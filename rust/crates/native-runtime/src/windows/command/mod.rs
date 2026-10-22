@@ -6,7 +6,7 @@
 
 mod line;
 pub(crate) mod start;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
@@ -104,7 +104,9 @@ fn is_path(name: &OsStr) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case("PATH"))
 }
 
-/// What a child receives as one standard handle.
+/// What a child receives as one standard handle: a description the
+/// builder keeps. Each start creates its own pipe or null device, or
+/// duplicates the given handle, so a builder starts every child alike.
 pub struct Stdio(Kind);
 
 enum Kind {
@@ -280,40 +282,46 @@ fn open_null(readable: bool) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
-/// The child's end of one standard stream, and this process's end of its
-/// pipe when there is one.
+/// One standard stream of one start: the child's end, created for this
+/// start or borrowed from the host or the builder, and this process's end
+/// of its pipe when there is one.
 struct Lowered {
-    theirs: Option<OwnedHandle>,
-    inherited: HANDLE,
+    created: Option<OwnedHandle>,
+    borrowed: HANDLE,
     ours: Option<OwnedHandle>,
 }
 
 impl Lowered {
     fn handle(&self) -> HANDLE {
-        self.theirs
+        self.created
             .as_ref()
-            .map_or(self.inherited, AsRawHandle::as_raw_handle)
+            .map_or(self.borrowed, AsRawHandle::as_raw_handle)
     }
 }
 
-fn lower(stdio: Option<Stdio>, default: fn() -> Stdio, id: STD_HANDLE) -> io::Result<Lowered> {
+/// Lowers the builder's description of one stream for one start. Nothing
+/// is taken from the builder: the start duplicates a borrowed handle, and
+/// pipes and the null device are created afresh.
+fn lower(stdio: Option<&Stdio>, default: fn() -> Stdio, id: STD_HANDLE) -> io::Result<Lowered> {
     let readable = id == STD_INPUT_HANDLE;
     let mut lowered = Lowered {
-        theirs: None,
-        inherited: std::ptr::null_mut(),
+        created: None,
+        borrowed: std::ptr::null_mut(),
         ours: None,
     };
-    match stdio.unwrap_or_else(default).0 {
+    let fallback = default();
+    let kind = &stdio.unwrap_or(&fallback).0;
+    match kind {
         // The start duplicates it, or gives none when it is closed.
         // SAFETY: reads this process's standard handle slot.
-        Kind::Inherit => lowered.inherited = unsafe { GetStdHandle(id) },
-        Kind::Null => lowered.theirs = Some(open_null(readable)?),
+        Kind::Inherit => lowered.borrowed = unsafe { GetStdHandle(id) },
+        Kind::Null => lowered.created = Some(open_null(readable)?),
         Kind::Piped => {
             let (ours, theirs) = pipe(!readable)?;
             lowered.ours = Some(ours);
-            lowered.theirs = Some(theirs);
+            lowered.created = Some(theirs);
         }
-        Kind::Handle(handle) => lowered.theirs = Some(handle),
+        Kind::Handle(handle) => lowered.borrowed = handle.as_raw_handle(),
     }
     Ok(lowered)
 }
@@ -505,7 +513,7 @@ impl Command {
         Some(captured)
     }
 
-    fn start(&mut self, default: fn() -> Stdio, needs_stdin: bool) -> io::Result<Child> {
+    fn start(&self, default: fn() -> Stdio, needs_stdin: bool) -> io::Result<Child> {
         let env = self.captured_env();
         let child_path = if self.saw_path || self.clear_env {
             env.as_ref()
@@ -527,9 +535,9 @@ impl Command {
         let environment = env.map(environment_block).transpose()?;
         let directory = self.cwd.as_deref().map(directory).transpose()?;
         let stdin_default = if needs_stdin { default } else { Stdio::null };
-        let stdin = lower(self.stdin.take(), stdin_default, STD_INPUT_HANDLE)?;
-        let stdout = lower(self.stdout.take(), default, STD_OUTPUT_HANDLE)?;
-        let stderr = lower(self.stderr.take(), default, STD_ERROR_HANDLE)?;
+        let stdin = lower(self.stdin.as_ref(), stdin_default, STD_INPUT_HANDLE)?;
+        let stdout = lower(self.stdout.as_ref(), default, STD_OUTPUT_HANDLE)?;
+        let stderr = lower(self.stderr.as_ref(), default, STD_ERROR_HANDLE)?;
         let started = start::start(start::Start {
             application: &application,
             command_line: &mut command_line,

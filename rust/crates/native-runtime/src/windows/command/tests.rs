@@ -4,14 +4,17 @@
 //! whose own output is closed still starts children, and a host's reader
 //! sees the host's output end while children it started still run.
 
+use super::testing::{Tether, TetherEvent, Tethered};
 use super::{Command, Stdio};
 use crate::{ProcessCustody, ProcessTree};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read as _, Write as _};
+use std::os::windows::io::AsHandle as _;
 use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
@@ -31,9 +34,15 @@ use windows_sys::Win32::System::Threading::{
 const ECHO: &str = "--acyclic-command-echo";
 /// Makes this executable write its next argument to its output and exit.
 const PRINT: &str = "--acyclic-command-print";
-/// When set, a service start of this executable publishes its PID in this
-/// directory and runs until killed, instead of reaching the test harness.
+/// When set, a service start of this executable reports its PID over this
+/// tether and runs until the test releases it, instead of reaching the test
+/// harness.
 const PARK: &str = "ACYCLIC_COMMAND_TEST_PARK";
+/// The tether a service owner reports over.
+const REPORTS: &str = "ACYCLIC_COMMAND_TEST_REPORTS";
+/// How long a service test may take before it fails, as a backstop: every
+/// wait in it ends at once on the event it waits for or on a helper's end.
+const BACKSTOP: Duration = Duration::from_secs(60);
 const MODE: &str = "ACYCLIC_COMMAND_TEST_MODE";
 const ROOT: &str = "ACYCLIC_COMMAND_TEST_ROOT";
 const VALUE: &str = "ACYCLIC_COMMAND_TEST_VALUE";
@@ -58,7 +67,7 @@ extern "C" fn hook() {
             u32::from(printed.is_err())
         }
         Some("__service") => match std::env::var_os(PARK) {
-            Some(root) => park(Path::new(&root)),
+            Some(tether) => park(&tether),
             None => return,
         },
         _ => return,
@@ -100,14 +109,17 @@ fn echo() -> u32 {
     0
 }
 
-fn park(root: &Path) -> u32 {
-    let published = root.join(format!("parked-{}", std::process::id()));
-    if fs::write(&published, b"parked").is_err() {
+/// Reports this process's PID over the tether named `name`, then runs
+/// until the test releases it.
+fn park(name: &OsStr) -> u32 {
+    let Ok(tether) = Tethered::connect(name) else {
+        return 1;
+    };
+    if tether.send(&std::process::id().to_string()).is_err() {
         return 1;
     }
-    loop {
-        thread::sleep(Duration::from_secs(3600));
-    }
+    tether.released();
+    0
 }
 
 fn exe() -> PathBuf {
@@ -506,7 +518,7 @@ fn command_owner_helper() {
             "printed".to_owned()
         }
         "closed" => closed_output(&root),
-        "service" | "service-control" => return serve_while_closed(&root, &mode),
+        "service" | "service-control" => serve_while_closed(&mode),
         other => panic!("unknown mode {other}"),
     };
     fs::write(root.join("outcome"), outcome).expect("outcome");
@@ -559,46 +571,42 @@ fn closed_output(root: &Path) -> String {
 }
 
 /// Starts a service (through this crate, or through `std` for the
-/// control), closes this host's output and lives until killed.
-fn serve_while_closed(root: &Path, mode: &str) {
-    let readiness = if mode == "service" {
+/// control) and, once the test has seen it run, closes this host's output.
+/// Reports the service's end, or its own failure, over its tether at once.
+fn serve_while_closed(mode: &str) -> ! {
+    let reports =
+        Arc::new(Tethered::connect(&std::env::var_os(REPORTS).expect("reports")).expect("reports"));
+    let reporter = Arc::clone(&reports);
+    std::panic::set_hook(Box::new(move |panic| {
+        let _ = reporter.send(&format!("panicked: {panic}"));
+    }));
+    let started = if mode == "service" {
         let readiness = crate::spawn_service_process(&exe()).expect("service");
-        Box::new(readiness) as Box<dyn std::any::Any>
+        Box::new(move || format!("{:?}", readiness.wait())) as Box<dyn FnOnce() -> String + Send>
     } else {
-        let child = std::process::Command::new(exe())
+        let mut child = std::process::Command::new(exe())
             .args(["__service", crate::SERVICE_READY_ARGUMENT])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("std service");
-        Box::new(child) as Box<dyn std::any::Any>
+        Box::new(move || format!("{:?}", child.wait()))
     };
-    while parked(root).is_none() {
-        thread::sleep(Duration::from_millis(5));
-    }
-    // SAFETY: this helper never writes its output again.
-    unsafe { CloseHandle(GetStdHandle(STD_OUTPUT_HANDLE)) };
-    fs::write(root.join("owner-ready"), b"ready").expect("ready");
-    let _readiness = readiness;
-    loop {
-        thread::park();
-    }
+    let reporter = Arc::clone(&reports);
+    thread::spawn(move || {
+        let ended = started();
+        let _ = reporter.send(&format!("the service ended: {ended}"));
+        std::process::exit(1);
+    });
+    assert_eq!(reports.receive().expect("go"), Some("go".to_owned()));
+    super::testing::close_standard_output().expect("close output");
+    reports.send("ready").expect("ready");
+    reports.released();
+    std::process::exit(0)
 }
 
-/// The PID a parked service published.
-fn parked(root: &Path) -> Option<u32> {
-    fs::read_dir(root).ok()?.flatten().find_map(|entry| {
-        entry
-            .file_name()
-            .to_str()?
-            .strip_prefix("parked-")?
-            .parse()
-            .ok()
-    })
-}
-
-fn owner(mode: &str, root: &Path, park: bool) -> std::process::Child {
+fn owner(mode: &str, root: &Path, tethers: Option<(&Tether, &Tether)>) -> std::process::Child {
     let mut command = std::process::Command::new(exe());
     command
         .args([
@@ -611,8 +619,10 @@ fn owner(mode: &str, root: &Path, park: bool) -> std::process::Child {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    if park {
-        command.env(PARK, root);
+    if let Some((reports, service)) = tethers {
+        command
+            .env(REPORTS, reports.name())
+            .env(PARK, service.name());
     }
     command.spawn().expect("owner")
 }
@@ -620,7 +630,7 @@ fn owner(mode: &str, root: &Path, park: bool) -> std::process::Child {
 /// Runs an owner to its end and returns its output and its outcome file.
 fn finished(mode: &str) -> (String, String) {
     let root = tempfile::tempdir().expect("root");
-    let output = owner(mode, root.path(), false)
+    let output = owner(mode, root.path(), None)
         .wait_with_output()
         .expect("owner");
     assert!(
@@ -700,29 +710,54 @@ impl Drop for Parked {
     }
 }
 
+/// An owner that is killed and reaped however the test ends.
+struct Reaped(std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Whether the owner's reader sees its output end once the owner closes
-/// it, while the service the owner started still runs.
+/// it, while the service the owner started still runs. Each wait ends on
+/// the event it waits for, or at once on the owner's or service's failure.
 fn output_ends_while_the_service_runs(mode: &str, bound: Duration) -> (bool, bool) {
+    let deadline = std::time::Instant::now() + BACKSTOP;
     let root = tempfile::tempdir().expect("root");
-    let mut owner = owner(mode, root.path(), true);
-    let mut output = owner.stdout.take().expect("owner output");
+    let mut reports = Tether::new().expect("reports");
+    let mut service = Tether::new().expect("service");
+    let mut owner = Reaped(owner(mode, root.path(), Some((&reports, &service))));
+    let mut output = owner.0.stdout.take().expect("owner output");
     let (ended, end) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let _ = ended.send(output.read_to_end(&mut Vec::new()).map(|_| ()));
     });
-    while !root.path().join("owner-ready").exists() {
-        assert!(
-            owner.try_wait().expect("owner").is_none(),
-            "owner exited early"
-        );
-        thread::sleep(Duration::from_millis(5));
-    }
-    let service = Parked::open(parked(root.path()).expect("parked service"));
-    let reached = end.recv_timeout(bound);
-    let running = service.running();
-    owner.kill().expect("kill owner");
-    owner.wait().expect("reap owner");
-    drop(service);
+    let started = Tether::wait(
+        &mut [&mut service, &mut reports],
+        &[owner.0.as_handle()],
+        deadline,
+    );
+    let Ok(TetherEvent::Line(0, pid)) = started else {
+        panic!("the service did not start: {started:?}");
+    };
+    // Killed when dropped, before the tether releases it.
+    let service_process = Parked::open(pid.parse().expect("service PID"));
+    reports.send("go").expect("go");
+    let ready = Tether::wait(
+        &mut [&mut reports, &mut service],
+        &[owner.0.as_handle()],
+        deadline,
+    );
+    assert_eq!(
+        ready.ok(),
+        Some(TetherEvent::Line(0, "ready".to_owned())),
+        "the owner did not close its output"
+    );
+    let reached =
+        end.recv_timeout(bound.min(deadline.saturating_duration_since(std::time::Instant::now())));
+    let running = service_process.running();
     (matches!(reached, Ok(Ok(()))), running)
 }
 

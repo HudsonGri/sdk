@@ -25,4 +25,6 @@ pub(crate) use crate::windows::command::start;
 pub use crate::windows::command::{Child, Command, Stdio};
 
 #[cfg(test)]
+mod parity_tests;
+#[cfg(test)]
 mod sources_tests;
