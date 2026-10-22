@@ -66,13 +66,27 @@ pub(in crate::native_mount::materialize) fn with_restore_artifact<
     result
 }
 
+pub(in crate::native_mount::materialize) struct RestoreLock {
+    file: acyclic_native_runtime::FileLock,
+    cleanup: Option<crate::materializer::NativeCleanupWrite>,
+}
+
+impl Drop for RestoreLock {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            let _ = cleanup.attempt(|| self.file.unlock());
+        }
+    }
+}
+
 pub(in crate::native_mount::materialize) fn acquire_restore_lock(
     parent: &HostRoot,
     relative: &Path,
     blocking: bool,
-    work: &mut impl crate::demand::SourceDemandReadWork,
-) -> Result<acyclic_native_runtime::FileLock, MaterializeError> {
+    work: &mut crate::NativeMaterializationWork,
+) -> Result<RestoreLock, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
+        let cleanup = work.reserve_cleanup_write()?;
         let file = acyclic_native_runtime::FileLock::new(
             crate::native_host::open_leaf(
                 &parent.directory,
@@ -86,7 +100,12 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
             work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
                 .map_err(MaterializeError::from)?;
             match file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive) {
-                Ok(()) => return Ok(file),
+                Ok(()) => {
+                    return Ok(RestoreLock {
+                        file,
+                        cleanup: Some(cleanup),
+                    });
+                }
                 Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
