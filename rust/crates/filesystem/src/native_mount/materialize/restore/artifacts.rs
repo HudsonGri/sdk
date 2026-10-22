@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_host::NativeHostWork as _;
 
 pub(in crate::native_mount::materialize) fn restore_artifact_name(
     prefix: &str,

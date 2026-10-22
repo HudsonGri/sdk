@@ -915,7 +915,8 @@ fn restore_lock_release_is_funded_after_cancellation_and_budget_exhaustion()
     let relative = Path::new("entry");
     let cancellation = CancellationToken::new();
     let mut work =
-        crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
+        crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
     let parent = HostRoot::open(temporary.path(), &mut work)?;
     let lock = acquire_restore_lock(&parent, relative, false, &mut work)?;
     let before = work.receipt();
