@@ -40,7 +40,6 @@ impl PiNativeLaunchIntent {
         let intent = crate::pi_root_provider::guarded_pi_decode::<Self>(
             &bytes,
             maximum,
-            std::mem::size_of::<Self>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::None,
             PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,

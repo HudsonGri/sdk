@@ -81,7 +81,6 @@ impl PiNativeSourceCut {
         let selected = crate::pi_root_provider::guarded_pi_decode::<Vec<Value>>(
             self.entries_json.as_bytes(),
             maximum_bytes,
-            std::mem::size_of::<Vec<Value>>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::Root,
             0,
@@ -163,7 +162,6 @@ impl PiNativeSourceCut {
                 .ok_or_else(|| invalid("Pi child header is absent"))?
                 .as_bytes(),
             maximum_bytes,
-            std::mem::size_of::<NativeHeader>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             JsonValueSchema::None,
             NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES,
@@ -186,7 +184,6 @@ impl PiNativeSourceCut {
                     .ok_or_else(|| invalid("Pi child lost a source entry"))?
                     .as_bytes(),
                 maximum_bytes,
-                std::mem::size_of::<Value>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid,
                 JsonValueSchema::Root,
                 0,

@@ -101,7 +101,9 @@ impl crate::pi_host::PiControlHost<'_> {
         )
     }
 
-    pub(super) async fn context(
+    /// The caller's task context bound to its own output: the root's provider-prepared
+    /// root output, or a child's created private scratch.
+    pub(crate) async fn context(
         &self,
         shared: Arc<TaskContext>,
         fence: &LeaseFence,
@@ -156,7 +158,6 @@ impl crate::pi_host::PiControlHost<'_> {
         let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
         let (value, custody) = crate::pi_root_provider::guarded_pi_decode(
             &bytes.0,
-            maximum,
             maximum,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
