@@ -103,7 +103,7 @@ async fn native_access_lazy_content_read_does_not_disclose_metadata()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn native_access_lazy_pins_handles_and_refreshes_new_opens()
+async fn native_access_lazy_revokes_existing_and_new_handles()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("file"), b"source")?;
@@ -114,9 +114,15 @@ async fn native_access_lazy_pins_handles_and_refreshes_new_opens()
         &view.authored,
         vec![deny("revoked", &[Action::Read, Action::Write], "file")],
     )?;
-    assert_eq!(old.read_range(0, 6)?.as_ref(), b"source");
-    old.write_range(0, Bytes::from_static(b"pinned"))?;
-    assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
+    assert!(matches!(
+        old.read_range(0, 6),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert!(matches!(
+        old.write_range(0, Bytes::from_static(b"pinned")),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert_eq!(std::fs::read(root.path().join("file"))?, b"source");
     let fresh = view.open_file(&path)?;
     assert!(matches!(
         fresh.read_range(0, 6),
@@ -135,7 +141,10 @@ async fn native_access_lazy_pins_handles_and_refreshes_new_opens()
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
     view.remove(&path, None, &work)?;
-    assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
+    assert!(matches!(
+        old.read_range(0, 6),
+        Err(MountSourceError::AccessDenied)
+    ));
     Ok(())
 }
 
