@@ -74,6 +74,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
                 )
                 .map_err(storage)?,
                 authority: None,
+                processes: None,
             },
         )
         .await?,
