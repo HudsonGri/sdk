@@ -511,8 +511,10 @@ impl<'a> KernelAccounting<'a> {
 #[path = "accounting_tests.rs"]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
 mod charge_tests;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod charge_model;

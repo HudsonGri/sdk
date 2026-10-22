@@ -1,4 +1,6 @@
 //! Shared streaming adapters and immutable model selection.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();
 
 mod accounting;
 mod adapter;
@@ -23,7 +25,8 @@ pub use codex::CodexLogin;
 mod call_ids;
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
 mod cancellation;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod codex_dispatch_tests;
 mod counting;
 mod credentials;
@@ -51,7 +54,8 @@ mod retry;
 mod spec;
 mod sse;
 mod stream;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 mod tool_names;
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
@@ -78,7 +82,8 @@ use acyclic_harness_core::{Error, Result};
 use serde_json::Value;
 mod sync;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod accounting_properties;
 
 fn invalid(reason: impl Into<String>) -> Error {

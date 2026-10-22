@@ -188,6 +188,7 @@ pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {
         .ok_or_else(|| invalid("token count exceeds portable arithmetic"))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "wire_tests.rs"]
 mod tests;

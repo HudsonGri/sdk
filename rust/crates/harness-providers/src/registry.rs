@@ -174,7 +174,8 @@ impl Registry {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod credential_tests;
 
 /// The built-in Responses route that a native Codex CLI login may replace.

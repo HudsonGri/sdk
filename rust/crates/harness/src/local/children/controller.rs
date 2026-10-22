@@ -503,7 +503,8 @@ fn execution(
         .transpose()
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 fn input_count(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> u64 {
     values
         .keys()
@@ -537,7 +538,8 @@ fn settled_turn(
     })
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 fn needs_work(
     reference: &Component,
     values: &BTreeMap<FileKey, FileValue>,
@@ -588,7 +590,8 @@ fn release_completed(
     ready
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 async fn publish<P: StreamProvider + ?Sized>(

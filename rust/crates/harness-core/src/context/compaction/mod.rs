@@ -152,12 +152,15 @@ pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
 pub(crate) use allocation::reserve_vector;
 use allocation::{quota_vector, retire_vector};
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod copying_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod defaults_tests;
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod unknown_output_tests;

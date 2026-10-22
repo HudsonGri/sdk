@@ -221,9 +221,11 @@ impl Drop for NativeResourceRetirement {
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "allocation_model.rs"]
 mod model_checking;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 #[path = "allocation_tests.rs"]
 mod tests;

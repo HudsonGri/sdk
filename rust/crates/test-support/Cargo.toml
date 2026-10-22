@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[dependencies]
+acyclic-differential = { path = "../differential" }
+
 [dev-dependencies]
 proptest.workspace = true
 

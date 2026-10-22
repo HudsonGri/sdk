@@ -537,6 +537,7 @@ fn sort_wire<'a>(
     });
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "tool_names_budget_tests.rs"]
 mod tests;

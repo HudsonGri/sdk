@@ -31,7 +31,8 @@ impl NativeDemandReadMeter {
             },
         )
     }
-    #[cfg(all(test, not(acyclic_fs_loom)))]
+    #[cfg(test)]
+    #[cfg(not(acyclic_fs_loom))]
     pub(crate) fn count_locks<T>(&self, operation: impl FnOnce() -> T) -> (T, usize) {
         lock_probe::count(self, operation)
     }
@@ -45,10 +46,12 @@ impl NativeDemandReadMeter {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod lock_probe;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {

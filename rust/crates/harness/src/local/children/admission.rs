@@ -573,5 +573,6 @@ fn source_volumes(
     ))
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod work_tests;

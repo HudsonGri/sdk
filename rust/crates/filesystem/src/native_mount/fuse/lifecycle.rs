@@ -1,7 +1,8 @@
 use super::*;
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::native_host::unix_name;
-#[cfg(all(test, acyclic_fs_native_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_native_loom)]
 use crate::native_mount::disconnected::kernel::Helper as RecoveryHelper;
 use crate::{NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 #[cfg(not(all(test, acyclic_fs_native_loom)))]

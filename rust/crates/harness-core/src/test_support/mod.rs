@@ -3,7 +3,8 @@
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
@@ -17,6 +18,23 @@ pub mod crash_cuts;
 mod scripted;
 #[cfg(feature = "test-support")]
 mod task_volume_work;
+
+/// One step of an effect-history root proof, in the order a differential
+/// capture observes it: the authority hashes `Hash` bytes, and a cut workflow
+/// reports each storage operation it performs.
+#[cfg(all(
+    any(test, feature = "test-support"),
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum EffectRootObservation {
+    /// Bytes fed to the keyed effect-root hash.
+    Hash(u64),
+    /// A described storage operation.
+    Storage(String),
+}
 
 pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,

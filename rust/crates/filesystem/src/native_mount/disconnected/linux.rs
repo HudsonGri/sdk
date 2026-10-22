@@ -161,5 +161,6 @@ impl Pinned {
     }
 }
 
-#[cfg(all(test, not(acyclic_fs_native_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_native_loom))]
 mod tests;

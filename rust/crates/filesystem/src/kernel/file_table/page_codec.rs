@@ -620,6 +620,7 @@ pub fn file_table_page_id(
     })
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 #[path = "../tests/file_table_decode.rs"]
 mod tests;

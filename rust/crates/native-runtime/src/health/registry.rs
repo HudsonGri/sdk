@@ -1,4 +1,4 @@
-use super::FileHealth;
+use super::{FileHealth, HealthOwner};
 use crate::{FileIdentity, NativeFilePayload, NativeReadMeter, file_identity};
 use std::{
     fs::File,
@@ -47,7 +47,7 @@ impl FileHealthRegistry {
             sweep_at: FIRST_SWEEP,
         }
     }
-    fn find(
+    pub(crate) fn find(
         &self,
         identity: FileIdentity,
         meter: Option<&dyn NativeReadMeter>,
@@ -104,7 +104,7 @@ impl FileHealthRegistry {
 pub(crate) fn shared_file_health(
     file: &File,
     meter: Option<&dyn NativeReadMeter>,
-) -> io::Result<Arc<FileHealth>> {
+) -> io::Result<HealthOwner> {
     let lock = match FILE_HEALTH.get() {
         Some(lock) => lock,
         None if meter.is_some() => return Err(io::ErrorKind::NotConnected.into()),
@@ -114,9 +114,43 @@ pub(crate) fn shared_file_health(
         meter.admit_read(0)?;
     }
     let identity = file_identity(file)?;
-    lock.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .admit(identity, meter)
+    let mut registry = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let health = registry.admit(identity, meter)?;
+    // Counted while the lock is held, so a last owner's cleanup cannot
+    // remove the row this owner was made from.
+    let owner = HealthOwner::owning(health, identity);
+    drop(registry);
+    Ok(owner)
+}
+
+/// Unregisters `health` once the [`HealthOwner`] that took its owner count
+/// to zero gets here, so that owner frees it on its own thread. A healthy
+/// row's `Weak` would otherwise keep the allocation until a later admission
+/// or sweep, on any thread, replaced the row. Owners are made from rows only
+/// under the registry lock, so a count still zero under it means no owner
+/// was made since; a retired job's fence may still upgrade its `Weak` to read
+/// `uncertain`, which a healthy row never sets. Poisoned rows own their
+/// health and stay.
+pub(super) fn release_file_health(identity: FileIdentity, health: &Arc<FileHealth>) {
+    let Some(lock) = FILE_HEALTH.get() else {
+        return;
+    };
+    let mut registry = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !health.owners.idle() {
+        return;
+    }
+    if let Ok(Ok(index)) = registry.find(identity, None)
+        && matches!(
+            registry.entries.get(index),
+            Some((_, Entry::Healthy(row))) if std::ptr::eq(row.as_ptr(), Arc::as_ptr(health))
+        )
+    {
+        registry.entries.remove(index);
+    }
 }
 
 impl FileHealthRegistry {

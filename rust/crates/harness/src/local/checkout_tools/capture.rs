@@ -11,7 +11,8 @@ use std::time::Duration;
 
 mod arrivals;
 mod converge;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;
 
 // Exclude owned projections individually below, never their authored siblings.

@@ -54,5 +54,6 @@ pub(super) async fn routed<R, T>(
     super::admission::serialized(gate, async || act(observe().await?).await).await
 }
 
-#[cfg(all(test, acyclic_harness_loom))]
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod model;

@@ -25,21 +25,24 @@ impl std::ops::Deref for MountLockFile {
     }
 }
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 pub(super) struct MountLockFile(
     File,
     std::sync::Arc<super::disconnected::kernel::Kernel>,
     usize,
 );
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl std::fmt::Debug for MountLockFile {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(&self.0, formatter)
     }
 }
 
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl From<File> for MountLockFile {
     fn from(file: File) -> Self {
         let domain = super::disconnected::kernel::Kernel::lock_domain(&file);
@@ -50,14 +53,16 @@ impl From<File> for MountLockFile {
         )
     }
 }
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl std::ops::Deref for MountLockFile {
     type Target = File;
     fn deref(&self) -> &File {
         &self.0
     }
 }
-#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_native_loom, target_os = "linux"))]
 impl Drop for MountLockFile {
     fn drop(&mut self) {
         // The real retirement worker may outlive the model's main closure.

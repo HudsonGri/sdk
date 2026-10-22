@@ -17,14 +17,16 @@ pub(super) fn evict(values: &mut BTreeMap<FileKey, FileValue>, reference: &Compo
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests {
     use super::*;
     use acyclic_test_support::differential;
     use proptest::prelude::*;
 
     fn run(count: usize) -> [(BTreeMap<FileKey, FileValue>, Vec<(&'static str, u64)>); 2] {
-        differential::pair::<_, _, (&'static str, u64)>(
+        differential::pair_of(
+            &["result-fold-visit"],
             || {
                 (0..count)
                     .map(|index| {

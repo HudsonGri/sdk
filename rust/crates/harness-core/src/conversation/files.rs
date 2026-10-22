@@ -90,7 +90,7 @@ impl FileDescriptor {
             feature = "filesystem",
             not(target_arch = "wasm32")
         ))]
-        acyclic_test_support::differential::record(("verify", bytes.len() as u64));
+        acyclic_differential::record(("verify", bytes.len() as u64));
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }

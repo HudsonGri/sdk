@@ -1,12 +1,14 @@
 use crate::{CancellationToken, FsError, NativeMaterializationWork, WorkCounters};
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 loom::thread_local! {
     pub(crate) static OMIT_RESERVATION: std::cell::Cell<bool> = std::cell::Cell::new(false);
     pub(crate) static OMIT_REFUND: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 pub(crate) fn broken_reservation() -> bool {
     OMIT_RESERVATION.with(std::cell::Cell::get)
 }
@@ -154,5 +156,6 @@ fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounters) {
     });
 }
 
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;

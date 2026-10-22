@@ -171,7 +171,9 @@ impl Drop for EncodeAccounting<'_, '_> {
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 mod model_checking;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;

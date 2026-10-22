@@ -2,7 +2,8 @@ use super::super::adapter::NativeDemandCarrier;
 use super::*;
 use crate::demand::NativeMountAllocationCustody;
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 #[path = "model_checking.rs"]
 mod model_checking;
 

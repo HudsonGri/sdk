@@ -1,7 +1,8 @@
 use super::*;
 use crate::runtime::OwnedTaskMailbox;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 thread_local! {
     pub(super) static IGNORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(super) static SWALLOW_SAVE_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

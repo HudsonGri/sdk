@@ -368,18 +368,22 @@ impl NativeDemandReadMeter {
     }
 }
 
-#[cfg(all(test, feature = "native-watch"))]
+#[cfg(test)]
+#[cfg(feature = "native-watch")]
 #[path = "admissions_registry_tests.rs"]
 mod registry_tests;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "admissions_tests.rs"]
 mod tests;
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "admissions_loom_tests.rs"]
 mod loom_tests;
 
-#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 #[path = "admissions_metadata_tests.rs"]
 mod metadata_tests;

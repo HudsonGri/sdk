@@ -114,10 +114,12 @@ impl<'a, T> Index<'a, T> {
     }
 }
 
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "index_tests.rs"]
 mod tests;
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "index_properties.rs"]
 mod properties;

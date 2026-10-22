@@ -160,7 +160,8 @@ fn statx_at<W: NativeHostWork>(
     Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "stat_probe.rs"]
 pub(crate) mod stat_probe;
 

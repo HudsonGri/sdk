@@ -235,5 +235,6 @@ fn wait<G, R>(
     }
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod model;

@@ -318,7 +318,9 @@ pub(super) fn compare_object_id(left: &ObjectId, right: &ObjectId) -> Ordering {
         .then_with(|| left.digest.cmp(&right.digest))
 }
 
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(test)]
+#[cfg(acyclic_fs_loom)]
 mod loom_tests;
-#[cfg(all(test, not(acyclic_fs_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_fs_loom))]
 mod tests;

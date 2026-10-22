@@ -1,4 +1,6 @@
 //! Native file and owned-process primitives shared by SDK host consumers.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 use bytes::Bytes;
 use std::cell::Cell;
@@ -107,9 +109,9 @@ pub(crate) use workers::{
 };
 
 mod health;
-use health::FileHealth;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 use health::{FILE_HEALTH, FileHealthRegistry, poison_file_health, shared_file_health};
+use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;

@@ -263,15 +263,18 @@ fn charged<T>(
     Ok(effect())
 }
 
-#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 #[path = "identity_tests.rs"]
 mod tests;
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "identity_loom.rs"]
 mod model;
 
-#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 #[path = "name_tests.rs"]
 mod name_tests;
 
@@ -279,7 +282,8 @@ mod name_tests;
 #[path = "name_reference.rs"]
 mod reference;
 
-#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "name_loom.rs"]
 mod name_model;
 

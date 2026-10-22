@@ -275,13 +275,16 @@ impl Drop for Reservation<'_> {
     }
 }
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 thread_local! {
     static ABANDON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LEAK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod retention;
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_harness_loom))]
 mod tests;

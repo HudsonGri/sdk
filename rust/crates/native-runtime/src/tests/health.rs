@@ -94,9 +94,7 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
             .poll(&mut Context::from_waker(&waker))
             .is_pending()
     );
-    started
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(io::Error::other)?;
+    started.recv().map_err(io::Error::other)?;
     drop(native);
     let alias = bounded_write_file(&alias, true)?;
     let mut resize = alias.set_len_async(1, None)?;
@@ -110,5 +108,122 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
     complete(pending)?;
     complete(resize)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 1);
+    Ok(())
+}
+
+/// Whether the process registry still holds a row for `file`.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+fn registered(file: &File) -> io::Result<bool> {
+    let identity = file_identity(file)?;
+    let registry = FILE_HEALTH
+        .get()
+        .ok_or(io::ErrorKind::NotConnected)?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Ok(registry.find(identity, None)?.is_ok())
+}
+
+// The last owner of a healthy file unregisters it, so its health is freed by
+// the thread that admitted it. A row left behind would keep the allocation
+// until another thread's admission or sweep replaced it, and thread-local
+// allocation accounting would see the free land on that thread.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn last_owner_unregisters_healthy_file_on_its_own_thread() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let mut byte = [0; 1];
+    read_at(&file, 0, &mut byte)?;
+    assert!(!registered(&file)?, "a borrowed admission left its row");
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    assert!(registered(&file)?);
+    // A borrowed admission while an owner is live shares and keeps that owner.
+    read_at(&file, 0, &mut byte)?;
+    assert!(
+        registered(&file)?,
+        "a borrowed admission released a live owner"
+    );
+    drop(native);
+    assert!(!registered(&file)?, "the last native owner left its row");
+    Ok(())
+}
+
+// Queued jobs own the health too. Whichever owner drops last unregisters it:
+// here an unpolled read outlives its NativeFile, so the job's owner is last.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn pending_job_that_outlives_its_file_unregisters_health() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    let read = native.read_batch_async(vec![OwnedRead {
+        offset: 0,
+        length: 1,
+    }]);
+    let control = native.control_async(|_, _| Ok(()), None)?;
+    drop(native);
+    assert!(
+        registered(&file)?,
+        "a pending job's owner was released early"
+    );
+    drop(read);
+    assert!(
+        registered(&file)?,
+        "a pending control's owner was released early"
+    );
+    drop(control);
+    assert!(!registered(&file)?, "the last pending job left its row");
+    Ok(())
+}
+
+// The final two owners dropping at once on different threads: exactly one of
+// them takes the owner count to zero and unregisters. Reading the `Arc`'s
+// strong count instead let both see the other and both skip cleanup.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn concurrent_final_owner_drops_unregister_health() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    for _ in 0..200 {
+        let native =
+            NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+        let read = native.read_batch_async(vec![OwnedRead {
+            offset: 0,
+            length: 1,
+        }]);
+        let other = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            other.wait();
+            drop(read);
+        });
+        barrier.wait();
+        drop(native);
+        worker
+            .join()
+            .map_err(|_| io::Error::other("drop thread panicked"))?;
+        assert!(!registered(&file)?, "concurrent final owners left the row");
+    }
+    Ok(())
+}
+
+// Negative control: while an owner's release has not run, the check used
+// above sees its row. The owner is held, not leaked, so the process-wide
+// registry is left clean for later tests once it drops.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn unreleased_owner_keeps_its_row() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    let unreleased = native.health.clone();
+    drop(native);
+    assert!(registered(&file)?, "an unreleased owner's row was removed");
+    drop(unreleased);
+    assert!(!registered(&file)?, "the released owner left its row");
     Ok(())
 }
