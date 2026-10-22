@@ -6,8 +6,9 @@ use std::process::{Command, Stdio};
 
 const PROMPT: &str = "main thread qualification";
 
-fn call(name: &str, arguments: Value) -> Value {
-    json!({"type": "function_call", "name": name, "arguments": arguments.to_string()})
+fn call(name: &str, arguments: &Value, call_id: &str) -> Value {
+    json!({"type": "function_call", "call_id": call_id, "name": name,
+        "arguments": arguments.to_string()})
 }
 
 /// The parent's next turn is chosen by how many tool results it has seen; the
@@ -17,20 +18,36 @@ fn turn(body: &str) -> Value {
         return json!({"type": "message", "text": "child done"});
     }
     let results = body.matches("\"function_call_output\"").count();
-    let mut turn = match results {
-        0 => call("fs", json!({"command": "diff"})),
-        1 => call("fs", json!({"command": "commit -m main-thread"})),
-        2 => call("spawn", json!({"task": "say hi", "name": "kid"})),
+    let (name, arguments) = match results {
+        0 => ("fs", json!({"command": "diff"})),
+        1 => ("fs", json!({"command": "commit -m main-thread"})),
+        2 => ("spawn", json!({"task": "say hi", "name": "kid"})),
         _ => return json!({"type": "message", "text": "done"}),
     };
-    turn["call_id"] = json!(format!("call{results}"));
-    turn
+    call(name, &arguments, &format!("call{results}"))
+}
+
+/// One streamed provider response carrying `turn`.
+fn events(turn: &Value) -> String {
+    let event = if turn.get("type") == Some(&json!("message")) {
+        json!({"type": "response.output_text.delta", "delta": turn.get("text")})
+    } else {
+        json!({"type": "response.output_item.done", "output_index": 0, "item": turn})
+    };
+    [
+        event,
+        json!({"type": "response.completed", "response": {"status": "completed",
+            "usage": {"input_tokens": 64, "output_tokens": 2}}}),
+    ]
+    .iter()
+    .map(|event| format!("data: {event}\n\n"))
+    .collect()
 }
 
 /// The binary on the smallest release main thread: Windows' own 1 MiB, and
 /// the same 1 MiB on Unix.
 fn main_thread_command() -> Command {
-    let binary = env!("CARGO_BIN_EXE_graphcoder");
+    let binary = super::build_metadata::EXECUTABLE;
     #[cfg(unix)]
     {
         let mut shell = Command::new("sh");
@@ -39,6 +56,23 @@ fn main_thread_command() -> Command {
     }
     #[cfg(windows)]
     Command::new(binary)
+}
+
+/// Writes the catalog naming the scripted provider at `address`.
+fn catalog(
+    directory: &std::path::Path,
+    address: std::net::SocketAddr,
+) -> std::io::Result<std::path::PathBuf> {
+    let catalog = directory.join("catalog.json");
+    std::fs::write(&catalog, serde_json::to_vec(&json!({"main-thread": {
+        "adapter": "responses", "authentication": "optional", "base_url": format!("http://{address}"),
+        "models": {"tiny": {"capacity": {"context_tokens": 8192, "output_tokens": 1024},
+            "features": {"tools": true, "images": false}}},
+        "max_event_bytes": 65536,
+        "token_counter": {"path": "count", "adapter": "responses",
+            "response_field": "input_tokens", "framing_tokens": 0}
+    }}))?)?;
+    Ok(catalog)
 }
 
 #[tokio::test]
@@ -57,21 +91,8 @@ async fn released_binary_completes_fs_diff_commit_and_spawn_on_its_main_thread()
                 let requests = requests.clone();
                 async move {
                     let body = String::from_utf8(body.to_vec()).unwrap();
-                    let turn = turn(&body);
+                    let stream = events(&turn(&body));
                     requests.send(body).unwrap();
-                    let event = if turn["type"] == "message" {
-                        json!({"type": "response.output_text.delta", "delta": turn["text"]})
-                    } else {
-                        json!({"type": "response.output_item.done", "output_index": 0, "item": turn})
-                    };
-                    let stream: String = [
-                        event,
-                        json!({"type": "response.completed", "response": {"status": "completed",
-                            "usage": {"input_tokens": 64, "output_tokens": 2}}}),
-                    ]
-                    .iter()
-                    .map(|event| format!("data: {event}\n\n"))
-                    .collect();
                     ([("content-type", "text/event-stream")], stream)
                 }
             }),
@@ -91,16 +112,7 @@ async fn released_binary_completes_fs_diff_commit_and_spawn_on_its_main_thread()
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&settings).unwrap();
     std::fs::write(workspace.join("calc.py"), "x = 1\n").unwrap();
-    let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"main-thread": {
-        "adapter": "responses", "authentication": "optional", "base_url": format!("http://{address}"),
-        "models": {"tiny": {"capacity": {"context_tokens": 8192, "output_tokens": 1024},
-            "features": {"tools": true, "images": false}}},
-        "max_event_bytes": 65536,
-        "token_counter": {"path": "count", "adapter": "responses",
-            "response_field": "input_tokens", "framing_tokens": 0}
-    }})).unwrap())
-    .unwrap();
+    let catalog = catalog(directory.path(), address).unwrap();
     let mut command = main_thread_command();
     command
         .env("CODEX_HOME", &settings)

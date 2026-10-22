@@ -45,6 +45,20 @@ impl<E: std::error::Error + 'static> std::error::Error for NativeStageUncertaint
 impl<S: MaterializationJournalStore>
     JournaledMaterializer<S, Arc<NativeTreeMaterializationBackend>>
 {
+    /// A journal this store can stage: fenced on the backend's ledger, still
+    /// preparing, and with neither progress nor preimages recorded yet.
+    fn stageable(
+        &self,
+        journal: &MaterializationJournal,
+        work: &NativeMaterializationWork,
+    ) -> bool {
+        work.shares_ledger(self.backend.work())
+            && journal.is_valid_for(journal.plan.operation_id)
+            && journal.phase == MaterializationPhase::Preparing
+            && journal.preparation_progress.is_none()
+            && journal.preimages.is_empty()
+    }
+
     /// Stages through this store's fenced journal and the caller's existing work.
     pub async fn stage_generation<A, O, E, F, Fut>(
         &self,
@@ -71,12 +85,7 @@ impl<S: MaterializationJournalStore>
                 NativeTreeMaterializationError::InvalidLayout,
             ))
         };
-        if !work.shares_ledger(self.backend.work())
-            || !journal.is_valid_for(journal.plan.operation_id)
-            || journal.phase != MaterializationPhase::Preparing
-            || journal.preparation_progress.is_some()
-            || !journal.preimages.is_empty()
-        {
+        if !self.stageable(&journal, work) {
             return Err(invalid());
         }
         let failure = NativeStageUncertainty::new(work)
@@ -165,8 +174,8 @@ impl<S: MaterializationJournalStore>
         .map_err(|error| E::from(MaterializationError::Backend(error)))?
         .map_frame(|frame| -> acyclic_stream::BoxProviderFuture<'_, _> { frame });
         let result = staged.await;
-        let (journal, completion, last) = state.into_inner();
-        drop(completion);
+        // The completion is dropped here, before the outcome is decided.
+        let (journal, _, last) = state.into_inner();
         match (result, journal, last) {
             (Ok(_), Some(journal), false) => Ok(journal),
             (Err(error), _, true) => Err(E::from(failure.fail(error))),

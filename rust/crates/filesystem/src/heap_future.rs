@@ -151,6 +151,9 @@ impl FrameLedger for crate::kernel::KernelAccounting<'_> {
         Ok(())
     }
 }
+/// A pinned heap frame holding `F`.
+pub(crate) type HeapFrame<F> = Pin<Box<HeapFuture<F>>>;
+
 /// The exact allocation [`in_heap_metered`] and [`in_heap_claimed`] make for `F`.
 fn frame_bytes<F>() -> u64 {
     crate::foundation::usize_to_u64(std::mem::size_of::<HeapFuture<F>>())
@@ -166,7 +169,7 @@ fn frame_bytes<F>() -> u64 {
 pub(crate) fn in_heap_metered<'r, L: FrameLedger + ?Sized, F: Future>(
     ledger: &'r mut L,
     create: impl FnOnce(&'r mut L) -> F,
-) -> Result<MeteredFrame<Pin<Box<HeapFuture<F>>>, L::Reservation>, L::Error> {
+) -> Result<MeteredFrame<HeapFrame<F>, L::Reservation>, L::Error> {
     let reservation = ledger.reserve_frame(frame_bytes::<F>())?;
     Ok(MeteredFrame {
         frame: Some(Box::pin(HeapFuture {
@@ -184,7 +187,7 @@ pub(crate) fn in_heap_metered<'r, L: FrameLedger + ?Sized, F: Future>(
 pub(crate) fn in_heap_budgeted<F: Future>(
     accounting: &mut crate::kernel::KernelAccounting<'_>,
     create: impl FnOnce(crate::WorkBudget) -> F,
-) -> Result<MeteredFrame<Pin<Box<HeapFuture<F>>>, KernelFrameReservation>, crate::FsError> {
+) -> Result<MeteredFrame<HeapFrame<F>, KernelFrameReservation>, crate::FsError> {
     let reservation = accounting.reserve_frame(frame_bytes::<F>())?;
     let remaining = accounting.remaining()?;
     Ok(MeteredFrame {
@@ -313,7 +316,7 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
     mut state: C,
     admit: impl FnOnce(&mut C, u64) -> Result<(), E>,
     create: impl FnOnce(C) -> F,
-) -> Result<(Pin<Box<HeapFuture<F>>>, u64), E> {
+) -> Result<(HeapFrame<F>, u64), E> {
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
     admit(&mut state, bytes)?;
     Ok((
@@ -470,7 +473,10 @@ mod tests {
                 for (index, line) in lines.iter().enumerate() {
                     let code = line.split("//").next().unwrap_or_default();
                     let raw = code.match_indices("in_heap(").any(|(at, _)| {
-                        !code[..at].ends_with(|c: char| c == '_' || c.is_alphanumeric())
+                        !code
+                            .get(..at)
+                            .unwrap_or_default()
+                            .ends_with(|c: char| c == '_' || c.is_alphanumeric())
                     });
                     let justified = lines[index.saturating_sub(4)..index].iter().any(|above| {
                         let above = above.trim_start();
@@ -671,7 +677,7 @@ mod tests {
                 .claim_frame(64, &mut work, crate::WorkBudget::UNBOUNDED)
                 .expect("frame admitted");
             let baseline = ledger.live_bytes() - 64;
-            let mut preview = ledger.preview();
+            let mut preview = ledger.preview().expect("frame retirements balance");
             // Retire an existing frame while the preview holds the ledger;
             // the preview must preserve that retirement on either outcome.
             drop(frame);
@@ -679,7 +685,7 @@ mod tests {
                 .claim_bytes(0, 0, &mut work, crate::WorkBudget::UNBOUNDED)
                 .expect("numeric preview admitted");
             if commit {
-                preview.commit();
+                preview.commit().expect("frame retirements balance");
             } else {
                 drop(preview);
             }

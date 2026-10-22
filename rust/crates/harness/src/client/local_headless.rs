@@ -317,7 +317,7 @@ impl LocalFileClient {
                     // Boxed: submission resolves the prompt, and its future
                     // would otherwise sit in every poll frame of this loop.
                     let request = parse_local_request(&line?, operation)?;
-                    acyclic_fs::in_heap(|| self.submit(&request)).await?
+                    acyclic_fs::in_heap(|| self.submit(&request)).await?;
                 }
                 Next::Input(None) => {
                     input_open = false;

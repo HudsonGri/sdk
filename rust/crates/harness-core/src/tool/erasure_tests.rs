@@ -32,7 +32,7 @@ fn code_only(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut index = 0;
     while index < bytes.len() {
-        let rest = &source[index..];
+        let rest = source.get(index..).unwrap_or_default();
         if rest.starts_with("//") {
             let end = rest.find('\n').unwrap_or(rest.len());
             out.extend(std::iter::repeat_n(' ', end));
@@ -40,7 +40,8 @@ fn code_only(source: &str) -> String {
         } else if rest.starts_with("/*") {
             let end = rest.find("*/").map_or(rest.len(), |end| end + 2);
             out.extend(
-                rest[..end]
+                rest.get(..end)
+                    .unwrap_or(rest)
                     .chars()
                     .map(|c| if c == '\n' { '\n' } else { ' ' }),
             );
@@ -48,11 +49,13 @@ fn code_only(source: &str) -> String {
         } else if let Some(hashes) = raw_string_hashes(rest) {
             let open = 2 + hashes;
             let close = format!("\"{}", "#".repeat(hashes));
-            let end = rest[open..]
-                .find(&close)
+            let end = rest
+                .get(open..)
+                .and_then(|after| after.find(&close))
                 .map_or(rest.len(), |end| open + end + close.len());
             out.extend(
-                rest[..end]
+                rest.get(..end)
+                    .unwrap_or(rest)
                     .chars()
                     .map(|c| if c == '\n' { '\n' } else { ' ' }),
             );
@@ -71,7 +74,8 @@ fn code_only(source: &str) -> String {
             }
             let end = end.min(rest.len());
             out.extend(
-                rest[..end]
+                rest.get(..end)
+                    .unwrap_or(rest)
                     .chars()
                     .map(|c| if c == '\n' { '\n' } else { ' ' }),
             );
@@ -91,7 +95,7 @@ fn code_only(source: &str) -> String {
 fn raw_string_hashes(rest: &str) -> Option<usize> {
     let after = rest.strip_prefix('r')?;
     let hashes = after.len() - after.trim_start_matches('#').len();
-    after[hashes..].starts_with('"').then_some(hashes)
+    after.get(hashes..)?.starts_with('"').then_some(hashes)
 }
 
 /// The length of a character literal at the start of `rest`, if one is
@@ -100,10 +104,10 @@ fn char_literal(rest: &str) -> Option<usize> {
     let body = rest.strip_prefix('\'')?;
     if let Some(escaped) = body.strip_prefix('\\') {
         let first = escaped.chars().next()?.len_utf8();
-        return escaped[first..].find('\'').map(|end| end + first + 3);
+        return escaped.get(first..)?.find('\'').map(|end| end + first + 3);
     }
     let c = body.chars().next()?;
-    body[c.len_utf8()..]
+    body.get(c.len_utf8()..)?
         .starts_with('\'')
         .then_some(c.len_utf8() + 2)
 }
@@ -111,12 +115,16 @@ fn char_literal(rest: &str) -> Option<usize> {
 /// The item text at brace depth one of the block opened after `start`: the
 /// method signatures of a trait or impl, without any method body.
 fn signatures(code: &str, start: usize) -> String {
-    let Some(open) = code[start..].find('{').map(|open| start + open) else {
+    let Some(open) = code
+        .get(start..)
+        .and_then(|rest| rest.find('{'))
+        .map(|open| start + open)
+    else {
         return String::new();
     };
     let mut depth = 0_usize;
     let mut out = String::new();
-    for c in code[open..].chars() {
+    for c in code.get(open..).unwrap_or_default().chars() {
         match c {
             '{' => depth += 1,
             '}' => {
@@ -164,9 +172,9 @@ const ROUTERS: [(&str, &str); 2] = [
 /// A router's signature, up to its body.
 fn router_signature(code: &str, name: &str) -> Option<String> {
     let start = code.find(name)?;
-    let end = code[start..].find('{')?;
+    let end = code.get(start..)?.find('{')?;
     Some(
-        code[start..start + end]
+        code.get(start..start + end)?
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" "),
@@ -194,7 +202,7 @@ fn every_dispatch_returns_an_erased_future() {
     // Dispatch implementations live in both this crate and the harness crate
     // built on it.
     let mut files = Vec::new();
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = Path::new(crate::build_metadata::MANIFEST_DIR);
     sources(&manifest.join("src"), &mut files);
     sources(&manifest.join("../harness/src"), &mut files);
     let mut found = Vec::new();
