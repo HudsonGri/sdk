@@ -1,4 +1,74 @@
 use super::*;
+
+#[cfg(all(target_os = "linux", feature = "native-watch"))]
+#[tokio::test]
+async fn name_search_lazy_checkpoint_reopens_native_directory_after_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    for ordinal in 0..300 {
+        std::fs::write(
+            directory.path().join(format!("candidate-{ordinal:03}")),
+            b"unread",
+        )
+        .unwrap();
+    }
+    let fs = Fs::memory();
+    let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+    let reference = source.reference();
+    let lazy = attach(&fs, source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut names = std::collections::BTreeSet::new();
+    while names.is_empty() {
+        names.extend(
+            walk.next_page()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .map(|name| name.path),
+        );
+    }
+    assert!(names.len() < 300);
+    let bytes = serde_json::to_vec(&walk.checkpoint().unwrap()).unwrap();
+    drop(walk);
+    let workspace = lazy.workspace.clone();
+    let store = lazy.store.clone();
+    drop(lazy);
+    let source = crate::demand::native::NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(directory.path()),
+        crate::FilesystemProfile::Portable,
+        crate::VolumeLimits::default(),
+        Some(reference),
+        None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+    .value;
+    let reopened = LazyWorkspace {
+        workspace,
+        store,
+        source: Arc::new(source),
+        _allocation: None,
+    };
+    let mut resumed = NameWalk::resume(
+        &reopened,
+        serde_json::from_slice(&bytes).unwrap(),
+        GitIgnorePolicy::default(),
+    )
+    .await
+    .unwrap();
+    while let Some(page) = resumed.next_page().await.unwrap() {
+        for name in page {
+            assert!(names.insert(name.path), "replayed a checkpointed candidate");
+        }
+    }
+    assert_eq!(names.len(), 300);
+}
 use crate::facade::FsWork as _;
 use crate::{GitIgnorePolicy, NameWalk, PublicationPermit};
 
