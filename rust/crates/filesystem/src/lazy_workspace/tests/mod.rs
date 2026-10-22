@@ -38,6 +38,7 @@ async fn attach<
 struct SourceCounts {
     lookups: AtomicUsize,
     pages: AtomicUsize,
+    opens: AtomicUsize,
     ranges: AtomicUsize,
     links: AtomicUsize,
     cancel_range: AtomicBool,
@@ -333,6 +334,7 @@ impl DemandSource for CountingSource {
         cancel: &CancellationToken,
     ) -> W::Output<Box<dyn DemandFile>, DemandError> {
         let mut ctx = work.accounting(cancel);
+        self.counts.opens.fetch_add(1, Ordering::Relaxed);
         let result = (|| {
             let bytes = self.pinned(source, version)?;
             let guard = ctx

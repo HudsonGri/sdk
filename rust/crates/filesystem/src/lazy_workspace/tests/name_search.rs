@@ -737,6 +737,7 @@ async fn name_search_placeholder_policies_are_partial_without_hydration() {
         assert!(seen.iter().any(|path| path == "healthy/visible.txt"));
         assert!(!seen.iter().any(|path| path == "nested/secret.txt"));
         assert!(walk.unavailable_entries() > 0);
+        assert_eq!(source.counts.opens.load(Ordering::Relaxed), 0);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
         // Negative control: an explicit content read really reaches this
         // provider; a zero counter is not an inert or empty source.
@@ -744,6 +745,7 @@ async fn name_search_placeholder_policies_are_partial_without_hydration() {
             &*walk.read(".gitignore", 1024).await.unwrap(),
             b"secret.txt\n"
         );
+        assert!(source.counts.opens.load(Ordering::Relaxed) > 0);
         assert!(source.counts.ranges.load(Ordering::Relaxed) > 0);
     }
 }
