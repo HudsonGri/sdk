@@ -6,7 +6,8 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GitIgnorePolicy,
     LazyDirectoryCursor, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, WorkBudget,
 };
-use std::collections::BTreeMap;
+mod policies;
+use policies::Policies;
 const PAGE_ENTRIES: u32 = 128;
 pub(crate) const NAME_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -69,7 +70,7 @@ pub struct NameCheckpoint {
     cut: NameCut,
     pending: Vec<(String, SavedCursor)>,
     single: Option<SearchName>,
-    ignore_policies: BTreeMap<String, GitIgnorePolicy>,
+    ignore_policies: Policies,
     unavailable_entries: usize,
 }
 
@@ -118,7 +119,7 @@ impl NameCheckpoint {
                 single,
                 unavailable_entries,
                 pending: Vec::new(),
-                ignore_policies: BTreeMap::new(),
+                ignore_policies: Policies::default(),
             }),
             _ => Err(SearchError::Invalid("missing checkpoint header".into())),
         }
@@ -140,16 +141,15 @@ impl NameCheckpoint {
     }
 
     pub(crate) fn eligible(&self, root: &GitIgnorePolicy, path: &str) -> bool {
-        root.eligible_with_nested(&self.ignore_policies, path, false)
+        self.ignore_policies.eligible(root, path, false)
     }
 
     pub(crate) fn eligible_directory(&self, root: &GitIgnorePolicy, path: &str) -> bool {
-        root.eligible_with_nested(&self.ignore_policies, path, true)
+        self.ignore_policies.eligible(root, path, true)
     }
 
     pub(crate) fn forget_subtree(&mut self, path: &str) {
-        self.ignore_policies
-            .retain(|directory, _| !within_subtree(directory, path));
+        self.ignore_policies.forget_subtree(path);
     }
 
     pub(crate) fn discover_directory(&mut self, path: &str, authored: bool) {
@@ -245,7 +245,7 @@ pub struct NameWalk<'a, A, O, D, S> {
     ignore: GitIgnorePolicy,
     // Existing authored metadata is cheap and available before native listing.
     authored: Option<Generation<A, O>>,
-    ignore_policies: BTreeMap<String, GitIgnorePolicy>,
+    ignore_policies: Policies,
     unavailable_entries: usize,
     directory_query: Option<String>,
 }
@@ -496,7 +496,7 @@ impl<
             single: None,
             ignore,
             authored,
-            ignore_policies: BTreeMap::new(),
+            ignore_policies: Policies::default(),
             unavailable_entries: 0,
             directory_query: None,
         };
@@ -616,8 +616,8 @@ impl<
         if let Some(single) = self.single.take() {
             return Ok(Some(
                 if self
-                    .ignore
-                    .eligible_with_nested(&self.ignore_policies, &single.path, false)
+                    .ignore_policies
+                    .eligible(&self.ignore, &single.path, false)
                 {
                     vec![single]
                 } else {
@@ -764,8 +764,8 @@ impl<
                 .split('/')
                 .any(|part| matches!(part, ".git" | ".acyclic-sdk"))
                 || !self
-                    .ignore
-                    .eligible_with_nested(&self.ignore_policies, &path, is_directory)
+                    .ignore_policies
+                    .eligible(&self.ignore, &path, is_directory)
             {
                 continue;
             }

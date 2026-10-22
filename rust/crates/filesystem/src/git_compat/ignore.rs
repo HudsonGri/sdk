@@ -161,6 +161,15 @@ impl GitIgnorePolicy {
         git_path_eligible(self, nested, path, is_directory, false)
     }
 
+    pub(crate) fn eligible_with_lookup<'a>(
+        &self,
+        lookup: impl Fn(&str) -> Option<&'a Self>,
+        path: &str,
+        is_directory: bool,
+    ) -> bool {
+        eligible_with_lookup(self, lookup, path, is_directory)
+    }
+
     fn apply(&self, path: &str, is_directory: bool, ignored: &mut bool) {
         for rule in &self.rules {
             if ignore_matches(rule, path, is_directory) {
@@ -180,6 +189,15 @@ pub(super) fn git_path_eligible(
     if already_tracked {
         return true;
     }
+    eligible_with_lookup(root, |key| nested.get(key), path, is_directory)
+}
+
+fn eligible_with_lookup<'a>(
+    root: &GitIgnorePolicy,
+    lookup: impl Fn(&str) -> Option<&'a GitIgnorePolicy>,
+    path: &str,
+    is_directory: bool,
+) -> bool {
     let path = path.trim_start_matches('/');
     for end in path
         .match_indices('/')
@@ -193,7 +211,7 @@ pub(super) fn git_path_eligible(
         // Look up just this path's ancestors. Scanning every previously read
         // ignore directory for every file makes a large walk quadratic.
         for (split, _) in candidate.match_indices('/') {
-            if let Some(policy) = nested.get(&candidate[..split]) {
+            if let Some(policy) = lookup(&candidate[..split]) {
                 policy.apply(&candidate[split + 1..], directory, &mut ignored);
             }
         }

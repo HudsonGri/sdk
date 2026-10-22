@@ -72,6 +72,7 @@ napi-derive = { workspace = true, optional = true }
 prost.workspace = true
 unicode-normalization.workspace = true
 icu_casemap.workspace = true
+imbl = { version = "=7.0.2", default-features = false }
 writeable.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
