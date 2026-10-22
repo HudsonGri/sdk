@@ -536,7 +536,9 @@ fn metadata_changed(
     path: &str,
     complete: bool,
 ) {
-    let root = if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
+    let root = if path == ".git/info/exclude" {
+        ""
+    } else if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
         path.rsplit_once('/').map_or("", |(parent, _)| parent)
     } else {
         path

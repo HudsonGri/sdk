@@ -28,6 +28,10 @@ impl PartialEq for GitIgnoreRule {
 impl Eq for GitIgnoreRule {}
 
 impl GitIgnorePolicy {
+    /// Search policies at the volume root, from lowest to highest precedence.
+    /// Repository metadata is read only through the selected volume capability.
+    pub const SEARCH_ROOT_FILES: [&'static str; 3] = [".git/info/exclude", ".gitignore", ".ignore"];
+
     /// Identifies changed, newly ignored paths whose child binding wins.
     pub async fn newly_ignored_paths_at<A, O>(
         &self,

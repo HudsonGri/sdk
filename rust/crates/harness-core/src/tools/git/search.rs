@@ -54,16 +54,10 @@ pub async fn search_ignore(view: View<'_>) -> crate::Result<GitIgnorePolicy> {
     // an ignore pattern or cause a policy file outside this volume to be read.
     let reader = walk_names(view, None, GitIgnorePolicy::default()).await?;
     let mut policy = GitIgnorePolicy::default();
-    for path in [".gitignore", ".ignore"] {
+    for path in GitIgnorePolicy::SEARCH_ROOT_FILES {
         match reader.read_policy(path, 1024 * 1024).await {
             Ok(bytes) => policy.extend(GitIgnorePolicy::parse(&String::from_utf8_lossy(&bytes))),
-            Err(SearchError::Lazy(
-                acyclic_fs::LazyWorkspaceError::NotFound
-                | acyclic_fs::LazyWorkspaceError::NotRegularFile,
-            ))
-            | Err(SearchError::Workspace(
-                WorkspaceError::NotFound | WorkspaceError::NotRegularFile,
-            )) => {}
+            Err(error) if error.is_missing_policy() => {}
             Err(error) => return Err(search_error(error)),
         }
     }

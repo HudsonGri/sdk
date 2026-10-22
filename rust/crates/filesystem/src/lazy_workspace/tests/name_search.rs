@@ -339,7 +339,7 @@ async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() 
         .unwrap();
     let tokens: std::collections::BTreeMap<_, _> =
         reopened.manifest.checkpoint.source_versions().collect();
-    assert_eq!(tokens.len(), 9);
+    assert_eq!(tokens.len(), 10);
     assert!(
         tokens
             .iter()
@@ -1005,6 +1005,16 @@ async fn name_search_checks_mount_boundaries_before_nested_policy_content_reads(
         let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
             .await
             .unwrap();
+        let policy = walk.read_policy("foreign/.gitignore", 1024).await;
+        if cross_mounts {
+            assert!(policy.is_ok());
+        } else {
+            assert!(matches!(
+                policy,
+                Err(crate::SearchError::PolicyUnavailable(_))
+            ));
+            assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+        }
         while walk.next_page().await.unwrap().is_some() {}
         source.counts.ranges.load(Ordering::Relaxed)
     }

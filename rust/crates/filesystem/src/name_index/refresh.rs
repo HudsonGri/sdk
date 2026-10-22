@@ -115,6 +115,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                         .value,
                 );
             }
+            if path == ".git/info/exclude"
+                || matches!(path.as_str(), ".git" | ".git/info")
+                    && !(change
+                        .before
+                        .is_some_and(|record| record.kind == FileKind::Directory)
+                        && change
+                            .after
+                            .is_some_and(|record| record.kind == FileKind::Directory)
+                        && change.before.map(|record| record.file_id)
+                            == change.after.map(|record| record.file_id))
+            {
+                return Ok(NameIndexRefresh::Ineligible);
+            }
             if path.is_empty()
                 || path
                     .split('/')

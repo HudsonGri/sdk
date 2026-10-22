@@ -55,6 +55,40 @@ pub enum SearchError {
     #[error("search policy is not locally available: {0}")]
     PolicyUnavailable(String),
 }
+
+impl SearchError {
+    /// An absent policy includes a non-directory ancestor (for example a
+    /// worktree's `.git` file). Access failures and unavailable content remain
+    /// errors, so they cannot silently broaden the eligible namespace.
+    pub fn is_missing_policy(&self) -> bool {
+        match self {
+            Self::Lazy(error) => missing_policy_parent(error),
+            Self::Workspace(
+                crate::WorkspaceError::NotFound
+                | crate::WorkspaceError::NotDirectory
+                | crate::WorkspaceError::NotRegularFile,
+            ) => true,
+            _ => false,
+        }
+    }
+}
+
+fn missing_policy_parent(error: &crate::LazyWorkspaceError) -> bool {
+    use crate::{LazyWorkspaceError as Lazy, WorkspaceError as Workspace};
+    match error.semantic_error() {
+        Lazy::NotFound
+        | Lazy::NotDirectory
+        | Lazy::NotRegularFile
+        | Lazy::WorkspaceCause(
+            Workspace::NotFound | Workspace::NotDirectory | Workspace::NotRegularFile,
+        ) => true,
+        Lazy::Demand(crate::demand::DemandError::Io(error)) => matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ),
+        _ => false,
+    }
+}
 enum Cut<'a, A, O, D, S> {
     Lazy(&'a LazyWorkspace<A, O, D, S>, LazySnapshotRef),
     Exact(Generation<A, O>),
@@ -970,7 +1004,10 @@ impl<
 
     async fn load_directory_ignore(&mut self, directory: &str) -> Result<(), SearchError> {
         if let Cut::Lazy(lazy, snapshot) = &self.cut {
-            for name in [".gitignore", ".ignore"] {
+            for name in [".gitignore", ".ignore"]
+                .into_iter()
+                .chain(directory.is_empty().then_some(".git/info/exclude"))
+            {
                 let path = format!("{directory}/{name}")
                     .trim_start_matches('/')
                     .to_owned();
@@ -979,9 +1016,17 @@ impl<
                 }
                 let stop = CancellationToken::new();
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
-                let (entry, _, guard) = lazy
+                let (entry, _, guard) = match lazy
                     .lookup_at_snapshot(*snapshot, &format!("/{path}"), &mut ctx)
-                    .await?;
+                    .await
+                {
+                    Ok(observed) => observed,
+                    Err(error) if missing_policy_parent(&error) => {
+                        self.directory_versions.insert(path, None);
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 // Use the pinned observation that supplies the policy bytes,
                 // rather than recording a newer version after reading them.
                 // Authored policy content is fenced by the SDK generation.
@@ -1010,12 +1055,7 @@ impl<
             let path = format!("{directory}/{name}");
             let bytes = match self.read_policy(&path, 1024 * 1024).await {
                 Ok(bytes) => bytes,
-                Err(SearchError::Lazy(
-                    crate::LazyWorkspaceError::NotFound | crate::LazyWorkspaceError::NotRegularFile,
-                ))
-                | Err(SearchError::Workspace(
-                    crate::WorkspaceError::NotFound | crate::WorkspaceError::NotRegularFile,
-                )) => continue,
+                Err(error) if error.is_missing_policy() => continue,
                 Err(error) => return Err(error),
             };
             policy
@@ -1044,6 +1084,23 @@ impl<
         path: &str,
         maximum: u64,
     ) -> Result<acyclic_stream::OwnedBytes, SearchError> {
+        if let Cut::Lazy(lazy, snapshot) = &self.cut {
+            let parent = path
+                .trim_matches('/')
+                .rsplit_once('/')
+                .map_or("", |(parent, _)| parent);
+            let stop = CancellationToken::new();
+            if !lazy
+                .same_volume_at_snapshot(
+                    *snapshot,
+                    &format!("/{parent}"),
+                    &mut WorkBudget::UNBOUNDED.accounting(&stop),
+                )
+                .await?
+            {
+                return Err(SearchError::PolicyUnavailable(path.to_owned()));
+            }
+        }
         self.read_selected(path, maximum, true).await
     }
 

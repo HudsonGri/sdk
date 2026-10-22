@@ -1113,11 +1113,155 @@ async fn volume_search_live_index_reloads_the_volume_ignore_policy() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn volume_search_root_exclude_is_shared_by_grep_and_live_names() -> Result<()> {
+    for authored in [false, true] {
+        let (_temp, root, fs, store, main) = fixture_native(true).await?;
+        if authored {
+            let stop = CancellationToken::new();
+            let mut transaction = main
+                .workspace()
+                .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+                .await?
+                .value;
+            transaction
+                .write_batch(
+                    &["/.git", "/.git/info"],
+                    &[(
+                        "/.git/info/exclude",
+                        acyclic_stream::OwnedBytes::from_static(b"native.txt\n"),
+                    )],
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                )
+                .await?;
+            transaction
+                .commit(
+                    None,
+                    PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                            acyclic_fs::OperationReceipt {
+                                value: (),
+                                work: acyclic_fs::WorkCounters::UNCHARGED,
+                            },
+                        )
+                    },
+                )
+                .await?;
+        } else {
+            std::fs::create_dir_all(root.join(".git/info"))?;
+            std::fs::write(root.join(".git/info/exclude"), b"native.txt\n")?;
+        }
+        assert!(acyclic_fs::GitIgnorePolicy::default().eligible("native.txt", false, false));
+        assert!(
+            !git::search_ignore((&main).into())
+                .await?
+                .eligible("native.txt", false, false)
+        );
+        let mut names = git::IndexedNames::open((&main).into()).await?;
+        let mut paths = Vec::new();
+        while let Some(page) = names.next_page().await? {
+            paths.extend(page.names.into_iter().map(|name| name.path));
+        }
+        assert!(!paths.iter().any(|path| path == "native.txt"));
+        let (output, _) = run(
+            &fs,
+            &store,
+            &main,
+            main.workspace().id(),
+            &["grep", "origin"],
+        )
+        .await?;
+        let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+            value: output,
+            ..
+        }) = output
+        else {
+            panic!("expected grep data")
+        };
+        assert_eq!(output["matches"], serde_json::json!([]));
+        assert_eq!(output["complete"], true);
+        let old = acyclic_fs::NameIndex::open(main.workspace())
+            .await?
+            .unwrap();
+        if authored {
+            main.workspace()
+                .write_text("/.git/info/exclude", "other.txt\n")
+                .await?;
+        } else {
+            std::fs::write(root.join(".git/info/exclude"), b"other.txt\n")?;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                while let Some(page) = names.next_page().await? {
+                    if page.reset {
+                        paths.clear();
+                    }
+                    paths.extend(page.names.into_iter().map(|name| name.path));
+                }
+                let current = acyclic_fs::NameIndex::open(main.workspace())
+                    .await?
+                    .unwrap();
+                if current.manifest.complete && current.manifest.cut != old.manifest.cut {
+                    assert!(paths.iter().any(|path| path == "native.txt"));
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                names.changed().await?;
+            }
+        })
+        .await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_root_exclude_precedence_and_worktree_file() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    std::fs::create_dir_all(root.join(".git/info"))?;
+    std::fs::write(root.join(".git/info/exclude"), b"native.txt\n")?;
+    std::fs::write(root.join(".gitignore"), b"!native.txt\n")?;
+    assert!(
+        git::search_ignore((&main).into())
+            .await?
+            .eligible("native.txt", false, false)
+    );
+    std::fs::write(root.join(".ignore"), b"native.txt\n")?;
+    assert!(
+        !git::search_ignore((&main).into())
+            .await?
+            .eligible("native.txt", false, false)
+    );
+
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    std::fs::write(root.join(".git"), b"gitdir: /outside-volume\n")?;
+    assert!(
+        git::search_ignore((&main).into())
+            .await?
+            .eligible("native.txt", false, false)
+    );
+    let mut walk = git::walk_names(
+        (&main).into(),
+        None,
+        git::search_ignore((&main).into()).await?,
+    )
+    .await?;
+    let mut found = false;
+    while let Some(page) = walk.next_page().await? {
+        found |= page.iter().any(|name| name.path == "native.txt");
+    }
+    assert!(found);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn volume_search_root_ignore_links_are_not_read_as_policy() -> Result<()> {
     let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
-    for name in [".gitignore", ".ignore"] {
+    std::fs::create_dir_all(root.join(".git/info"))?;
+    for name in acyclic_fs::GitIgnorePolicy::SEARCH_ROOT_FILES {
         std::os::unix::fs::symlink("native.txt", root.join(name))?;
     }
     let policy = git::search_ignore((&main).into()).await?;

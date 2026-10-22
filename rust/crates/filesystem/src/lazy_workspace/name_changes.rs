@@ -42,16 +42,32 @@ impl PendingNames {
 }
 
 fn is_ignore_policy(name: &LogicalName) -> bool {
-    [".gitignore", ".ignore"].iter().any(|policy| {
-        if name.encoding() == crate::kernel::NameEncoding::WindowsUtf16Le {
-            name.as_bytes()
-                .iter()
-                .copied()
-                .eq(policy.encode_utf16().flat_map(u16::to_le_bytes))
-        } else {
-            name.as_bytes() == policy.as_bytes()
-        }
-    })
+    [".gitignore", ".ignore"]
+        .iter()
+        .any(|policy| name_is(name, policy))
+}
+
+fn name_is(name: &LogicalName, text: &str) -> bool {
+    if name.encoding() == crate::kernel::NameEncoding::WindowsUtf16Le {
+        name.as_bytes()
+            .iter()
+            .copied()
+            .eq(text.encode_utf16().flat_map(u16::to_le_bytes))
+    } else {
+        name.as_bytes() == text.as_bytes()
+    }
+}
+
+fn root_exclude_change(path: &NamespacePath, binding: bool) -> bool {
+    let parts = path.components();
+    let target = [".git", "info", "exclude"];
+    !parts.is_empty()
+        && parts.len() <= target.len()
+        && (binding || parts.len() == target.len())
+        && parts
+            .iter()
+            .zip(target)
+            .all(|(name, text)| name_is(name, text))
 }
 
 impl SourceChangeSink for NameSignal {
@@ -74,6 +90,12 @@ impl SourceChangeSink for NameSignal {
                 match change {
                     SourceChange::Everything | SourceChange::Unconfirmed => pending.mark_all(),
                     SourceChange::Name(path) | SourceChange::Entry(path) => {
+                        if root_exclude_change(path, matches!(change, SourceChange::Name(_))) {
+                            // Replacing either parent changes the root policy
+                            // as surely as editing the exclude file itself.
+                            pending.mark_all();
+                            continue;
+                        }
                         let policy = path.components().last().is_some_and(is_ignore_policy);
                         if matches!(change, SourceChange::Entry(_)) && !policy {
                             continue;
@@ -273,6 +295,49 @@ mod tests {
             )
             .unwrap();
         assert!(signal.pending.lock().unwrap().all);
+    }
+
+    #[test]
+    fn name_search_native_root_exclude_changes_reload_policy_in_both_encodings() {
+        for windows in [false, true] {
+            for binding in [false, true] {
+                for (text, expected) in [
+                    (".git", binding),
+                    (".git/info", binding),
+                    (".git/info/exclude", true),
+                    (".git/index", false),
+                    (".git/info/other", false),
+                ] {
+                    let (revision, _receiver) = watch::channel(0);
+                    let signal = NameSignal {
+                        revision,
+                        pending: Arc::new(Mutex::new(PendingNames::default())),
+                    };
+                    let policy = NamespacePath::new(
+                        text.split('/')
+                            .map(|name| path(name, windows).components()[0].clone())
+                            .collect(),
+                        crate::model::VolumeLimits::default(),
+                    )
+                    .unwrap();
+                    // Negative control: basename-only policy recognition misses
+                    // exclude and its replaced parents in either encoding.
+                    assert!(!is_ignore_policy(policy.components().last().unwrap()));
+                    let event = if binding {
+                        SourceChange::Name(policy)
+                    } else {
+                        SourceChange::Entry(policy)
+                    };
+                    signal
+                        .source_changed(
+                            &[event],
+                            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                        )
+                        .unwrap();
+                    assert_eq!(signal.pending.lock().unwrap().all, expected, "{text}");
+                }
+            }
+        }
     }
 
     #[test]
