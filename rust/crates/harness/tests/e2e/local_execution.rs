@@ -16,6 +16,7 @@ use acyclic_harness::{
     test_support::{
         ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config, local_task_stream,
     },
+    tools::shell::PLATFORM,
 };
 use acyclic_stream::{StreamPath, StreamProvider as _};
 use futures::StreamExt as _;
@@ -377,7 +378,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         // Only a failed case may stop before dispatch; validate() requires it.
         return Ok(());
     }
-    if ["bash", "fs", "read", "write", "edit"]
+    if [PLATFORM.name, "fs", "read", "write", "edit"]
         .iter()
         .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
     {
