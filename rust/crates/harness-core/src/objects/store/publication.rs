@@ -90,14 +90,27 @@ impl ContentPublisher for ObjectContentStore {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-        io: Option<&'a crate::conversation::ContentIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
             (FileRef, Option<crate::conversation::ContentHold<'a>>),
         >,
     > {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         self.supports_stage(io)?;
+        if let Some(grants) = ceiling
+            && !crate::executor::with_history_io(io, |work| {
+                crate::core::volume_write_granted_with_work(grants, &self.volume, work)
+            })?
+        {
+            return Err(crate::conversation::content_error(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "content caller lacks a volume write grant",
+            ));
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let grant = self.writer.as_ref().ok_or_else(|| {
                 Error::Unauthorized("Objects writer is not bound to the original owner".into())

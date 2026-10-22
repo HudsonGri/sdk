@@ -85,7 +85,7 @@ async fn exercise(
             &bytes[0],
             "application/octet-stream",
             "content.bin",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let second = publisher
@@ -95,12 +95,12 @@ async fn exercise(
             &bytes[1],
             "application/octet-stream",
             "content.bin",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     // Retain both holds until the authenticated historical reads complete.
-    let a = verifier.read(&first.0, 4096, None)?.await?.to_vec();
-    let b = verifier.read(&second.0, 4096, None)?.await?.to_vec();
+    let a = verifier.read(&first.0, 4096, None, None)?.await?.to_vec();
+    let b = verifier.read(&second.0, 4096, None, None)?.await?.to_vec();
     Ok((vec![first.0, second.0], vec![a, b]))
 }
 

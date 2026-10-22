@@ -1,13 +1,24 @@
+struct ContentChangeContext<'a> {
+    work: &'a crate::NativeMaterializationWork,
+    lifetime: &'a CancellationToken,
+    clock: &'a super::clock::Clock,
+    guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
     async fn change_file_content<F: crate::facade::ContentFile>(
         &self,
         file: F,
         change: ContentChange<F>,
-        work: &crate::NativeMaterializationWork,
-        lifetime: &CancellationToken,
-        clock: &super::clock::Clock,
-        guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+        append_only: bool,
+        context: ContentChangeContext<'_>,
     ) -> Result<(), MountSourceError> {
+        let ContentChangeContext {
+            work,
+            lifetime,
+            clock,
+            guard,
+        } = context;
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let file_id = match file.address() {
@@ -48,6 +59,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 .record;
             if current.is_none_or(|record| record.file_id != file_id) {
                 return Err(MountSourceError::Stale);
+            }
+        }
+        if append_only {
+            let record = candidate
+                .checkout
+                .read_file_record_by_id(file_id, work, cancellation)
+                .await?;
+            if !matches!(&change, ContentChange::Write { offset, .. } if *offset == mount_node(record).logical_bytes)
+            {
+                return Err(MountSourceError::AccessDenied);
             }
         }
         candidate

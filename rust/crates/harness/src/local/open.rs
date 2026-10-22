@@ -206,26 +206,34 @@ impl Opening {
         let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
             .map_err(storage)?
             .with_ownership_anchor(self.config.test_state.clone());
-        // This process now holds the state exclusively. Before anything
-        // reads the checkout or records an interruption, every tool tree a
-        // dead previous owner left is dead; owners in this process share it.
-        let state = workspace::OwnerState {
-            store,
-            processes: Some(fence_stale_processes(directory.join("processes")).await?),
-        };
+        // Hold exclusive state before reopening the checkout or recording an
+        // interruption; a dead previous owner's process trees must be gone.
+        let processes = Some(fence_stale_processes(directory.join("processes")).await?);
+        let issuer = AuthorityIssuer::new(
+            "acyclic.local",
+            owner.key,
+            Authority {
+                kind: AggregateKind::Task,
+                id: owner.task.to_string(),
+            },
+        );
         let workspace = match &self.config.project {
             LocalProject::Workspace(path) => Some(
                 workspace::open(
                     filesystem,
                     &owner.project,
-                    scratch,
                     path,
-                    directory,
                     owner.workspace_identity,
-                    workspace::attach_operation(owner.task),
                     false,
-                    self.native_mounts,
-                    state,
+                    workspace::OpenOptions {
+                        scratch,
+                        directory,
+                        operation: workspace::attach_operation(owner.task),
+                        native_mounts: self.native_mounts,
+                        store,
+                        authority: Some((&issuer, owner.agent)),
+                        processes,
+                    },
                 )
                 .await?,
             ),
@@ -233,11 +241,15 @@ impl Opening {
                 workspace::open_volume(
                     filesystem,
                     &owner.project,
-                    scratch,
-                    directory,
-                    workspace::attach_operation(owner.task),
-                    self.native_mounts,
-                    state,
+                    workspace::OpenOptions {
+                        scratch,
+                        directory,
+                        operation: workspace::attach_operation(owner.task),
+                        native_mounts: self.native_mounts,
+                        store,
+                        authority: Some((&issuer, owner.agent)),
+                        processes,
+                    },
                 )
                 .await?,
             ),

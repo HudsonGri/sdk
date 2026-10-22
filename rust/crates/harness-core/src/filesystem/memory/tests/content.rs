@@ -1,5 +1,42 @@
 use super::*;
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Recovery authenticates the publication operation, not the later head or
+    // a placeholder version; the requested path must still match its receipt.
+    #[test]
+    fn publication_recovery_preserves_operation_identity(
+        key in "[a-z0-9]{1,32}",
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..1024),
+    ) {
+        let result = futures::executor::block_on(async {
+            let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+            let write = ContentGrant::verify(
+                &storage.verifier(), &storage.scope, &storage.volume,
+                VolumeOperation::Write, 1024, &mut None,
+            )?;
+            let key = IdempotencyKey::new(key)?;
+            let original = storage.host.put_content(
+                &storage.volume, &write, "original", &body, "application/octet-stream",
+                "original", 1024, &key, None, None, None,
+            ).await?;
+            storage.host.put_content(
+                &storage.volume, &write, "original", b"replacement", "text/plain",
+                "replacement", 1024, &IdempotencyKey::new("later-head/edit")?,
+                None, None, None,
+            ).await?;
+            assert_eq!(storage.host.content_for_operation(
+                &storage.volume, &write, &key, "original", 1024, crate::conversation::ContentAccess::default(),
+            ).await?, Some(original));
+            assert!(storage.host.content_for_operation(
+                &storage.volume, &write, &key, "different", 1024, crate::conversation::ContentAccess::default(),
+            ).await.is_err());
+            Ok::<_, Error>(())
+        });
+        proptest::prop_assert!(result.is_ok(), "{result:?}");
+    }
+}
+
 #[tokio::test]
 async fn stock_publisher_finite_once_observes_original_metadata_after_head_changes() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
@@ -15,7 +52,10 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             b"original",
             "application/json",
             "original.json",
-            Some(&committed_io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&committed_io),
+            },
         )?
         .await?;
     assert!(committed_io.receipt().backend_write_operations > 0);
@@ -27,14 +67,14 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             b"later",
             "text/plain",
             "later.txt",
-            None,
+            crate::conversation::ContentAccess::default(),
         )?
         .await?;
     let observed_io =
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
     let (recovered, _recovered_hold) = storage
         .publisher
-        .observe_staged_once(operation, 1024, Some(&observed_io))?
+        .observe_staged_once(operation, 1024, None, Some(&observed_io))?
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
     let read_io =
@@ -42,7 +82,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert_eq!(
         storage
             .content_verifier
-            .read(&committed, 1024, Some(&read_io))?
+            .read(&committed, 1024, None, Some(&read_io))?
             .await?
             .as_ref(),
         b"original"
@@ -56,7 +96,10 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 b"original",
                 "text/plain",
                 "changed.txt",
-                Some(&committed_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&committed_io)
+                }
             )?
             .await
             .is_err()
@@ -74,7 +117,10 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 b"never",
                 "text/plain",
                 "never",
-                Some(&cancelled_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&cancelled_io)
+                }
             )
             .is_err()
     );
@@ -92,14 +138,17 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 b"never",
                 "text/plain",
                 "never",
-                Some(&denied_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&denied_io)
+                }
             )
             .is_err()
     );
     assert!(
         storage
             .publisher
-            .observe_staged_once(denied_operation, 1024, Some(&observed_io))?
+            .observe_staged_once(denied_operation, 1024, None, Some(&observed_io))?
             .await?
             .0
             .is_none()
@@ -142,7 +191,10 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
             b"never",
             "text/plain",
             "never",
-            Some(&io)
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io)
+            }
         ),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -166,7 +218,10 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"never",
                 "text/plain",
                 "never",
-                Some(&frame_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&frame_io)
+                }
             )
             .is_err()
     );
@@ -180,7 +235,10 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
             b"original",
             "application/json",
             "original.json",
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )?
         .await?;
     assert!(file_hold.as_ref().is_some_and(|hold| hold.bytes() > 0));
@@ -188,7 +246,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
     let before_read = work.live_allocation_bytes();
     let bytes = storage
         .content_verifier
-        .read(&file, 1024, Some(&io))?
+        .read(&file, 1024, None, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
     assert!(bytes.matches_meter(&work.runtime_meter()));
@@ -205,7 +263,10 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"original",
                 "text/plain",
                 "changed",
-                Some(&io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io)
+                }
             )?
             .await
             .is_err()
@@ -222,7 +283,10 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"never",
                 "text/plain",
                 "never",
-                Some(&io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io)
+                }
             )
             .is_err()
     );
@@ -241,7 +305,10 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
                 b"never",
                 "text/plain",
                 "never",
-                Some(&denied_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&denied_io)
+                }
             )?
             .await
             .is_err()
@@ -393,6 +460,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 1024,
                 &key,
                 None,
+                None,
                 Some(&path_io)
             )
             .await,
@@ -410,7 +478,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &key,
                 ".system/private",
                 1024,
-                Some(&path_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&path_io)
+                }
             )
             .await,
         Err(Error::NativeBoundary {
@@ -439,6 +510,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             1024,
             &key,
             None,
+            None,
             Some(&io),
         )
         .await?;
@@ -456,6 +528,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &IdempotencyKey::new("head-edit")?,
             None,
             None,
+            None,
         )
         .await?;
     let recovered = storage
@@ -466,7 +539,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &key,
             "inputs/original.json",
             1024,
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )
         .await?
         .ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
@@ -474,7 +550,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     assert_eq!(recovered, staged);
     let content = storage
         .content_verifier
-        .read(&recovered, 1024, Some(&io))?
+        .read(&recovered, 1024, None, Some(&io))?
         .await?;
     assert_eq!(content.as_ref(), b"original");
     drop(content);
@@ -492,6 +568,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 1024,
                 &key,
                 None,
+                None,
                 Some(&io)
             )
             .await
@@ -507,7 +584,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &key,
                 "inputs/changed.json",
                 1024,
-                Some(&io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io)
+                }
             )
             .await
             .is_err()
@@ -521,7 +601,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &IdempotencyKey::new("proven-absent-operation")?,
                 "inputs/original.json",
                 1024,
-                Some(&io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io)
+                }
             )
             .await?
             .is_none()
@@ -547,7 +630,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &key,
                 "inputs/original.json",
                 1024,
-                Some(&io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io)
+                }
             )
             .await,
         Err(Error::NativeWork {

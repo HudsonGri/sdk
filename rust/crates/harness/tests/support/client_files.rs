@@ -113,6 +113,7 @@ impl Fixture {
                 &IdempotencyKey::new(key)?,
                 None,
                 None,
+                None,
             )
             .await
     }

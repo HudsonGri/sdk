@@ -60,6 +60,7 @@ async fn fixture_with_filesystem(
             &IdempotencyKey::new("payload")?,
             None,
             None,
+            None,
         )
         .await?;
     Ok((host, file))

@@ -315,48 +315,9 @@ impl CommandCatalog {
                                     )));
                                 }
                             }
-                            source.validate(&mut None)?;
-                            let prefix = reader
-                                .read_private_prefix(
-                                    &root.volume,
-                                    &root.directory,
-                                    &source.path,
-                                    &generation,
-                                    u64::from(limits.header_bytes),
-                                    None,
-                                )?
+                            catalog
+                                .add_prompt(reader, source, name, scope, limits.header_bytes)
                                 .await?;
-                            if prefix.len() > limits.header_bytes as usize {
-                                return Err(Error::Storage("command prefix exceeded bound".into()));
-                            }
-                            if prefix.len() == limits.header_bytes as usize
-                                && (b"---\n".starts_with(&prefix)
-                                    || b"---\r\n".starts_with(&prefix))
-                            {
-                                return Err(Error::Invalid(
-                                    "command header exceeds prefix bound".into(),
-                                ));
-                            }
-                            let metadata: PromptMetadata = if has_frontmatter(&prefix) {
-                                parse_frontmatter(&prefix)?
-                            } else {
-                                PromptMetadata::default()
-                            };
-                            let description = metadata.description.unwrap_or_else(|| name.clone());
-                            if description.trim().is_empty() || description.contains('\0') {
-                                return Err(Error::Invalid("invalid command description".into()));
-                            }
-                            let _ = catalog.names.insert(&name, &name);
-                            catalog.commands.insert(
-                                name.clone(),
-                                CommandSpec {
-                                    name,
-                                    aliases: Vec::new(),
-                                    description,
-                                    arguments: CommandArguments::Text,
-                                    action: CommandAction::Prompt { source, scope },
-                                },
-                            );
                         }
                     }
                 }
@@ -378,6 +339,56 @@ impl CommandCatalog {
             catalog.commands.insert(name, spec);
         }
         Ok(catalog)
+    }
+
+    async fn add_prompt(
+        &mut self,
+        reader: &dyn ContentResidencyVerifier,
+        source: PinnedContextPath,
+        name: String,
+        scope: CommandScope,
+        header_bytes: u32,
+    ) -> Result<()> {
+        source.validate(&mut None)?;
+        let prefix = reader
+            .read_private_prefix(
+                &source.root.volume,
+                &source.root.directory,
+                &source.path,
+                &source.generation,
+                u64::from(header_bytes),
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        if prefix.len() > header_bytes as usize {
+            return Err(Error::Storage("command prefix exceeded bound".into()));
+        }
+        if prefix.len() == header_bytes as usize
+            && (b"---\n".starts_with(&prefix) || b"---\r\n".starts_with(&prefix))
+        {
+            return Err(Error::Invalid("command header exceeds prefix bound".into()));
+        }
+        let metadata: PromptMetadata = if has_frontmatter(&prefix) {
+            parse_frontmatter(&prefix)?
+        } else {
+            PromptMetadata::default()
+        };
+        let description = metadata.description.unwrap_or_else(|| name.clone());
+        if description.trim().is_empty() || description.contains('\0') {
+            return Err(Error::Invalid("invalid command description".into()));
+        }
+        let _ = self.names.insert(&name, &name);
+        self.commands.insert(
+            name.clone(),
+            CommandSpec {
+                name,
+                aliases: Vec::new(),
+                description,
+                arguments: CommandArguments::Text,
+                action: CommandAction::Prompt { source, scope },
+            },
+        );
+        Ok(())
     }
 
     /// Same descriptors used for help, completion and resolution.

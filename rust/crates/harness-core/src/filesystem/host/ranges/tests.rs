@@ -31,6 +31,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             &IdempotencyKey::new("publish")?,
             None,
             None,
+            None,
         )
         .await?;
     Ok((host, file))
@@ -95,7 +96,7 @@ async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             "ordinary",
             Some(&generation),
             body.len() as u64,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(actual.as_ref(), body);

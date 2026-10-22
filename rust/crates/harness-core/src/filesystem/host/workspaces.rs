@@ -554,7 +554,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 };
                 io.sdk(
                     workspace
-                        .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
+                        .begin_transaction_at(&pinned, operation, io, io.cancellation())
                         .await,
                 )?
             };

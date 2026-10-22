@@ -87,6 +87,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
                 64,
                 &key,
                 None,
+                None,
                 Some(&io),
             )
             .await
@@ -106,6 +107,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             64,
             &IdempotencyKey::new("later-content")?,
             None,
+            None,
             Some(&io),
         )
         .await?;
@@ -119,7 +121,17 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         &cancellation,
     )?;
     let recovered = host
-        .content_for_operation(&volume, &write, &key, "result.json", 64, Some(&io))
+        .content_for_operation(
+            &volume,
+            &write,
+            &key,
+            "result.json",
+            64,
+            acyclic_harness::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
+        )
         .await?;
 
     let original =
@@ -150,6 +162,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             "original.json",
             64,
             &key,
+            None,
             None,
             Some(&io)
         )
@@ -197,6 +210,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
                 64,
                 &key,
                 None,
+                None,
                 Some(&io)
             )
             .await
@@ -214,14 +228,27 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &IdempotencyKey::new("never-uploaded")?,
             "result.json",
             64,
-            Some(&io),
+            acyclic_harness::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )
         .await?;
     assert_eq!(missing, None);
     assert!(
-        host.content_for_operation(&volume, &write, &key, "changed.json", 64, Some(&io))
-            .await
-            .is_err()
+        host.content_for_operation(
+            &volume,
+            &write,
+            &key,
+            "changed.json",
+            64,
+            acyclic_harness::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io)
+            }
+        )
+        .await
+        .is_err()
     );
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(
         CONTENT_WORK_BUDGET,
@@ -249,6 +276,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             64,
             &IdempotencyKey::new("cancelled-content")?,
             None,
+            None,
             Some(&io)
         )
         .await
@@ -269,6 +297,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             64,
             &IdempotencyKey::new("denied-content")?,
             None,
+            None,
             Some(&io)
         )
         .await
@@ -286,7 +315,10 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &IdempotencyKey::new("denied-content")?,
             "denied",
             64,
-            Some(&io)
+            acyclic_harness::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io)
+            }
         )
         .await?,
         None
