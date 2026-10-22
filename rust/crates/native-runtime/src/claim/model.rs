@@ -634,3 +634,47 @@ fn a_removed_claim_file_whose_identity_is_reused_is_a_new_store() {
         Ok(())
     });
 }
+
+/// Every handle on a claimed store drops while the store's owner still holds
+/// the claim for its last work, as a store does while a detached write and
+/// its close-time flush finish. A reopen in the same process then waits for
+/// that release and takes the store, never reporting it open, while another
+/// process races for the store throughout.
+#[test]
+fn a_reopen_after_the_last_handle_takes_over_the_closing_claim() {
+    explore(|findings| {
+        let world = Arc::new(Mutex::new(World::new(2, findings)));
+        let owner = Sim::new(&world, 0);
+        let other = Sim::new(&world, 1);
+        let closing = protocol::acquire(owner.clone(), Path::new("store")).map_err(failed)?;
+        owner.own(&closing);
+        closing.handles().issue();
+        closing.handles().retire();
+        let contender = loom::thread::spawn(move || {
+            other.hold("store");
+        });
+        let draining = {
+            let owner = owner.clone();
+            loom::thread::spawn(move || {
+                loom::thread::yield_now();
+                owner.disown(&closing);
+                drop(closing);
+            })
+        };
+        match protocol::acquire(owner.clone(), Path::new("store")) {
+            Ok(reopened) => {
+                owner.own(&reopened);
+                owner.disown(&reopened);
+            }
+            // Only the other process may hold the store at this point.
+            Err(error) if error.to_string().contains("in this process") => report(
+                findings,
+                "a reopen after the last handle found the store open".to_owned(),
+            ),
+            Err(_) => {}
+        }
+        draining.join().map_err(failed)?;
+        contender.join().map_err(failed)?;
+        Ok(())
+    });
+}

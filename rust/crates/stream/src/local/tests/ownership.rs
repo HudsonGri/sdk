@@ -56,24 +56,63 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
             .ok_or("detached native operation lost its identity")?;
         let terminal = Arc::downgrade(&provider.inner);
         drop(provider);
-        // The detached append holds the journal, and with it the store's
-        // claim, until its blocking task returns; the journal then flushes and
-        // releases the claim as it drops, after its last reference is gone.
-        let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if terminal.upgrade().is_none() {
-                    match LocalStream::open(directory.path(), LocalStreamLimits::default()).await {
-                        Err(LocalStreamError::AlreadyOpen) => {}
-                        opened => return opened,
-                    }
-                }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while terminal.upgrade().is_some() {
                 tokio::task::yield_now().await;
             }
         })
-        .await??;
+        .await?;
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
         meter.assert_refunded();
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+}
+
+#[test]
+fn a_reopen_after_the_last_provider_waits_for_the_store_to_close()
+-> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let path = StreamPath::new("closing")?;
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"kept")],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        // A latch on the close: the journal stays open, as it does while
+        // the last provider's detached work or its final flush runs.
+        let closing = Arc::clone(&provider.inner.journal);
+        drop(provider);
+        let reopen = tokio::spawn({
+            let root = directory.path().to_path_buf();
+            async move { LocalStream::open(&root, LocalStreamLimits::default()).await }
+        });
+        // The reopen can finish only by failing while the store closes.
+        let early = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            while !reopen.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(early.is_err(), "a reopen found the closing store open");
+        drop(closing);
+        let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), reopen).await???;
+        assert_eq!(reopened.tail(path).await?, 1);
+        // A live provider still refuses a second open in this process.
+        assert!(matches!(
+            LocalStream::open(directory.path(), LocalStreamLimits::default()).await,
+            Err(LocalStreamError::AlreadyOpen)
+        ));
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }

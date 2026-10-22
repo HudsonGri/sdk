@@ -138,6 +138,45 @@ pub struct StoreClaim {
     _claim: protocol::Claim<Native>,
 }
 
+/// One handle on a claimed store, given out by [`StoreClaim::handle`].
+///
+/// Once a claim has given out handles and every one has dropped, the claim
+/// is closing: an acquire of the same store in this process waits for the
+/// claim's release instead of failing, so a store reopened after its last
+/// handle drops always opens, however long its close takes.
+pub struct StoreHandle {
+    handles: crate::sync::Arc<protocol::Handles>,
+}
+
+impl StoreHandle {
+    fn new(handles: &crate::sync::Arc<protocol::Handles>) -> Self {
+        handles.issue();
+        Self {
+            handles: crate::sync::Arc::clone(handles),
+        }
+    }
+}
+
+impl Clone for StoreHandle {
+    fn clone(&self) -> Self {
+        Self::new(&self.handles)
+    }
+}
+
+impl Drop for StoreHandle {
+    fn drop(&mut self) {
+        self.handles.retire();
+    }
+}
+
+impl std::fmt::Debug for StoreHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoreHandle")
+            .finish_non_exhaustive()
+    }
+}
+
 impl StoreClaim {
     /// The most backend reads one [`StoreClaim::check`] makes: the record,
     /// then the probes of its owner.
@@ -168,6 +207,13 @@ impl StoreClaim {
     /// excludes owners for its duration.
     pub fn is_claimed(file: &mut File) -> io::Result<bool> {
         Self::check(file).map(|check| check.claimed)
+    }
+
+    /// A handle on the claimed store. The claim's owner gives one to each
+    /// of its users and keeps none for its own work, so that once every user
+    /// is gone the claim is closing; see [`StoreHandle`].
+    pub fn handle(&self) -> StoreHandle {
+        StoreHandle::new(self._claim.handles())
     }
 
     /// The path this claim releases by.

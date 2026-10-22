@@ -111,7 +111,7 @@ impl LocalStream {
         if !cut.written() {
             return Err(self.cut_crash(cut.as_ref()).await);
         }
-        let stream = self.clone();
+        let stream = self.worker();
         spawn_blocking(move || stream.flush_all(&tracing::Span::none()))
             .await
             .map_err(|_| self.inner.poison())??;

@@ -2,6 +2,7 @@
 //! model run the same code.
 
 use super::record::{Contents, Process, RECORD_LIMIT, Record};
+use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::io;
@@ -66,24 +67,65 @@ const SHARDS: usize = 2;
 /// file, so a closed claim's entry binds only while the file still carries
 /// that claim's record.
 pub(super) struct Table<Key> {
-    shards: [crate::sync::Mutex<HashMap<Key, Entry>>; SHARDS],
+    shards: [Shard<Key>; SHARDS],
 }
 
-#[derive(Clone, Copy, Debug)]
+struct Shard<Key> {
+    entries: crate::sync::Mutex<HashMap<Key, Entry>>,
+    /// Signalled whenever an entry is removed, so that an acquire waiting
+    /// on a closing claim takes the store over as that claim's release ends.
+    removed: crate::sync::Condvar,
+}
+
 struct Entry {
     token: u64,
     /// The claim closed the file after recording itself in it.
     recorded: bool,
+    handles: crate::sync::Arc<Handles>,
+}
+
+/// The handles a claim's owner gave out. Once it gave some and every one
+/// has dropped, the claim is closing: its owner's last work drains and its
+/// release follows without fail, so an acquire in this process waits for
+/// that release rather than reporting the store open.
+pub(super) struct Handles {
+    issued: AtomicBool,
+    live: AtomicUsize,
+}
+
+impl Handles {
+    fn new() -> Self {
+        Self {
+            issued: AtomicBool::new(false),
+            live: AtomicUsize::new(0),
+        }
+    }
+
+    pub(super) fn issue(&self) {
+        self.live.fetch_add(1, Ordering::SeqCst);
+        self.issued.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn retire(&self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn closing(&self) -> bool {
+        self.issued.load(Ordering::SeqCst) && self.live.load(Ordering::SeqCst) == 0
+    }
 }
 
 impl<Key: Clone + Eq + Hash> Table<Key> {
     pub(super) fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| crate::sync::Mutex::new(HashMap::new())),
+            shards: std::array::from_fn(|_| Shard {
+                entries: crate::sync::Mutex::new(HashMap::new()),
+                removed: crate::sync::Condvar::new(),
+            }),
         }
     }
 
-    fn shard(&self, key: &Key) -> io::Result<&crate::sync::Mutex<HashMap<Key, Entry>>> {
+    fn shard(&self, key: &Key) -> io::Result<&Shard<Key>> {
         use std::hash::{BuildHasher as _, BuildHasherDefault, DefaultHasher};
         let index = BuildHasherDefault::<DefaultHasher>::default().hash_one(key) % SHARDS as u64;
         usize::try_from(index)
@@ -95,8 +137,29 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
     fn entries(&self, key: &Key) -> io::Result<crate::sync::MutexGuard<'_, HashMap<Key, Entry>>> {
         Ok(self
             .shard(key)?
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// Waits while a claim of this process on the file `key` is closing:
+    /// its handles are gone and only its release remains.
+    fn await_closing(&self, key: &Key) -> io::Result<()> {
+        let shard = self.shard(key)?;
+        let mut entries = shard
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while entries
+            .get(key)
+            .is_some_and(|entry| entry.handles.closing())
+        {
+            entries = shard
+                .removed
+                .wait(entries)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        Ok(())
     }
 
     /// Enters claim `token` for the file `key`, whose lock the caller holds
@@ -108,6 +171,7 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
         &self,
         key: &Key,
         token: u64,
+        handles: &crate::sync::Arc<Handles>,
         contents: &Contents,
         own: Option<&Process>,
     ) -> io::Result<()> {
@@ -125,6 +189,7 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
             Entry {
                 token,
                 recorded: false,
+                handles: crate::sync::Arc::clone(handles),
             },
         );
         Ok(())
@@ -142,10 +207,17 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
 
     /// Removes claim `token`'s entry, never one that replaced it.
     fn remove(&self, key: &Key, token: u64) {
-        if let Ok(mut entries) = self.entries(key)
-            && entries.get(key).is_some_and(|entry| entry.token == token)
-        {
+        let Ok(shard) = self.shard(key) else {
+            return;
+        };
+        let mut entries = shard
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries.get(key).is_some_and(|entry| entry.token == token) {
             entries.remove(key);
+            drop(entries);
+            shard.removed.notify_all();
         }
     }
 }
@@ -186,6 +258,7 @@ pub(super) struct Claim<H: Host> {
     /// The claim file, kept locked as the claim itself when this process has
     /// no process lock to name.
     held: Option<H::File>,
+    handles: crate::sync::Arc<Handles>,
 }
 
 impl<H: Host> std::fmt::Debug for Claim<H> {
@@ -218,6 +291,9 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
     let mut file = host.open(path, true)?;
     let key = host.identity(&file, path)?;
     let token = host.token();
+    // A closing claim of this process hands the store over once released.
+    host.table().await_closing(&key)?;
+    let handles = crate::sync::Arc::new(Handles::new());
     if !host.try_lock(&file)? {
         return Err(contention(
             "store claim is being exchanged by another owner",
@@ -230,7 +306,7 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
     let exchanged = (|| {
         let contents = Contents::decode(&host.read(&mut file)?);
         let own = host.process();
-        host.table().insert(&key, token, &contents, own)?;
+        host.table().insert(&key, token, &handles, &contents, own)?;
         pending.entry = Some((key.clone(), token));
         if let Some(refusal) = excludes(&host, own, &contents, &mut 0) {
             return Err(refusal);
@@ -282,6 +358,7 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
         key,
         token,
         held,
+        handles,
     })
 }
 
@@ -303,6 +380,11 @@ impl<H: Host> Claim<H> {
     #[cfg(all(test, unix))]
     pub(super) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The handles this claim's owner gives out.
+    pub(super) fn handles(&self) -> &crate::sync::Arc<Handles> {
+        &self.handles
     }
 
     /// The claimed file's identity.
