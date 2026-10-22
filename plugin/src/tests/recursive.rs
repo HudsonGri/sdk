@@ -57,7 +57,7 @@ fn recursive_publication_is_direct_parent_only() {
             .await
             .unwrap();
         let writer = acyclic_native_runtime::process_output(
-            std::process::Command::new(std::env::current_exe().unwrap())
+            acyclic_native_runtime::command::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "tests::recursive::projected_mount_writer_child",

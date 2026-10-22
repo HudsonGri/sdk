@@ -1,11 +1,12 @@
+#[cfg(test)]
+use crate::command::Child;
+use crate::command::Command;
 use std::io;
 use std::io::{Read, Write};
 pub(super) use std::os::fd::AsRawFd as Pipe;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
-#[cfg(test)]
-use std::process::Child;
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 
 #[cfg(test)]
 pub(super) fn observe_exit(child: &Child) -> io::Result<Option<ExitStatus>> {

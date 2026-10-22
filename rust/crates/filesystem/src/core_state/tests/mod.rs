@@ -158,8 +158,10 @@ pub(super) fn ownership_child_acts_on_its_namespace() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-pub(super) fn ownership_child(root: &Path) -> Result<std::process::Command, std::io::Error> {
-    let mut child = std::process::Command::new(std::env::current_exe()?);
+pub(super) fn ownership_child(
+    root: &Path,
+) -> Result<acyclic_native_runtime::command::Command, std::io::Error> {
+    let mut child = acyclic_native_runtime::command::Command::new(std::env::current_exe()?);
     child
         .args([
             "--exact",
@@ -330,7 +332,10 @@ pub(super) fn core_crash_child_runs_until_its_crash_point() -> Result<(), Box<dy
         std::fs::write(&acknowledged, group.end.to_string())?;
     }
     if let Some(count) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_COUNT") {
-        std::fs::write(count, crate::core_state::log::crash_point_count().to_string())?;
+        std::fs::write(
+            count,
+            crate::core_state::log::crash_point_count().to_string(),
+        )?;
     }
     Ok(())
 }

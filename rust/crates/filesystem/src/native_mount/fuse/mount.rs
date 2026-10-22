@@ -1,3 +1,4 @@
+use acyclic_native_runtime::command::{Child, Command, Stdio};
 use nix::mount::{MntFlags, MsFlags};
 use std::{
     ffi::CStr,
@@ -8,7 +9,6 @@ use std::{
         unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixStream},
     },
     path::Path,
-    process::{Child, Command, Stdio},
 };
 mod reply;
 use reply::receive_device;
