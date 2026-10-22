@@ -18,7 +18,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(limits)
     }
 
+    /// Reads, verifies and validates the immutable admission of `operation` once per
+    /// host; later reads copy the validated record onto the caller's work. Every reader
+    /// receives and pays for its own copy exactly as if it had decoded one.
     pub(super) async fn admission(
+        &self,
+        operation: OperationId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<TaskAdmissionRecord> {
+        if let Some(record) = self.admissions.get(operation) {
+            return copy_admission(&record, work);
+        }
+        let record = self.read_admission(operation, work).await?;
+        self.admissions.insert(operation, &record);
+        Ok(record)
+    }
+
+    pub(super) async fn read_admission(
         &self,
         operation: OperationId,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -156,5 +172,67 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .absorb_native_custody(recheck.into_custody()?)?;
         }
         result
+    }
+}
+
+/// A copy of a validated admission, held exactly as a freshly decoded one would be.
+fn copy_admission(
+    record: &TaskAdmissionRecord,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
+) -> Result<TaskAdmissionRecord> {
+    let mut quota = crate::wire_codec::CodecQuota::new(
+        work,
+        std::mem::size_of::<TaskAdmissionRecord>() as u64,
+    )?;
+    let copied = crate::core::copy(record, &mut quota, |record, _| record.logical_owned_bytes())?;
+    quota.replace(
+        std::mem::size_of::<TaskAdmissionRecord>() as u64 + copied.logical_owned_bytes()?,
+    )?;
+    quota.transfer();
+    Ok(copied)
+}
+
+/// Validated admissions, immutable once published, kept for the few tasks a host is
+/// serving at once. The memo is bounded by entries and record size, so it is O(1) per
+/// host however many tasks it has served.
+#[derive(Default)]
+pub(super) struct AdmissionMemo(
+    std::sync::Mutex<std::collections::VecDeque<(OperationId, Arc<TaskAdmissionRecord>)>>,
+);
+
+impl AdmissionMemo {
+    const ENTRIES: usize = 16;
+    const RECORD_BYTES: u64 = 16 * 1024;
+    fn entries(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        std::collections::VecDeque<(OperationId, Arc<TaskAdmissionRecord>)>,
+    > {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    fn get(&self, operation: OperationId) -> Option<Arc<TaskAdmissionRecord>> {
+        self.entries()
+            .iter()
+            .find(|(cached, _)| *cached == operation)
+            .map(|(_, record)| Arc::clone(record))
+    }
+    fn insert(&self, operation: OperationId, record: &TaskAdmissionRecord) {
+        if !record
+            .logical_owned_bytes()
+            .is_ok_and(|bytes| bytes <= Self::RECORD_BYTES)
+        {
+            return;
+        }
+        let mut entries = self.entries();
+        if entries.iter().any(|(cached, _)| *cached == operation) {
+            return;
+        }
+        if entries.len() == Self::ENTRIES {
+            entries.pop_front();
+        }
+        entries.push_back((operation, Arc::new(record.clone())));
     }
 }
