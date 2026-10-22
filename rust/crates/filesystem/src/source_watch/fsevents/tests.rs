@@ -663,11 +663,7 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
                 original.0.try_lock().is_ok(),
                 "callback runs outside the original admission lock"
             );
-            assert!(
-                work.shares_ledger(&crate::NativeMaterializationWork::from_meter(
-                    original.clone()
-                ))
-            );
+            assert!(Arc::ptr_eq(&work.state, &original));
             self.cancellation.cancel();
             let watch = self
                 .watch
@@ -687,10 +683,9 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
     budget.backend_write_operations = 128;
     budget.items_examined = 4096;
     budget.allocation_operations = 128;
-    let original = Arc::new(NativeDemandReadMeter::new(DemandWork::new(
-        budget,
-        &cancellation,
-    )));
+    let mut work =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let original = work.state.clone();
     let lifetime = Arc::downgrade(&original);
     let sink = Arc::new(Retires {
         watch: Mutex::new(None),
@@ -698,7 +693,6 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         cancellation,
         invoked: AtomicBool::new(false),
     });
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
     let completion = Arc::clone(&watch.shared);
