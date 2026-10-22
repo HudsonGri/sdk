@@ -525,9 +525,64 @@ fn call(name: &str, arguments: serde_json::Value) -> serde_json::Value {
 
 /// Every model tool GraphCoder offers. A tool the provider sees that is not
 /// listed here fails the `tools` case, so a new tool cannot ship unmeasured.
+#[cfg(not(windows))]
 const TOOLS: &[&str] = &[
-    "archive", "bash", "edit", "fs", "read", "send", "spawn", "url_fetch", "wait", "write",
+    "archive",
+    "bash",
+    "edit",
+    "fs",
+    "read",
+    "send",
+    "spawn",
+    "url_fetch",
+    "wait",
+    "write",
 ];
+#[cfg(windows)]
+const TOOLS: &[&str] = &[
+    "archive",
+    "edit",
+    "fs",
+    "powershell",
+    "read",
+    "send",
+    "spawn",
+    "url_fetch",
+    "wait",
+    "write",
+];
+
+/// The platform shell tool GraphCoder offers: bash on Unix, PowerShell on Windows.
+const SHELL: &str = if cfg!(windows) { "powershell" } else { "bash" };
+
+/// Writes `text` byte for byte to `path` through the platform shell. The
+/// fixture texts never contain a single quote.
+fn write_file(path: &str, text: &str) -> serde_json::Value {
+    assert!(!text.contains('\''));
+    let command = if cfg!(windows) {
+        format!("[IO.File]::WriteAllText((Join-Path $PWD '{path}'), '{text}')")
+    } else {
+        format!("printf '%s' '{text}' > {path}")
+    };
+    call(SHELL, json!({ "command": command }))
+}
+
+/// Prints the files' exact bytes, in order, through the platform shell.
+fn print_files(paths: &[&str]) -> serde_json::Value {
+    let command = if cfg!(windows) {
+        let paths = paths
+            .iter()
+            .map(|path| format!("'{path}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "foreach ($path in {paths}) {{ [Console]::Out.Write([IO.File]::ReadAllText((Join-Path $PWD $path))) }}"
+        )
+    } else {
+        format!("cat {}", paths.join(" "))
+    };
+    call(SHELL, json!({ "command": command }))
+}
 
 /// The body the fixture serves to `url_fetch`, a real credential-free GET.
 const SOURCE: &str = "stack source\n";
@@ -607,9 +662,9 @@ fn tool_group(case: &str) -> Vec<serde_json::Value> {
             json!({"file": "$FILE", "old_text": "beta", "new_text": "gamma"}),
         ),
         call("url_fetch", json!({"url": "$ORIGIN/source"})),
-        call(
-            "bash",
-            json!({"command": "printf 'diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n' > change.patch"}),
+        write_file(
+            "change.patch",
+            "diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n",
         ),
     ];
     // Every group starts with the same file tools and its own complete history.
@@ -622,15 +677,12 @@ fn tool_group(case: &str) -> Vec<serde_json::Value> {
         // A commit must capture a real change. An early NothingToCommit reply
         // never reaches the filesystem work whose stack this suite measures.
         if matches!(*command, "commit -m first" | "commit -m topic") {
-            turns.push(call(
-                "bash",
-                json!({"command": format!("printf 'alpha {command}\\n' > notes.txt")}),
-            ));
+            turns.push(write_file("notes.txt", &format!("alpha {command}\n")));
         }
         turns.push(fs(command));
     }
     if case == "tools-recovery" {
-        turns.push(call("bash", json!({"command": "cat calc.py"})));
+        turns.push(print_files(&["calc.py"]));
     }
     turns.push(text("done"));
     turns
@@ -771,7 +823,7 @@ fn tool_result_succeeded(turn: &serde_json::Value, output: &serde_json::Value) -
     match turn["name"].as_str().unwrap() {
         "read" => output == "alpha beta\n",
         "write" | "edit" => output["file"].is_object(),
-        "bash" => output["exit_code"] == 0 && output["success"] == true,
+        name if name == SHELL => output["exit_code"] == 0 && output["success"] == true,
         "url_fetch" => output["content"] == SOURCE,
         "fs" => {
             let command = arguments["command"].as_str().unwrap();
@@ -844,23 +896,20 @@ fn merge_recovery(case: &str) -> Vec<serde_json::Value> {
         fs("commit -m base"),
         fs("branch topic"),
         fs("switch topic"),
-        call("bash", json!({"command":"printf 'theirs\\n' > calc.py"})),
+        write_file("calc.py", "theirs\n"),
         fs("commit -m theirs"),
         fs("switch main"),
-        call("bash", json!({"command":"printf 'ours\\n' > calc.py"})),
+        write_file("calc.py", "ours\n"),
         fs("commit -m ours"),
         fs("merge topic"),
     ];
     if case == "merge-continue" {
-        turns.push(call(
-            "bash",
-            json!({"command":"printf 'resolved\\n' > calc.py"}),
-        ));
+        turns.push(write_file("calc.py", "resolved\n"));
         turns.push(fs("merge --continue"));
     } else {
         turns.push(fs("merge --abort"));
     }
-    turns.push(call("bash", json!({"command":"cat calc.py"})));
+    turns.push(print_files(&["calc.py"]));
     turns.push(fs("status"));
     turns.push(text("done"));
     turns
@@ -911,7 +960,7 @@ fn child_merge() -> Vec<serde_json::Value> {
         ),
         child_call("archive"),
         fs("merge agents/kid"),
-        call("bash", json!({"command": "cat child.txt parent.txt"})),
+        print_files(&["child.txt", "parent.txt"]),
         text("done"),
     ]
 }
@@ -943,8 +992,7 @@ fn covers_child_merge(code: u8, used: usize, requests: &[String]) {
         outputs[2]
     );
     assert_eq!(
-        outputs[3]["stdout"],
-        "child\nparent\n",
+        outputs[3]["stdout"], "child\nparent\n",
         "merged tree lacks either side: {}",
         outputs[3]
     );
