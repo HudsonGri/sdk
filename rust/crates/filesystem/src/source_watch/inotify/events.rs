@@ -411,11 +411,12 @@ impl Shared {
                     while let Some((_, watched)) = watches.get(at) {
                         work.started_io(ITEM)?;
                         if *watched == descriptor {
-                            let shifted = (watches.len() - at - 1)
+                            let shifted = usize::from(at + 1 != watches.len())
                                 .checked_mul(std::mem::size_of::<(PathBuf, i32)>())
                                 .ok_or(WorkError::Overflow)?;
+                            let slots = watches.prepare_remove(at, work)?;
                             work.started_io(copied(shifted as u64))?;
-                            let (path, _) = watches.remove(at);
+                            let (path, _) = watches.remove(at, slots);
                             let bytes = path.capacity() as u64;
 
                             drop(path);

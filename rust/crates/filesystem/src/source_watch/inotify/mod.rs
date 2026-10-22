@@ -23,8 +23,10 @@ mod events;
 mod hub;
 mod lifecycle;
 mod registration;
+mod registry;
 use cleanup::{clear_records, close, close_component, stop_custody};
 use registration::{owned, proc_fd_path, watch_ancestors};
+use registry::Registrations;
 
 const READ: WorkCounters = WorkCounters {
     backend_read_operations: 1,
@@ -87,7 +89,7 @@ struct Shared {
     retained_variable_bytes: AtomicU64,
     reading: Mutex<RawReads>,
     reading_changed: Condvar,
-    watches: Mutex<Vec<(PathBuf, i32)>>,
+    watches: Mutex<Registrations>,
     stopping: AtomicBool,
     completed: AtomicBool,
     controller_alive: AtomicBool,

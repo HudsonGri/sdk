@@ -1,18 +1,5 @@
 use super::*;
 
-pub(super) fn contains_path_with_work<W: SourceDemandReadWork>(
-    watches: &[(PathBuf, i32)],
-    path: &Path,
-    work: &mut W,
-) -> Result<bool, DemandError> {
-    for (candidate, _) in watches {
-        work.with_original_leaf(|work| work.started_io(ITEM))?;
-        if candidate == path {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
 pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     watches: &mut Vec<(PathBuf, i32)>,
     path: &Path,
@@ -408,18 +395,28 @@ impl Shared {
                         close_component(previous, work)?;
                     }
                     added = false;
-                    if contains_path_with_work(&watches, &prefix, work)? {
+                    if watches.contains(&prefix, work)? {
                         continue;
                     }
                     self.reserve_record_cleanup(work)?;
-                    let owned = match prepare_insert_with_work(
-                        &mut watches,
-                        &prefix,
-                        work,
-                        &self.retained_variable_bytes,
-                        &self.ownership,
-                    ) {
-                        Ok(owned) => owned,
+                    let prepared = (|| {
+                        let slot = watches.prepare(
+                            &prefix,
+                            work,
+                            &self.retained_variable_bytes,
+                            &self.ownership,
+                        )?;
+                        let owned = prepare_insert_with_work(
+                            &mut watches.records,
+                            &prefix,
+                            work,
+                            &self.retained_variable_bytes,
+                            &self.ownership,
+                        )?;
+                        Ok::<_, DemandError>((owned, slot))
+                    })();
+                    let (owned, slot) = match prepared {
+                        Ok(prepared) => prepared,
                         Err(error) => {
                             self.cancel_record_cleanup(work);
                             return Err(error);
@@ -436,7 +433,7 @@ impl Shared {
                     ) {
                         Ok(descriptor) => {
                             let capacity = owned.capacity() as u64;
-                            watches.push((owned, descriptor));
+                            watches.insert(slot, owned, descriptor);
 
                             self.retained_variable_bytes
                                 .fetch_add(capacity, Ordering::AcqRel);
@@ -511,18 +508,19 @@ impl Shared {
                 }
             }
             let copied = WorkCounters {
-                bytes_copied: ((watches.len() - at - 1) as u64)
+                bytes_copied: u64::from(at + 1 != watches.len())
                     .checked_mul(size_of::<(PathBuf, i32)>() as u64)
                     .ok_or(WorkError::Overflow)?,
                 ..WorkCounters::default()
             };
+            let slots = watches.prepare_remove(at, work)?;
             work.with_original_leaf(|work| work.work.admit(&copied, &work.budget))?;
             if !shared {
                 work.with_original_leaf(|work| work.started_io(WRITE))?;
                 hub::hub()?.remove(self.subscriber, descriptor, hub::Interest::All)?;
             }
             work.record(copied)?;
-            let (removed, _) = watches.remove(at);
+            let (removed, _) = watches.remove(at, slots);
             let bytes = removed.capacity() as u64;
 
             drop(removed);
