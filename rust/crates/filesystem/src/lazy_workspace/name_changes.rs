@@ -73,7 +73,11 @@ impl SourceChangeSink for NameSignal {
             for change in changes {
                 match change {
                     SourceChange::Everything | SourceChange::Unconfirmed => pending.mark_all(),
-                    SourceChange::Name(path) => {
+                    SourceChange::Name(path) | SourceChange::Entry(path) => {
+                        let policy = path.components().last().is_some_and(is_ignore_policy);
+                        if matches!(change, SourceChange::Entry(_)) && !policy {
+                            continue;
+                        }
                         if pending.all {
                             continue;
                         }
@@ -98,6 +102,20 @@ impl SourceChangeSink for NameSignal {
                             .map_err(DemandError::from)?;
                         text.remove(0);
                         let bytes = text.capacity() as u64;
+                        if policy {
+                            if let Some(separator) = text.rfind('/') {
+                                // Rebuild the affected policy's directory so
+                                // both newly ignored and newly admitted names
+                                // are replaced without touching its siblings.
+                                text.truncate(separator);
+                            } else {
+                                Owned::new(text, allocation, bytes)
+                                    .retire(accounting)
+                                    .map_err(DemandError::from)?;
+                                pending.mark_all();
+                                continue;
+                            }
+                        }
                         let text = Owned::new(text, allocation, bytes);
                         if pending.paths.as_ref().is_some_and(|paths| {
                             paths.value.iter().any(|path| path.value == text.value)
@@ -130,12 +148,7 @@ impl SourceChangeSink for NameSignal {
                             paths.value.push(text);
                         }
                     }
-                    SourceChange::Entry(path)
-                        if path.components().last().is_some_and(is_ignore_policy) =>
-                    {
-                        pending.mark_all()
-                    }
-                    SourceChange::Entry(_) | SourceChange::Node(_) => {}
+                    SourceChange::Node(_) => {}
                 }
             }
             drop(pending);
@@ -260,6 +273,46 @@ mod tests {
             )
             .unwrap();
         assert!(signal.pending.lock().unwrap().all);
+    }
+
+    #[test]
+    fn name_search_native_nested_policy_edits_only_dirty_their_directory() {
+        for windows in [false, true] {
+            for created in [false, true] {
+                let (revision, _receiver) = watch::channel(0);
+                let signal = NameSignal {
+                    revision,
+                    pending: Arc::new(Mutex::new(PendingNames::default())),
+                };
+                let policy = NamespacePath::new(
+                    ["nested", ".gitignore"]
+                        .into_iter()
+                        .map(|name| path(name, windows).components()[0].clone())
+                        .collect(),
+                    crate::model::VolumeLimits::default(),
+                )
+                .unwrap();
+                let event = if created {
+                    SourceChange::Name(policy)
+                } else {
+                    SourceChange::Entry(policy)
+                };
+                signal
+                    .source_changed(
+                        &[event],
+                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                    )
+                    .unwrap();
+                let delta = std::mem::take(&mut *signal.pending.lock().unwrap()).into_delta();
+                assert!(!delta.all);
+                assert_eq!(delta.paths, ["nested".into()].into());
+                // Negative control: the old policy handling discarded every
+                // known path and forced whole-volume rediscovery.
+                let mut previous = PendingNames::default();
+                previous.mark_all();
+                assert!(previous.into_delta().all);
+            }
+        }
     }
 
     #[test]
