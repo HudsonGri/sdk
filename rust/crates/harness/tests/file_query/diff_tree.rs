@@ -171,13 +171,29 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
         .stat("/zz-changed", BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
+    // Semantic records and rendered paths have separate bounds: the host also
+    // changes directory/metadata records when replacing this one visible file.
+    let changes = base
+        .diff_to(&current, LIMITS.changes, BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value
+        .0;
+    let paths = changes
+        .changed_paths(4, BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value
+        .0;
+    assert_eq!(paths.len(), 1);
     // Negative control: an output bound used as a cold scan bound cannot find it.
     let old = current
-        .paths_for_file_id(stat.file_id, 4, BOUNDARY_BUDGET, &cancel)
+        .paths_for_file_id(stat.file_id, LIMITS.changes, BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
     assert!(old.is_empty());
-    let mut stream = fixture.source.observe_diff(base.id(), 4).await?;
+    let mut stream = fixture
+        .source
+        .observe_diff(base.id(), LIMITS.changes)
+        .await?;
     let snapshot = stream.next().await.ok_or("snapshot")??;
     assert_eq!(snapshot.paths.len(), 1);
     assert_eq!(snapshot.paths[0].path, "zz-changed");
@@ -192,7 +208,12 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
             ..BOUNDARY_BUDGET
         },
     )?;
-    assert!(limited.observe_diff(base.id(), 4).await.is_err());
+    assert!(
+        limited
+            .observe_diff(base.id(), LIMITS.changes)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
