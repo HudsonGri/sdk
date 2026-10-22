@@ -416,6 +416,53 @@ fn native_access_rename_checks_source_and_destination() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    for action in [
+        Action::Create,
+        Action::Rename,
+        Action::Delete,
+        Action::Admin,
+    ] {
+        let source = sources(
+            FilesystemProfile::Portable,
+            ConsistencyMode::TrackingSafe,
+            MountPublication::Manual,
+        )?
+        .0;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+        source.create_directory(&native_test_path("nested"), metadata(), &work)?;
+        seed(&source, "nested/from", b"retained")?;
+        source.sync()?;
+        match action {
+            Action::Create => {
+                source.create_file(&native_test_path("nested/new"), metadata(), None, &work)?;
+            }
+            Action::Rename => source.rename(
+                &native_test_path("nested/from"),
+                &native_test_path("nested/to"),
+                false,
+                &work,
+            )?,
+            Action::Delete => source.remove(&native_test_path("nested/from"), None, &work)?,
+            Action::Admin => source.hard_link(
+                &native_test_path("nested/from"),
+                &native_test_path("nested/link"),
+                &work,
+            )?,
+            _ => unreachable!(),
+        }
+        let policy = crate::access::fixtures::denied(action, "**");
+        super::policy_refresh::publish(&source, &policy)?;
+        assert!(
+            source.sync().is_err(),
+            "native mutation published across policy revocation: {action:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn native_path_reads_and_enumeration_bind_their_actual_policy_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
