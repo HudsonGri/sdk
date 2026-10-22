@@ -88,11 +88,8 @@ fn poll_until_entered<T>(
                 .poll(&mut Context::from_waker(&waker))
                 .is_pending()
         );
-        loop {
-            match events.recv().map_err(io::Error::other)? {
-                Progress::Entered => return Ok(()),
-                Progress::Woken => break,
-            }
+        if let Progress::Entered = events.recv().map_err(io::Error::other)? {
+            return Ok(());
         }
     }
 }

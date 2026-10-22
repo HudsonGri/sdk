@@ -237,7 +237,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     match (case.expect.outcome, output) {
         (super::outcome::ExpectedOutcome::Succeeded, Ok(output))
             if output.text == case.expect.text
-                && output.steps as usize == case.completed_steps() => {}
+                && output.steps as usize == completed_steps(case) => {}
         (
             super::outcome::ExpectedOutcome::Failed,
             Err(acyclic_harness::Error::TaskFailed { task, .. }),
@@ -358,4 +358,11 @@ pub(super) fn check_request(
         }
     }
     Ok(())
+}
+
+/// Responses that complete a model step; refused or stalled ones fail or are redelivered.
+fn completed_steps(case: &ProviderCase) -> usize {
+    (0..case.responses.len())
+        .filter(|&index| case.completes(index))
+        .count()
 }
