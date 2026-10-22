@@ -122,10 +122,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             if !resolution_matches_conflict(&conflict.key, resolution) {
                 return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
             }
+            // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
             if let ConflictKey::File(file_id) = conflict.key
-                && let Some(resolution) = self
-                    .replaced_conflict_resolution(file_id, conflict.path.as_deref(), resolution)
-                    .await?
+                && let Some(resolution) = crate::heap_future::in_heap_unmetered(|| {
+                    self.replaced_conflict_resolution(file_id, conflict.path.as_deref(), resolution)
+                })
+                .await?
             {
                 resolutions.insert(MergeConflict::File(file_id), resolution);
                 continue;
