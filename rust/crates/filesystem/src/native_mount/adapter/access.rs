@@ -373,7 +373,7 @@ where
 
 pub(super) fn visible_name(
     parent: crate::access::PreparedPath<'_>,
-    name: &crate::LogicalName,
+    name: &LogicalName,
     now: u64,
 ) -> Result<bool, MountSourceError> {
     Ok(parent
