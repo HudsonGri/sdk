@@ -180,7 +180,11 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
     assert!(
         harness
             .input_publisher()?
-            .observe_staged_once(operation, harness.limits.file_bytes, None, None)?
+            .observe_staged_once(
+                operation,
+                harness.limits.file_bytes,
+                crate::conversation::ContentAccess::default()
+            )?
             .await?
             .0
             .is_none()
@@ -395,7 +399,11 @@ async fn invalid_instructions_reject_before_input_publication_or_model_dispatch(
         assert!(
             harness
                 .input_publisher()?
-                .observe_staged_once(operation, harness.limits.file_bytes, None, None)?
+                .observe_staged_once(
+                    operation,
+                    harness.limits.file_bytes,
+                    crate::conversation::ContentAccess::default()
+                )?
                 .await?
                 .0
                 .is_none()

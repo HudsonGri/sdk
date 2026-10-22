@@ -89,8 +89,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("admitted-content")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let orphan = host
@@ -104,8 +103,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("unpublished-content")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let attached = AgentId::from_bytes([33; 16]);
@@ -193,8 +191,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         64,
         &IdempotencyKey::new("advanced-head")?,
         None,
-        None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     let retried = host
@@ -208,8 +205,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("admitted-content")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(retried, admitted);
@@ -224,8 +220,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("admitted-content")?,
             None,
-            None,
-            None
+            acyclic_harness::conversation::ContentAccess::default()
         )
         .await
         .is_err()
@@ -243,8 +238,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("unread-original")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     host.put_content(
@@ -257,8 +251,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         64,
         &IdempotencyKey::new("unread-overwrite")?,
         None,
-        None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     drop(host);
@@ -293,8 +286,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             64,
             &IdempotencyKey::new("unread-original")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(retried, unread);

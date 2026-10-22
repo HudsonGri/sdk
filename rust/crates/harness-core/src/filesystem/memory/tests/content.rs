@@ -18,12 +18,12 @@ proptest::proptest! {
             let key = IdempotencyKey::new(key)?;
             let original = storage.host.put_content(
                 &storage.volume, &write, "original", &body, "application/octet-stream",
-                "original", 1024, &key, None, None, None,
+                "original", 1024, &key, None, crate::conversation::ContentAccess::default(),
             ).await?;
             storage.host.put_content(
                 &storage.volume, &write, "original", b"replacement", "text/plain",
                 "replacement", 1024, &IdempotencyKey::new("later-head/edit")?,
-                None, None, None,
+                None, crate::conversation::ContentAccess::default(),
             ).await?;
             assert_eq!(storage.host.content_for_operation(
                 &storage.volume, &write, &key, "original", 1024, crate::conversation::ContentAccess::default(),
@@ -74,7 +74,14 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
     let (recovered, _recovered_hold) = storage
         .publisher
-        .observe_staged_once(operation, 1024, None, Some(&observed_io))?
+        .observe_staged_once(
+            operation,
+            1024,
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&observed_io),
+            },
+        )?
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
     let read_io =
@@ -148,7 +155,14 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert!(
         storage
             .publisher
-            .observe_staged_once(denied_operation, 1024, None, Some(&observed_io))?
+            .observe_staged_once(
+                denied_operation,
+                1024,
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&observed_io)
+                }
+            )?
             .await?
             .0
             .is_none()
@@ -460,8 +474,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 1024,
                 &key,
                 None,
-                None,
-                Some(&path_io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&path_io)
+                }
             )
             .await,
         Err(Error::NativeBoundary {
@@ -510,8 +526,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             1024,
             &key,
             None,
-            None,
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )
         .await?;
     let staged_hold = io.take_native_custody(staged.logical_owned_bytes()?)?;
@@ -527,8 +545,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             1024,
             &IdempotencyKey::new("head-edit")?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     let recovered = storage
@@ -568,8 +585,10 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 1024,
                 &key,
                 None,
-                None,
-                Some(&io)
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io)
+                }
             )
             .await
             .is_err()

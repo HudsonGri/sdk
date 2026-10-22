@@ -56,49 +56,13 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
         } else {
             // Deliberately run the former unfenced publication path. The same
             // checker below must reject the observable policy change.
-            let pinned = workspace
-                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await?
-                .value;
-            workspace
-                .fork::<_, _, acyclic_fs::WorkspaceError>(
-                    target.storage_name(&mut None)?,
-                    acyclic_fs::ForkOptions::from_generation(
-                        pinned,
-                        acyclic_fs::IdempotencyKey::new(),
-                    ),
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                    &mut |_| {
-                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
-                        }))
-                    },
-                )
-                .await?;
+            unchecked_fork(&workspace, &target).await?;
         }
         Ok::<_, Box<dyn Error>>(())
     };
     let publish = async {
         entered.await?;
-        let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY)?;
-        policy.version += 1;
-        let mut deny = policy
-            .layers
-            .first_mut()
-            .and_then(|layer| layer.first_mut())
-            .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?
-            .clone();
-        deny.id = "revoked-during-fork".into();
-        deny.effect = Effect::Deny;
-        deny.actions = [action].into_iter().collect();
-        policy
-            .layers
-            .first_mut()
-            .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
-            .push(deny);
+        let policy = revoked_policy("revoked-during-fork", action)?;
         let result = fixture.publish_policy(policy.clone()).await;
         release
             .send(())
@@ -234,4 +198,39 @@ proptest! {
         tokio::runtime::Builder::new_current_thread().build()?.block_on(expiring_fork(offset))
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
+}
+
+impl objects::CountingObjects {
+    fn pause_write(
+        &self,
+        kind: acyclic_fs::ObjectKind,
+    ) -> Result<objects::PauseChannels, acyclic_fs::ObjectStoreError> {
+        self.pause_io(kind, true)
+    }
+}
+
+async fn unchecked_fork(
+    workspace: &acyclic_fs::Workspace<acyclic_fs::MemoryAuthorityBackend, objects::CountingObjects>,
+    target: &VolumeRef,
+) -> Result<(), Box<dyn Error>> {
+    let pinned = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    workspace
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
+            target.storage_name(&mut None)?,
+            acyclic_fs::ForkOptions::from_generation(pinned, acyclic_fs::IdempotencyKey::new()),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?;
+    Ok(())
 }

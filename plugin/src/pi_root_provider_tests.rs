@@ -1239,8 +1239,7 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
             "result.json",
             fixture.owner.policy().maximum_payload_bytes,
             &IdempotencyKey::new("different-output-operation").unwrap(),
-            None,
-            None,
+            None, acyclic_harness::conversation::ContentAccess::default(),
         )
         .await
         .unwrap();

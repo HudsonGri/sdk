@@ -122,8 +122,7 @@ where
             1024,
             &IdempotencyKey::new(format!("scratch-{level}"))?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let mut capabilities = local_scope

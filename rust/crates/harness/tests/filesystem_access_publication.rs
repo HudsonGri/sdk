@@ -152,7 +152,14 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
         for _ in 0..2 {
             let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
             let result = writer
-                .observe_staged_once(operation, 4096, None, Some(&io))?
+                .observe_staged_once(
+                    operation,
+                    4096,
+                    acyclic_harness::conversation::ContentAccess {
+                        ceiling: None,
+                        io: Some(&io),
+                    },
+                )?
                 .await;
             assert_eq!(result.is_ok(), !denied);
             drop(result);

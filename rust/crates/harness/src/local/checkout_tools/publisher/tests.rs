@@ -246,7 +246,11 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     // the tool again. It must repair the checkout as well as return its ref.
     assert_eq!(
         publisher
-            .observe_staged_once(operation, 1024, None, None)?
+            .observe_staged_once(
+                operation,
+                1024,
+                crate::conversation::ContentAccess::default()
+            )?
             .await?
             .0
             .as_ref(),
@@ -531,7 +535,14 @@ fn checkout_publication_preserves_caller_ceilings() {
                             replacement.as_ref().err()
                         );
                         let observed = publisher
-                            .observe_staged_once(operation, 1024, Some(&ceiling), None)?
+                            .observe_staged_once(
+                                operation,
+                                1024,
+                                crate::conversation::ContentAccess {
+                                    ceiling: Some(&ceiling),
+                                    io: None,
+                                },
+                            )?
                             .await;
                         assert_eq!(observed.is_ok(), allowed, "{:?}", observed.as_ref().err());
                         for once in [false, true] {
@@ -744,7 +755,14 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
     );
     assert!(matches!(
         publisher
-            .observe_staged_once(OperationId::new(), 1024, Some(&restricted), None)?
+            .observe_staged_once(
+                OperationId::new(),
+                1024,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&restricted),
+                    io: None
+                }
+            )?
             .await,
         Err(Error::FilesystemAccessConfiguration(
             "local checkout publication"

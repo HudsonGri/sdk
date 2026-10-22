@@ -48,8 +48,7 @@ async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), B
             65536,
             &IdempotencyKey::new("coarse-blob")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let cancellation = CancellationToken::new();
@@ -103,22 +102,7 @@ async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), B
     };
     let publish = async {
         entered.await?;
-        let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY)?;
-        policy.version += 1;
-        let mut deny = policy
-            .layers
-            .first_mut()
-            .and_then(|layer| layer.first_mut())
-            .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?
-            .clone();
-        deny.id = "revoke-during-coarse-read".into();
-        deny.effect = Effect::Deny;
-        deny.actions = [Action::Read].into_iter().collect();
-        policy
-            .layers
-            .first_mut()
-            .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
-            .push(deny);
+        let policy = revoked_policy("revoke-during-coarse-read", Action::Read)?;
         if revoke {
             fixture.publish_policy(policy).await?;
         }

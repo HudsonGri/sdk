@@ -278,8 +278,7 @@ impl Fixture {
                 1_000_000,
                 &IdempotencyKey::new(key)?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         Ok(())

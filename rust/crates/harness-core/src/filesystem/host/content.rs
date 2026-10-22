@@ -14,13 +14,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         key: &IdempotencyKey,
         expected_generation: Option<&GenerationRef>,
-        ceiling: Option<&crate::Capabilities>,
-        io: Option<&PreparationIo>,
+        access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<FileRef>
     where
         A: 'static,
         O: 'static,
     {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         if expected_generation.is_some() {
             crate::tool::edit::validate_edit_bound(maximum_bytes)?;
         }
@@ -134,8 +135,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 maximum_bytes,
                 idempotency_key,
                 None,
-                None,
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await?;
         Ok(ReferencedAttachments::Manifest {

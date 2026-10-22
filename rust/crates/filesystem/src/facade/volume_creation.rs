@@ -13,6 +13,16 @@ pub struct VolumeInitialization<'a> {
     pub access_policy: Option<&'a [u8]>,
 }
 
+impl<'a> VolumeInitialization<'a> {
+    /// Select immutable volume semantics and the initial owner policy.
+    pub const fn new(config: VolumeConfig, access_policy: Option<&'a [u8]>) -> Self {
+        Self {
+            config,
+            access_policy,
+        }
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a fresh volume and its authenticated empty generation.
     pub async fn create_volume(

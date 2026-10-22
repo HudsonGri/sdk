@@ -12,7 +12,8 @@ pub(super) async fn publish_policy<O: AsyncObjectStore + 'static>(
         serde_json::from_slice(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY)?;
     policy.version += 1;
     if read || list {
-        let mut deny = policy.layers[0][0].clone();
+        let layer = policy.layers.first_mut().ok_or("missing fixture layer")?;
+        let mut deny = layer.first().ok_or("missing fixture rule")?.clone();
         deny.id = "restricted-query".into();
         deny.effect = Effect::Deny;
         deny.actions = [(read, Action::Read), (list, Action::List)]
@@ -20,7 +21,7 @@ pub(super) async fn publish_policy<O: AsyncObjectStore + 'static>(
             .filter_map(|(denied, action)| denied.then_some(action))
             .collect();
         deny.resource.path = "plans/**".into();
-        policy.layers[0].push(deny);
+        layer.push(deny);
     }
     let workspace = fixture
         .filesystem

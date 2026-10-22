@@ -9,13 +9,7 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     for kind in 0..5 {
         for revoke in [false, true] {
-            let objects = CountingObjects::default();
-            let filesystem = Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
-                objects.clone(),
-                acyclic_fs::EmbeddedCapabilities::MEMORY,
-            );
-            let fixture = Fixture::with_filesystem(filesystem, objects.reads.clone()).await?;
+            let (objects, fixture) = counted_fixture().await?;
             let content = objects::blob_text(false);
             fixture.write(&[("plans/a.md", Some(&content))]).await?;
             let scope = fixture.issuer.issue(
@@ -75,62 +69,7 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
             } else {
                 acyclic_fs::ObjectKind::BlobChunk
             })?;
-            let read = async {
-                match kind {
-                    0 => reader.read(&file, 65536, None, None)?.await.map(|_| ()),
-                    1 => reader
-                        .read_range(
-                            &file,
-                            acyclic_fs::ByteRange {
-                                offset: 0,
-                                length: 4,
-                            },
-                            None,
-                            None,
-                        )?
-                        .await
-                        .map(|_| ()),
-                    2 => fixture
-                        .host
-                        .read_private_path(
-                            &fixture.volume,
-                            &grant,
-                            "plans/a.md",
-                            Some(&generation),
-                            65536,
-                            acyclic_harness::conversation::ContentAccess::default(),
-                        )
-                        .await
-                        .map(|_| ()),
-                    3 => fixture
-                        .host
-                        .read_private_prefix(
-                            &fixture.volume,
-                            &grant,
-                            "plans/a.md",
-                            &generation,
-                            4,
-                            acyclic_harness::conversation::ContentAccess::default(),
-                        )
-                        .await
-                        .map(|_| ()),
-                    _ => fixture
-                        .host
-                        .list_private_directory(
-                            &fixture.volume,
-                            &grant,
-                            "plans",
-                            acyclic_harness::filesystem::DirectoryOptions {
-                                generation: Some(&generation),
-                                after: None,
-                                maximum_entries: 8,
-                                ceiling: None,
-                            },
-                        )
-                        .await
-                        .map(|_| ()),
-                }
-            };
+            let read = read_kind(kind, &reader, &fixture, &file, &grant, &generation);
             futures::pin_mut!(read);
             let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
                 let pending = match futures::future::select(read, entered).await {
@@ -166,4 +105,80 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
         }
     }
     Ok(())
+}
+
+async fn read_kind(
+    kind: u8,
+    reader: &FilesystemContentVerifier<MemoryAuthorityBackend, CountingObjects>,
+    fixture: &Fixture<CountingObjects>,
+    file: &FileRef,
+    grant: &ContentGrant,
+    generation: &acyclic_harness::resources::GenerationRef,
+) -> Result<()> {
+    match kind {
+        0 => reader.read(file, 65536, None, None)?.await.map(|_| ()),
+        1 => reader
+            .read_range(
+                file,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 4,
+                },
+                None,
+                None,
+            )?
+            .await
+            .map(|_| ()),
+        2 => fixture
+            .host
+            .read_private_path(
+                &fixture.volume,
+                grant,
+                "plans/a.md",
+                Some(generation),
+                65536,
+                acyclic_harness::conversation::ContentAccess::default(),
+            )
+            .await
+            .map(|_| ()),
+        3 => fixture
+            .host
+            .read_private_prefix(
+                &fixture.volume,
+                grant,
+                "plans/a.md",
+                generation,
+                4,
+                acyclic_harness::conversation::ContentAccess::default(),
+            )
+            .await
+            .map(|_| ()),
+        _ => fixture
+            .host
+            .list_private_directory(
+                &fixture.volume,
+                grant,
+                "plans",
+                acyclic_harness::filesystem::DirectoryOptions {
+                    generation: Some(generation),
+                    after: None,
+                    maximum_entries: 8,
+                    ceiling: None,
+                },
+            )
+            .await
+            .map(|_| ()),
+    }
+}
+
+async fn counted_fixture()
+-> std::result::Result<(CountingObjects, Fixture<CountingObjects>), Box<dyn std::error::Error>> {
+    let objects = CountingObjects::default();
+    let filesystem = Fs::new(
+        acyclic_fs::StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+        objects.clone(),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
+    let fixture = Fixture::with_filesystem(filesystem, objects.reads.clone()).await?;
+    Ok((objects, fixture))
 }

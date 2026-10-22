@@ -664,10 +664,7 @@ async fn native_lazy_workspace_lists_windows_source_directories()
         "ntfs-native-listing",
         demand,
         MemoryLazyWorkspaceStore::default(),
-        acyclic_fs::VolumeInitialization {
-            config: VolumeConfig::native(Lifecycle::Durable),
-            access_policy: None,
-        },
+        acyclic_fs::VolumeInitialization::new(VolumeConfig::native(Lifecycle::Durable), None),
         acyclic_fs::OperationId::new(),
         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
     )

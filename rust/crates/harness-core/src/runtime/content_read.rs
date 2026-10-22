@@ -533,8 +533,10 @@ impl TaskContext {
             .observe_staged_once(
                 operation_id,
                 scope.limits.file_bytes,
-                Some(scope.grants()),
-                io,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(scope.grants()),
+                    io,
+                },
             )?
             .await?;
         if io.is_some() {

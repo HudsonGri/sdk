@@ -192,8 +192,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         1024,
         &IdempotencyKey::new("root-skill")?,
         None,
-        None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     let builtin_writer = ContentGrant::verify(
@@ -215,8 +214,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             1024,
             &IdempotencyKey::new("builtin")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let root_workspace = workspace_ref(provider.clone(), &root.storage_name(&mut None)?)?;
@@ -313,8 +311,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         1024,
         &IdempotencyKey::new("edit-skill")?,
         None,
-        None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     assert_eq!(
@@ -369,8 +366,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         1024,
         &IdempotencyKey::new("late-skill")?,
         None,
-        None,
-        None,
+        acyclic_harness::conversation::ContentAccess::default(),
     )
     .await?;
     assert!(matches!(

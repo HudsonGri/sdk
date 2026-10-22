@@ -387,7 +387,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             assert!(matches!(
                 result,
                 Err(Error::FilesystemAccessConfiguration("child checkout"))
-            ))
+            ));
         };
         check_ceiling(&denied);
         assert!(

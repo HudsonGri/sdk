@@ -323,7 +323,12 @@ impl CommandCatalog {
                 }
             }
         }
-        for skill in discover_skills(reader, skill_roots, "SKILL.md", &mut work).await? {
+        catalog.add_skills(discover_skills(reader, skill_roots, "SKILL.md", &mut work).await?)?;
+        Ok(catalog)
+    }
+
+    fn add_skills(&mut self, skills: Vec<SkillSpec>) -> Result<()> {
+        for skill in skills {
             let name = skill.name.to_ascii_lowercase();
             let spec = CommandSpec {
                 name: name.clone(),
@@ -332,13 +337,13 @@ impl CommandCatalog {
                 arguments: CommandArguments::Text,
                 action: CommandAction::Skill { skill },
             };
-            if catalog.lookup(&name).is_some() {
+            if self.lookup(&name).is_some() {
                 return Err(Error::Conflict(format!("skill/command collision: {name}")));
             }
-            let _ = catalog.names.insert(&name, &name);
-            catalog.commands.insert(name, spec);
+            let _ = self.names.insert(&name, &name);
+            self.commands.insert(name, spec);
         }
-        Ok(catalog)
+        Ok(())
     }
 
     async fn add_prompt(

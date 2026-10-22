@@ -81,14 +81,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "volume fork has no work context",
             )
         })?;
-        source.validate(&mut Some(&mut io.history_io()))?;
-        child.validate(&mut Some(&mut io.history_io()))?;
-        if source.provider() != &host.provider
-            || child.provider() != &host.provider
-            || source == child
-        {
-            return Err(io.invalid("volume fork has a foreign or identical destination"));
-        }
+        validate_fork_volumes(source, child, &host.provider, io)?;
         let reference = fork_preparer_io::content_workspace(&host.provider, source, Some(io))?;
         let workspace = host.open(&reference, Some(io)).await?;
         let pinned = host.generation(&workspace, selected, Some(io)).await?;
@@ -153,6 +146,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map_err(map_error)??;
         io.remaining()?;
+        let observed = host.fork_observation(&forked, name, operation, io).await?;
+        if io.original_native_work().is_none()
+            && let Some(task) = preparation
+        {
+            task.verify(false, Some(io))?.await?;
+        }
+        Ok(observed)
+    }
+
+    async fn fork_observation(
+        &self,
+        forked: &acyclic_fs::Workspace<A, O>,
+        name: String,
+        operation: acyclic_fs::IdempotencyKey,
+        io: &PreparationIo,
+    ) -> Result<WorkspaceObservation> {
         let initial = io
             .sdk(
                 forked
@@ -169,17 +178,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer_io::retain(&initial, Some(io)).await?;
         let observed = WorkspaceObservation {
             workspace: WorkspaceRef::new(
-                host.provider.clone_with_io(io)?,
+                self.provider.clone_with_io(io)?,
                 name.into_bytes(),
                 None,
             )?,
-            generation: fork_preparer_io::generation_ref(&host.provider, initial.id(), Some(io))?,
+            generation: fork_preparer_io::generation_ref(&self.provider, initial.id(), Some(io))?,
         };
-        if io.original_native_work().is_none()
-            && let Some(task) = preparation
-        {
-            task.verify(false, Some(io))?.await?;
-        }
         Ok(observed)
     }
 
@@ -499,4 +503,18 @@ fn native_owned_bytes_failure(
             reason: "native owned byte buffer violated its fixed initialized ownership invariant",
         },
     }
+}
+
+fn validate_fork_volumes(
+    source: &VolumeRef,
+    child: &VolumeRef,
+    provider: &ProviderRef,
+    io: &PreparationIo,
+) -> Result<()> {
+    source.validate(&mut Some(&mut io.history_io()))?;
+    child.validate(&mut Some(&mut io.history_io()))?;
+    if source.provider() != provider || child.provider() != provider || source == child {
+        return Err(io.invalid("volume fork has a foreign or identical destination"));
+    }
+    Ok(())
 }

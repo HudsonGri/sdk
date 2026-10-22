@@ -131,8 +131,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             1_024,
             &IdempotencyKey::new("root-message")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let root_attachment = host
@@ -146,8 +145,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             1_024,
             &IdempotencyKey::new("root-attachment")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let root_manifest_bytes = serde_json::to_vec(&vec![Attachment {
@@ -166,8 +164,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             1_024,
             &IdempotencyKey::new("root-manifest")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let previous_attachment = root_attachment.clone();
@@ -217,8 +214,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             1_024,
             &IdempotencyKey::new("root-project-reference")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     project_head = host.resolve(&project_head.workspace, None).await?;
@@ -250,8 +246,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             1_024,
             &IdempotencyKey::new("root-shared-reference")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     aggregate

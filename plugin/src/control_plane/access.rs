@@ -48,12 +48,16 @@ mod tests {
             serde_json::from_slice(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY)
                 .map_err(display)?;
         policy.version += 1;
-        let mut deny = policy.layers[0][0].clone();
+        let layer = policy
+            .layers
+            .first_mut()
+            .ok_or("missing fixture policy layer")?;
+        let mut deny = layer.first().ok_or("missing fixture policy rule")?.clone();
         deny.id = "hidden".into();
         deny.effect = Effect::Deny;
         deny.actions = [Action::Read, Action::List].into_iter().collect();
         deny.resource.path = "secrets/**".into();
-        policy.layers[0].push(deny);
+        layer.push(deny);
         let cancel = CancellationToken::new();
         let mut checkout = workspace
             .checkout(

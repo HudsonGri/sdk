@@ -111,7 +111,7 @@ proptest! {
         refuse_dfa in any::<bool>(),
         folded in any::<bool>(),
     ) {
-        let (policy, capability) = input(&pattern)?;
+        let (policy, capability) = input(&pattern).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
         let caller = caller();
         let context = Context { now: 10, approvals: 0 };
         let mut resource = resource();

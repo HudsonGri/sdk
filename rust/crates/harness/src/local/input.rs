@@ -61,8 +61,7 @@ impl LocalHarness {
                     .observe_staged_once(
                         prompt_operation(operation),
                         self.limits.file_bytes,
-                        None,
-                        None,
+                        crate::conversation::ContentAccess::default(),
                     )?
                     .await?;
                 if let Some(saved) = saved {
@@ -128,8 +127,7 @@ impl LocalHarness {
             .observe_staged_once(
                 prompt_operation(operation),
                 self.limits.file_bytes,
-                None,
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         let Some(retained) = retained else {
@@ -258,7 +256,11 @@ impl ComposerInput {
         let path = format!("inputs/{operation}.resolution.json");
         let reader = Arc::clone(&self.reader);
         let (saved, _) = publisher
-            .observe_staged_once(identity, self.maximum_bytes, None, None)?
+            .observe_staged_once(
+                identity,
+                self.maximum_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         if let Some(saved) = saved {
             if saved.path() != path {

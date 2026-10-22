@@ -8,6 +8,20 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    async fn verify_summary_owner(&self, io: Option<&PreparationIo>) -> Result<()> {
+        if let Some((owner, _)) = &self.owner {
+            owner
+                .verify_read_access(
+                    &mut io
+                        .map(PreparationIo::history_io)
+                        .as_mut()
+                        .map(|work| work as &mut dyn crate::store::HistoryIo),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn authenticate_summary_with_io(
         &self,
         file: &FileRef,
@@ -64,16 +78,7 @@ where
             let path_hold = io
                 .map(|io| io.guard_owned((retry.as_str().len() + path.capacity()) as u64))
                 .transpose()?;
-            if let Some((owner, _)) = &self.owner {
-                owner
-                    .verify_read_access(
-                        &mut io
-                            .map(PreparationIo::history_io)
-                            .as_mut()
-                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                    )
-                    .await?;
-            }
+            self.verify_summary_owner(io).await?;
             // Only the original harness upload receipt authenticates this
             // provenance. A file at the same mutable Head path is insufficient.
             let Some((provenance, Some(bytes))) = self
@@ -101,16 +106,7 @@ where
             let allowed = decode_summary(&bytes, operation, file, io)?;
             drop(bytes);
             drop(provenance);
-            if let Some((owner, _)) = &self.owner {
-                owner
-                    .verify_read_access(
-                        &mut io
-                            .map(PreparationIo::history_io)
-                            .as_mut()
-                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                    )
-                    .await?;
-            }
+            self.verify_summary_owner(io).await?;
             drop(retry);
             drop(path);
             drop(path_hold);
@@ -155,8 +151,9 @@ fn decode_summary(
             allowed
         }
         None => {
-            let summary: crate::context::ContextSummary = crate::contract::json_from_slice(&bytes)
-                .map_err(|error| Error::Storage(error.to_string()))?;
+            let summary: crate::context::ContextSummary =
+                crate::contract::json_from_slice(bytes)
+                    .map_err(|error| Error::Storage(error.to_string()))?;
             payload_matches::<true>(&summary, operation, file)
         }
     };

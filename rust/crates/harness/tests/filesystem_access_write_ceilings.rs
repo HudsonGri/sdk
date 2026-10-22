@@ -76,8 +76,10 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
                     4096,
                     &IdempotencyKey::new("direct")?,
                     None,
-                    Some(&grants),
-                    None
+                    acyclic_harness::conversation::ContentAccess {
+                        ceiling: Some(&grants),
+                        io: None
+                    }
                 )
                 .await
                 .is_err()
@@ -204,8 +206,7 @@ async fn structured_service_grant_is_governed_by_policy_and_its_resource()
                 4096,
                 &IdempotencyKey::new("service")?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await;
         assert_eq!(result.is_ok(), granted, "{result:?}");

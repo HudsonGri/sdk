@@ -103,8 +103,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
             4096,
             &IdempotencyKey::new("retained")?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     host.apply(
@@ -147,8 +146,7 @@ async fn execute(
                 4096,
                 &IdempotencyKey::new("next")?,
                 None,
-                None,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await
         }
@@ -163,8 +161,7 @@ async fn execute(
                 4096,
                 &IdempotencyKey::new("retained")?,
                 None,
-                None,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await
         }

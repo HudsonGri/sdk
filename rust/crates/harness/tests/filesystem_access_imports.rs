@@ -36,8 +36,7 @@ async fn revoked_import(protected: bool, action: Action) -> Result<(), Box<dyn E
             4096,
             &IdempotencyKey::new("new-private")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let selected = GenerationRef::new(
@@ -52,62 +51,22 @@ async fn revoked_import(protected: bool, action: Action) -> Result<(), Box<dyn E
         .prepare_volume_import(&fixture.volume, &source, &selected, &target, &destination)
         .await?;
     let cancel = CancellationToken::new();
-    let source_workspace = fixture
-        .fs
-        .open_workspace(
-            fixture.volume.storage_name(&mut None)?,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        )
-        .await?
-        .value;
-    let target_workspace = fixture
-        .fs
-        .open_workspace(
-            target.storage_name(&mut None)?,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        )
-        .await?
-        .value;
+    let source_workspace = fixture.workspace(&fixture.volume).await?;
+    let target_workspace = fixture.workspace(&target).await?;
     let old_plan = if protected {
         None
     } else {
         Some(
-            source_workspace
-                .join_into(&target_workspace)
-                .plan_at(
-                    &source_workspace
-                        .generation(plan.source_head(), WorkBudget::UNBOUNDED, &cancel)
-                        .await?
-                        .value,
-                    &target_workspace
-                        .head(WorkBudget::UNBOUNDED, &cancel)
-                        .await?
-                        .value,
-                    WorkBudget::UNBOUNDED,
-                    &cancel,
-                )
-                .await?
-                .value,
+            unchecked_join_plan(
+                &source_workspace,
+                &target_workspace,
+                plan.source_head(),
+                &cancel,
+            )
+            .await?,
         )
     };
-    let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY)?;
-    policy.version += 1;
-    let mut deny = policy
-        .layers
-        .first_mut()
-        .and_then(|layer| layer.first_mut())
-        .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?
-        .clone();
-    deny.id = "revoked-after-planning".into();
-    deny.effect = Effect::Deny;
-    deny.actions = [action].into_iter().collect();
-    policy
-        .layers
-        .first_mut()
-        .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
-        .push(deny);
+    let policy = revoked_policy("revoked-after-planning", action)?;
     fixture.publish_policy(policy).await?;
     let options = acyclic_fs::ApplyOptions {
         if_target: plan.target_head(),
@@ -131,31 +90,11 @@ async fn revoked_import(protected: bool, action: Action) -> Result<(), Box<dyn E
             .await
         }
     };
-    let head = target_workspace
-        .head(WorkBudget::UNBOUNDED, &cancel)
-        .await?
-        .value;
-    let read = head
-        .read("/new-private", 4096, WorkBudget::UNBOUNDED, &cancel)
-        .await;
-    if !protected {
-        assert_eq!(
-            read.as_ref()
-                .map_err(|_| "negative control import did not expose copied bytes")?
-                .value
-                .as_ref(),
-            b"new-private"
-        );
-    }
-    assert!(
-        matches!(
-            applied,
-            Err(acyclic_harness::Error::FilesystemAccessConfiguration(_))
-        ) && head.id() == plan.target_head()
-            && read.is_err(),
-        "prepared import ignored source revocation"
+    let denied = matches!(
+        applied,
+        Err(acyclic_harness::Error::FilesystemAccessConfiguration(_))
     );
-    Ok(())
+    check_import_result(&target_workspace, plan.target_head(), protected, denied).await
 }
 
 #[tokio::test]
@@ -244,5 +183,78 @@ async fn imports_reject_expiring_source_authority() -> Result<(), Box<dyn Error>
             "whole-volume copy requires non-expiring authority"
         ))
     ));
+    Ok(())
+}
+
+async fn unchecked_join_plan(
+    source_workspace: &acyclic_fs::Workspace<
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >,
+    target_workspace: &acyclic_fs::Workspace<
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >,
+    source_head: acyclic_fs::GenerationId,
+    cancel: &CancellationToken,
+) -> Result<
+    acyclic_fs::workspace::JoinPlan<
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >,
+    Box<dyn Error>,
+> {
+    Ok(source_workspace
+        .join_into(target_workspace)
+        .plan_at(
+            &source_workspace
+                .generation(source_head, WorkBudget::UNBOUNDED, cancel)
+                .await?
+                .value,
+            &target_workspace
+                .head(WorkBudget::UNBOUNDED, cancel)
+                .await?
+                .value,
+            WorkBudget::UNBOUNDED,
+            cancel,
+        )
+        .await?
+        .value)
+}
+
+async fn check_import_result(
+    target_workspace: &acyclic_fs::Workspace<
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >,
+    target_head: acyclic_fs::GenerationId,
+    protected: bool,
+    denied: bool,
+) -> Result<(), Box<dyn Error>> {
+    let head = target_workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let read = head
+        .read(
+            "/new-private",
+            4096,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await;
+    if !protected {
+        assert_eq!(
+            read.as_ref()
+                .map_err(|_| "negative control import did not expose copied bytes")?
+                .value
+                .as_ref(),
+            b"new-private"
+        );
+    }
+    assert!(
+        denied && head.id() == target_head && read.is_err(),
+        "prepared import ignored source revocation"
+    );
     Ok(())
 }

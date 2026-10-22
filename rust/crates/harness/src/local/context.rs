@@ -65,8 +65,7 @@ impl LocalHarness {
             .observe_staged_once(
                 manifest_operation(operation),
                 self.limits.file_bytes,
-                None,
-                None,
+                crate::conversation::ContentAccess::default(),
             )?
             .await?;
         if let Some(reference) = &reference {

@@ -48,11 +48,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         &'a self,
         operation_id: OperationId,
         maximum_bytes: u64,
-        ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a crate::filesystem::PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
-        self.files
-            .observe_staged_once(operation_id, maximum_bytes, ceiling, io)
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.files.observe_staged_once(
+            operation_id,
+            maximum_bytes,
+            crate::conversation::ContentAccess { ceiling, io },
+        )
     }
 
     fn stage_at<'a>(

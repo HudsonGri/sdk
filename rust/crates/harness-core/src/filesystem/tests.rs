@@ -218,8 +218,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-first")?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     let second = host
@@ -233,8 +232,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-second")?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     assert_eq!(
@@ -248,8 +246,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-first")?,
             None,
-            None,
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await?,
         first
@@ -274,8 +271,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
                 16,
                 &IdempotencyKey::new("stage-first")?,
                 None,
-                None,
-                None
+                crate::conversation::ContentAccess::default()
             )
             .await
             .is_err()
@@ -446,8 +442,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         16,
         &IdempotencyKey::new("stage-later")?,
         None,
-        None,
-        None,
+        crate::conversation::ContentAccess::default(),
     )
     .await?;
     let (old_generation, old_page) = delegated_reader
@@ -540,8 +535,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("internal-write")?,
             None,
-            None,
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await
         .is_err()
@@ -557,8 +551,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("stage-empty")?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     assert!(matches!(
@@ -600,8 +593,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             16,
             &IdempotencyKey::new("invalid-path")?,
             None,
-            None,
-            None
+            crate::conversation::ContentAccess::default()
         )
         .await
         .is_err()
@@ -693,8 +685,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
             32,
             &IdempotencyKey::new("input-upload")?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     let manifest = host

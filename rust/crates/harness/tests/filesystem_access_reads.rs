@@ -126,45 +126,11 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
                 4096,
                 &IdempotencyKey::new("file")?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?
         } else {
-            // Seed a deliberately policy-less volume through the low-level SDK
-            // owner; the content boundary itself must refuse all new writes.
-            let workspace = acyclic_harness::filesystem::workspace_ref(
-                volume.provider().clone(),
-                &volume.storage_name(&mut None)?,
-            )?;
-            let generation = host
-                .apply(
-                    &workspace,
-                    None,
-                    &[
-                        acyclic_harness::filesystem::WorkspaceMutation::CreateDirectory {
-                            path: "/secrets".into(),
-                        },
-                        acyclic_harness::filesystem::WorkspaceMutation::PutFile {
-                            path: "/secrets/key".into(),
-                            bytes: bytes::Bytes::from_static(b"private").into(),
-                        },
-                    ],
-                    &IdempotencyKey::new("raw-seed")?,
-                )
-                .await?;
-            FileRef::new(
-                volume.clone(),
-                "secrets/key".into(),
-                hex::encode(generation.as_resource().key()),
-                acyclic_harness::conversation::FileDescriptor::from_bytes(
-                    b"private",
-                    "text/plain",
-                    &mut None,
-                )?,
-                "key".into(),
-                &mut None,
-            )?
+            Self::seed_without_policy(&host, &volume).await?
         };
         Ok(Self {
             fs,
@@ -174,6 +140,46 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             scope,
             file,
         })
+    }
+
+    async fn seed_without_policy(
+        host: &FilesystemHost<acyclic_fs::MemoryAuthorityBackend, O>,
+        volume: &VolumeRef,
+    ) -> Result<FileRef, Box<dyn Error>> {
+        // Seed a deliberately policy-less volume through the low-level SDK
+        // owner; the content boundary itself must refuse all new writes.
+        let workspace = acyclic_harness::filesystem::workspace_ref(
+            volume.provider().clone(),
+            &volume.storage_name(&mut None)?,
+        )?;
+        let generation = host
+            .apply(
+                &workspace,
+                None,
+                &[
+                    acyclic_harness::filesystem::WorkspaceMutation::CreateDirectory {
+                        path: "/secrets".into(),
+                    },
+                    acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                        path: "/secrets/key".into(),
+                        bytes: bytes::Bytes::from_static(b"private").into(),
+                    },
+                ],
+                &IdempotencyKey::new("raw-seed")?,
+            )
+            .await?;
+        Ok(FileRef::new(
+            volume.clone(),
+            "secrets/key".into(),
+            hex::encode(generation.as_resource().key()),
+            acyclic_harness::conversation::FileDescriptor::from_bytes(
+                b"private",
+                "text/plain",
+                &mut None,
+            )?,
+            "key".into(),
+            &mut None,
+        )?)
     }
 
     fn reader(
@@ -211,6 +217,21 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
                 .push(rule);
         }
         self.publish_policy(policy).await
+    }
+
+    async fn workspace(
+        &self,
+        volume: &VolumeRef,
+    ) -> Result<acyclic_fs::Workspace<acyclic_fs::MemoryAuthorityBackend, O>, Box<dyn Error>> {
+        Ok(self
+            .fs
+            .open_workspace(
+                volume.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value)
     }
 
     async fn publish_policy(&self, policy: Policy) -> Result<(), Box<dyn Error>> {
@@ -687,7 +708,7 @@ proptest! {
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&labels)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         let mut file: serde_json::Value = serde_json::from_slice(include_bytes!("../../harness-fuzz/corpus/filesystem_access/file-ref"))?;
-        file["path"] = format!("notes/{name}").into();
+        *file.get_mut("path").ok_or_else(|| TestCaseError::fail("missing fixture path"))? = format!("notes/{name}").into();
         let file: FileRef = serde_json::from_value(file)?;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&file)?)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
@@ -761,4 +782,22 @@ async fn unsupported_authenticated_facts_never_remove_a_principal_dependent_deny
         ));
     }
     Ok(())
+}
+
+fn revoked_policy(id: &str, action: Action) -> Result<Policy, Box<dyn Error>> {
+    let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY)?;
+    policy.version += 1;
+    let layer = policy
+        .layers
+        .first_mut()
+        .ok_or(InvalidPolicy("missing fixture layer"))?;
+    let mut deny = layer
+        .first()
+        .ok_or(InvalidPolicy("missing fixture rule"))?
+        .clone();
+    deny.id = id.into();
+    deny.effect = Effect::Deny;
+    deny.actions = [action].into_iter().collect();
+    layer.push(deny);
+    Ok(policy)
 }

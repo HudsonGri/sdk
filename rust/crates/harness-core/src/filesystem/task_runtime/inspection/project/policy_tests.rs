@@ -100,8 +100,7 @@ impl Source {
                     4096,
                     &crate::IdempotencyKey::new(format!("seed-{path}"))?,
                     None,
-                    None,
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )
                 .await?;
         }

@@ -18,13 +18,7 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
             let view = self.access_snapshot(work).await?;
-            let access = view
-                .prepare_namespace(&path)
-                .map_err(|_| MountSourceError::AccessDenied)?;
-            let now = access::access_time()?;
-            if !access.decide(crate::access::Action::List, now).allowed {
-                return Err(MountSourceError::AccessDenied);
-            }
+            let (access, now) = access::require_list(&view, &path)?;
             self.disclose(&view, work, async {
                 let cursor = cursor
                     .map(|bytes| {

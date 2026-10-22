@@ -153,7 +153,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     assert!(!directory.path().join(".volumes/scratch/denied").exists());
     assert_eq!(
         publisher
-            .observe_staged_once(operation, 64, None, None)?
+            .observe_staged_once(operation, 64, crate::conversation::ContentAccess::default())?
             .await?
             .0,
         Some(file.clone())

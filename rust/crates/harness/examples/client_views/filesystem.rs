@@ -83,8 +83,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             64,
             &IdempotencyKey::new("source")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
@@ -188,8 +187,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             64,
             &IdempotencyKey::new("user")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let head = host.resolve(&workspace, None).await?.generation;

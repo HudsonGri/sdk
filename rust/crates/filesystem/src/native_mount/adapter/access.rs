@@ -382,3 +382,17 @@ pub(super) fn visible_name(
         .mount_mode(now)
         .visible())
 }
+
+pub(in crate::native_mount) fn require_list<'a>(
+    view: &'a crate::access::PathTrie,
+    path: &crate::kernel::NamespacePath,
+) -> Result<(crate::access::PreparedPath<'a>, u64), MountSourceError> {
+    let access = view
+        .prepare_namespace(path)
+        .map_err(|_| MountSourceError::AccessDenied)?;
+    let now = access_time()?;
+    if !access.decide(Action::List, now).allowed {
+        return Err(MountSourceError::AccessDenied);
+    }
+    Ok((access, now))
+}

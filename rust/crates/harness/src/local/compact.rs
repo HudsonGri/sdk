@@ -154,7 +154,11 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<(crate::conversation::FileRef, crate::context::SummarySource)> {
         let (retained, _) = publisher
-            .observe_staged_once(staged, self.limits.file_bytes, None, None)?
+            .observe_staged_once(
+                staged,
+                self.limits.file_bytes,
+                crate::conversation::ContentAccess::default(),
+            )?
             .await?;
         let (source, captured) = match retained {
             Some(file) => {

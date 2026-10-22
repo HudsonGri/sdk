@@ -82,8 +82,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 64,
                 &IdempotencyKey::new("source")?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let edited = host
@@ -100,8 +99,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 64,
                 &IdempotencyKey::new("user")?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         (source, edited, user)
@@ -129,8 +127,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 maximum_bytes,
                 &key,
                 Some(&head),
-                None,
-                None
+                acyclic_harness::conversation::ContentAccess::default()
             )
             .await,
             Err(Error::Invalid(_))

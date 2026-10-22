@@ -187,7 +187,9 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let original = lazy.workspace().head(&work, &cancellation).await?.id();
-    let options = if ceiling != ReadCeiling::All {
+    let options = if ceiling == ReadCeiling::All {
+        local_owner_mount_options(lazy.workspace(), "readonly-import", false).await?
+    } else {
         use acyclic_fs::access::{
             Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
         };
@@ -240,8 +242,6 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         )
         .await?
         .native_context(&work, None, None)
-    } else {
-        local_owner_mount_options(lazy.workspace(), "readonly-import", false).await?
     }
     .publication(MountPublication::Manual)
     .subdirectory("/hot");

@@ -18,13 +18,7 @@ where
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
         let namespace = self.authored.namespace_inputs(path, &mut inputs)?;
-        let access = view
-            .prepare_namespace(&namespace)
-            .map_err(|_| MountSourceError::AccessDenied)?;
-        let now = adapter::access::access_time()?;
-        if !access.decide(crate::access::Action::List, now).allowed {
-            return Err(MountSourceError::AccessDenied);
-        }
+        let (access, _now) = adapter::access::require_list(&view, &namespace)?;
         let result = (|| {
             let (text, _allocation) = self.path(path, work)?;
             let owner = ViewGate::callback_owner()?;

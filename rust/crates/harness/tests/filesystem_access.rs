@@ -1,4 +1,5 @@
 //! Signed filesystem delegation boundaries.
+acyclic_test_support::counting_allocator!();
 #[path = "filesystem_access_compilation.rs"]
 mod compilation;
 #[cfg(feature = "filesystem")]
@@ -231,8 +232,9 @@ proptest::proptest! {
         child_expiry in proptest::option::of(proptest::prelude::any::<u64>()),
     ) {
         use acyclic_fs::access::{DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, SCOPE_PREFIX, VolumeOperation, is_filesystem_capability};
-        let prefix = [FILE_READ_PREFIX, DIRECTORY_READ_PREFIX,
-            VolumeOperation::Read.capability_prefix(), VolumeOperation::Write.capability_prefix()].get(legacy_kind).ok_or(proptest::test_runner::TestCaseError::fail("missing fixture capability prefix"))?;
+        let prefixes = [FILE_READ_PREFIX, DIRECTORY_READ_PREFIX,
+            VolumeOperation::Read.capability_prefix(), VolumeOperation::Write.capability_prefix()];
+        let prefix = prefixes.get(legacy_kind).ok_or(proptest::test_runner::TestCaseError::fail("missing fixture capability prefix"))?;
         let legacy = format!("{prefix}volume");
         let parent = Capability { layers: vec![vec![grant("src/**")]], expires_at: parent_expiry };
         let parent = Capabilities::new([legacy.clone(), parent.to_scope_label()?, "task:spawn:child".into()]);

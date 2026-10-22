@@ -7,7 +7,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-type PauseChannels = (
+pub(super) type PauseChannels = (
     futures::channel::oneshot::Receiver<()>,
     futures::channel::oneshot::Sender<()>,
 );
@@ -53,11 +53,11 @@ impl CountingObjects {
         self.pause_io(kind, false)
     }
 
-    pub(super) fn pause_write(&self, kind: ObjectKind) -> Result<PauseChannels, ObjectStoreError> {
-        self.pause_io(kind, true)
-    }
-
-    fn pause_io(&self, kind: ObjectKind, write: bool) -> Result<PauseChannels, ObjectStoreError> {
+    pub(super) fn pause_io(
+        &self,
+        kind: ObjectKind,
+        write: bool,
+    ) -> Result<PauseChannels, ObjectStoreError> {
         let (entered, arrival) = futures::channel::oneshot::channel();
         let (release, released) = futures::channel::oneshot::channel();
         *self

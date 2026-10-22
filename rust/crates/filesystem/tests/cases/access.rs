@@ -991,7 +991,7 @@ proptest! {
         let context = Context { now: 10, approvals: 0 };
         let mut resource = Resource { config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
             lineage: &[], volume: "project", generation: 1, head: 1, path: &path };
-        let action = Action::ALL[deny_action];
+        let action = *Action::ALL.get(deny_action).ok_or(InvalidPolicy("missing fixture action"))?;
         let mut policy = policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]);
         let mut capability = capability();
         if restricted_capability { capability.layers.first_mut().and_then(|layer| layer.first_mut()).ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?.resource.path = format!("{denied}/**"); }

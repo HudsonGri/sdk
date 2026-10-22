@@ -63,8 +63,7 @@ async fn put(
             4096,
             &IdempotencyKey::new(key)?,
             None,
-            None,
-            io,
+            acyclic_harness::conversation::ContentAccess { ceiling: None, io },
         )
         .await
 }
@@ -250,8 +249,10 @@ async fn publication_refuses_a_generation_older_than_its_transaction_head()
                 4096,
                 &IdempotencyKey::new("stale")?,
                 Some(&prior),
-                None,
-                io.as_ref(),
+                acyclic_harness::conversation::ContentAccess {
+                    ceiling: None,
+                    io: io.as_ref(),
+                },
             )
             .await;
         assert_eq!(

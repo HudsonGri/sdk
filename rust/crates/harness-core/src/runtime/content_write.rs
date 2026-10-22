@@ -454,36 +454,6 @@ fn can_write_volume(
     })
 }
 
-#[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unbound_native_writer_returns_a_static_failure() -> Result<()> {
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(
-                16,
-                acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-            ),
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
-        let io = crate::executor::PreparationIo::from_native_work(&work)?;
-        assert!(matches!(
-            bound_content_writer(None, &RuntimeScope::default(), Some(&io)),
-            Err(Error::NativeBoundary {
-                code: ErrorCode::Unsupported,
-                ..
-            })
-        ));
-        Ok(())
-    }
-}
-
 struct PublishedFile<'a> {
     volume: &'a VolumeRef,
     path: &'a str,
@@ -540,4 +510,34 @@ async fn finish_publication<'io>(
     #[cfg(not(feature = "filesystem"))]
     let _ = hold;
     Ok((file, retained))
+}
+
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unbound_native_writer_returns_a_static_failure() -> Result<()> {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(
+                16,
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| Error::NativeWork {
+            cause,
+            custody: None,
+        })?;
+        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        assert!(matches!(
+            bound_content_writer(None, &RuntimeScope::default(), Some(&io)),
+            Err(Error::NativeBoundary {
+                code: ErrorCode::Unsupported,
+                ..
+            })
+        ));
+        Ok(())
+    }
 }

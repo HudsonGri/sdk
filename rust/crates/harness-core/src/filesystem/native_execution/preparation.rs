@@ -141,7 +141,7 @@ where
             _ => unreachable!("only native preparation installs"),
         });
         let manifest = self.manifest(mappings, &io)?;
-        let mut store = super::journal::Store {
+        let store = super::journal::Store {
             owner: Arc::clone(owner),
             work: work.clone(),
             original: None,

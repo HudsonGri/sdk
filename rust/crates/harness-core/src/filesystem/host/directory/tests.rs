@@ -77,8 +77,7 @@ async fn fixture(
             4096,
             &IdempotencyKey::new(format!("row-{index}"))?,
             None,
-            None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
         if keep {
@@ -115,8 +114,8 @@ proptest! {
             let (host, volume, grant) = fixture(mask).await?;
             let caller = crate::Capabilities::new([Capability {
                 layers: vec![std::iter::once("rows".into())
-                    .chain(caller_mask.into_iter().enumerate().filter_map(|(index, keep)|
-                        keep.then(|| format!("rows/{index:02}"))))
+                    .chain(caller_mask.into_iter().enumerate().filter(|(_, keep)| *keep)
+                        .map(|(index, _)| format!("rows/{index:02}")))
                     .map(|path| Grant {
                         actions: [Action::List, Action::ReadHistory].into_iter().collect(),
                         resource: ResourcePattern { lineage_root: None, volume: None,

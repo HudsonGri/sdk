@@ -105,7 +105,7 @@ impl CheckoutPublisher {
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, ceiling, None)?.await?.0,
+                Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
                 Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
                 Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
             };
@@ -294,9 +294,10 @@ impl ContentPublisher for CheckoutPublisher {
         &'a self,
         operation: OperationId,
         maximum: u64,
-        ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             serialized(&self.tools.state, async |state| {
@@ -320,7 +321,11 @@ impl ContentPublisher for CheckoutPublisher {
                     .await?;
                     let file = self
                         .writer_for(&mount.view.volume, workspace)?
-                        .observe_staged_once(operation, maximum, ceiling, None)?
+                        .observe_staged_once(
+                            operation,
+                            maximum,
+                            crate::conversation::ContentAccess { ceiling, io: None },
+                        )?
                         .await?
                         .0;
                     if let Some(file) = file {

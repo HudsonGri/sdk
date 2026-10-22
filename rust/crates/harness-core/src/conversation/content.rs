@@ -152,23 +152,6 @@ pub(crate) fn require_owner_reader(ceiling: Option<&crate::Capabilities>) -> Res
     }
 }
 
-#[cfg(test)]
-mod owner_reader_tests {
-    use super::*;
-
-    proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-        // No ceiling contents, including an empty deny-all ceiling, may be
-        // silently discarded by an owner-only browser reader.
-        #[test]
-        fn every_caller_ceiling_is_rejected(labels in proptest::collection::vec("[a-z:/]{0,32}", 0..8)) {
-            let ceiling = crate::Capabilities::new(labels);
-            proptest::prop_assert!(matches!(require_owner_reader(Some(&ceiling)), Err(Error::Unsupported(_))));
-            proptest::prop_assert!(require_owner_reader(None).is_ok());
-        }
-    }
-}
-
 /// Authenticated, bounded immutable-content operations.
 /// Filesystem readers intersect caller ceilings with their verified binding;
 /// a caller ceiling supplies no authority of its own.
@@ -396,9 +379,13 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _maximum_bytes: u64,
-        _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess {
+            ceiling: _ceiling,
+            io,
+        } = access;
+
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -619,5 +606,22 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             maximum_bytes,
             crate::conversation::ContentAccess { ceiling, io },
         )
+    }
+}
+
+#[cfg(test)]
+mod owner_reader_tests {
+    use super::*;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+        // No ceiling contents, including an empty deny-all ceiling, may be
+        // silently discarded by an owner-only browser reader.
+        #[test]
+        fn every_caller_ceiling_is_rejected(labels in proptest::collection::vec("[a-z:/]{0,32}", 0..8)) {
+            let ceiling = crate::Capabilities::new(labels);
+            proptest::prop_assert!(matches!(require_owner_reader(Some(&ceiling)), Err(Error::Unsupported(_))));
+            proptest::prop_assert!(require_owner_reader(None).is_ok());
+        }
     }
 }

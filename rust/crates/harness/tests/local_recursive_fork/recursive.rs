@@ -97,8 +97,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             1_024,
             &IdempotencyKey::new("root-message")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let root_attachment = host
@@ -112,8 +111,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             1_024,
             &IdempotencyKey::new("root-attachment")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let mut previous_attachment = root_attachment.clone();
@@ -464,8 +462,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     1024,
                     &IdempotencyKey::new("later-parent-scratch")?,
                     None,
-                    None,
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )
                 .await?;
             assert_ne!(Some(&changed), approved_model_files.get(1));
@@ -522,8 +519,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 1_024,
                 &IdempotencyKey::new(format!("child-message-{level}"))?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let child_attachment = host
@@ -537,8 +533,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 1_024,
                 &IdempotencyKey::new(format!("child-attachment-{level}"))?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         let child_read = ContentGrant::verify(
@@ -683,8 +678,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     1_024,
                     &IdempotencyKey::new("final-merge-notice")?,
                     None,
-                    None,
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )
                 .await?;
             let merge_message = ConversationMessage {

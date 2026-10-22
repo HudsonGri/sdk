@@ -262,8 +262,7 @@ impl LocalHarness {
                     limit,
                     &key,
                     Some(&generation),
-                    None,
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )
                 .await
                 .map(drop)
@@ -443,17 +442,8 @@ impl LocalHarness {
             self.record_goal_revision(&current, &generation, &goal.source, publication)
                 .await?;
         }
+        require_continuable_goal(&goal)?;
         let unreachable = GoalBlockedReason::TaskViewUnreachable;
-        if goal.status == GoalStatus::Blocked
-            && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
-        {
-            return Err(Error::GoalBlocked(unreachable));
-        }
-        // A goal whose final state is blocked is the loop's result, so a
-        // headless caller reports it instead of a completed turn.
-        if goal.status == GoalStatus::Blocked {
-            return Err(Error::GoalBlocked(GoalBlockedReason::Declared));
-        }
         let Some(policy) = self.goal_continuations else {
             return Ok(None);
         };
@@ -647,4 +637,19 @@ impl LocalHarness {
         }
         Ok(())
     }
+}
+
+fn require_continuable_goal(goal: &GoalView) -> Result<()> {
+    let unreachable = GoalBlockedReason::TaskViewUnreachable;
+    if goal.status == GoalStatus::Blocked
+        && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
+    {
+        return Err(Error::GoalBlocked(unreachable));
+    }
+    // A goal whose final state is blocked is the loop's result, so a
+    // headless caller reports it instead of a completed turn.
+    if goal.status == GoalStatus::Blocked {
+        return Err(Error::GoalBlocked(GoalBlockedReason::Declared));
+    }
+    Ok(())
 }

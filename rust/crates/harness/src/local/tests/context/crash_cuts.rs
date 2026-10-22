@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation::{BoundedContentFuture, ContentHold, ContentIo};
+use crate::conversation::{BoundedContentFuture, ContentHold};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(in crate::local::tests) struct Interrupted<'a> {
@@ -33,11 +33,15 @@ impl ContentPublisher for Interrupted<'_> {
         &'a self,
         operation: OperationId,
         maximum: u64,
-        ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
-        self.publisher
-            .observe_staged_once(operation, maximum, ceiling, io)
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
+        self.publisher.observe_staged_once(
+            operation,
+            maximum,
+            crate::conversation::ContentAccess { ceiling, io },
+        )
     }
 
     fn stage_once<'a>(

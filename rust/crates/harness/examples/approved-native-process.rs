@@ -197,8 +197,7 @@ where
             128,
             &IdempotencyKey::new("example-source")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let work = capture::work()?;

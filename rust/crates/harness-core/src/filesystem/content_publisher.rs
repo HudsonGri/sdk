@@ -145,8 +145,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     self.maximum_bytes,
                     &retry,
                     None,
-                    None,
-                    io,
+                    crate::conversation::ContentAccess { ceiling: None, io },
                 )
                 .await;
             drop(retry);
@@ -234,9 +233,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         &'a self,
         operation: OperationId,
         maximum: u64,
-        ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a PreparationIo>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        let crate::conversation::ContentAccess { ceiling, io } = access;
+
         BoundedContentFuture::new(io, || async move {
             let file = self
                 .observe_publication(operation, maximum, ceiling, io)
@@ -280,8 +280,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     self.maximum_bytes,
                     &retry,
                     None,
-                    ceiling,
-                    io,
+                    crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
             drop(retry);

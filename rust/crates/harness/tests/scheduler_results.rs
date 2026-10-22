@@ -191,8 +191,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             1_024,
             &IdempotencyKey::new("scheduler-initial")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let verifier = FilesystemContentVerifier::new(
@@ -263,8 +262,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         if slot == "a" {
@@ -331,8 +329,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     1_024,
                     &IdempotencyKey::new("invalid-type-upload")?,
                     None,
-                    None,
-                    None,
+                    acyclic_harness::conversation::ContentAccess::default(),
                 )
                 .await?;
             assert!(
@@ -389,8 +386,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             1_024,
             &IdempotencyKey::new("forged-join-upload")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let expected_revision = coordinator
@@ -518,8 +514,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
                 None,
-                None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?;
         coordinator
@@ -630,8 +625,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             1_024,
             &IdempotencyKey::new("reduce-child-upload")?,
             None,
-            None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     coordinator

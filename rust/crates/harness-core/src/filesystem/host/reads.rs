@@ -140,17 +140,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await;
         }
 
-        let name = path.rsplit('/').next().unwrap_or(path);
-        crate::executor::with_history_io(io, |work| {
-            crate::conversation::validate_content_path(path, work)
-        })?;
-        if name.len() > crate::conversation::MAX_LABEL_BYTES {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "file or volume label is invalid",
-            ));
-        }
+        validate_private_read_path(path, io)?;
         let unmeasured;
         let io = if let Some(io) = io {
             io
@@ -166,19 +156,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
             None => io.sdk(workspace.head(io, io.cancellation()).await)?,
         };
-        let label = crate::core::filesystem_scope_label(
-            grant.policy_scope().capabilities(),
-            &mut Some(&mut io.history_io()),
-        )?;
-        let view = crate::filesystem::access::access_view(
-            &workspace,
-            grant.policy_scope(),
-            Some(generation.id()),
-            super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
-            ceiling,
-            io,
-        )
-        .await?;
+        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         fork_preparer_io::retain(&generation, Some(io)).await?;
@@ -575,4 +553,41 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Err(error) => return Err(error),
     };
     Ok(staged)
+}
+
+async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &acyclic_fs::Workspace<A, O>,
+    grant: &ContentGrant,
+    generation: GenerationId,
+    ceiling: Option<&crate::Capabilities>,
+    io: &'a PreparationIo,
+) -> Result<super::super::access::CompiledAccess<'a>> {
+    let label = crate::core::filesystem_scope_label(
+        grant.policy_scope().capabilities(),
+        &mut Some(&mut io.history_io()),
+    )?;
+    crate::filesystem::access::access_view(
+        workspace,
+        grant.policy_scope(),
+        Some(generation),
+        super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
+        ceiling,
+        io,
+    )
+    .await
+}
+
+fn validate_private_read_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    crate::executor::with_history_io(io, |work| {
+        crate::conversation::validate_content_path(path, work)
+    })?;
+    if name.len() > crate::conversation::MAX_LABEL_BYTES {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "file or volume label is invalid",
+        ));
+    }
+    Ok(())
 }
