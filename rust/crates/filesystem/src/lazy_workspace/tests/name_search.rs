@@ -804,8 +804,25 @@ async fn name_search_placeholder_policies_are_partial_without_hydration() {
             &*walk.read(".gitignore", 1024).await.unwrap(),
             b"secret.txt\n"
         );
-        assert!(source.counts.opens.load(Ordering::Relaxed) > 0);
         assert!(source.counts.ranges.load(Ordering::Relaxed) > 0);
+        // Range reads and held-file opens are separate provider entry points.
+        // Exercise the latter explicitly so its zero-open control is live too.
+        let (
+            LazyLookup::Source {
+                source: pinned,
+                node,
+            },
+            _,
+        ) = lazy.inspect("/.gitignore", accounting!()).await.unwrap()
+        else {
+            panic!("source policy required");
+        };
+        let held = lazy
+            .open_source_file("/.gitignore", pinned, node, accounting!())
+            .await
+            .unwrap();
+        assert!(source.counts.opens.load(Ordering::Relaxed) > 0);
+        drop(held);
     }
 }
 
