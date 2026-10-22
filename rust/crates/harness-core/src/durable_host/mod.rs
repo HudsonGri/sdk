@@ -185,6 +185,7 @@ pub struct CoordinatorTaskHost<P> {
     session_limits: Option<crate::scheduler::SessionLimits>,
     #[cfg(feature = "filesystem")]
     resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
+    admissions: admission_read::AdmissionMemo,
 }
 
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
@@ -207,6 +208,8 @@ pub struct TaskJournalOwner<P> {
         )>,
     >,
     root_choice: std::sync::OnceLock<(OperationId, [u8; 32], [u8; 32])>,
+    /// The canonical digest of the immutable admission, computed once on first use.
+    admission_digest: std::sync::OnceLock<[u8; 32]>,
     root_gate: tokio::sync::Mutex<()>,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
