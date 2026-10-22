@@ -49,6 +49,9 @@ pub(crate) use validation::{
 };
 mod value;
 pub use value::*;
+mod environment;
+mod text;
+pub use environment::EnvironmentFacts;
 mod pipeline;
 pub use pipeline::*;
 mod source;

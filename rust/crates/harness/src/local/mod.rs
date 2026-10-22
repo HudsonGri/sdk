@@ -100,6 +100,12 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(feature = "native-execution")]
     checkout_context: bool,
+    #[cfg(all(test, feature = "native-execution"))]
+    environment_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(feature = "native-execution")]
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    #[cfg(feature = "native-execution")]
+    environment_platform: crate::native_environment::PlatformPolicy,
 }
 
 impl LocalHarness {
@@ -323,7 +329,7 @@ impl LocalHarness {
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
                 concurrency: config.concurrency,
-                clock: config.clock,
+                clock: Arc::clone(&config.clock),
             })
             .await?;
             let local = Self {
@@ -355,6 +361,12 @@ impl LocalHarness {
                 drivers: orphans::Drivers::new(),
                 #[cfg(feature = "native-execution")]
                 workspace,
+                #[cfg(all(test, feature = "native-execution"))]
+                environment_reads: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(feature = "native-execution")]
+                clock: config.clock,
+                #[cfg(feature = "native-execution")]
+                environment_platform: config.environment_platform,
             };
             Ok(local)
         })
