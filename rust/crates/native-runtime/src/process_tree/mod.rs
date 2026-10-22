@@ -9,6 +9,12 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+#[cfg(windows)]
+mod custodian;
+mod custody;
+pub use custody::ProcessCustody;
+#[cfg(unix)]
+mod warden;
 
 /// The clock the capture deadline reads. Tests freeze it so that expiry is
 /// ordered by the capture loop's own checks instead of scheduler latency.
@@ -42,6 +48,8 @@ mod prepared;
 pub use prepared::PreparedClosedProcess;
 #[cfg(unix)]
 use prepared::prepared_process_vec;
+#[cfg(test)]
+mod custody_tests;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod platform;
@@ -66,6 +74,7 @@ pub struct ProcessTree {
     spawn_resources: platform::SpawnResources,
     #[cfg(unix)]
     prepared_spawn: Option<PreparedClosedProcess>,
+    custody: Option<custody::Record>,
 }
 
 impl ProcessTree {
@@ -85,6 +94,38 @@ impl ProcessTree {
             return Err(admission);
         }
         custody.ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+
+    /// Starts a child whose whole tree is tied to this host process and
+    /// recorded in `custody` until this owner observes it gone. If the host
+    /// dies first, the tree is killed, and a reopened owner's
+    /// [`ProcessCustody::fence_stale`] returns only after it is dead.
+    /// `command` must not be reused for another spawn.
+    pub fn spawn_in_custody(command: &mut Command, custody: &ProcessCustody) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let directory = custody.arm(command)?;
+            let mut tree = Self::spawn(command)?;
+            let pid = libc::pid_t::try_from(tree.owned_child_id()?)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            tree.custody = Some(custody::Record::new(directory, pid));
+            Ok(tree)
+        }
+        #[cfg(windows)]
+        {
+            let (mut record, name) = custody.record()?;
+            let mut tree = None;
+            if let Err(admission) = platform::spawn_named(command, &mut tree, &name, &mut record) {
+                if let Some(tree) = tree.as_mut() {
+                    tree.terminate(None)?;
+                }
+                record.remove()?;
+                return Err(admission);
+            }
+            let mut tree = tree.ok_or(io::ErrorKind::NotFound)?;
+            tree.custody = Some(record);
+            Ok(tree)
+        }
     }
 
     /// Starts a child while retaining admitted custody and the original meter.
@@ -621,7 +662,11 @@ impl ProcessTree {
                     Ok(())
                 })?;
             }
-            self.guard.close(meter)
+            self.guard.close(meter)?;
+            if let Some(record) = self.custody.take() {
+                record.remove()?;
+            }
+            Ok(())
         }
     }
 
@@ -661,6 +706,11 @@ impl ProcessTree {
                         Ok(())
                     })?;
                 }
+            }
+            // The exited leader still holds its PID, so no new tree's record
+            // can take this name before it is removed.
+            if let Some(record) = self.custody.take() {
+                record.remove()?;
             }
             let (reaped, recorded) =
                 platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;

@@ -61,6 +61,9 @@ pub struct LocalWorkspace {
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
+    /// Custody of this owner's tool process trees; absent in an embedded
+    /// binding, whose state directory has no exclusive owner to fence it.
+    pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
     #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -249,6 +252,14 @@ impl LocalWorkspace {
     }
 }
 
+/// The durable state an owner opens a workspace with: its core state
+/// store and the custody of its tool process trees, absent in an embedded
+/// binding, whose state directory has no exclusive owner to fence it.
+pub(super) struct OwnerState {
+    pub(super) store: LocalCoreStateStore,
+    pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
+}
+
 pub(super) async fn open(
     filesystem: &acyclic_fs::Fs<LocalAuthorityBackend, LocalObjectBackend>,
     volume: &VolumeRef,
@@ -259,8 +270,9 @@ pub(super) async fn open(
     operation: acyclic_fs::OperationId,
     existing: bool,
     native_mounts: bool,
-    store: LocalCoreStateStore,
+    state: OwnerState,
 ) -> Result<LocalWorkspace> {
+    let OwnerState { store, processes } = state;
     let path = std::fs::canonicalize(path).map_err(storage)?;
     #[cfg(target_os = "linux")]
     if native_mounts {
@@ -390,6 +402,7 @@ pub(super) async fn open(
         state,
         context_line,
         mounts,
+        processes,
     })
 }
 
@@ -403,7 +416,7 @@ pub(super) async fn open_volume(
     directory: &Path,
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
-    store: LocalCoreStateStore,
+    state: OwnerState,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -458,7 +471,7 @@ pub(super) async fn open_volume(
         operation,
         true,
         native_mounts,
-        store,
+        state,
     )
     .await
 }
