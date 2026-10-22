@@ -1,10 +1,8 @@
-//! Conservative durable Windows USN restart continuity.
+//! Windows USN restart continuity and bounded native journal replay.
 //!
-//! The adapter proves only the strongest inexpensive case: the exact root,
-//! volume journal, and volume-wide next USN are unchanged. Any journal advance
-//! or ambiguity requires the canonical watcher baseline; it is never treated
-//! as proof that the watched subtree was unchanged. A same-volume checkpoint
-//! write advances the journal itself, so it cannot use this fast path.
+//! The continuity check certifies only an unchanged volume cursor. The replay
+//! reader can consume an advanced journal through a fixed fence, preserving
+//! native file identities and committing progress only after acceptance.
 
 #![allow(
     unsafe_code,
@@ -12,7 +10,11 @@
 )]
 
 use crate::NativeRootIdentity;
+use crate::demand::SourceDemandReadWork;
 use crate::native_host::HostRoot;
+use crate::native_host::NativeHostWork as _;
+mod replay;
+pub use replay::{WindowsUsnReplay, WindowsUsnReplayProgress};
 use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::Path;
@@ -198,16 +200,33 @@ fn observe_root(root: &Path) -> Result<(NativeRootIdentity, JournalSnapshot), Wi
     let root = HostRoot::open(&canonical, &mut crate::native_host::ordinary_work())
         .map_err(crate::native_host::ordinary_error)
         .map_err(|_| WindowsUsnError::RootIdentityUnavailable)?;
-    Ok((root.identity(), query_journal(&root)?))
+    Ok((
+        root.identity(),
+        query_journal(&root, &mut crate::native_host::ordinary_work())?,
+    ))
 }
 
-fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
-    let volume = open_journal_volume(root)?;
+fn query_journal<W: SourceDemandReadWork>(
+    root: &HostRoot,
+    work: &mut W,
+) -> Result<JournalSnapshot, WindowsUsnError> {
+    let volume = open_journal_volume(root, work)?;
+    query_journal_file(&volume, work)
+}
+
+fn query_journal_file<W: SourceDemandReadWork>(
+    volume: &std::fs::File,
+    work: &mut W,
+) -> Result<JournalSnapshot, WindowsUsnError> {
     let mut data = USN_JOURNAL_DATA_V0::default();
     let mut returned = 0_u32;
     let output_size = u32::try_from(size_of::<USN_JOURNAL_DATA_V0>())
         .map_err(|_| WindowsUsnError::InvalidJournal)?;
     let handle = HANDLE(volume.as_raw_handle());
+    work.started_io(crate::WorkCounters {
+        backend_read_operations: 1,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
     // SAFETY: `volume` holds a valid volume handle for the duration of the call;
     // the output pointer references a correctly sized initialized structure;
     // no overlapped operation outlives these stack values.
@@ -224,64 +243,82 @@ fn query_journal(root: &HostRoot) -> Result<JournalSnapshot, WindowsUsnError> {
         )
     }
     .map_err(|error| WindowsUsnError::Native(error.to_string()))?;
-    if returned < output_size || data.NextUsn < 0 || data.LowestValidUsn < 0 {
+    if returned < output_size || data.NextUsn < 0 || data.LowestValidUsn < 0 || data.FirstUsn < 0 {
         return Err(WindowsUsnError::InvalidJournal);
     }
     Ok(JournalSnapshot {
         journal_id: data.UsnJournalID,
-        lowest_valid_usn: u64::try_from(data.LowestValidUsn)
+        lowest_valid_usn: u64::try_from(data.LowestValidUsn.max(data.FirstUsn))
             .map_err(|_| WindowsUsnError::InvalidJournal)?,
         next_usn: u64::try_from(data.NextUsn).map_err(|_| WindowsUsnError::InvalidJournal)?,
     })
 }
 
-fn open_journal_volume(root: &HostRoot) -> Result<std::fs::File, WindowsUsnError> {
+fn open_journal_volume<W: SourceDemandReadWork>(
+    root: &HostRoot,
+    work: &mut W,
+) -> Result<std::fs::File, WindowsUsnError> {
     let handle = HANDLE(root.directory_handle().as_raw_handle());
     let mut path = Vec::new();
-    loop {
-        // SAFETY: the held directory and initialized output buffer remain live
-        // through the synchronous call. An empty buffer queries its size.
-        let count = unsafe { GetFinalPathNameByHandleW(handle, &mut path, VOLUME_NAME_GUID) };
-        if count == 0 {
-            return Err(WindowsUsnError::Io(
-                std::io::Error::last_os_error().to_string(),
-            ));
+    let mut allocation = 0;
+    let result = (|| {
+        loop {
+            work.started_io(crate::WorkCounters {
+                backend_read_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            // SAFETY: the held directory and initialized output buffer remain live
+            // through the synchronous call. An empty buffer queries its size.
+            let count = unsafe { GetFinalPathNameByHandleW(handle, &mut path, VOLUME_NAME_GUID) };
+            if count == 0 {
+                return Err(WindowsUsnError::Io(
+                    std::io::Error::last_os_error().to_string(),
+                ));
+            }
+            let count = count as usize;
+            if count < path.len() {
+                path.truncate(count);
+                break;
+            }
+            if count > 32768 {
+                return Err(WindowsUsnError::InvalidJournal);
+            }
+            let (mut replacement, claim) = crate::native_host::buffer(count + 1, work)?;
+            replacement.resize(count + 1, 0);
+            drop(std::mem::replace(&mut path, replacement));
+            work.release(std::mem::replace(&mut allocation, claim))?;
         }
-        let count = count as usize;
-        if count < path.len() {
-            path.truncate(count);
-            break;
+        let name = volume_device_name(&path)?;
+        work.started_io(crate::WorkCounters {
+            backend_read_operations: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        // SAFETY: the GUID volume name is terminated and contains no embedded NUL.
+        // FILE_TRAVERSE selects the filesystem's volume object. An access-zero
+        // open can bypass the filesystem and reach the storage device, which
+        // rejects USN controls. No raw file-data read or write access is requested.
+        // CreateFileW transfers a new synchronous handle, which File owns below.
+        let volume = unsafe {
+            CreateFileW(
+                windows::core::PCWSTR(name.as_ptr()),
+                FILE_TRAVERSE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            )
         }
-        path.resize(
-            count
-                .checked_add(1)
-                .ok_or(WindowsUsnError::InvalidJournal)?,
-            0,
-        );
-    }
-    let name = volume_device_name(&path)?;
-    // SAFETY: the GUID volume name is terminated and contains no embedded NUL.
-    // FILE_TRAVERSE selects the filesystem's volume object. An access-zero
-    // open can bypass the filesystem and reach the storage device, which
-    // rejects USN controls. No raw file-data read or write access is requested.
-    // CreateFileW transfers a new synchronous handle, which File owns below.
-    let volume = unsafe {
-        CreateFileW(
-            windows::core::PCWSTR(name.as_ptr()),
-            FILE_TRAVERSE.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAGS_AND_ATTRIBUTES(0),
-            None,
-        )
-    }
-    .map_err(|error| WindowsUsnError::Native(error.to_string()))?;
-    // SAFETY: this fresh handle is now owned by File and closes on every return.
-    Ok(unsafe { std::fs::File::from_raw_handle(volume.0) })
+        .map_err(|error| WindowsUsnError::Native(error.to_string()))?;
+        // SAFETY: this fresh handle is now owned by File and closes on every return.
+        Ok(unsafe { std::fs::File::from_raw_handle(volume.0) })
+    })();
+    drop(path);
+    work.release(allocation)?;
+    result
 }
 
-fn volume_device_name(path: &[u16]) -> Result<Vec<u16>, WindowsUsnError> {
+fn volume_device_name(path: &[u16]) -> Result<[u16; 49], WindowsUsnError> {
     const PREFIX: &[u16] = &[92, 92, 63, 92, 86, 111, 108, 117, 109, 101, 123];
     // GetFinalPathNameByHandleW(VOLUME_NAME_GUID) returns
     // \\?\Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}\..., independent of
@@ -302,8 +339,8 @@ fn volume_device_name(path: &[u16]) -> Result<Vec<u16>, WindowsUsnError> {
             return Err(WindowsUsnError::InvalidJournal);
         }
     }
-    let mut device = path[..48].to_vec();
-    device.push(0);
+    let mut device = [0; 49];
+    device[..48].copy_from_slice(&path[..48]);
     Ok(device)
 }
 
@@ -316,6 +353,12 @@ fn decode_u64(bytes: &[u8]) -> u64 {
 /// Windows USN checkpoint failures.
 #[derive(Debug, Error)]
 pub enum WindowsUsnError {
+    /// The original admitted work denied or cancelled a native operation.
+    #[error(transparent)]
+    Demand(#[from] crate::demand::DemandError),
+    /// The saved cursor cannot be replayed from this held root and journal.
+    #[error("Windows USN replay requires a new baseline: {0:?}")]
+    Discontinuous(WindowsUsnDiscontinuity),
     /// Checkpoint bytes are not the exact current canonical format.
     #[error("the Windows USN checkpoint is invalid")]
     InvalidCheckpoint,

@@ -168,6 +168,8 @@ pub mod streams_record;
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
 pub use acyclic_fs_base::text_merge;
+#[cfg(all(feature = "native-watch", any(windows, test)))]
+mod usn_records;
 #[cfg(feature = "native-watch")]
 pub mod watch;
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
@@ -391,6 +393,8 @@ pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
     StreamsDurableRecord,
 };
+#[cfg(all(feature = "native-watch", target_os = "windows"))]
+pub use usn_records::WindowsUsnRecord;
 #[cfg(feature = "native-watch")]
 pub use watch::{
     NativeWatch, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions, WatchBatch,
@@ -399,7 +403,8 @@ pub use watch::{
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 pub use windows_usn::{
     WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
-    capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
+    WindowsUsnReplay, WindowsUsnReplayProgress, capture_windows_usn_checkpoint,
+    validate_windows_usn_checkpoint,
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation, IdempotencyKey,
