@@ -770,12 +770,12 @@ mod interrupted_turns;
 #[path = "tests/retained_failure.rs"]
 mod retained_failure;
 
-#[cfg(all(feature = "native-execution", windows))]
-mod bash_environment;
 #[cfg(feature = "native-execution")]
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+#[cfg(all(feature = "native-execution", windows))]
+mod powershell;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod lazy_volumes;

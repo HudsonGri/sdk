@@ -91,7 +91,7 @@ pub enum CommandTaskScope {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandTool {
-    /// Execute a shell command through the bash tool owner.
+    /// Execute a shell command through the platform shell tool owner.
     Bash,
     /// Fork/spawn an agent through the task owner.
     Spawn,
