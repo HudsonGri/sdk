@@ -82,8 +82,8 @@ mod frame_tests {
     }
 }
 
+#[cfg(test)]
 #[cfg(all(
-    test,
     feature = "memory",
     feature = "distributed",
     not(target_arch = "wasm32")

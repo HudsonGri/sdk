@@ -1045,6 +1045,12 @@ impl StandaloneOnly {
     fn validate_native_work<T>(&self, _: T) -> Result<(), ()> {
         Err(())
     }
+
+    /// The native read a real reader charges to the receipt's custody; never
+    /// reached, since this reader validates no native work.
+    fn native_allowance<T>(&self, _: T) -> std::future::Ready<Result<u64, MaterializeError>> {
+        std::future::ready(Err(MaterializeError::InvalidOptions))
+    }
 }
 
 async fn standalone_read_allowance(
@@ -1052,7 +1058,7 @@ async fn standalone_read_allowance(
     receipt: &mut GenerationReceipt,
 ) -> Result<u64, MaterializeError> {
     let allowance = read_source!(reader, receipt, remaining, value,
-        std::future::ready(Err::<u64, _>(MaterializeError::InvalidOptions)) => value,
+        reader.native_allowance(receipt.custody.work()) => value,
         async move {
             Ok::<_, OperationFailure<crate::FsError>>(OperationReceipt {
                 value: remaining.peak_allocation_bytes,

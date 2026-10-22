@@ -5,9 +5,9 @@
 //! reads keys from it. The driver types the prompt once the TUI has drawn its
 //! composer, and quits once the scripted provider has served its last turn
 //! and the TUI shows the session idle.
-use super::{CASE, SETTLED};
+use super::{CASE, Outcome, SETTLED};
 use std::{
-    io::{Read as _, Write as _},
+    io::Write as _,
     path::Path,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -17,8 +17,13 @@ use std::{
 /// A hang is a failure, never a wait: the whole TUI turn takes seconds.
 const DEADLINE: Duration = Duration::from_secs(90);
 
-/// The terminal host: script(1) on Unix, the repository's ConPTY host on Windows.
-fn host(executable: &Path, scratch: &Path) -> Command {
+/// The harness crate, whose ancestors hold the repository's scripts.
+#[cfg(windows)]
+const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
+/// The terminal host: script(1) on Unix, the repository's console
+/// pseudo-terminal host on Windows.
+fn host(executable: &Path, scratch: &Path) -> Outcome<Command> {
     #[cfg(target_os = "linux")]
     let command = {
         let mut command = Command::new("script");
@@ -42,13 +47,13 @@ fn host(executable: &Path, scratch: &Path) -> Command {
     };
     #[cfg(windows)]
     let command = {
-        let scripts = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let scripts = Path::new(MANIFEST_DIR)
             .ancestors()
             .nth(6)
-            .expect("repository root")
+            .ok_or("the repository root")?
             .join("scripts");
         let catalog = scratch.join("unused-catalog.json");
-        std::fs::write(&catalog, b"{}").unwrap();
+        std::fs::write(&catalog, b"{}")?;
         let mut command = Command::new("powershell.exe");
         command
             .args(["-NoProfile", "-NonInteractive", "-File"])
@@ -66,7 +71,7 @@ fn host(executable: &Path, scratch: &Path) -> Command {
     };
     #[cfg(unix)]
     let _ = scratch;
-    command
+    Ok(command)
 }
 
 /// The visible text of terminal output: escape sequences removed.
@@ -110,60 +115,97 @@ struct Session {
 }
 
 impl Session {
+    /// Applies `read` to the output so far.
+    fn read<T>(&self, read: impl FnOnce(&[u8]) -> T) -> Outcome<T> {
+        let output = self
+            .output
+            .lock()
+            .map_err(|_| "the terminal output is poisoned")?;
+        Ok(read(&output))
+    }
+
     /// Waits until `ready` holds for the output so far, failing at the deadline.
-    fn until(&mut self, what: &str, ready: impl Fn(&[u8]) -> bool) {
+    fn until(&mut self, what: &str, ready: impl Fn(&[u8]) -> bool) -> Outcome {
         loop {
-            if ready(&self.output.lock().unwrap()) {
-                return;
+            if self.read(&ready)? {
+                return Ok(());
             }
-            if let Some(status) = self.child.try_wait().unwrap() {
-                panic!("the TUI exited ({status}) before {what}: {}", self.screen());
+            if let Some(status) = self.child.try_wait()? {
+                let screen = self.screen();
+                return Err(format!("the TUI exited ({status}) before {what}: {screen}").into());
             }
             if self.started.elapsed() > DEADLINE {
                 let _ = self.child.kill();
-                panic!("the TUI did not reach {what}: {}", self.screen());
+                let screen = self.screen();
+                return Err(format!("the TUI did not reach {what}: {screen}").into());
             }
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
+    /// The last of the visible output, for a failure report.
     fn screen(&self) -> String {
-        let output = self.output.lock().unwrap();
-        let text = visible(&output);
+        let text = self.read(visible).unwrap_or_default();
         let skipped = text.chars().count().saturating_sub(2000);
         text.chars().skip(skipped).collect()
     }
 
-    fn send(&mut self, keys: &[u8]) {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        stdin.write_all(keys).unwrap();
-        stdin.flush().unwrap();
+    fn send(&mut self, keys: &[u8]) -> Outcome {
+        let stdin = self
+            .child
+            .stdin
+            .as_mut()
+            .ok_or("the terminal host's input")?;
+        stdin.write_all(keys)?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    /// Waits for the TUI to exit, failing at the deadline.
+    fn exit(&mut self) -> Outcome<std::process::ExitStatus> {
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status);
+            }
+            if self.started.elapsed() > DEADLINE {
+                let _ = self.child.kill();
+                return Err(format!("the TUI did not quit: {}", self.screen()).into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
+/// Copies the host's output into `output` until it closes.
+fn copy_output(
+    mut stdout: impl std::io::Read + Send + 'static,
+    output: Arc<Mutex<Vec<u8>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut bytes = [0; 4096];
+        while let Ok(count @ 1..) = stdout.read(&mut bytes) {
+            let (Some(read), Ok(mut output)) = (bytes.get(..count), output.lock()) else {
+                return;
+            };
+            output.extend_from_slice(read);
+        }
+    })
+}
+
 /// Runs the TUI case on a real terminal and requires it to pass its budget.
-pub(super) fn run(executable: &Path) {
-    let scratch = tempfile::tempdir().unwrap();
+pub(super) fn run(executable: &Path) -> Outcome {
+    let scratch = tempfile::tempdir()?;
     let settled = scratch.path().join("settled");
-    let mut child = host(executable, scratch.path())
+    let mut child = host(executable, scratch.path())?
         .env(CASE, "tui")
         .env(SETTLED, &settled)
         .env("TERM", "xterm-256color")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .spawn()?;
     let output = Arc::new(Mutex::new(Vec::new()));
-    let reader = {
-        let output = Arc::clone(&output);
-        let mut stdout = child.stdout.take().unwrap();
-        std::thread::spawn(move || {
-            let mut bytes = [0; 4096];
-            while let Ok(count @ 1..) = stdout.read(&mut bytes) {
-                output.lock().unwrap().extend_from_slice(&bytes[..count]);
-            }
-        })
-    };
+    let stdout = child.stdout.take().ok_or("the terminal host's output")?;
+    let reader = copy_output(stdout, Arc::clone(&output));
     let mut session = Session {
         child,
         output,
@@ -172,28 +214,21 @@ pub(super) fn run(executable: &Path) {
     // The composer is drawn and the cursor shown: the TUI reads keys now.
     session.until("its composer", |output| {
         visible(output).contains("GraphCoder") && output.windows(6).any(|w| w == b"\x1b[?25h")
-    });
-    session.send(b"\x1b[200~go\x1b[201~\r");
-    session.until("the scripted turn's end", |_| settled.exists());
-    let served = session.output.lock().unwrap().len();
+    })?;
+    session.send(b"\x1b[200~go\x1b[201~\r")?;
+    session.until("the scripted turn's end", |_| settled.exists())?;
+    let served = session.read(<[u8]>::len)?;
     // The session shows idle again after the last turn.
     session.until("an idle session", |output| {
-        visible(&output[served.min(output.len())..]).contains('\u{25cb}')
-    });
-    session.send(b"\x04");
-    let status = loop {
-        if let Some(status) = session.child.try_wait().unwrap() {
-            break status;
-        }
-        if session.started.elapsed() > DEADLINE {
-            let _ = session.child.kill();
-            panic!("the TUI did not quit: {}", session.screen());
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    reader.join().unwrap();
+        visible(output.get(served..).unwrap_or_default()).contains('\u{25cb}')
+    })?;
+    session.send(b"\x04")?;
+    let status = session.exit()?;
+    reader
+        .join()
+        .map_err(|_| "the terminal output reader panicked")?;
     // The case reports its depth on the terminal it ran on.
-    let report = visible(&session.output.lock().unwrap());
+    let report = session.read(visible)?;
     if let Some(line) = report
         .lines()
         .find(|line| line.contains("GraphCoder turn:"))
@@ -205,4 +240,5 @@ pub(super) fn run(executable: &Path) {
         "main-thread tui ({status}): {}",
         session.screen()
     );
+    Ok(())
 }

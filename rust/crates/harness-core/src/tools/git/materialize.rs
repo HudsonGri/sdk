@@ -111,6 +111,29 @@ struct CheckoutTransition<'a> {
     to_generation: LocalGeneration,
 }
 
+/// Creates the staging directory's parent and proves the staging location
+/// still lies on the checkout root the publication was authorized for.
+fn prepare_staging(
+    root: &Path,
+    operation_directory: &Path,
+    work: &acyclic_fs::NativeMaterializationWork,
+    source_root_identity: acyclic_fs::NativeRootIdentity,
+) -> Result<(), Error> {
+    let parent = operation_directory
+        .parent()
+        .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
+    let actual = acyclic_fs::validate_native_preparation_location(root, operation_directory, work)
+        .map_err(Error::from)?;
+    if actual != source_root_identity {
+        return Err(Error::Storage(
+            "checkout root changed before publication".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl CheckoutTransition<'_> {
     async fn publish<F, Fut>(
         self,
@@ -183,19 +206,7 @@ impl CheckoutTransition<'_> {
             return Ok(());
         }
         drop(journal);
-        let parent = operation_directory
-            .parent()
-            .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
-        std::fs::create_dir_all(parent)
-            .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
-        let actual =
-            acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
-                .map_err(Error::from)?;
-        if actual != source_root_identity {
-            return Err(Error::Storage(
-                "checkout root changed before publication".into(),
-            ));
-        }
+        prepare_staging(root, &operation_directory, &work, source_root_identity)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
             expected_root_identity: None,
@@ -218,7 +229,7 @@ impl CheckoutTransition<'_> {
                     excluded_names: &[".git", ".system", ".volumes"],
                     options: &options,
                     budget: WorkBudget::UNBOUNDED,
-                    cancellation: cancellation,
+                    cancellation,
                 },
                 work,
                 || async {

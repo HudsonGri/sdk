@@ -1,4 +1,4 @@
-//! GraphCoder's runtime and shared invocation entrypoint.
+//! The runtime and shared invocation entrypoint of the `graphcoder` binary.
 use crate::{
     args::{Args, InputFormat},
     view,
@@ -91,7 +91,7 @@ pub(crate) async fn open(
     let home = args
         .settings_root
         .clone()
-        .or_else(dirs::home_dir)
+        .or_else(acyclic_harness::native_environment::home)
         .ok_or("user settings directory is unavailable")?;
     let mut settings =
         acyclic_harness::native_settings::SettingsConfig::new(&args.workspace, &home);
