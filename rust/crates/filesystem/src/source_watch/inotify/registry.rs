@@ -12,6 +12,8 @@ pub(super) struct Registrations {
     slots: Vec<usize>,
     used: usize,
     hash: RandomState,
+    descriptors: super::descriptors::DescriptorIndex,
+    pub(super) revision: u64,
 }
 
 impl std::ops::Deref for Registrations {
@@ -168,6 +170,8 @@ impl Registrations {
     }
 
     pub(super) fn remove(&mut self, record: usize, slots: (usize, usize)) -> (PathBuf, i32) {
+        self.descriptors.invalidate();
+        self.revision = self.revision.wrapping_add(1);
         let (removed, moved) = slots;
         if removed == EMPTY {
             return self.records.swap_remove(record);
@@ -180,9 +184,22 @@ impl Registrations {
     }
 
     pub(super) fn clear(&mut self) -> WorkCounters {
+        self.descriptors = Default::default();
         self.slots = Vec::new();
         self.used = 0;
         clear_records(&mut self.records)
+    }
+
+    pub(super) fn descriptor_alias<W: SourceDemandReadWork>(
+        &mut self,
+        descriptor: i32,
+        cursor: usize,
+        work: &mut W,
+        retained: &AtomicU64,
+        ownership: &SourcePayloadOwnership,
+    ) -> Result<Option<(usize, usize)>, DemandError> {
+        self.descriptors
+            .alias(&self.records, descriptor, cursor, work, retained, ownership)
     }
 }
 

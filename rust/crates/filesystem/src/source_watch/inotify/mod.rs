@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 mod cleanup;
+mod descriptors;
 mod events;
 mod hub;
 mod lifecycle;
@@ -112,6 +113,7 @@ struct RawReads {
     filled: usize,
     cursor: usize,
     alias_cursor: usize,
+    alias_revision: u64,
     blocked: bool,
     cleanup: Vec<PathBuf>,
 }
