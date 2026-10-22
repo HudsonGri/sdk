@@ -1,4 +1,5 @@
 use super::*;
+use futures::StreamExt;
 use crate::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
 
 include!("access_tests.rs");
