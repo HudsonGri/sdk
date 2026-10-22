@@ -149,6 +149,10 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
     {
         result.windows_attributes = Some(metadata.raw.FileAttributes);
     }
+    #[cfg(target_os = "macos")]
+    {
+        result.posix_flags = Some(u64::from(metadata.raw.st_flags));
+    }
     result
 }
 

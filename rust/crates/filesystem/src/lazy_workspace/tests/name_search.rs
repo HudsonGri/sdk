@@ -640,6 +640,115 @@ async fn name_search_hydration_counter_detects_content_reads() {
 }
 
 #[tokio::test]
+async fn name_search_placeholder_policies_are_partial_without_hydration() {
+    for metadata in [
+        SourceMetadata {
+            windows_attributes: Some(0x0000_1000), // OFFLINE
+            ..SourceMetadata::default()
+        },
+        SourceMetadata {
+            windows_attributes: Some(0x0004_0000), // RECALL_ON_OPEN
+            ..SourceMetadata::default()
+        },
+        SourceMetadata {
+            windows_attributes: Some(0x0040_0000), // RECALL_ON_DATA_ACCESS
+            ..SourceMetadata::default()
+        },
+        SourceMetadata {
+            posix_flags: Some(0x4000_0000), // Darwin SF_DATALESS
+            ..SourceMetadata::default()
+        },
+    ] {
+        let fs = Fs::memory();
+        let mut source = CountingSource::new(Bytes::from_static(b"secret.txt\n"));
+        source.node.metadata = metadata;
+        source.policy_files = true;
+        source.directory_entries = 0;
+        let source = Arc::new(source);
+        let lazy = attach(
+            &fs,
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .unwrap();
+        let stop = CancellationToken::new();
+        let mut transaction = lazy
+            .workspace()
+            .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        transaction
+            .write_batch(
+                &["/nested", "/healthy"],
+                &[
+                    (
+                        "/nested/secret.txt",
+                        acyclic_stream::OwnedBytes::from_static(b"hidden"),
+                    ),
+                    (
+                        "/healthy/visible.txt",
+                        acyclic_stream::OwnedBytes::from_static(b"visible"),
+                    ),
+                    (
+                        "/healthy/.gitignore",
+                        acyclic_stream::OwnedBytes::from_static(b""),
+                    ),
+                    (
+                        "/healthy/.ignore",
+                        acyclic_stream::OwnedBytes::from_static(b""),
+                    ),
+                ],
+                WorkBudget::UNBOUNDED,
+                &stop,
+            )
+            .await
+            .unwrap();
+        transaction
+            .commit(
+                None,
+                PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &stop,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+            .await
+            .unwrap();
+        // The owner-side root policy loader uses the same guarded read.
+        assert!(matches!(
+            walk.read_policy(".gitignore", 1024).await,
+            Err(crate::SearchError::PolicyUnavailable(_))
+        ));
+        let mut seen = Vec::new();
+        while let Some(page) = walk.next_page().await.unwrap() {
+            seen.extend(page.into_iter().map(|name| name.path));
+        }
+        assert!(seen.iter().any(|path| path == "healthy/visible.txt"));
+        assert!(!seen.iter().any(|path| path == "nested/secret.txt"));
+        assert!(walk.unavailable_entries() > 0);
+        assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+        // Negative control: an explicit content read really reaches this
+        // provider; a zero counter is not an inert or empty source.
+        assert_eq!(
+            &*walk.read(".gitignore", 1024).await.unwrap(),
+            b"secret.txt\n"
+        );
+        assert!(source.counts.ranges.load(Ordering::Relaxed) > 0);
+    }
+}
+
+#[tokio::test]
 async fn name_search_checks_mount_boundaries_before_nested_policy_content_reads() {
     async fn read_count(cross_mounts: bool) -> usize {
         let fs = Fs::memory();

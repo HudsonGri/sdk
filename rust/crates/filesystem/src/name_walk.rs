@@ -51,6 +51,9 @@ pub enum SearchError {
     /// Missing explicit root.
     #[error("search root missing: {0}")]
     NotFound(String),
+    /// An ignore policy would require fetching placeholder content.
+    #[error("search policy is not locally available: {0}")]
+    PolicyUnavailable(String),
 }
 enum Cut<'a, A, O, D, S> {
     Lazy(&'a LazyWorkspace<A, O, D, S>, LazySnapshotRef),
@@ -742,6 +745,10 @@ impl<
     /// alone signals completion. No regular-file read occurs on this path.
     pub async fn next_page(&mut self) -> Result<Option<Vec<SearchName>>, SearchError> {
         match self.next_directory_page().await {
+            Err(SearchError::PolicyUnavailable(_)) => {
+                self.unavailable_entries += 1;
+                Ok(Some(Vec::new()))
+            }
             Err(SearchError::Lazy(crate::LazyWorkspaceError::Demand(
                 crate::demand::DemandError::Io(error),
             ))) if matches!(
@@ -1001,7 +1008,7 @@ impl<
         let mut policy = None;
         for name in [".gitignore", ".ignore"] {
             let path = format!("{directory}/{name}");
-            let bytes = match self.read(&path, 1024 * 1024).await {
+            let bytes = match self.read_policy(&path, 1024 * 1024).await {
                 Ok(bytes) => bytes,
                 Err(SearchError::Lazy(
                     crate::LazyWorkspaceError::NotFound | crate::LazyWorkspaceError::NotRegularFile,
@@ -1027,6 +1034,25 @@ impl<
         path: &str,
         maximum: u64,
     ) -> Result<acyclic_stream::OwnedBytes, SearchError> {
+        self.read_selected(path, maximum, false).await
+    }
+
+    /// Reads resident ignore-policy bytes without fetching a placeholder.
+    /// A missing policy is distinct from one whose rules are unavailable.
+    pub async fn read_policy(
+        &self,
+        path: &str,
+        maximum: u64,
+    ) -> Result<acyclic_stream::OwnedBytes, SearchError> {
+        self.read_selected(path, maximum, true).await
+    }
+
+    async fn read_selected(
+        &self,
+        path: &str,
+        maximum: u64,
+        policy: bool,
+    ) -> Result<acyclic_stream::OwnedBytes, SearchError> {
         let absolute = format!("/{path}");
         match &self.cut {
             Cut::Lazy(lazy, snapshot) => {
@@ -1042,7 +1068,12 @@ impl<
                 // An indexed regular name can be replaced by a link between
                 // enumeration and reading. Search never reads link payloads,
                 // including policy files, through the generic snapshot reader.
-                let result = if entry.stat().kind == SourceNodeKind::RegularFile {
+                let unavailable = policy
+                    && matches!(&entry, crate::LazyLookup::Source { node, .. }
+                        if policy_requires_hydration(&node.metadata));
+                let result = if unavailable {
+                    Err(SearchError::PolicyUnavailable(path.to_owned()))
+                } else if entry.stat().kind == SourceNodeKind::RegularFile {
                     lazy.read_resolved(&entry, &absolute, None, maximum, &mut ctx)
                         .await
                         .map(|chunk| chunk.bytes)
@@ -1065,6 +1096,21 @@ impl<
                 .map_err(|failure| SearchError::from(failure.error)),
         }
     }
+}
+
+fn policy_requires_hydration(metadata: &crate::demand::SourceMetadata) -> bool {
+    // These are source metadata, so interpret them on every host (including
+    // a Windows volume exposed by a remote provider to a Linux harness).
+    // Windows: OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS.
+    const WINDOWS_PLACEHOLDER: u32 = 0x0000_1000 | 0x0004_0000 | 0x0040_0000;
+    // Darwin stat.h: SF_DATALESS.
+    const DARWIN_DATALESS: u64 = 0x4000_0000;
+    metadata
+        .windows_attributes
+        .is_some_and(|attributes| attributes & WINDOWS_PLACEHOLDER != 0)
+        || metadata
+            .posix_flags
+            .is_some_and(|flags| flags & DARWIN_DATALESS != 0)
 }
 
 fn directory_matches(path: &str, query: &str) -> bool {

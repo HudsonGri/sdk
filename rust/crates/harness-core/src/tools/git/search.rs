@@ -55,7 +55,7 @@ pub async fn search_ignore(view: View<'_>) -> crate::Result<GitIgnorePolicy> {
     let reader = walk_names(view, None, GitIgnorePolicy::default()).await?;
     let mut policy = GitIgnorePolicy::default();
     for path in [".gitignore", ".ignore"] {
-        match reader.read(path, 1024 * 1024).await {
+        match reader.read_policy(path, 1024 * 1024).await {
             Ok(bytes) => policy.extend(GitIgnorePolicy::parse(&String::from_utf8_lossy(&bytes))),
             Err(SearchError::Lazy(
                 acyclic_fs::LazyWorkspaceError::NotFound
@@ -103,6 +103,9 @@ pub(super) fn search_error(error: SearchError) -> Error {
         SearchError::Lazy(error) => error.into(),
         SearchError::Invalid(message) => Error::Invalid(message),
         SearchError::NotFound(path) => Error::NotFound(path),
+        SearchError::PolicyUnavailable(path) => {
+            Error::Storage(format!("search policy is not locally available: {path}"))
+        }
     }
 }
 impl<F, Fut> WorkspaceGitExecutor<'_, F>
