@@ -87,7 +87,7 @@ pub(super) const PROBES: u64 = 3;
 /// What can be proven about the process a record names. Only a positive proof
 /// of death is `Dead`; every probe that fails to answer is `Unknown`. Counts
 /// each probe it makes in `probes`.
-pub(super) fn liveness(process: &Process, probes: &mut u64) -> Liveness {
+pub(super) fn liveness(process: &Process, probes: &mut u64, probe: super::LockProbe) -> Liveness {
     let Some(path) = bytes_path(&process.lock) else {
         return Liveness::Unknown;
     };
@@ -95,7 +95,7 @@ pub(super) fn liveness(process: &Process, probes: &mut u64) -> Liveness {
     match File::open(&path) {
         Ok(lock) => match identity_bytes(&lock) {
             Ok(identity) if identity == process.lock_identity => {
-                match FileLock::try_acquire(lock, FileLockMode::Shared) {
+                match probe(lock) {
                     // Its owner holds it exclusively for life.
                     Ok(_) => Liveness::Dead,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => Liveness::Alive,

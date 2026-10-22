@@ -30,9 +30,27 @@ type ClaimKey = crate::FileIdentity;
 #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
 type ClaimKey = std::path::PathBuf;
 
+/// Tries a shared lock on the process lock a record names. Its owner holds
+/// it exclusively for life, so the probe proves death only by taking it.
+type LockProbe = fn(std::fs::File) -> io::Result<FileLock>;
+
+fn shared_lock_probe(file: std::fs::File) -> io::Result<FileLock> {
+    FileLock::try_acquire(file, FileLockMode::Shared)
+}
+
 /// The claim protocol on this machine's files and processes.
 #[derive(Clone, Copy, Debug)]
-struct Native;
+struct Native {
+    /// How the liveness probe locks another process's lock; a seam so tests
+    /// can make it fail as an OS lock does other than by contention.
+    probe: LockProbe,
+}
+
+impl Native {
+    const SYSTEM: Self = Self {
+        probe: shared_lock_probe,
+    };
+}
 
 impl Host for Native {
     type File = FileLock;
@@ -104,7 +122,7 @@ impl Host for Native {
     }
 
     fn liveness(&self, process: &record::Process, probes: &mut u64) -> Liveness {
-        process::liveness(process, probes)
+        process::liveness(process, probes, self.probe)
     }
 
     fn token(&self) -> u64 {
@@ -197,10 +215,26 @@ impl StoreClaim {
 
     /// Claims the store whose claim file is `path`, creating the file if needed.
     pub fn acquire(path: &Path) -> io::Result<Self> {
+        Self::acquire_with(Native::SYSTEM, path)
+    }
+
+    fn acquire_with(host: Native, path: &Path) -> io::Result<Self> {
         // Release reopens the file by this path, which must still name it
         // after this process changes its working directory.
         let path = std::path::absolute(path)?;
-        protocol::acquire(Native, &path).map(|claim| Self { _claim: claim })
+        protocol::acquire(host, &path).map(|claim| Self { _claim: claim })
+    }
+
+    /// [`StoreClaim::acquire`], probing other processes' locks with `probe`.
+    #[cfg(test)]
+    pub(crate) fn acquire_probing(path: &Path, probe: LockProbe) -> io::Result<Self> {
+        Self::acquire_with(Native { probe }, path)
+    }
+
+    /// [`StoreClaim::check`], probing other processes' locks with `probe`.
+    #[cfg(test)]
+    pub(crate) fn check_probing(file: &FileLock, probe: LockProbe) -> io::Result<ClaimCheck> {
+        Self::check_with(&Native { probe }, file)
     }
 
     /// Whether the claim file `file` names an owner that excludes others: a
@@ -228,7 +262,11 @@ impl StoreClaim {
     /// [`StoreClaim::is_claimed`], with the reads it made, for callers that
     /// account their I/O. At most [`StoreClaim::CHECK_READ_OPERATIONS`].
     pub fn check(file: &FileLock) -> io::Result<ClaimCheck> {
-        let (claimed, read_operations) = protocol::is_claimed(&Native, file)?;
+        Self::check_with(&Native::SYSTEM, file)
+    }
+
+    fn check_with(host: &Native, file: &FileLock) -> io::Result<ClaimCheck> {
+        let (claimed, read_operations) = protocol::is_claimed(host, file)?;
         Ok(ClaimCheck {
             claimed,
             read_operations,
