@@ -8,11 +8,11 @@ use std::{future::Future, sync::Arc};
 pub(crate) mod imports;
 pub(crate) use imports::Document;
 mod budget;
-#[cfg(test)]
-mod mcp_identity_tests;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod effects;
+#[cfg(test)]
+mod mcp_identity_tests;
 mod plan;
 mod snapshot;
 mod spec;
@@ -233,6 +233,9 @@ thread_local! {
     #[doc(hidden)]
     pub static SUBSTITUTE_HOOK_NAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+#[cfg(test)]
+#[cfg(windows)]
+mod release_tests;
 #[cfg(test)]
 mod tests;
 
