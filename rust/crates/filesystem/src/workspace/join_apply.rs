@@ -90,13 +90,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .map_err(Into::into)
     }
 
-    /// Validates a candidate and stages immutable records without publishing.
-    /// Callers may recheck their execution owner before applying the returned map.
-    pub async fn prepare_candidate(
+    /// Refuses a candidate planned against other heads, or whose resolutions
+    /// do not answer exactly its complete set of conflicts.
+    fn check_candidate(
         &self,
         candidate: &UnpublishedMergeCandidate,
-    ) -> Result<BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>, DrivenJoinError>
-    {
+    ) -> Result<(), DrivenJoinError> {
         let conflict_keys = candidate
             .plan
             .conflicts
@@ -113,6 +112,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         {
             return Err(DrivenJoinError::StaleCandidate);
         }
+        Ok(())
+    }
+
+    /// Validates a candidate and stages immutable records without publishing.
+    /// Callers may recheck their execution owner before applying the returned map.
+    pub async fn prepare_candidate(
+        &self,
+        candidate: &UnpublishedMergeCandidate,
+    ) -> Result<BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>, DrivenJoinError>
+    {
+        self.check_candidate(candidate)?;
         let mut resolutions = BTreeMap::new();
         for conflict in &candidate.plan.conflicts {
             let resolution = candidate

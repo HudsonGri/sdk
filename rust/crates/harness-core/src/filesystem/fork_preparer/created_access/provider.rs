@@ -207,6 +207,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
 #[path = "frame_tests.rs"]
 mod frame_tests;

@@ -4,9 +4,9 @@
       710,
       101,
       158,
-      315729,
-      12355,
-      59145
+      315465,
+      12371,
+      59105
     ],
     "work": {
       "allocationOperations": 487,
@@ -29,7 +29,7 @@
       "outputBytes": 0,
       "pageReads": 53,
       "pageWrites": 8,
-      "peakAllocationBytes": 67151139,
+      "peakAllocationBytes": 67151099,
       "sourceBytesRead": 547,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 22
@@ -40,9 +40,9 @@
       139,
       15,
       71,
-      53905,
-      2612,
-      30850
+      53793,
+      2628,
+      30818
     ],
     "work": {
       "allocationOperations": 124,
@@ -65,7 +65,7 @@
       "outputBytes": 0,
       "pageReads": 5,
       "pageWrites": 0,
-      "peakAllocationBytes": 67129448,
+      "peakAllocationBytes": 67129416,
       "sourceBytesRead": 0,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 17

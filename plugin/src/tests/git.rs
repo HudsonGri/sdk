@@ -323,7 +323,7 @@ fn control_plane_requests_fit_the_main_thread_budget() {
         &["merge", "review-other"],
     ] {
         if let ["write", text] = args {
-            runtime.block_on(write_child_text(&control, *text));
+            runtime.block_on(write_child_text(&control, text));
             continue;
         }
         let conflict = args[0] == "merge";

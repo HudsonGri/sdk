@@ -7,6 +7,12 @@ mod entry;
 mod stack_budget;
 #[path = "../view.rs"]
 mod view;
-fn main() {
-    stack_budget::qualify();
+fn main() -> std::process::ExitCode {
+    match stack_budget::qualify() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("stack budget qualification failed: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
