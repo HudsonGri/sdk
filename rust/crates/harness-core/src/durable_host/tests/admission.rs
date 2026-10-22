@@ -398,3 +398,55 @@ fn canonical_payload_decode_checks_source_bytes_and_exact_bound() -> Result<()> 
     }
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn observed_admission<P: StreamProvider>(
+    host: &CoordinatorTaskHost<P>,
+    task: TaskId,
+) -> Result<(TaskAdmissionRecord, u64, u64)> {
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (record, custody) = host
+        .observe_admission_with_native_work(task, &work)?
+        .await?;
+    Ok((record, work.receipt().items_examined, custody.bytes()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_validated_admission_is_read_once_per_host_and_copied_onto_each_ledger() -> Result<()> {
+    let f = fixture().await?;
+    f.host.admit(f.admission(131, json!(0))).await?;
+    let task = TaskId::from_bytes([131; 16]);
+    let (first, read, first_bytes) = observed_admission(&f.host, task).await?;
+    let (second, copied, second_bytes) = observed_admission(&f.host, task).await?;
+    assert!(first == second, "the memo returns the validated admission");
+    assert_eq!(
+        first_bytes, second_bytes,
+        "each copy holds what a decode holds"
+    );
+    assert!(
+        copied * 4 < read,
+        "a later read copies the record ({copied} items) instead of re-reading it ({read} items)"
+    );
+    // Negative control: reading through the uncached path pays the full read again.
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let reread = f
+        .host
+        .read_admission(
+            OperationId::from_bytes(task.into_bytes()),
+            &mut Some(&mut io.history_io()),
+        )
+        .await?;
+    assert!(reread == first);
+    assert!(work.receipt().items_examined * 2 > read);
+    Ok(())
+}
