@@ -1,15 +1,5 @@
 use super::*;
-
-/// Counts this process's descriptors that name `path`.
-fn descriptors_naming(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
-    let mut count = 0;
-    for entry in std::fs::read_dir("/proc/self/fd")? {
-        if std::fs::read_link(entry?.path()).is_ok_and(|target| target == path) {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
+use acyclic_native_runtime::testing::descriptors_naming;
 
 #[tokio::test]
 async fn an_open_stream_holds_one_journal_descriptor() -> Result<(), Box<dyn std::error::Error>> {
