@@ -12,7 +12,6 @@
 use crate::NativeRootIdentity;
 use crate::demand::SourceDemandReadWork;
 use crate::native_host::HostRoot;
-use crate::native_host::NativeHostWork as _;
 mod replay;
 pub use replay::{WindowsUsnReplay, WindowsUsnReplayProgress};
 use std::mem::size_of;
@@ -386,7 +385,10 @@ mod tests {
         for suffix in [r"\", r"\mounted\child", "\\非ASCII"] {
             let input: Vec<_> = format!("{guid}{suffix}").encode_utf16().collect();
             let device = volume_device_name(&input).unwrap();
-            assert_eq!(device, guid.encode_utf16().chain([0]).collect::<Vec<_>>());
+            assert_eq!(
+                device.as_slice(),
+                guid.encode_utf16().chain([0]).collect::<Vec<_>>()
+            );
         }
         // Negative controls: a drive or share spelling cannot identify a
         // mounted-folder volume, and unvalidated text cannot select a device.
