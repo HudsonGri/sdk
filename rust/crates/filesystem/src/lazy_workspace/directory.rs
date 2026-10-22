@@ -103,6 +103,28 @@ impl LazyDirectoryCursor {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
+    /// Observes a native directory token without enumerating or reading content.
+    /// Authored directory bindings do not hide changes in their native remainder.
+    pub async fn source_directory_version_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<crate::demand::SourceVersion>, LazyWorkspaceError> {
+        self.validate_snapshot(snapshot, accounting).await?;
+        let namespace = self.namespace_path(path, accounting)?;
+        let observed = accounted!(accounting, |work, stop| self.source.lookup(
+            snapshot.source,
+            &namespace.value,
+            work,
+            stop
+        ));
+        namespace.retire(accounting)?;
+        Ok(observed?
+            .filter(|node| node.kind == SourceNodeKind::Directory)
+            .map(|node| node.version))
+    }
+
     /// Lists the current merged directory.
     pub async fn list_directory(
         &self,

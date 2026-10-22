@@ -115,6 +115,47 @@ impl StoredManifest {
                 "pathname checkpoint progress mismatch".into(),
             ));
         }
+        let root = directory_root();
+        let mut after = None;
+        loop {
+            let page = generation
+                .list_directory(&root, after.as_ref(), 128, WorkBudget::UNBOUNDED, &stop)
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+                .0;
+            for entry in &page.entries {
+                let name = entry
+                    .name
+                    .unicode_text(WorkBudget::UNBOUNDED, &stop)
+                    .map_err(|failure| failure.error)?
+                    .value
+                    .to_string();
+                let hash = name
+                    .strip_suffix(".json")
+                    .filter(|hash| {
+                        hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                    .ok_or_else(|| {
+                        SearchError::Invalid("invalid directory token filename".into())
+                    })?;
+                let bytes = generation
+                    .read(
+                        &format!("{root}/{name}"),
+                        MAXIMUM_INDEX_FILE_BYTES,
+                        WorkBudget::UNBOUNDED,
+                        &stop,
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value;
+                checkpoint.restore_directory_record(&bytes, hash)?;
+            }
+            if !page.has_more {
+                break;
+            }
+            after = page.entries.last().map(|entry| entry.name.clone());
+        }
         Ok(NameIndexManifest {
             schema: self.schema,
             cut: self.cut,
@@ -185,7 +226,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     };
     let root = policy_root();
     if previous.is_none() {
-        clear_policies(transaction, expected).await?;
+        clear_directory(transaction, expected, &root).await?;
     }
     transaction
         .write_batch(
@@ -258,8 +299,52 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .map_err(|failure| failure.error)?;
         }
     }
+    let directory_root = directory_root();
+    if previous.is_none() {
+        clear_directory(transaction, expected, &directory_root).await?;
+    }
+    transaction
+        .write_batch(
+            &[&directory_root],
+            &[],
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    for record in manifest
+        .checkpoint
+        .directory_records_since(previous.map(|previous| &previous.manifest.checkpoint))
+    {
+        let (directory, record) = record?;
+        let path = format!(
+            "{directory_root}/{}.json",
+            blake3::hash(directory.as_bytes()).to_hex()
+        );
+        if let Some(bytes) = record {
+            if bytes.len() as u64 > MAXIMUM_INDEX_FILE_BYTES {
+                return Err(SearchError::Invalid(
+                    "directory token exceeds its file budget".into(),
+                ));
+            }
+            transaction
+                .write(
+                    &path,
+                    bytes,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?;
+        } else {
+            transaction
+                .remove(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| failure.error)?;
+        }
+    }
     let stored = StoredManifest {
-        schema: 3,
+        schema: 4,
         cut: manifest.cut.clone(),
         names_cut: manifest.names_cut.clone(),
         observed_generation: manifest.observed_generation,
@@ -284,16 +369,20 @@ fn policy_root() -> String {
     format!("{ROOT}/policies")
 }
 
-async fn clear_policies<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+fn directory_root() -> String {
+    format!("{ROOT}/directories")
+}
+
+async fn clear_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     transaction: &mut crate::Transaction<A, O>,
     expected: &Generation<A, O>,
+    root: &str,
 ) -> Result<(), SearchError> {
-    let root = policy_root();
     let stop = CancellationToken::new();
     let mut after = None;
     loop {
         let page = match expected
-            .list_directory(&root, after.as_ref(), 128, WorkBudget::UNBOUNDED, &stop)
+            .list_directory(root, after.as_ref(), 128, WorkBudget::UNBOUNDED, &stop)
             .await
         {
             Ok(receipt) => receipt.value.0,
@@ -408,7 +497,7 @@ mod tests {
             checkpoint.restore_record(&record).unwrap();
         }
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -591,7 +680,7 @@ mod tests {
             checkpoint.restore_record(&record).unwrap();
         }
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

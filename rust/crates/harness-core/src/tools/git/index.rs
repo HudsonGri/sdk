@@ -105,7 +105,7 @@ impl IndexedNames {
         let existing = Index::open(workspace)
             .await
             .map_err(super::search::search_error)?;
-        let existing = if let Some(index) = existing {
+        let mut existing = if let Some(index) = existing {
             if reusable(view, &index).await? {
                 Some(index)
             } else {
@@ -114,7 +114,10 @@ impl IndexedNames {
         } else {
             None
         };
-        restore_watches(&owned, native.is_some(), existing.as_ref()).await?;
+        let restart_fresh = restore_watches(&owned, existing.as_ref()).await?;
+        if !restart_fresh {
+            existing = None;
+        }
         let (changed, receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
             latest: AsyncMutex::new(existing.map(Arc::new)),
@@ -126,7 +129,7 @@ impl IndexedNames {
         *entry = Arc::downgrade(&shared);
         let producer = Arc::clone(&shared);
         tokio::spawn(async move {
-            if let Err(error) = maintain(&owned, &producer, native).await {
+            if let Err(error) = maintain(&owned, &producer, native, restart_fresh).await {
                 if let Ok(mut failure) = producer.failure.lock() {
                     *failure = Some(error.to_string());
                 }
@@ -298,17 +301,14 @@ fn native_follow(
     })
 }
 
-async fn restore_watches(
-    view: &OwnedView,
-    native: bool,
-    index: Option<&Index>,
-) -> crate::Result<()> {
+async fn restore_watches(view: &OwnedView, index: Option<&Index>) -> crate::Result<bool> {
     // A newly opened inotify subscription initially watches only the root.
-    // Restore subdirectory registrations from committed index pages before
+    // Restore registrations and compare persisted per-directory tokens before
     // declaring a completed index live. Lookup registers each directory and
-    // its ancestors; it never lists it or reads candidate content.
-    if native
-        && let OwnedView::Checkout(lazy) = view
+    // its ancestors; it never lists it or reads candidate content. Offline
+    // changes cannot be hidden by reinstalling watches on a stale snapshot.
+    let mut fresh = true;
+    if let OwnedView::Checkout(lazy) = view
         && let Some(index) = index
         && let acyclic_fs::NameCut::Lazy(snapshot) = &index.manifest.cut
     {
@@ -319,30 +319,21 @@ async fn restore_watches(
             work: &work,
             cancellation: &cancellation,
         };
-        for page in 0..index.manifest.pages {
-            for name in index
-                .page(page)
-                .await
-                .map_err(super::search::search_error)?
-            {
-                if name.directory {
-                    lazy.observe_indexed_native_directory(
-                        *snapshot,
-                        &format!("/{}", name.path),
-                        &mut accounting,
-                    )
-                    .await?;
-                }
-            }
+        for (path, expected) in index.manifest.checkpoint.native_directories() {
+            let observed = lazy
+                .observe_indexed_native_directory(*snapshot, &format!("/{path}"), &mut accounting)
+                .await?;
+            fresh &= observed == expected;
         }
     }
-    Ok(())
+    Ok(fresh)
 }
 
 async fn maintain(
     view: &OwnedView,
     shared: &Shared,
     mut native: Option<acyclic_fs::lazy_workspace::NativeNameChanges>,
+    mut restart_fresh: bool,
 ) -> crate::Result<()> {
     let mut native_delta = None;
     let (provider, path) = view
@@ -366,6 +357,10 @@ async fn maintain(
             .map_err(super::search::search_error)?;
         let mut policy = None;
         let published = match published {
+            Some(_) if !restart_fresh => {
+                restart_fresh = true;
+                None
+            }
             Some(index) if reusable(view.view(), &index).await? => Some(index),
             Some(index) => {
                 // The shared index has one volume-owned policy. Query callers
@@ -631,7 +626,7 @@ async fn fill_pass(
         let complete = page.is_none();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -742,7 +737,7 @@ mod tests {
                 .is_none()
         );
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

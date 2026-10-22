@@ -71,7 +71,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         let stored: checkpoint::StoredManifest = serde_json::from_slice(&bytes)?;
-        if stored.schema != 3 {
+        if stored.schema != 4 {
             return Err(SearchError::Invalid(
                 "unsupported pathname index schema".into(),
             ));

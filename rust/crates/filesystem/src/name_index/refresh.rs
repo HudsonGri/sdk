@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             write_page(&mut transaction, ordinal, &page, &stop).await?;
         }
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             names_cut: if names_changed {
                 cut.clone()
             } else {
@@ -394,7 +394,7 @@ mod byte_page_tests {
         .unwrap();
         while walk.next_page().await.unwrap().is_some() {}
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

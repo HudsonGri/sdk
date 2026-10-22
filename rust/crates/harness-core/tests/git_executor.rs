@@ -598,7 +598,7 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
         let page = walk.next_page().await?;
         pages += u64::from(page.is_some());
         let manifest = acyclic_fs::NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -649,6 +649,114 @@ async fn volume_search_restores_nested_watches_before_open_returns() -> Result<(
                 .any(|name| name.path == "nested/arrived.txt")
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_rejects_a_durable_index_changed_while_the_source_was_closed() -> Result<()> {
+    let (_temp, root, _fs, store, main) = fixture_native(false).await?;
+    std::fs::create_dir(root.join("nested"))?;
+    std::fs::write(root.join("nested/removed-offline.txt"), b"unread")?;
+    let ignore = git::search_ignore((&main).into()).await?;
+    let mut walk = git::walk_names((&main).into(), None, ignore).await?;
+    let stop = CancellationToken::new();
+    let mut expected = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let mut previous = None;
+    let mut pages = 0;
+    loop {
+        let page = walk.next_page().await?;
+        pages += u64::from(page.is_some());
+        let manifest = acyclic_fs::NameIndexManifest {
+            schema: 4,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint()?,
+        };
+        let index = acyclic_fs::NameIndex::publish(
+            main.workspace(),
+            &expected,
+            manifest,
+            page.as_deref(),
+            previous.as_ref(),
+        )
+        .await?
+        .unwrap();
+        expected = index.generation();
+        previous = Some(index);
+        if page.is_none() {
+            break;
+        }
+    }
+    drop(walk);
+    let original = previous.unwrap();
+    let acyclic_fs::NameCut::Lazy(snapshot) = &original.manifest.cut else {
+        panic!("lazy cut");
+    };
+    let workspace = main.workspace().clone();
+    drop(main);
+    // No producer or source subscription exists during this offline mutation.
+    std::fs::remove_file(root.join("nested/removed-offline.txt"))?;
+    std::fs::write(root.join("nested/created-offline.txt"), b"unread")?;
+    let config = VolumeConfig::native(Lifecycle::Durable);
+    let source = NativeDemandSource::open(
+        Cow::Borrowed(&root),
+        config.profile,
+        config.limits,
+        Some(snapshot.source),
+        None,
+        WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .await?
+    .value;
+    let reopened = LazyWorkspace::open(
+        workspace,
+        Arc::new(source),
+        store,
+        &mut WorkBudget::UNBOUNDED.accounting(&stop),
+    )
+    .await?;
+    let mut names = git::IndexedNames::open((&reopened).into()).await?;
+    let mut paths = Vec::new();
+    while let Some(page) = names.next_page().await? {
+        if page.reset {
+            paths.clear();
+        }
+        paths.extend(page.names.into_iter().map(|name| name.path));
+    }
+    assert!(
+        paths
+            .iter()
+            .any(|path| path == "nested/created-offline.txt")
+    );
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path == "nested/removed-offline.txt")
+    );
+    // Negative control: the old immutable pages certify exactly the wrong names.
+    let mut old_paths = Vec::new();
+    for page in 0..original.manifest.pages {
+        old_paths.extend(original.page(page).await?.into_iter().map(|name| name.path));
+    }
+    assert!(
+        old_paths
+            .iter()
+            .any(|path| path == "nested/removed-offline.txt")
+    );
+    assert!(
+        !old_paths
+            .iter()
+            .any(|path| path == "nested/created-offline.txt")
+    );
     Ok(())
 }
 

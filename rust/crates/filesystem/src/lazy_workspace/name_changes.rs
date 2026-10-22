@@ -335,16 +335,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, S: LazyWorkspaceStore>
         snapshot: LazySnapshotRef,
         path: &str,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<bool, LazyWorkspaceError> {
-        let namespace = self.namespace_path(path, accounting)?;
-        let observed = accounted!(accounting, |work, stop| self.source.lookup(
-            snapshot.source,
-            &namespace.value,
-            work,
-            stop
-        ));
-        namespace.retire(accounting)?;
-        Ok(observed?.is_some_and(|node| node.kind == SourceNodeKind::Directory))
+    ) -> Result<Option<crate::demand::SourceVersion>, LazyWorkspaceError> {
+        self.source_directory_version_at_snapshot(snapshot, path, accounting)
+            .await
     }
 
     /// Subscribes before pathname discovery, so a completed index can remain

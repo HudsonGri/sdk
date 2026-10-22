@@ -8,6 +8,8 @@ use crate::{
 };
 mod policies;
 use policies::Policies;
+mod versions;
+use versions::DirectoryVersions;
 const PAGE_ENTRIES: u32 = 128;
 pub(crate) const NAME_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -71,11 +73,69 @@ pub struct NameCheckpoint {
     pending: Vec<(String, SavedCursor)>,
     single: Option<SearchName>,
     ignore_policies: Policies,
+    directory_versions: DirectoryVersions,
     unavailable_entries: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NameCheckpoint {
+    /// Native directory metadata captured during enumeration. A missing
+    /// directory is also a token: its later creation invalidates this cut.
+    pub fn native_directories(
+        &self,
+    ) -> impl Iterator<Item = (&str, Option<crate::demand::SourceVersion>)> {
+        self.directory_versions.iter()
+    }
+
+    pub(crate) fn directory_records_since<'a>(
+        &'a self,
+        previous: Option<&'a Self>,
+    ) -> impl Iterator<Item = Result<(&'a str, Option<Vec<u8>>), serde_json::Error>> + 'a {
+        let changes: Box<
+            dyn Iterator<Item = (&str, Option<&Option<crate::demand::SourceVersion>>)> + Send + 'a,
+        > = match previous {
+            Some(previous) => Box::new(
+                self.directory_versions
+                    .changes(&previous.directory_versions),
+            ),
+            None => Box::new(
+                self.directory_versions
+                    .entries()
+                    .map(|(path, version)| (path, Some(version))),
+            ),
+        };
+        changes.map(|(path, version)| {
+            Ok((
+                path,
+                version
+                    .map(|version| {
+                        serde_json::to_vec(&CheckpointRecordRef::Directory(path, *version))
+                    })
+                    .transpose()?,
+            ))
+        })
+    }
+
+    pub(crate) fn restore_directory_record(
+        &mut self,
+        record: &[u8],
+        hash: &str,
+    ) -> Result<(), SearchError> {
+        let CheckpointRecord::Directory(path, version) = serde_json::from_slice(record)? else {
+            return Err(SearchError::Invalid(
+                "expected directory version record".into(),
+            ));
+        };
+        if blake3::hash(path.as_bytes()).to_hex().as_str() != hash
+            || self.directory_versions.contains_key(&path)
+        {
+            return Err(SearchError::Invalid(
+                "directory version identity mismatch".into(),
+            ));
+        }
+        self.directory_versions.insert(path, version);
+        Ok(())
+    }
     pub(crate) fn records(&self) -> impl Iterator<Item = Result<Vec<u8>, serde_json::Error>> + '_ {
         std::iter::once(CheckpointRecordRef::Header {
             cut: &self.cut,
@@ -122,6 +182,9 @@ impl NameCheckpoint {
             CheckpointRecord::Policy(path, policy) => {
                 self.ignore_policies.insert(path, policy);
             }
+            CheckpointRecord::Directory(path, version) => {
+                self.directory_versions.insert(path, version);
+            }
         }
         Ok(())
     }
@@ -159,6 +222,7 @@ impl NameCheckpoint {
                 unavailable_entries,
                 pending: Vec::new(),
                 ignore_policies: Policies::default(),
+                directory_versions: DirectoryVersions::default(),
             }),
             _ => Err(SearchError::Invalid("missing checkpoint header".into())),
         }
@@ -189,6 +253,7 @@ impl NameCheckpoint {
 
     pub(crate) fn forget_subtree(&mut self, path: &str) {
         self.ignore_policies.forget_subtree(path);
+        self.directory_versions.forget_subtree(path);
     }
 
     pub(crate) fn discover_directory(&mut self, path: &str, authored: bool) {
@@ -220,6 +285,7 @@ enum CheckpointRecordRef<'a> {
     },
     Pending(&'a str, &'a SavedCursor),
     Policy(&'a str, &'a GitIgnorePolicy),
+    Directory(&'a str, Option<crate::demand::SourceVersion>),
 }
 
 #[derive(serde::Deserialize)]
@@ -231,6 +297,7 @@ enum CheckpointRecord {
     },
     Pending(String, SavedCursor),
     Policy(String, GitIgnorePolicy),
+    Directory(String, Option<crate::demand::SourceVersion>),
 }
 
 pub(crate) fn within_subtree(path: &str, root: &str) -> bool {
@@ -285,6 +352,7 @@ pub struct NameWalk<'a, A, O, D, S> {
     // Existing authored metadata is cheap and available before native listing.
     authored: Option<Generation<A, O>>,
     ignore_policies: Policies,
+    directory_versions: DirectoryVersions,
     unavailable_entries: usize,
     directory_query: Option<String>,
 }
@@ -335,6 +403,7 @@ impl<
             pending,
             single: self.single.clone(),
             ignore_policies: self.ignore_policies.clone(),
+            directory_versions: self.directory_versions.clone(),
             unavailable_entries: self.unavailable_entries,
         })
     }
@@ -441,6 +510,7 @@ impl<
             ignore,
             authored,
             ignore_policies: checkpoint.ignore_policies,
+            directory_versions: checkpoint.directory_versions,
             unavailable_entries: checkpoint.unavailable_entries,
             directory_query: None,
         })
@@ -536,6 +606,7 @@ impl<
             ignore,
             authored,
             ignore_policies: Policies::default(),
+            directory_versions: DirectoryVersions::default(),
             unavailable_entries: 0,
             directory_query: None,
         };
@@ -699,6 +770,13 @@ impl<
             (Cut::Lazy(lazy, snapshot), Continuation::Lazy(cursor)) => {
                 let stop = CancellationToken::new();
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
+                if cursor.is_none() {
+                    let version = lazy
+                        .source_directory_version_at_snapshot(*snapshot, &directory, &mut ctx)
+                        .await?;
+                    self.directory_versions
+                        .insert(directory.trim_matches('/').to_owned(), version);
+                }
                 if let Some(cursor) = &cursor {
                     // Pages (including restored continuations) have separate
                     // standalone ledgers. Fund the retained cursor in this

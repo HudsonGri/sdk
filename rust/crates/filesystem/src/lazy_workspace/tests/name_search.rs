@@ -121,6 +121,69 @@ async fn name_search_lazy_checkpoint_reopens_native_directory_after_restart() {
 use crate::facade::FsWork as _;
 use crate::{GitIgnorePolicy, NameWalk, PublicationPermit};
 
+#[cfg(all(unix, feature = "native-watch"))]
+#[tokio::test]
+async fn name_search_directory_tokens_survive_reopen_and_detect_offline_edits() {
+    let root = tempfile::tempdir().unwrap();
+    for directory in ["changed", "unchanged"] {
+        std::fs::create_dir(root.path().join(directory)).unwrap();
+        std::fs::write(root.path().join(directory).join("original"), b"unread").unwrap();
+    }
+    let fs = Fs::memory();
+    let lazy = attach(
+        &fs,
+        native_source(root.path(), crate::FilesystemProfile::Portable).await,
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let original = publish_name_walk(lazy.workspace(), walk).await;
+    let reopened = crate::NameIndex::open(lazy.workspace())
+        .await
+        .unwrap()
+        .unwrap();
+    let tokens: std::collections::BTreeMap<_, _> =
+        reopened.manifest.checkpoint.native_directories().collect();
+    assert_eq!(tokens.len(), 3);
+    assert!(tokens.values().all(Option::is_some));
+    assert_eq!(
+        serde_json::to_vec(&original.manifest.checkpoint).unwrap(),
+        serde_json::to_vec(&reopened.manifest.checkpoint).unwrap()
+    );
+    let stop = CancellationToken::new();
+    let snapshot = lazy
+        .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&stop))
+        .await
+        .unwrap();
+    for (path, token) in &tokens {
+        let current = lazy
+            .source_directory_version_at_snapshot(
+                snapshot,
+                &format!("/{path}"),
+                &mut WorkBudget::UNBOUNDED.accounting(&stop),
+            )
+            .await
+            .unwrap();
+        assert_eq!(current, *token);
+    }
+    // Negative control: a root-only token misses edits below an existing child.
+    std::fs::write(root.path().join("changed/created-offline"), b"unread").unwrap();
+    for (path, token) in tokens {
+        let current = lazy
+            .source_directory_version_at_snapshot(
+                snapshot,
+                &format!("/{path}"),
+                &mut WorkBudget::UNBOUNDED.accounting(&stop),
+            )
+            .await
+            .unwrap();
+        assert_eq!(current == token, path != "changed", "{path}");
+    }
+}
+
 async fn publish_name_walk<A, O, D, S>(
     workspace: &crate::Workspace<A, O>,
     mut walk: NameWalk<'_, A, O, D, S>,
@@ -142,7 +205,7 @@ where
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = crate::NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -742,7 +805,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 3,
+        schema: 4,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1131,7 +1194,7 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 3,
+        schema: 4,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1206,7 +1269,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1426,7 +1489,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     .unwrap();
     while walk.next_page().await.unwrap().is_some() {}
     let manifest = NameIndexManifest {
-        schema: 3,
+        schema: 4,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1537,7 +1600,7 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 3,
+            schema: 4,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
