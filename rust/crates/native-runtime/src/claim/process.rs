@@ -355,8 +355,9 @@ fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
 #[cfg(target_vendor = "apple")]
 #[allow(unsafe_code, reason = "FFI: proc_pidinfo, which rustix does not wrap")]
 fn zombie(pid: rustix::process::Pid) -> bool {
-    /// `SZOMB` in `<sys/proc.h>`.
-    const ZOMBIE: u32 = 5;
+    /// Asks for zombies too: without it the kernel looks up only live
+    /// processes, and a zombie fails with ESRCH as if its status were unknown.
+    const FIND_ZOMBIES: u64 = 1;
     let Ok(size) = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()) else {
         return false;
     };
@@ -366,7 +367,7 @@ fn zombie(pid: rustix::process::Pid) -> bool {
         libc::proc_pidinfo(
             pid.as_raw_nonzero().get(),
             libc::PROC_PIDTBSDINFO,
-            0,
+            FIND_ZOMBIES,
             info.as_mut_ptr().cast(),
             size,
         )
@@ -377,7 +378,7 @@ fn zombie(pid: rustix::process::Pid) -> bool {
     // SAFETY: zeroed, then wholly written: every field is an integer or an
     // integer array, valid for any bytes.
     let info = unsafe { info.assume_init() };
-    info.pbi_status == ZOMBIE
+    info.pbi_status == libc::SZOMB
 }
 
 /// The whole of the file at `path`, which must fit `buffer`.
