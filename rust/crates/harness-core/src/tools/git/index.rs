@@ -368,7 +368,7 @@ async fn maintain(
     let mut native_delta =
         (restart_delta.all || !restart_delta.paths.is_empty()).then_some(restart_delta);
     let probe_metadata = native.is_none() && matches!(view, OwnedView::Checkout(_));
-    let mut metadata_cursor = None;
+    let mut metadata_probe = MetadataProbe::new();
     let (provider, path) = view
         .workspace()
         .authority_records()
@@ -468,7 +468,7 @@ async fn maintain(
             },
             _ = shared.refresh.notified() => {},
             changed = source_changed(&mut native) => { native_delta = Some(changed?); },
-            changed = metadata_changed_without_feed(view, shared, &mut metadata_cursor, probe_metadata) => {
+            changed = metadata_changed_without_feed(view, shared, &mut metadata_probe, probe_metadata) => {
                 native_delta = Some(changed?);
             },
             record = records.next() => {
@@ -497,10 +497,31 @@ fn metadata_changed(
     }
 }
 
+struct MetadataProbe {
+    after: Option<String>,
+    next: tokio::time::Instant,
+}
+
+impl MetadataProbe {
+    fn new() -> Self {
+        Self {
+            after: None,
+            next: tokio::time::Instant::now() + std::time::Duration::from_millis(250),
+        }
+    }
+
+    async fn wait(&mut self) {
+        // This deadline belongs to the producer, not the select! future.
+        // Cancelling a wait for an unrelated file revision cannot postpone it.
+        tokio::time::sleep_until(self.next).await;
+        self.next = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
+    }
+}
+
 async fn metadata_changed_without_feed(
     view: &OwnedView,
     shared: &Shared,
-    after: &mut Option<String>,
+    probe: &mut MetadataProbe,
     enabled: bool,
 ) -> crate::Result<acyclic_fs::lazy_workspace::NativeNameDelta> {
     let OwnedView::Checkout(lazy) = view else {
@@ -513,7 +534,7 @@ async fn metadata_changed_without_feed(
         // Network and externally managed mounts may have no usable native
         // feed. One producer checks a bounded batch of metadata tokens; it
         // never periodically lists the tree, nor allocates a cursor per agent.
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        probe.wait().await;
         let Some(index) = shared.snapshot().await else {
             continue;
         };
@@ -533,7 +554,7 @@ async fn metadata_changed_without_feed(
         for (path, expected) in index
             .manifest
             .checkpoint
-            .source_versions_after(after.as_deref())
+            .source_versions_after(probe.after.as_deref())
             .take(128)
         {
             let observed = lazy
@@ -545,7 +566,7 @@ async fn metadata_changed_without_feed(
             count += 1;
             last = Some(path.to_owned());
         }
-        *after = if count == 128 { last } else { None };
+        probe.after = if count == 128 { last } else { None };
         if delta.all || !delta.paths.is_empty() {
             lazy.invalidate_indexed_native_metadata();
             return Ok(delta);
@@ -775,6 +796,33 @@ async fn fill_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn volume_search_metadata_deadline_survives_unrelated_file_revisions() {
+        let mut probe = MetadataProbe::new();
+        for _ in 0..4 {
+            let waiting = probe.wait();
+            tokio::pin!(waiting);
+            assert!(futures::poll!(&mut waiting).is_pending());
+            tokio::time::advance(std::time::Duration::from_millis(60)).await;
+            // Dropping the wait models another authority record winning select!.
+        }
+        {
+            let waiting = probe.wait();
+            tokio::pin!(waiting);
+            assert!(futures::poll!(&mut waiting).is_pending());
+            tokio::time::advance(std::time::Duration::from_millis(10)).await;
+            assert!(futures::poll!(&mut waiting).is_ready());
+        }
+        // Negative control: the old freshly constructed sleep starts its
+        // 250 ms delay again after every record and is not due at this point.
+        let restarted = tokio::time::sleep(std::time::Duration::from_millis(250));
+        tokio::pin!(restarted);
+        assert!(futures::poll!(&mut restarted).is_pending());
+        let next = probe.wait();
+        tokio::pin!(next);
+        assert!(futures::poll!(&mut next).is_pending());
+    }
 
     #[tokio::test]
     async fn volume_search_replacement_subscription_cancels_idle_retirement() {
