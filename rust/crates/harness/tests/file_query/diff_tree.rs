@@ -155,6 +155,7 @@ fn moved_directories_expand_descendants_and_retire_previous_rows() -> TestResult
 #[tokio::test]
 async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() -> TestResult {
     let fixture = Fixture::new().await?;
+    let maximum_changes = u32::try_from(LIMITS.changes)?;
     let names: Vec<_> = (0..4097).map(|index| format!("file-{index:04}")).collect();
     let mut writes: Vec<_> = names
         .iter()
@@ -174,7 +175,7 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
     // Semantic records and rendered paths have separate bounds: the host also
     // changes directory/metadata records when replacing this one visible file.
     let changes = base
-        .diff_to(&current, LIMITS.changes, BOUNDARY_BUDGET, &cancel)
+        .diff_to(&current, maximum_changes, BOUNDARY_BUDGET, &cancel)
         .await?
         .value
         .0;
@@ -186,13 +187,13 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
     assert_eq!(paths.len(), 1);
     // Negative control: an output bound used as a cold scan bound cannot find it.
     let old = current
-        .paths_for_file_id(stat.file_id, LIMITS.changes, BOUNDARY_BUDGET, &cancel)
+        .paths_for_file_id(stat.file_id, maximum_changes, BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
     assert!(old.is_empty());
     let mut stream = fixture
         .source
-        .observe_diff(base.id(), LIMITS.changes)
+        .observe_diff(base.id(), maximum_changes)
         .await?;
     let snapshot = stream.next().await.ok_or("snapshot")??;
     assert_eq!(snapshot.paths.len(), 1);
@@ -210,7 +211,7 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
     )?;
     assert!(
         limited
-            .observe_diff(base.id(), LIMITS.changes)
+            .observe_diff(base.id(), maximum_changes)
             .await
             .is_err()
     );
