@@ -28,7 +28,7 @@ where
         let file =
             wrap(self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?);
         let file = self.disclose_result(permissions.policy_view(), file, work)?;
-        authorize_file(file, permissions, created.node.file_id, true, work)
+        self.authorize_file(file, permissions, created.node.file_id, true, work)
     }
 
     pub(super) fn seek_extent(
@@ -134,7 +134,8 @@ where
                 })
                 .await?;
             let raw = self.attached_file(lookup.node.file_id, inputs.carrier)?;
-            let (file, bytes) = authorize_file(raw, permissions, lookup.node.file_id, false, work)?;
+            let (file, bytes) =
+                self.authorize_file(raw, permissions, lookup.node.file_id, false, work)?;
             Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
         })
     }
@@ -224,7 +225,7 @@ where
                     Ok((file, lookup.record.file_id))
                 })
                 .await?;
-            authorize_file(wrap((file, 0))?, permissions, file_id, false, work)
+            self.authorize_file(wrap((file, 0))?, permissions, file_id, false, work)
         })
     }
 }

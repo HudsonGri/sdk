@@ -325,7 +325,7 @@ fn require_same_page(
     ))
 }
 
-impl LocalListFilesTool {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListFilesTool<A, O> {
     async fn query(
         &self,
         invocation: &ToolInvocation,

@@ -339,8 +339,7 @@ fn native_access_append_is_atomic_and_cannot_overwrite() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn native_access_refreshes_new_opens_but_keeps_handle_permissions()
--> Result<(), Box<dyn std::error::Error>> {
+fn native_access_revokes_existing_and_new_handles() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     seed(&source, "file", b"pinned")?;
     let old = source.open_file(&native_test_path("file"))?;
@@ -384,7 +383,19 @@ fn native_access_refreshes_new_opens_but_keeps_handle_permissions()
             .map_err(|failure| MountSourceError::from(failure.error))?;
         Ok::<_, MountSourceError>(())
     })?;
-    assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
+    for result in [
+        old.read_range(0, 6).map(|_| ()),
+        old.read_range_with_meter(0, 6, &work).map(|_| ()),
+        old.lookup().map(|_| ()),
+        old.seek(0, MountSeekTarget::Data).map(|_| ()),
+        old.write_range(0, Bytes::from_static(b"denied")),
+        old.append_range(6, Bytes::from_static(b"denied")),
+        old.resize_with_meter(0, &work),
+        old.clone_source(&source.checkout, &work).map(|_| ()),
+        old.clone_range_from(old.as_ref(), 0, 0, 6, &work),
+    ] {
+        assert!(matches!(result, Err(MountSourceError::AccessDenied)));
+    }
     assert!(matches!(
         source.open_file(&native_test_path("file")),
         Err(MountSourceError::AccessDenied)
@@ -420,6 +431,8 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
     for action in [
         Action::Create,
+        Action::Write,
+        Action::Append,
         Action::Rename,
         Action::Delete,
         Action::Admin,
@@ -438,6 +451,12 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
             Action::Create => {
                 source.create_file(&native_test_path("nested/new"), metadata(), None, &work)?;
             }
+            Action::Write => source
+                .open_file(&native_test_path("nested/from"))?
+                .write_range(0, Bytes::from_static(b"changed"))?,
+            Action::Append => source
+                .open_file(&native_test_path("nested/from"))?
+                .append_range(8, Bytes::from_static(b"!"))?,
             Action::Rename => source.rename(
                 &native_test_path("nested/from"),
                 &native_test_path("nested/to"),
@@ -492,7 +511,19 @@ fn native_path_reads_and_enumeration_bind_their_actual_policy_snapshot()
         source.directory_page(&MountPath::root(), None, 8, &work),
         Err(MountSourceError::AccessDenied)
     ));
-    assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
+    for result in [
+        old.read_range(0, 6).map(|_| ()),
+        old.read_range_with_meter(0, 6, &work).map(|_| ()),
+        old.lookup().map(|_| ()),
+        old.seek(0, MountSeekTarget::Data).map(|_| ()),
+        old.write_range(0, Bytes::from_static(b"denied")),
+        old.append_range(6, Bytes::from_static(b"denied")),
+        old.resize_with_meter(0, &work),
+        old.clone_source(&source.checkout, &work).map(|_| ()),
+        old.clone_range_from(old.as_ref(), 0, 0, 6, &work),
+    ] {
+        assert!(matches!(result, Err(MountSourceError::AccessDenied)));
+    }
     Ok(())
 }
 
@@ -727,12 +758,18 @@ fn native_access_retarget_preserves_grants_and_checks_identity()
             .write_range(0, Bytes::from_static(b"denied"))
             .is_err()
     );
-    assert_eq!(rebound.read_range(0, 8)?.as_ref(), b"original");
+    assert!(matches!(
+        rebound.read_range(0, 8),
+        Err(MountSourceError::AccessDenied)
+    ));
     publish_test_access(&source, vec![deny("no-read", &[Action::Read], "file")])?;
     let detached = source.detach_file(&path)?;
     assert!(detached.read_range(0, 8).is_err());
     let rebound = retarget_file(old.as_ref(), detached.as_ref(), &work)?.0;
-    assert_eq!(rebound.read_range(0, 8)?.as_ref(), b"original");
+    assert!(matches!(
+        rebound.read_range(0, 8),
+        Err(MountSourceError::AccessDenied)
+    ));
     let other = source.detach_file(&native_test_path("other"))?;
     assert!(matches!(
         retarget_file(old.as_ref(), other.as_ref(), &work),

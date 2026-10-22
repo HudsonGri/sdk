@@ -669,13 +669,10 @@ fn native_access_fuse_cached_content_cannot_bypass_new_open_revocation()
             MountSourceError::AccessDenied
         ))
     ));
-    assert_eq!(
-        projection
-            .read_handle(inode, handle, 0, 4, &work)?
-            .bytes
-            .as_ref(),
-        b"data"
-    );
+    assert!(matches!(
+        projection.read_handle(inode, handle, 0, 4, &work),
+        Err(NativeMountError::Source(MountSourceError::AccessDenied))
+    ));
     Ok(())
 }
 
@@ -719,9 +716,10 @@ fn native_access_fuse_cached_metadata_requires_current_list_authority()
             Err(NativeMountError::Source(MountSourceError::AccessDenied))
         ));
     }
-    // An open handle retains its original List decision; pathname metadata
-    // uses the latest policy even when the underlying namespace is unchanged.
-    projection.node_attributes(inode, Some(handle), &work)?;
+    assert!(matches!(
+        projection.node_attributes(inode, Some(handle), &work),
+        Err(NativeMountError::Source(MountSourceError::AccessDenied))
+    ));
     Ok(())
 }
 
@@ -780,7 +778,10 @@ fn native_access_fuse_detaching_preserves_each_open_handle_policy()
             .map_err(NativeMountError::from)?
             .open_file
             .clone();
-        assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
+        assert!(matches!(
+            file.file().read_range(0, 8),
+            Err(MountSourceError::AccessDenied)
+        ));
         assert!(matches!(
             file.file().write_range(0, Bytes::from_static(b"denied")),
             Err(MountSourceError::AccessDenied)

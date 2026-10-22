@@ -424,6 +424,7 @@ fn every_native_result_rechecks_authority_after_its_storage_read()
 -> Result<(), Box<dyn std::error::Error>> {
     for op in [
         Read::Bytes,
+        Read::Pinned,
         Read::Metadata,
         Read::Directory,
         Read::Open,
@@ -444,6 +445,12 @@ fn every_native_result_rechecks_authority_after_its_storage_read()
 #[should_panic(expected = "native result escaped a revoked cut")]
 fn removed_return_fence_negative_control() {
     revoked_return(Read::Bytes, true, Change::Policy).unwrap();
+}
+
+#[test]
+#[should_panic(expected = "native result escaped a revoked cut")]
+fn removed_pinned_policy_fence_negative_control() {
+    revoked_return(Read::Pinned, true, Change::Policy).unwrap();
 }
 
 #[test]
@@ -476,7 +483,8 @@ fn removed_pinned_expiry_fence_negative_control() {
 #[test]
 fn policy_observation_retries_data_only_publication_without_rereading_data()
 -> Result<(), Box<dyn std::error::Error>> {
-    revoked_return(Read::Bytes, false, Change::Data)
+    revoked_return(Read::Bytes, false, Change::Data)?;
+    revoked_return(Read::Pinned, false, Change::Data)
 }
 
 #[test]

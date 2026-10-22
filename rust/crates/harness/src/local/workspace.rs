@@ -492,7 +492,7 @@ pub(super) async fn open_volume(
             native_mounts,
             store: store.clone(),
             authority,
-        processes,
+            processes,
         },
     )
     .await

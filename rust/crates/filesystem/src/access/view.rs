@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 /// Published compiled access for one authenticated mount binding.
 /// The trusted policy owner installs revisions; new operations load the latest
-/// view, while open handles retain their original immutable view.
+/// view. Open handles retain their original ceiling and fail closed when the
+/// owner policy changes.
 ///
 /// ```compile_fail
 /// let _ = acyclic_fs::access::PathTrie::valid_at;

@@ -1,6 +1,35 @@
 use super::*;
 use crate::access::{AccessView, Action, PinnedPath};
 
+pub(super) async fn observe_current_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &SharedCheckout<A, O>,
+    cancellation: &CancellationToken,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(crate::GenerationId, crate::kernel::MetadataField<ObjectId>), MountSourceError> {
+    crate::access::observe_policy(work.cancellation(), cancellation, || async {
+        let observed = checkout
+            .volume
+            .current_access_policy_revision_accounted(
+                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )
+            .await
+            .map_err(MountSourceError::from)?;
+        #[cfg(test)]
+        if super::tests::return_fence::skip_retry() && observed.is_none() {
+            return Err(MountSourceError::AccessDenied);
+        }
+        // Retry only the accounted policy observation, never the data.
+        Ok(observed)
+    })
+    .await
+    .map_err(|error| match error {
+        crate::access::RetryError::CallerCancelled => MountSourceError::Cancelled,
+        crate::access::RetryError::MountCancelled => MountSourceError::Stale,
+        crate::access::RetryError::Observation(error) => error,
+    })
+}
+
 pub(in crate::native_mount) fn access_time() -> Result<u64, MountSourceError> {
     #[cfg(test)]
     if let Some(now) = super::tests::return_fence::now() {
@@ -87,8 +116,7 @@ impl<A, O> CheckoutMountSource<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
-    /// The sole return/admission boundary for fresh native disclosures. Existing
-    /// open handles keep their pinned authority and do not pass through here.
+    /// Return/admission boundary for native disclosures.
     pub(in crate::native_mount) async fn disclose<T>(
         &self,
         view: &crate::access::PathTrie,
@@ -100,30 +128,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         if super::tests::return_fence::omitted() {
             return result;
         }
-        let revision =
-            crate::access::observe_policy(work.cancellation(), &self.cancellation, || async {
-                let observed = self
-                    .checkout
-                    .volume
-                    .current_access_policy_revision_accounted(
-                        &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                        work.cancellation(),
-                    )
-                    .await
-                    .map_err(MountSourceError::from)?;
-                #[cfg(test)]
-                if super::tests::return_fence::skip_retry() && observed.is_none() {
-                    return Err(MountSourceError::AccessDenied);
-                }
-                // Retry only the accounted policy observation, never the data.
-                Ok(observed)
-            })
-            .await
-            .map_err(|error| match error {
-                crate::access::RetryError::CallerCancelled => MountSourceError::Cancelled,
-                crate::access::RetryError::MountCancelled => MountSourceError::Stale,
-                crate::access::RetryError::Observation(error) => error,
-            })?;
+        let revision = observe_current_policy(&self.checkout, &self.cancellation, work).await?;
         let valid = self
             .access_view
             .as_ref()

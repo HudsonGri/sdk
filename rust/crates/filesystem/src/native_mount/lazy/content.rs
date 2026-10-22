@@ -54,8 +54,13 @@ where
             })(),
             work,
         )?;
-        let (file, bytes) =
-            adapter::authorize_file((file.file, file.bytes), permissions, file_id, false, work)?;
+        let (file, bytes) = self.authored.authorize_file(
+            (file.file, file.bytes),
+            permissions,
+            file_id,
+            false,
+            work,
+        )?;
         Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
     }
 
