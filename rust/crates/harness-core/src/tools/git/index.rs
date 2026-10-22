@@ -848,7 +848,7 @@ async fn fill_pass(
         let complete = page.is_none();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: acyclic_fs::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1099,7 +1099,7 @@ mod tests {
             .map_err(|failure| failure.error)?
             .value;
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: acyclic_fs::NameIndexManifest::SCHEMA,
             cut: cut.clone(),
             names_cut: cut.clone(),
             observed_generation: expected.id(),
@@ -1320,7 +1320,7 @@ mod tests {
                 .is_none()
         );
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: acyclic_fs::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

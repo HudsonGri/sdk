@@ -111,6 +111,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::demand::SourceVersion>, LazyWorkspaceError> {
+        self.source_metadata_at_snapshot(snapshot, path, accounting)
+            .await
+            .map(|node| node.map(|node| node.version))
+    }
+
+    /// Observes source identity and version without directory enumeration or
+    /// content reads, including native children beneath authored directories.
+    pub async fn source_metadata_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
         self.validate_snapshot(snapshot, accounting).await?;
         let namespace = self.namespace_path(path, accounting)?;
         let observed = accounted!(accounting, |work, stop| self.source.lookup(
@@ -121,7 +134,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ));
         namespace.retire(accounting)?;
         match observed {
-            Ok(node) => Ok(node.map(|node| node.version)),
+            Ok(node) => Ok(node),
             // An indexed directory may have been removed or replaced by a
             // file while the source was closed. Its former descendants are
             // absent, rather than an environmental failure of the index.

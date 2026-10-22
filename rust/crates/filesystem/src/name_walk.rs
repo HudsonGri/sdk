@@ -9,7 +9,7 @@ use crate::{
 mod policies;
 use policies::Policies;
 mod versions;
-use versions::DirectoryVersions;
+use versions::{DirectoryVersions, Observation};
 #[cfg(not(target_arch = "wasm32"))]
 mod frontier;
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,23 +139,28 @@ impl NameCheckpoint {
         self.directory_versions.after(after)
     }
 
+    /// Stable native directory identities captured at this checkpoint. These
+    /// survive renamed/deleted bindings and never include policy file IDs.
+    pub fn source_directory_identities(&self) -> impl Iterator<Item = (&str, [u8; 32])> {
+        self.directory_versions.identities()
+    }
+
     pub(crate) fn directory_records_since<'a>(
         &'a self,
         previous: Option<&'a Self>,
     ) -> impl Iterator<Item = Result<(&'a str, Option<Vec<u8>>), serde_json::Error>> + 'a {
-        let changes: Box<
-            dyn Iterator<Item = (&str, Option<&Option<crate::demand::SourceVersion>>)> + Send + 'a,
-        > = match previous {
-            Some(previous) => Box::new(
-                self.directory_versions
-                    .changes(&previous.directory_versions),
-            ),
-            None => Box::new(
-                self.directory_versions
-                    .entries()
-                    .map(|(path, version)| (path, Some(version))),
-            ),
-        };
+        let changes: Box<dyn Iterator<Item = (&str, Option<&Observation>)> + Send + 'a> =
+            match previous {
+                Some(previous) => Box::new(
+                    self.directory_versions
+                        .changes(&previous.directory_versions),
+                ),
+                None => Box::new(
+                    self.directory_versions
+                        .entries()
+                        .map(|(path, version)| (path, Some(version))),
+                ),
+            };
         changes.map(|(path, version)| {
             Ok((
                 path,
@@ -185,7 +190,7 @@ impl NameCheckpoint {
                 "directory version identity mismatch".into(),
             ));
         }
-        self.directory_versions.insert(path, version);
+        self.directory_versions.restore(path, version);
         Ok(())
     }
     pub(crate) fn records(&self) -> impl Iterator<Item = Result<Vec<u8>, serde_json::Error>> + '_ {
@@ -267,7 +272,7 @@ impl NameCheckpoint {
                 self.ignore_policies.insert(path, policy);
             }
             CheckpointRecord::Directory(path, version) => {
-                self.directory_versions.insert(path, version);
+                self.directory_versions.restore(path, version);
             }
         }
         Ok(())
@@ -369,7 +374,7 @@ enum CheckpointRecordRef<'a> {
     },
     Pending(&'a str, &'a SavedCursor),
     Policy(&'a str, &'a GitIgnorePolicy),
-    Directory(&'a str, Option<crate::demand::SourceVersion>),
+    Directory(&'a str, Observation),
 }
 
 #[derive(serde::Deserialize)]
@@ -381,7 +386,7 @@ enum CheckpointRecord {
     },
     Pending(String, SavedCursor),
     Policy(String, GitIgnorePolicy),
-    Directory(String, Option<crate::demand::SourceVersion>),
+    Directory(String, Observation),
 }
 
 pub(crate) fn within_subtree(path: &str, root: &str) -> bool {
@@ -846,11 +851,11 @@ impl<
                 let stop = CancellationToken::new();
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
                 if cursor.is_none() {
-                    let version = lazy
-                        .source_metadata_version_at_snapshot(*snapshot, &directory, &mut ctx)
+                    let node = lazy
+                        .source_metadata_at_snapshot(*snapshot, &directory, &mut ctx)
                         .await?;
                     self.directory_versions
-                        .insert(directory.trim_matches('/').to_owned(), version);
+                        .observe(directory.trim_matches('/').to_owned(), node);
                 }
                 if let Some(cursor) = &cursor {
                     // Pages (including restored continuations) have separate

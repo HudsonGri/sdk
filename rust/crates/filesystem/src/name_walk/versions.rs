@@ -1,14 +1,51 @@
 //! Shared directory metadata tokens survive process restart without listing.
-use crate::demand::SourceVersion;
+use crate::demand::{SourceNode, SourceNodeKind, SourceVersion};
 use imbl::OrdMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default)]
-pub(super) struct DirectoryVersions(OrdMap<String, Option<SourceVersion>>);
+pub(super) struct DirectoryVersions(OrdMap<String, Observation>);
+
+/// Identity is independent of the version, so a journal can locate a former
+/// directory binding after that directory is renamed or removed offline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Observation {
+    pub(super) version: Option<SourceVersion>,
+    pub(super) directory_identity: Option<[u8; 32]>,
+}
 
 impl DirectoryVersions {
     pub(super) fn insert(&mut self, path: String, version: Option<SourceVersion>) {
-        self.0.insert(path, version);
+        self.restore(
+            path,
+            Observation {
+                version,
+                directory_identity: None,
+            },
+        );
+    }
+
+    pub(super) fn observe(&mut self, path: String, node: Option<SourceNode>) {
+        self.restore(
+            path,
+            Observation {
+                version: node.map(|node| node.version),
+                directory_identity: node
+                    .filter(|node| node.kind == SourceNodeKind::Directory)
+                    .map(|node| node.file_identity),
+            },
+        );
+    }
+
+    pub(super) fn restore(&mut self, path: String, observation: Observation) {
+        self.0.insert(path, observation);
+    }
+
+    pub(super) fn identities(&self) -> impl Iterator<Item = (&str, [u8; 32])> {
+        self.0.iter().filter_map(|(path, observation)| {
+            observation.directory_identity.map(|id| (path.as_str(), id))
+        })
     }
 
     pub(super) fn contains_key(&self, path: &str) -> bool {
@@ -18,7 +55,7 @@ impl DirectoryVersions {
     pub(super) fn iter(&self) -> impl Iterator<Item = (&str, Option<SourceVersion>)> {
         self.0
             .iter()
-            .map(|(path, version)| (path.as_str(), *version))
+            .map(|(path, observation)| (path.as_str(), observation.version))
     }
 
     pub(super) fn after(
@@ -31,10 +68,10 @@ impl DirectoryVersions {
                 after.map_or(Unbounded, |path| Excluded(path.to_owned())),
                 Unbounded,
             ))
-            .map(|(path, version)| (path.as_str(), *version))
+            .map(|(path, observation)| (path.as_str(), observation.version))
     }
 
-    pub(super) fn entries(&self) -> impl Iterator<Item = (&str, &Option<SourceVersion>)> {
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&str, &Observation)> {
         self.0
             .iter()
             .map(|(path, version)| (path.as_str(), version))
@@ -43,7 +80,7 @@ impl DirectoryVersions {
     pub(super) fn changes<'a>(
         &'a self,
         previous: &'a Self,
-    ) -> impl Iterator<Item = (&'a str, Option<&'a Option<SourceVersion>>)> {
+    ) -> impl Iterator<Item = (&'a str, Option<&'a Observation>)> {
         previous.0.diff(&self.0).map(|change| match change {
             imbl::ordmap::DiffItem::Add(path, version) => (path.as_str(), Some(version)),
             imbl::ordmap::DiffItem::Update {
@@ -71,7 +108,7 @@ impl DirectoryVersions {
 
 impl Serialize for DirectoryVersions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_map(self.iter())
+        serializer.collect_map(self.entries())
     }
 }
 
@@ -88,15 +125,13 @@ impl<'de> Deserialize<'de> for DirectoryVersions {
                 mut map: M,
             ) -> Result<Self::Value, M::Error> {
                 let mut versions = DirectoryVersions::default();
-                while let Some((path, version)) =
-                    map.next_entry::<String, Option<SourceVersion>>()?
-                {
+                while let Some((path, version)) = map.next_entry::<String, Observation>()? {
                     if versions.contains_key(&path) {
                         return Err(serde::de::Error::custom(
                             "duplicate directory version token",
                         ));
                     }
-                    versions.insert(path, version);
+                    versions.restore(path, version);
                 }
                 Ok(versions)
             }
@@ -136,6 +171,12 @@ mod tests {
             restored.iter().collect::<Vec<_>>(),
             changed.iter().collect::<Vec<_>>()
         );
-        assert!(serde_json::from_str::<DirectoryVersions>(r#"{"a":null,"a":null}"#).is_err());
+        assert!(
+            serde_json::from_str::<DirectoryVersions>(
+                r#"{"a":{"version":null,"directory_identity":null}}"#
+            )
+            .is_ok()
+        );
+        assert!(serde_json::from_str::<DirectoryVersions>(r#"{"a":{"version":null,"directory_identity":null},"a":{"version":null,"directory_identity":null}}"#).is_err());
     }
 }

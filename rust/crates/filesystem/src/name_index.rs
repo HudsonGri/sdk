@@ -39,6 +39,12 @@ pub struct NameIndexManifest {
     pub checkpoint: NameCheckpoint,
 }
 
+impl NameIndexManifest {
+    /// Current on-volume format. Directory observations include stable source
+    /// identities, so earlier version-only checkpoints cannot drive replay.
+    pub const SCHEMA: u32 = 6;
+}
+
 /// A pinned file-query snapshot of the index. Reading pages never lists source
 /// directories and cannot materialize source-backed file contents.
 pub struct NameIndex<A, O> {
@@ -110,7 +116,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         let stored: checkpoint::StoredManifest = serde_json::from_slice(&bytes)?;
-        if stored.schema != 5 {
+        if stored.schema != NameIndexManifest::SCHEMA {
             return Err(SearchError::Invalid(
                 "unsupported pathname index schema".into(),
             ));

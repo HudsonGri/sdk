@@ -2,6 +2,115 @@ use super::*;
 
 #[cfg(feature = "native-watch")]
 #[tokio::test]
+async fn name_search_directory_identities_survive_file_backed_restore_and_offline_rename() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("before")).unwrap();
+    std::fs::write(root.path().join("before/file"), b"unread").unwrap();
+    std::fs::write(root.path().join(".gitignore"), b"# local policy").unwrap();
+    let fs = Fs::memory();
+    let lazy = attach(
+        &fs,
+        native_source(root.path(), crate::FilesystemProfile::Portable).await,
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    while walk.next_page().await.unwrap().is_some() {}
+    let checkpoint = walk.checkpoint().unwrap();
+    let identities: std::collections::BTreeMap<_, _> = checkpoint
+        .source_directory_identities()
+        .map(|(path, id)| (path.to_owned(), id))
+        .collect();
+    assert_eq!(identities.len(), 2);
+    assert!(identities.contains_key(""));
+    assert!(identities.contains_key("before"));
+    assert!(
+        !identities.contains_key(".gitignore"),
+        "policy files are not directory identities"
+    );
+    let stop = CancellationToken::new();
+    let expected = lazy
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let index = crate::NameIndex::publish(
+        lazy.workspace(),
+        &expected,
+        crate::NameIndexManifest {
+            schema: crate::NameIndexManifest::SCHEMA,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages: 0,
+            pending_directories: 0,
+            complete: true,
+            checkpoint,
+        },
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    drop(index);
+    let restored = crate::NameIndex::open(lazy.workspace())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored
+            .manifest
+            .checkpoint
+            .source_directory_identities()
+            .map(|(path, id)| (path.to_owned(), id))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+        identities
+    );
+    std::fs::rename(root.path().join("before"), root.path().join("after")).unwrap();
+    let snapshot = lazy
+        .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&stop))
+        .await
+        .unwrap();
+    let current = lazy
+        .source_metadata_at_snapshot(
+            snapshot,
+            "/after",
+            &mut WorkBudget::UNBOUNDED.accounting(&stop),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(identities["before"], current.file_identity);
+    // Negative control: the old path is gone. A version or path-only
+    // checkpoint cannot identify which former subtree this directory was.
+    assert!(
+        lazy.source_metadata_at_snapshot(
+            snapshot,
+            "/before",
+            &mut WorkBudget::UNBOUNDED.accounting(&stop)
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let old: serde_json::Value = serde_json::json!({"Directory":["before", current.version]});
+    assert!(
+        restored
+            .manifest
+            .checkpoint
+            .clone()
+            .restore_record(&serde_json::to_vec(&old).unwrap())
+            .is_err()
+    );
+}
+
+#[cfg(feature = "native-watch")]
+#[tokio::test]
 async fn name_search_native_metadata_benchmark_keeps_pages_bounded() {
     let root = tempfile::tempdir().unwrap();
     for directory in 0..4 {
@@ -519,11 +628,12 @@ where
         .unwrap()
         .value;
     let mut pages = 0;
+    let mut previous = None;
     loop {
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = crate::NameIndexManifest {
-            schema: 5,
+            schema: crate::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -532,15 +642,21 @@ where
             complete: page.is_none(),
             checkpoint: walk.checkpoint().unwrap(),
         };
-        let index =
-            crate::NameIndex::publish(workspace, &expected, manifest, page.as_deref(), None)
-                .await
-                .unwrap()
-                .unwrap();
+        let index = crate::NameIndex::publish(
+            workspace,
+            &expected,
+            manifest,
+            page.as_deref(),
+            previous.as_ref(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         expected = index.generation();
         if page.is_none() {
             return index;
         }
+        previous = Some(index);
     }
 }
 
@@ -1261,7 +1377,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 5,
+        schema: crate::NameIndexManifest::SCHEMA,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1650,7 +1766,7 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
         .unwrap()
         .value;
     let manifest = NameIndexManifest {
-        schema: 5,
+        schema: crate::NameIndexManifest::SCHEMA,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -1725,7 +1841,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: crate::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -1945,7 +2061,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     .unwrap();
     while walk.next_page().await.unwrap().is_some() {}
     let manifest = NameIndexManifest {
-        schema: 5,
+        schema: crate::NameIndexManifest::SCHEMA,
         cut: walk.cut(),
         names_cut: walk.cut(),
         observed_generation: expected.id(),
@@ -2056,7 +2172,7 @@ async fn name_search_native_directory_refresh_never_relists_its_unchanged_siblin
         let page = walk.next_page().await.unwrap();
         pages += u64::from(page.is_some());
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: crate::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),

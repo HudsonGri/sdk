@@ -465,7 +465,7 @@ pub(super) async fn write_manifest<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     }
     let stored = StoredManifest {
-        schema: 5,
+        schema: crate::NameIndexManifest::SCHEMA,
         cut: manifest.cut.clone(),
         names_cut: manifest.names_cut.clone(),
         observed_generation: manifest.observed_generation,
@@ -630,13 +630,13 @@ mod tests {
             .unwrap();
             checkpoint.restore_record(&record).unwrap();
             let metadata = serde_json::to_vec(
-                &serde_json::json!({"Directory": [format!("d{ordinal:02}"), null]}),
+                &serde_json::json!({"Directory": [format!("d{ordinal:02}"), {"version": null, "directory_identity": null}]}),
             )
             .unwrap();
             checkpoint.restore_record(&metadata).unwrap();
         }
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: crate::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
@@ -659,7 +659,7 @@ mod tests {
         .unwrap();
         manifest.checkpoint.restore_record(&record).unwrap();
         let metadata = serde_json::to_vec(&serde_json::json!({"Directory": [
-            "d01", crate::demand::SourceVersion([2; 32])
+            "d01", {"version": crate::demand::SourceVersion([2; 32]), "directory_identity": null}
         ]}))
         .unwrap();
         manifest.checkpoint.restore_record(&metadata).unwrap();
@@ -846,7 +846,7 @@ mod tests {
             checkpoint.restore_record(&record).unwrap();
         }
         let manifest = NameIndexManifest {
-            schema: 5,
+            schema: crate::NameIndexManifest::SCHEMA,
             cut: walk.cut(),
             names_cut: walk.cut(),
             observed_generation: expected.id(),
