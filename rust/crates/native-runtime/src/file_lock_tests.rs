@@ -111,7 +111,7 @@ fn a_dropped_lock_is_free_while_a_spawned_process_shares_its_description() -> io
         ))
     };
     let directory = tempfile::tempdir()?;
-    let path = directory.path().join("lock");
+    let path = directory.path().join("raw-control");
 
     // Control: a raw lock released by close stays held by the child's copy.
     let raw = open(&path)?;
@@ -120,8 +120,11 @@ fn a_dropped_lock_is_free_while_a_spawned_process_shares_its_description() -> io
     drop(raw);
     assert!(!is_free(&path)?);
     drop(sharing);
-    assert!(is_free(&path)?);
 
+    // Other tests can fork while the raw description is open too. Their
+    // copies survive until exec, so ending our child is not proof that this
+    // raw lock has become free. Exercise explicit release on its own inode.
+    let path = directory.path().join("guarded");
     let guarded = FileLock::try_acquire(open(&path)?, FileLockMode::Exclusive)?;
     let _sharing = share(&guarded)?;
     drop(guarded);
