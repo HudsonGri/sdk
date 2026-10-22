@@ -1,7 +1,7 @@
 //! What this process holds from the OS, read from the OS itself on every
 //! platform, so per-agent cost is measured, not assumed, wherever it runs.
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Process-wide OS resources at one instant.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -27,14 +27,23 @@ pub struct ProcessResources {
     pub cpu_centiseconds: u64,
 }
 
+/// One open descriptor or handle of this process.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Descriptor {
+    /// A file or directory, by its path.
+    File(PathBuf),
+    /// Anything else, by its kind: a socket, pipe, event, thread or port.
+    Other(String),
+}
+
 /// Reads this process's resources from one platform's OS.
 trait Sampler {
     /// Every counter but `watches`, cheaply enough to poll.
     fn sample() -> io::Result<ProcessResources>;
     /// Watches beyond their descriptors.
     fn watches() -> io::Result<u64>;
-    /// This process's open descriptors or handles on the file at `path`.
-    fn descriptors_naming(path: &Path) -> io::Result<usize>;
+    /// This process's open descriptors or handles.
+    fn descriptors() -> io::Result<Vec<Descriptor>>;
 }
 
 #[cfg(target_os = "linux")]
@@ -60,14 +69,22 @@ pub fn process_resources() -> io::Result<ProcessResources> {
 /// How many of this process's descriptors or handles are open on the file at
 /// `path`.
 pub fn descriptors_naming(path: &Path) -> io::Result<usize> {
-    Native::descriptors_naming(path)
+    let path = Descriptor::File(std::fs::canonicalize(path)?);
+    Ok(Native::descriptors()?
+        .into_iter()
+        .filter(|descriptor| *descriptor == path)
+        .count())
+}
+
+/// Every descriptor or handle this process holds.
+pub fn descriptors() -> io::Result<Vec<Descriptor>> {
+    Native::descriptors()
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{ProcessResources, Sampler};
+    use super::{Descriptor, ProcessResources, Sampler};
     use std::io;
-    use std::path::Path;
 
     pub(super) struct Procfs;
 
@@ -113,14 +130,20 @@ mod linux {
                 .sum())
         }
 
-        fn descriptors_naming(path: &Path) -> io::Result<usize> {
-            let mut count = 0;
+        fn descriptors() -> io::Result<Vec<Descriptor>> {
+            let mut descriptors = Vec::new();
             for entry in std::fs::read_dir("/proc/self/fd")? {
-                if std::fs::read_link(entry?.path()).is_ok_and(|target| target == path) {
-                    count += 1;
-                }
+                // A descriptor closed since the listing has no target.
+                let Ok(target) = std::fs::read_link(entry?.path()) else {
+                    continue;
+                };
+                descriptors.push(if target.is_absolute() {
+                    Descriptor::File(target)
+                } else {
+                    Descriptor::Other(target.display().to_string())
+                });
             }
-            Ok(count)
+            Ok(descriptors)
         }
     }
 }
@@ -131,11 +154,11 @@ mod linux {
     reason = "FFI: proc_pidinfo, fcntl(F_GETPATH), getfsstat and getrusage"
 )]
 mod apple {
-    use super::{ProcessResources, Sampler};
+    use super::{Descriptor, ProcessResources, Sampler};
     use std::ffi::CStr;
     use std::io;
     use std::os::unix::ffi::OsStrExt as _;
-    use std::path::Path;
+    use std::path::PathBuf;
 
     pub(super) struct Libproc;
 
@@ -238,11 +261,14 @@ mod apple {
             Ok(0)
         }
 
-        fn descriptors_naming(path: &Path) -> io::Result<usize> {
-            let path = std::fs::canonicalize(path)?;
-            let mut count = 0;
+        fn descriptors() -> io::Result<Vec<Descriptor>> {
+            let mut named = Vec::new();
             for descriptor in descriptors()? {
                 if u32::try_from(libc::PROX_FDTYPE_VNODE).ok() != Some(descriptor.proc_fdtype) {
+                    named.push(Descriptor::Other(format!(
+                        "fdtype {}",
+                        descriptor.proc_fdtype
+                    )));
                     continue;
                 }
                 let mut buffer: [libc::c_char; MAXPATHLEN] = [0; MAXPATHLEN];
@@ -256,12 +282,12 @@ mod apple {
                     continue;
                 }
                 // SAFETY: F_GETPATH terminated the path within `buffer`.
-                let named = unsafe { CStr::from_ptr(buffer.as_ptr()) };
-                if Path::new(std::ffi::OsStr::from_bytes(named.to_bytes())) == path {
-                    count += 1;
-                }
+                let path = unsafe { CStr::from_ptr(buffer.as_ptr()) };
+                named.push(Descriptor::File(PathBuf::from(
+                    std::ffi::OsStr::from_bytes(path.to_bytes()),
+                )));
             }
-            Ok(count)
+            Ok(named)
         }
     }
 }
@@ -272,10 +298,11 @@ mod apple {
     reason = "FFI: process counters, the handle snapshot and handles' final paths"
 )]
 mod windows {
-    use super::{ProcessResources, Sampler};
+    use super::{Descriptor, ProcessResources, Sampler};
     use std::io;
     use std::os::windows::ffi::OsStringExt as _;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
+    use windows_sys::Wdk::Foundation::{NtQueryObject, ObjectTypeInformation};
     use windows_sys::Wdk::System::Threading::{
         NtQueryInformationProcess, ProcessHandleInformation,
     };
@@ -392,6 +419,43 @@ mod windows {
         }
     }
 
+    /// The object type of `handle`, such as `Event`, `Thread` or
+    /// `IoCompletion`.
+    fn kind(handle: HANDLE) -> String {
+        // PUBLIC_OBJECT_TYPE_INFORMATION: a UNICODE_STRING naming the type,
+        // whose characters follow it in the same buffer. Whole words keep it
+        // aligned.
+        let mut buffer = [0_u64; 128];
+        let length = u32::try_from(std::mem::size_of_val(&buffer)).unwrap_or(0);
+        // SAFETY: the kernel writes at most `length` bytes into `buffer`.
+        let status = unsafe {
+            NtQueryObject(
+                handle,
+                ObjectTypeInformation,
+                buffer.as_mut_ptr().cast(),
+                length,
+                std::ptr::null_mut(),
+            )
+        };
+        if status < 0 {
+            return format!("unknown {status:#x}");
+        }
+        // UNICODE_STRING: a u16 byte length, a u16 capacity, then a pointer.
+        let bytes = usize::from(u16::try_from(buffer[0] & 0xffff).unwrap_or(0));
+        let start = usize::try_from(buffer[1]).unwrap_or(0);
+        let base = buffer.as_ptr() as usize;
+        // SAFETY: plain integers, viewed as the UTF-16 units they hold.
+        let units = unsafe {
+            std::slice::from_raw_parts(buffer.as_ptr().cast::<u16>(), size_of_val(&buffer) / 2)
+        };
+        // The name must lie within `buffer`.
+        start
+            .checked_sub(base)
+            .map(|offset| offset / 2)
+            .and_then(|offset| units.get(offset..offset + bytes / 2))
+            .map_or_else(|| "unknown".to_owned(), String::from_utf16_lossy)
+    }
+
     fn threads() -> io::Result<u64> {
         // SAFETY: a snapshot of every thread, closed below.
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -475,13 +539,14 @@ mod windows {
             Ok(0)
         }
 
-        fn descriptors_naming(path: &Path) -> io::Result<usize> {
-            let path = std::fs::canonicalize(path)?;
+        fn descriptors() -> io::Result<Vec<Descriptor>> {
             Ok(handles()?
                 .into_iter()
-                .filter_map(final_path)
-                .filter(|named| *named == path)
-                .count())
+                .map(|handle| {
+                    final_path(handle)
+                        .map_or_else(|| Descriptor::Other(kind(handle)), Descriptor::File)
+                })
+                .collect())
         }
     }
 }
