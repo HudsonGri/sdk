@@ -21,7 +21,13 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     ownership: &SourcePayloadOwnership,
 ) -> Result<PathBuf, DemandError> {
     if watches.len() == watches.capacity() {
-        let count = watches.len().checked_add(1).ok_or(WorkError::Overflow)?;
+        // Each discovered directory adds one descriptor. Exact one-slot
+        // growth copies the entire registered tree at every insertion.
+        let count = watches
+            .len()
+            .checked_mul(2)
+            .ok_or(WorkError::Overflow)?
+            .max(1);
         let bytes = (count as u64)
             .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
             .ok_or(WorkError::Overflow)?;
@@ -45,6 +51,46 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     ownership.claim_retained(bytes, copied, work)?;
     Ok(path.to_path_buf())
 }
+
+#[cfg(test)]
+mod growth_tests {
+    use super::*;
+
+    #[test]
+    fn name_search_watch_registration_copies_linear_descriptor_bytes() {
+        let count = 5_000_u64;
+        let mut work = crate::native_host::ordinary_work();
+        let ownership = SourcePayloadOwnership::new(&mut work).unwrap();
+        let retained = AtomicU64::new(0);
+        let mut watches = Vec::new();
+        let mut path_bytes = 0;
+        for ordinal in 0..count {
+            let path = PathBuf::from(format!("directory-{ordinal:08}"));
+            path_bytes += path.as_os_str().len() as u64;
+            let owned =
+                prepare_insert_with_work(&mut watches, &path, &mut work, &retained, &ownership)
+                    .unwrap();
+            // Ordinary standalone work releases the retained path claim just
+            // as the registration caller does; no native descriptor is opened.
+            work.release(owned.as_os_str().len() as u64).unwrap();
+            watches.push((owned, ordinal as i32));
+        }
+        let slot = size_of::<(PathBuf, i32)>() as u64;
+        let descriptor_copies = work.receipt().bytes_copied - path_bytes;
+        assert!(descriptor_copies < 2 * count * slot);
+        assert_eq!(
+            retained.load(Ordering::Acquire),
+            watches.capacity() as u64 * slot
+        );
+        assert!(watches.capacity() < 2 * watches.len());
+        // Negative control: the former one-slot policy copies every earlier
+        // descriptor at each insertion, despite retaining the same final set.
+        let exact_growth_copies = (count - 1) * count / 2 * slot;
+        assert!(exact_growth_copies > 2 * count * slot);
+        assert_eq!(watches.len() as u64, count);
+    }
+}
+
 pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
     let mut path = [0_u8; 24];
     let prefix = b"/proc/self/fd/";
