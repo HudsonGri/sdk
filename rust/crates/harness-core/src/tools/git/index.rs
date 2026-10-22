@@ -14,6 +14,7 @@ type Registry = BTreeMap<(usize, acyclic_fs::WorkspaceId), Arc<AsyncMutex<Weak<S
 static INDEXES: OnceLock<Mutex<Registry>> = OnceLock::new();
 
 struct Shared {
+    registration: Arc<AsyncMutex<Weak<Shared>>>,
     latest: AsyncMutex<Option<Arc<Index>>>,
     changed: watch::Sender<u64>,
     failure: Mutex<Option<String>>,
@@ -24,6 +25,23 @@ struct Shared {
 impl Shared {
     async fn snapshot(&self) -> Option<Arc<Index>> {
         self.latest.lock().await.clone()
+    }
+
+    async fn retire_if_unobserved(&self) -> bool {
+        // Opening a reader holds this same lock until it subscribes. A
+        // resolved closed() future is only a hint: a replacement query may
+        // have subscribed since it woke the producer.
+        let mut registered = self.registration.lock().await;
+        if self.changed.receiver_count() != 0 {
+            return false;
+        }
+        if registered
+            .upgrade()
+            .is_some_and(|current| std::ptr::eq(current.as_ref(), self))
+        {
+            *registered = Weak::new();
+        }
+        true
     }
 }
 
@@ -61,6 +79,7 @@ impl IndexedNames {
                     .or_insert_with(|| Arc::new(AsyncMutex::new(Weak::new()))),
             )
         };
+        let registration = Arc::clone(&entry);
         let mut entry = entry.lock().await;
         if let Some(shared) = entry.upgrade() {
             let latest = shared.snapshot().await;
@@ -123,6 +142,7 @@ impl IndexedNames {
         }
         let (changed, receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
+            registration,
             latest: AsyncMutex::new(existing.map(Arc::new)),
             changed,
             failure: Mutex::new(None),
@@ -427,7 +447,11 @@ async fn maintain(
             };
             tokio::select! {
                 biased;
-                _ = shared.changed.closed() => return Ok(()),
+                _ = shared.changed.closed() => {
+                    if shared.retire_if_unobserved().await {
+                        return Ok(());
+                    }
+                },
                 changed = source_changed(&mut native) => { native_delta = Some(changed?); },
                 filled = fill(view, ignore, shared) => { filled?; },
             }
@@ -437,7 +461,11 @@ async fn maintain(
             continue;
         }
         tokio::select! {
-            _ = shared.changed.closed() => return Ok(()),
+            _ = shared.changed.closed() => {
+                if shared.retire_if_unobserved().await {
+                    return Ok(());
+                }
+            },
             _ = shared.refresh.notified() => {},
             changed = source_changed(&mut native) => { native_delta = Some(changed?); },
             changed = metadata_changed_without_feed(view, shared, &mut metadata_cursor, probe_metadata) => {
@@ -749,6 +777,42 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn volume_search_replacement_subscription_cancels_idle_retirement() {
+        let registration = Arc::new(AsyncMutex::new(Weak::new()));
+        let (changed, reader) = watch::channel(0);
+        let shared = Arc::new(Shared {
+            registration: Arc::clone(&registration),
+            latest: AsyncMutex::new(None),
+            changed,
+            failure: Mutex::new(None),
+            directory_query: Mutex::new(None),
+            refresh: tokio::sync::Notify::new(),
+        });
+        *registration.lock().await = Arc::downgrade(&shared);
+        drop(reader);
+        // Negative control: the old unconditional closed() branch is already
+        // ready and would exit even after a replacement query subscribed.
+        shared.changed.closed().await;
+        let opening = registration.lock().await;
+        let retirement = shared.retire_if_unobserved();
+        tokio::pin!(retirement);
+        assert!(futures::poll!(&mut retirement).is_pending());
+        let replacement = shared.changed.subscribe();
+        drop(opening);
+        assert!(!retirement.await);
+        assert!(Arc::ptr_eq(
+            &registration.lock().await.upgrade().unwrap(),
+            &shared,
+        ));
+        drop(replacement);
+        assert!(shared.retire_if_unobserved().await);
+        // Keeping the retired Shared alive cannot make a later opener reuse
+        // it: deregistration happens before the producer drops its Arc.
+        assert!(registration.lock().await.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&shared), 1);
+    }
+
+    #[tokio::test]
     async fn volume_search_unwatched_mount_follows_metadata_changes() -> crate::Result<()> {
         use acyclic_fs::{Lifecycle, LocalOptions, VolumeConfig};
         acyclic_native_runtime::initialize_native_io_services().map_err(storage_index)?;
@@ -788,6 +852,7 @@ mod tests {
         let view = Arc::new(OwnedView::Checkout(lazy));
         let (changed, receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
+            registration: Arc::new(AsyncMutex::new(Weak::new())),
             latest: AsyncMutex::new(None),
             changed,
             failure: Mutex::new(None),
@@ -939,6 +1004,7 @@ mod tests {
             .unwrap();
         let (changed, _receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
+            registration: Arc::new(AsyncMutex::new(Weak::new())),
             latest: AsyncMutex::new(Some(Arc::new(index))),
             changed,
             failure: Mutex::new(None),
