@@ -532,7 +532,6 @@ impl PiOwnerConfig {
         let owner = super::pi_root_provider::guarded_pi_decode::<Self>(
             &plain.bytes,
             MAXIMUM_OWNER_BYTES,
-            std::mem::size_of::<Self>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
             acyclic_harness::JsonValueSchema::None,
             OWNER_DIAGNOSTIC_LABEL_BYTES,

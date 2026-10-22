@@ -155,7 +155,6 @@ pub(crate) async fn read_pi_input<T: DeserializeOwned>(
     filesystem: &Host,
     operation: OperationId,
     label: &str,
-    maximum_owned_bytes: u64,
     schema_label_bytes: u64,
     context: &TaskContext,
     work: &NativeMaterializationWork,
@@ -179,7 +178,6 @@ pub(crate) async fn read_pi_input<T: DeserializeOwned>(
     let decoded = guarded_pi_decode(
         bytes.as_ref(),
         maximum,
-        maximum_owned_bytes,
         ErrorCode::Storage,
         JsonValueSchema::None,
         schema_label_bytes,
@@ -217,7 +215,31 @@ pub(crate) fn digest_pi_value<T: Serialize + ?Sized>(
     Ok(blake3::hash(&bytes.0))
 }
 
+/// Decodes `T`, retaining exactly its root plus the owned bound of the admitted JSON shape.
+///
+/// The retained charge is derived from the actual input, never from a configured payload
+/// cap, so a small value never holds a cap-sized allocation for its lifetime.
 pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
+    bytes: &[u8],
+    maximum_bytes: u64,
+    code: ErrorCode,
+    value_schema: &'static JsonValueSchema,
+    schema_label_bytes: u64,
+    work: &NativeMaterializationWork,
+) -> Result<(T, NativeAllocation)> {
+    guarded_pi_decode_measured(
+        bytes,
+        maximum_bytes,
+        std::mem::size_of::<T>() as u64,
+        code,
+        value_schema,
+        schema_label_bytes,
+        work,
+    )
+}
+
+/// [`guarded_pi_decode`] with a root charge measured from this input by the caller.
+pub(crate) fn guarded_pi_decode_measured<T: DeserializeOwned>(
     bytes: &[u8],
     maximum_bytes: u64,
     maximum_owned_bytes: u64,

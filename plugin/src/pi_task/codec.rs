@@ -116,7 +116,7 @@ pub(super) fn native_metadata<T: serde::de::DeserializeOwned>(
             ))
         })?;
     let quota = native_metadata_quota::<T>(encoded.0.len() as u64, items)?;
-    crate::pi_root_provider::guarded_pi_decode::<T>(
+    crate::pi_root_provider::guarded_pi_decode_measured::<T>(
         &encoded.0,
         NATIVE_METADATA_MAXIMUM,
         quota,

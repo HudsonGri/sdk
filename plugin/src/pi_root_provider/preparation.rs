@@ -136,7 +136,77 @@ impl PiRootProvider {
             ));
         }
         reference.1.absorb(&mut recorded.1)?;
+        self.remember_observed(&recorded.0)?;
         Ok(Some(((reference.0, recorded.0), reference.1)))
+    }
+
+    /// Keeps one copy of a fully observed allocation for the provider's lifetime,
+    /// held on the provider's own ledger.
+    fn remember_observed(&self, allocation: &PiRootAllocation) -> Result<()> {
+        if self.observed.get().is_some() {
+            return Ok(());
+        }
+        let mut bytes = std::mem::size_of::<PiRootAllocation>() as u64;
+        for key in allocation.roots.keys() {
+            bytes = bytes
+                .checked_add((std::mem::size_of::<(String, RootCreation)>() + key.len()) as u64)
+                .ok_or_else(|| Self::native_failure("root allocation size overflow"))?;
+        }
+        let custody = self.original.claim(bytes, 1, WorkCounters::UNCHARGED)?;
+        let _ = self.observed.set((allocation.clone(), custody));
+        Ok(())
+    }
+
+    /// Re-proves the live part of one observed root creation: its lazy workspace still
+    /// binds the original source at or after the recorded epoch.
+    pub(super) async fn verify_live_binding(
+        &self,
+        key: &str,
+        creation: &RootCreation,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        if !self
+            .preparation
+            .request
+            .binding
+            .project_volumes
+            .contains_key(key)
+        {
+            return Err(Self::native_failure(
+                "root is absent from its original selected volumes",
+            ));
+        }
+        let workspace = acyclic_fs::WorkspaceId::from_bytes(creation.repository_workspace_id);
+        let state = self
+            .store
+            .load_lazy_workspace(
+                workspace,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
+            .await?
+            .ok_or_else(|| Self::native_failure("created root workspace is unavailable"))?;
+        state.validate_root_binding(
+            workspace,
+            acyclic_fs::demand::SourceReference {
+                identity: creation.source_identity,
+                epoch: creation.source_epoch,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// The allocation this provider already observed in full, when it is `expected`.
+    pub(super) fn observed_allocation(
+        &self,
+        expected: &PiRootAllocation,
+    ) -> Option<&PiRootAllocation> {
+        self.observed
+            .get()
+            .map(|(observed, _)| observed)
+            .filter(|observed| same_allocation(expected, observed))
     }
 
     pub(crate) async fn prove_scratch_allocation_with_native_work(
