@@ -395,8 +395,16 @@ mod tests {
         .unwrap();
         while walk.next_page().await.unwrap().is_some() {}
         let mut checkpoint = walk.checkpoint().unwrap();
-        for ordinal in 0..64 {
-            let record = serde_json::to_vec(&serde_json::json!({"Policy": [format!("d{ordinal:02}"), crate::GitIgnorePolicy::parse("*.ignored")]})).unwrap();
+        for ordinal in 0..66 {
+            let policy = if ordinal == 1 {
+                crate::GitIgnorePolicy::parse(&"*.ignored\n".repeat(2000))
+            } else {
+                crate::GitIgnorePolicy::parse("*.ignored")
+            };
+            let record = serde_json::to_vec(
+                &serde_json::json!({"Policy": [format!("d{ordinal:02}"), policy]}),
+            )
+            .unwrap();
             checkpoint.restore_record(&record).unwrap();
         }
         let manifest = NameIndexManifest {
@@ -428,7 +436,7 @@ mod tests {
             2
         );
         // Negative control: a complete rewrite serializes every remaining policy.
-        assert_eq!(manifest.checkpoint.policy_records_since(None).count(), 63);
+        assert_eq!(manifest.checkpoint.policy_records_since(None).count(), 65);
         let updated = NameIndex::publish(
             &workspace,
             &initial.generation(),
@@ -444,6 +452,22 @@ mod tests {
             serde_json::to_vec(&updated.manifest.checkpoint).unwrap(),
             serde_json::to_vec(&reopened.manifest.checkpoint).unwrap()
         );
+        let changed = format!("{}/{}", policy_root(), blake3::hash(b"d01").to_hex());
+        let old_chunks = read_policy_header(&initial.generation(), &changed)
+            .await
+            .unwrap()
+            .chunks;
+        let new_chunks = read_policy_header(&updated.generation(), &changed)
+            .await
+            .unwrap()
+            .chunks;
+        assert!(old_chunks > new_chunks);
+        for ordinal in new_chunks..old_chunks {
+            assert!(
+                matches!(updated.generation().read(&policy_chunk(&changed, ordinal), CHUNK_BYTES as u64, WorkBudget::UNBOUNDED, &stop).await,
+                Err(failure) if matches!(failure.error, WorkspaceError::NotFound))
+            );
+        }
         let removed = format!("{}/{}", policy_root(), blake3::hash(b"d00").to_hex());
         assert!(matches!(
             read_policy_header(&updated.generation(), &removed).await,
@@ -491,7 +515,7 @@ mod tests {
         // retain their files through generation pins; the live tree retains no
         // obsolete policy namespace or historical delta chain.
         let mut empty = updated.manifest.clone();
-        for ordinal in 0..64 {
+        for ordinal in 0..66 {
             empty.checkpoint.forget_subtree(&format!("d{ordinal:02}"));
         }
         let reset = NameIndex::publish(&workspace, &updated.generation(), empty, None, None)
@@ -518,11 +542,10 @@ mod tests {
             0
         );
         assert!(
-            initial
+            !initial
                 .manifest
                 .checkpoint
                 .eligible(&crate::GitIgnorePolicy::default(), "d00/file.ignored")
-                == false
         );
     }
 
