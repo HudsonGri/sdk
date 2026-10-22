@@ -168,7 +168,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         result
     }
 
-    pub(super) async fn check_current_access(
+    pub(crate) async fn check_current_access(
         &self,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
