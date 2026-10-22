@@ -19,6 +19,7 @@ use crate::{
 use bytes::Bytes;
 #[cfg(unix)]
 use std::ffi::OsStr;
+#[cfg(any(windows, test))]
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
