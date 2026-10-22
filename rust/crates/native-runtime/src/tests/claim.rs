@@ -237,6 +237,51 @@ fn a_runtime_directory_with_newlines_names_its_owner_exactly() -> io::Result<()>
     Ok(())
 }
 
+/// A dead owner that its parent has not yet waited for is a zombie, which
+/// holds no files, so it owns nothing, even once a sweep has removed its
+/// process lock and only its pid is left to probe.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn an_owner_that_died_unwaited_owns_nothing() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let mut owner = Owner::spawn(&path)?;
+    let lock = recorded_process_lock(&path)?;
+    owner.0.kill()?;
+    exited_unwaited(owner.0.id())?;
+    // As another process's sweep does, once the dead owner's lock is free.
+    std::fs::File::open(&lock)?.try_lock_shared()?;
+    std::fs::remove_file(&lock)?;
+    drop(StoreClaim::acquire(&path)?);
+    Ok(())
+}
+
+/// Blocks until child `pid` exits, leaving it a zombie: std waits only to reap.
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[allow(unsafe_code, reason = "FFI: waitid without reaping")]
+fn exited_unwaited(pid: u32) -> io::Result<()> {
+    // SAFETY: siginfo_t is plain data, valid when zeroed.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: waitid writes only into `info`, which outlives the call.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                libc::id_t::from(pid),
+                &raw mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if waited == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 /// A record naming process `pid` by `start`, whose process lock is gone.
 #[cfg(target_os = "linux")]
 fn lockless_record(directory: &Path, pid: u32, start: &[u8]) -> Vec<u8> {

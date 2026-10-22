@@ -130,6 +130,7 @@ fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::err
 }
 
 /// The work one measured shared admission of `root` charges.
+#[track_caller]
 fn measured_admission(root: &Path) -> crate::WorkCounters {
     let cancellation = crate::CancellationToken::new();
     let work =
@@ -140,6 +141,7 @@ fn measured_admission(root: &Path) -> crate::WorkCounters {
 }
 
 /// Backend reads one measured shared admission of `root` charges.
+#[track_caller]
 fn measured_admission_reads(root: &Path) -> u64 {
     measured_admission(root).backend_read_operations
 }

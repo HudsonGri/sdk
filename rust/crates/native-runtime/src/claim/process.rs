@@ -81,7 +81,7 @@ impl ProcessOwner {
 }
 
 /// The most probes one [`liveness`] makes: the process lock, then the boot
-/// and the process's start.
+/// and the process's start on Linux, or the process and its status on macOS.
 pub(super) const PROBES: u64 = 3;
 
 /// What can be proven about the process a record names. Only a positive proof
@@ -138,8 +138,16 @@ fn without_lock(process: &Process, probes: &mut u64) -> Liveness {
         };
         *probes += 1;
         match rustix::process::test_kill_process(pid) {
-            // A reused pid reads as alive: a refusal, never two owners.
-            Ok(()) | Err(rustix::io::Errno::PERM) => Liveness::Alive,
+            Ok(()) | Err(rustix::io::Errno::PERM) => {
+                *probes += 1;
+                // A zombie awaiting its parent's wait holds no files. A reused
+                // pid reads as alive: a refusal, never two owners.
+                if zombie(pid) {
+                    Liveness::Dead
+                } else {
+                    Liveness::Alive
+                }
+            }
             Err(rustix::io::Errno::SRCH) => Liveness::Dead,
             Err(_) => Liveness::Unknown,
         }
@@ -292,8 +300,10 @@ fn sweep(directory: &Path) {
 }
 
 /// A Linux process's identity across pid reuse: the boot and its start tick.
-/// `NotFound` only when the boot is known and the process is not. Reads into
-/// fixed buffers, so a probe allocates only the identity it returns.
+/// `NotFound` only when the boot is known and the process is not, or has
+/// exited: a zombie awaiting its parent's wait holds no files, so it owns
+/// nothing. Reads into fixed buffers, so a probe allocates only the identity
+/// it returns.
 #[cfg(target_os = "linux")]
 fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
     use std::io::Write as _;
@@ -316,16 +326,56 @@ fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
     let mut stat = [0; 4096];
     let stat = read_bounded(Path::new(std::ffi::OsStr::from_bytes(name)), &mut stat)?;
     let stat = std::str::from_utf8(stat).map_err(|_| malformed())?;
-    // Field 22, counted after the parenthesized command name, which may
+    // Fields are counted after the parenthesized command name, which may
     // itself contain spaces.
     let (_, fields) = stat.rsplit_once(')').ok_or_else(malformed)?;
-    let start = fields.split_whitespace().nth(19).ok_or_else(malformed)?;
+    let mut fields = fields.split_whitespace();
+    // Field 3, the state, and field 20, the threads not yet released.
+    let state = fields.next().ok_or_else(malformed)?;
+    let threads = fields.nth(16).ok_or_else(malformed)?;
+    // Exited, or a zombie whose threads have all exited. A leader that exited
+    // before its other threads also reads as a zombie, but they live on.
+    if state == "X" || state == "x" || (state == "Z" && threads == "1") {
+        return Err(io::Error::from(io::ErrorKind::NotFound));
+    }
+    // Field 22, the start tick.
+    let start = fields.nth(1).ok_or_else(malformed)?;
     let boot = std::str::from_utf8(boot).map_err(|_| malformed())?.trim();
     let mut identity = Vec::with_capacity(boot.len() + 1 + start.len());
     identity.extend_from_slice(boot.as_bytes());
     identity.push(b':');
     identity.extend_from_slice(start.as_bytes());
     Ok(identity)
+}
+
+/// Whether process `pid` has exited and awaits its parent's wait. `false`
+/// whenever its status cannot be read.
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code, reason = "FFI: proc_pidinfo, which rustix does not wrap")]
+fn zombie(pid: rustix::process::Pid) -> bool {
+    /// `SZOMB` in `<sys/proc.h>`.
+    const ZOMBIE: u32 = 5;
+    let Ok(size) = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()) else {
+        return false;
+    };
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    // SAFETY: proc_pidinfo writes at most `size` bytes, the size of `info`.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid.as_raw_nonzero().get(),
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written != size {
+        return false;
+    }
+    // SAFETY: zeroed, then wholly written: every field is an integer or an
+    // integer array, valid for any bytes.
+    let info = unsafe { info.assume_init() };
+    info.pbi_status == ZOMBIE
 }
 
 /// The whole of the file at `path`, which must fit `buffer`.
