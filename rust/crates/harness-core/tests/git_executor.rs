@@ -688,7 +688,12 @@ impl acyclic_fs::demand::DemandDirectoryObserver for SearchDirectoryObservations
             if ordinal != 0 {
                 text.push('/');
             }
-            text.push_str(&name.unicode_text(WorkBudget::UNBOUNDED, &stop)?.value);
+            text.push_str(
+                &name
+                    .unicode_text(WorkBudget::UNBOUNDED, &stop)
+                    .map_err(|failure| acyclic_fs::demand::DemandError::from(failure.error))?
+                    .value,
+            );
         }
         self.0.lock().unwrap().push(text);
         Ok(())
