@@ -4,7 +4,10 @@ use imbl::OrdMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default)]
-pub(super) struct DirectoryVersions(OrdMap<String, Observation>);
+pub(super) struct DirectoryVersions(
+    OrdMap<String, Observation>,
+    OrdMap<[u8; 32], imbl::OrdSet<String>>,
+);
 
 /// Identity is independent of the version, so a journal can locate a former
 /// directory binding after that directory is renamed or removed offline.
@@ -39,7 +42,46 @@ impl DirectoryVersions {
     }
 
     pub(super) fn restore(&mut self, path: String, observation: Observation) {
+        let before = self.0.get(&path).and_then(|entry| entry.directory_identity);
+        if before == observation.directory_identity {
+            self.0.insert(path, observation);
+            return;
+        }
+        if let Some(identity) = before {
+            self.remove_identity(&path, identity);
+        }
+        if let Some(identity) = observation.directory_identity {
+            let mut paths = self.1.get(&identity).cloned().unwrap_or_default();
+            paths.insert(path.clone());
+            self.1.insert(identity, paths);
+        }
         self.0.insert(path, observation);
+    }
+
+    fn remove_identity(&mut self, path: &str, identity: [u8; 32]) {
+        let mut paths = self.1.get(&identity).cloned().unwrap_or_default();
+        paths.remove(path);
+        if paths.is_empty() {
+            self.1.remove(&identity);
+        } else {
+            self.1.insert(identity, paths);
+        }
+    }
+
+    fn remove(&mut self, path: &str) {
+        if let Some(observation) = self.0.remove(path)
+            && let Some(identity) = observation.directory_identity
+        {
+            self.remove_identity(path, identity);
+        }
+    }
+
+    pub(super) fn paths(&self, identity: &[u8; 32]) -> impl Iterator<Item = &str> {
+        self.1
+            .get(identity)
+            .into_iter()
+            .flat_map(|paths| paths.iter())
+            .map(String::as_str)
     }
 
     pub(super) fn identities(&self) -> impl Iterator<Item = (&str, [u8; 32])> {
@@ -92,7 +134,7 @@ impl DirectoryVersions {
     }
 
     pub(super) fn forget_subtree(&mut self, path: &str) {
-        self.0.remove(path);
+        self.remove(path);
         let prefix = format!("{path}/");
         let removed: Vec<_> = self
             .0
@@ -101,7 +143,7 @@ impl DirectoryVersions {
             .map(|(directory, _)| directory.clone())
             .collect();
         for directory in removed {
-            self.0.remove(&directory);
+            self.remove(&directory);
         }
     }
 }
@@ -143,6 +185,73 @@ impl<'de> Deserialize<'de> for DirectoryVersions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_search_journal_parent_lookup_preserves_aliases_and_full_identities() {
+        let mut original = DirectoryVersions::default();
+        for ordinal in 0u64..10_000 {
+            let mut id = [0; 32];
+            id[..8].copy_from_slice(&ordinal.to_le_bytes());
+            original.restore(
+                format!("d{ordinal:05}"),
+                Observation {
+                    version: Some(SourceVersion([1; 32])),
+                    directory_identity: Some(id),
+                },
+            );
+        }
+        let id = [0; 32];
+        original.restore(
+            "d00000/alias".into(),
+            Observation {
+                version: Some(SourceVersion([2; 32])),
+                directory_identity: Some(id),
+            },
+        );
+        let mut different = id;
+        different[31] = 1;
+        original.restore(
+            "d00000-other".into(),
+            Observation {
+                version: Some(SourceVersion([3; 32])),
+                directory_identity: Some(different),
+            },
+        );
+        assert_eq!(
+            original.paths(&id).collect::<Vec<_>>(),
+            ["d00000", "d00000/alias"]
+        );
+        assert_eq!(
+            original.paths(&different).collect::<Vec<_>>(),
+            ["d00000-other"]
+        );
+        // Negative control: projecting these identities to their first 64 bits
+        // aliases two distinct directories and loses the deletion target.
+        assert_eq!(&id[..8], &different[..8]);
+        let bytes = serde_json::to_vec(&original).unwrap();
+        let mut restored: DirectoryVersions = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            restored.paths(&id).collect::<Vec<_>>(),
+            original.paths(&id).collect::<Vec<_>>()
+        );
+        restored.forget_subtree("d00000");
+        assert_eq!(restored.paths(&id).count(), 0);
+        assert_eq!(
+            restored.paths(&different).collect::<Vec<_>>(),
+            ["d00000-other"]
+        );
+        assert_eq!(
+            original.paths(&id).count(),
+            2,
+            "older checkpoint retains its aliases"
+        );
+        restored.insert("d00000-other".into(), None);
+        assert_eq!(
+            restored.paths(&different).count(),
+            0,
+            "an absent binding retires its reverse identity"
+        );
+    }
 
     #[test]
     fn name_search_directory_token_snapshots_persist_only_changed_keys() {

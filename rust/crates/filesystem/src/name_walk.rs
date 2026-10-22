@@ -145,6 +145,12 @@ impl NameCheckpoint {
         self.directory_versions.identities()
     }
 
+    /// Resolves a source directory identity through the shared checkpoint's
+    /// reverse index, including aliases, without scanning volume paths.
+    pub fn source_directory_paths(&self, identity: &[u8; 32]) -> impl Iterator<Item = &str> {
+        self.directory_versions.paths(identity)
+    }
+
     pub(crate) fn directory_records_since<'a>(
         &'a self,
         previous: Option<&'a Self>,
