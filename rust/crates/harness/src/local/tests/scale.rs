@@ -274,19 +274,21 @@ fn sample() -> std::io::Result<Resources> {
     acyclic_native_runtime::testing::sample_process_resources().map(Resources::from)
 }
 
-#[cfg(target_os = "linux")]
 fn diagnose(root: &Path) {
+    use acyclic_native_runtime::testing::Descriptor;
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut fds = std::collections::BTreeMap::<String, u64>::new();
-    for entry in std::fs::read_dir("/proc/self/fd")
+    for descriptor in acyclic_native_runtime::testing::descriptors()
         .into_iter()
         .flatten()
-        .flatten()
     {
-        let target =
-            std::fs::read_link(entry.path()).map_or("?".into(), |t| t.display().to_string());
+        let target = match descriptor {
+            Descriptor::File(path) => path.display().to_string(),
+            Descriptor::Other(kind) => kind,
+        };
         let target = target.replace(&root.display().to_string(), "<root>");
         let shape: String = target
-            .split('/')
+            .split(['/', '\\'])
             .map(|part| {
                 if part.chars().all(|c| c.is_ascii_digit())
                     || part.len() > 24
@@ -302,6 +304,15 @@ fn diagnose(root: &Path) {
             .join("/");
         *fds.entry(shape).or_default() += 1;
     }
+    println!("scale diag fds={fds:#?}");
+    diagnose_threads_and_files(&root);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn diagnose_threads_and_files(_: &Path) {}
+
+#[cfg(target_os = "linux")]
+fn diagnose_threads_and_files(root: &Path) {
     let mut threads = std::collections::BTreeMap::<String, u64>::new();
     for entry in std::fs::read_dir("/proc/self/task")
         .into_iter()
@@ -311,10 +322,7 @@ fn diagnose(root: &Path) {
         let name = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
         *threads.entry(name.trim().to_owned()).or_default() += 1;
     }
-    println!(
-        "scale diag fds={fds:#?}
-threads={threads:#?}"
-    );
+    println!("scale diag threads={threads:#?}");
     let mut files = Vec::new();
     let mut pending = vec![root.join("0")];
     while let Some(directory) = pending.pop() {
@@ -336,9 +344,6 @@ threads={threads:#?}"
         println!("scale diag file {bytes} {path}");
     }
 }
-
-#[cfg(not(target_os = "linux"))]
-fn diagnose(_: &Path) {}
 
 fn disk_bytes(path: &Path) -> (u64, u64) {
     let mut bytes = 0;
