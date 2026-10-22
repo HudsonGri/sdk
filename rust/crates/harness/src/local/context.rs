@@ -8,6 +8,8 @@ use crate::{
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
+#[cfg(feature = "native-execution")]
+mod environment;
 mod guidance;
 pub(super) mod skills;
 
@@ -123,6 +125,43 @@ impl LocalHarness {
             manifest
                 .conventions
                 .push(workspace.context_line().to_owned());
+            if self.checkout_context {
+                #[cfg(test)]
+                self.environment_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let task = crate::runtime::task_id_for_admission(operation);
+                // Parented tasks acquire a fresh per-owner mount during tool
+                // execution. A switched native mount is likewise selected
+                // later. Neither can truthfully advertise the parent path.
+                let cwd = if self.admission_parent(task).await?.is_none()
+                    && !(workspace.mounted.is_some()
+                        && workspace.selected_view().await?.0.is_some())
+                {
+                    Some(workspace.path.as_path())
+                } else {
+                    None
+                };
+                let physical_git = cwd.is_some()
+                    && matches!(
+                        acyclic_fs::GitCompatStore::load(
+                            &workspace.store,
+                            workspace.view().workspace().id(),
+                        )
+                        .await,
+                        Ok(None)
+                    );
+                let model = self.admission_model(task).await?;
+                manifest.environment = Some(
+                    environment::gather(
+                        cwd,
+                        self.clock.now_unix_millis(),
+                        &model.name,
+                        &self.environment_platform,
+                        physical_git,
+                    )
+                    .await,
+                );
+            }
         }
         #[cfg(feature = "hooks")]
         manifest.sources.extend(hook_configuration);

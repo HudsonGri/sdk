@@ -294,6 +294,39 @@ impl LocalHarness {
         self.apply_own_binding(task, self.inherited(task).await?)
             .await
     }
+    /// Resolves a not-yet-admitted task without walking runtime ancestry.
+    /// Parented and continuation admissions prepare their inheritance first;
+    /// an ordinary root has only its own retained settings and global default.
+    #[cfg(feature = "native-execution")]
+    pub(super) async fn admission_model(&self, task: TaskId) -> Result<Model> {
+        let mut model = self.command_model(None).await?;
+        let selected = match self.own_value(task, "model").await? {
+            Some(name) => Some(name),
+            None => read_inheritance(&self.task_files.inner, task, self.limits.file_bytes)
+                .await?
+                .and_then(|value| {
+                    value
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                }),
+        };
+        if let Some(name) = selected {
+            model.name = name;
+        }
+        model.validate()?;
+        Ok(model)
+    }
+    /// The parent already claimed by admission preparation, without requiring
+    /// a runnable task or constructing its ephemeral physical tool mount.
+    #[cfg(feature = "native-execution")]
+    pub(super) async fn admission_parent(&self, task: TaskId) -> Result<Option<TaskId>> {
+        Ok(
+            cached_parent(&self.task_files.inner, task, self.limits.file_bytes)
+                .await?
+                .flatten(),
+        )
+    }
     async fn resolve_summary(&self, value: &Value) -> Result<Option<String>> {
         if value.is_object() {
             let selected = crate::context::SummarySelection::deserialize(value).map_err(storage)?;
