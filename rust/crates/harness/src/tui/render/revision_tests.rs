@@ -237,3 +237,150 @@ fn changed_tool_measurement() {
         );
     }
 }
+
+#[test]
+fn turn_eviction_keeps_text_reasoning_and_wrapped_caches_equal_to_fresh_projections() {
+    use crate::task_volume::{Change, Channel, Component, FileKey, FileValue, TaskFile};
+    for retained in [
+        "plain ".repeat(100),
+        "```rust\nlet x=1;".into(),
+        "[ref]: /x\n\n[ref]".into(),
+        "".into(),
+        "日🙂\n\n**bold**".into(),
+    ] {
+        let mut views = fixture(0);
+        let mut renderer = ClientRenderer::default();
+        let mut keys: Vec<Vec<FileKey>> = Vec::new();
+        for (turn, body) in ["old", retained.as_str(), "new", "next"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut cursor = views.selections().next().unwrap().1.cursor().clone();
+            cursor.position += 1;
+            cursor.accepted = cursor.position;
+            cursor.durable = cursor.position;
+            let files: Vec<_> = [Channel::Text, Channel::Reasoning]
+                .into_iter()
+                .map(|channel| FileValue {
+                    requester: None,
+                    publication: None,
+                    key: FileKey::Task {
+                        task: Component::new(TASK).unwrap(),
+                        file: TaskFile::TextHead {
+                            turn: turn as u64,
+                            channel,
+                        },
+                    },
+                    channel: Some(channel),
+                    bytes: body.as_bytes().to_vec().into(),
+                })
+                .collect();
+            let current = files.iter().map(|file| file.key.clone()).collect();
+            views
+                .query_change(Change {
+                    cursor,
+                    file: None,
+                    files,
+                    removed: if turn >= 2 {
+                        keys[turn - 2].clone()
+                    } else {
+                        vec![]
+                    },
+                })
+                .unwrap();
+            keys.push(current);
+            renderer.update(&views, &owner());
+            let mut fresh = ClientRenderer::default();
+            fresh.update(&views, &owner());
+            assert_eq!(renderer.screen().transcript, fresh.screen().transcript);
+            assert_eq!(renderer.task.reasoning().1, fresh.task.reasoning().1);
+            for width in [5, 80] {
+                for (actual, expected) in [
+                    (
+                        &mut renderer.wrapped_transcript,
+                        &mut fresh.wrapped_transcript,
+                    ),
+                    (
+                        &mut renderer.wrapped_reasoning,
+                        &mut fresh.wrapped_reasoning,
+                    ),
+                ] {
+                    actual.reflow(width);
+                    expected.reflow(width);
+                    for line in 0..expected.source_len() {
+                        let position = crate::tui::RowPosition { line, row: 0 };
+                        actual.view_from(position, 8);
+                        expected.view_from(position, 8);
+                        assert_eq!(actual.shown(), expected.shown());
+                    }
+                    assert_eq!(actual.source_len(), expected.source_len());
+                }
+            }
+        }
+    }
+}
+
+fn evicted_joined_cache<const KEEP_OLD: bool>() {
+    use crate::task_volume::{Change, Channel, Component, FileKey, FileValue, TaskFile};
+    let mut views = fixture(0);
+    let mut renderer = ClientRenderer::default();
+    let mut keys: Vec<FileKey> = Vec::new();
+    for (turn, body) in ["old", "retained", ""].into_iter().enumerate() {
+        let key = FileKey::Task {
+            task: Component::new(TASK).unwrap(),
+            file: TaskFile::TextHead {
+                turn: turn as u64,
+                channel: Channel::Text,
+            },
+        };
+        let mut cursor = views.selections().next().unwrap().1.cursor().clone();
+        cursor.position += 1;
+        cursor.accepted = cursor.position;
+        cursor.durable = cursor.position;
+        views
+            .query_change(Change {
+                cursor,
+                file: Some(FileValue {
+                    requester: None,
+                    publication: None,
+                    key: key.clone(),
+                    channel: Some(Channel::Text),
+                    bytes: body.as_bytes().to_vec().into(),
+                }),
+                files: vec![],
+                removed: if turn == 2 {
+                    vec![keys[0].clone()]
+                } else {
+                    vec![]
+                },
+            })
+            .unwrap();
+        keys.push(key);
+        let _ = renderer.screen();
+        let stale = renderer
+            .transcript
+            .get()
+            .expect("joined cache initialized")
+            .clone();
+        renderer.update(&views, &owner());
+        if KEEP_OLD && turn == 2 {
+            renderer.transcript = OnceLock::from(stale);
+        }
+        let mut fresh = ClientRenderer::default();
+        fresh.update(&views, &owner());
+        assert_eq!(
+            renderer.screen().transcript,
+            fresh.screen().transcript,
+            "prefix eviction must release joined rows even without new visible text"
+        );
+    }
+}
+#[test]
+fn empty_turn_after_eviction_releases_the_joined_cache() {
+    evicted_joined_cache::<false>();
+}
+#[test]
+#[should_panic(expected = "prefix eviction must release joined rows")]
+fn negative_control_retaining_evicted_joined_rows_is_detected() {
+    evicted_joined_cache::<true>();
+}

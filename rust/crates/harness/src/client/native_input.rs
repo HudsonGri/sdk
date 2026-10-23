@@ -23,7 +23,7 @@ pub async fn next_file_tui_event<P: acyclic_stream::StreamProvider + ?Sized>(
     commands: &mut super::CommandSession<P>,
     animation: bool,
     renderer: &mut crate::tui::ClientRenderer,
-    documents: &mut crate::task_volume::ChangeStream,
+    documents: &mut super::DocumentFiles,
 ) -> Result<Option<InputBatch>> {
     next_event::<P, false, true>(
         client,
@@ -51,7 +51,7 @@ async fn next_event<
     commands: &mut super::CommandSession<P>,
     animation: bool,
     renderer: &mut crate::tui::ClientRenderer,
-    documents: &mut crate::task_volume::ChangeStream,
+    documents: &mut super::DocumentFiles,
 ) -> Result<Option<InputBatch>> {
     let animation = animation_frame::<true>(animation);
     tokio::pin!(animation);
@@ -75,8 +75,8 @@ async fn next_event<
                 change?;
                 if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { renderer.request_frame(); }
             },
-            update = documents.next() => {
-                client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
+            update = documents.read_change() => {
+                client.apply_document_change(documents, update?)?;
                 if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { renderer.request_frame(); }
             },
             change = commands.observe_change_visible::<RETAIN>() => {

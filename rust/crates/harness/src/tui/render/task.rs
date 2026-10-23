@@ -72,6 +72,20 @@ impl TaskRows {
             self.fallback.rows()
         }
     }
+    pub(super) fn answer_dropped(&self) -> usize {
+        if self.owner == AnswerOwner::Archived
+            || self.owner == AnswerOwner::Session && !self.streamed
+        {
+            0
+        } else if self.streamed {
+            self.stream.dropped()
+        } else {
+            self.fallback.dropped()
+        }
+    }
+    pub(super) fn reasoning_dropped(&self) -> usize {
+        self.reasoning.dropped()
+    }
     pub(super) fn answer_append(&self) -> Option<(std::borrow::Cow<'_, str>, super::Style)> {
         if self.owner == AnswerOwner::Archived || !self.streamed {
             return None;
