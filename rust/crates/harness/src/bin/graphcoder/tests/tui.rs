@@ -278,8 +278,7 @@ async fn conversation(blocked: bool) {
                 });
             } else {
                 screen.until(ANSWERS[index], |text| {
-                    requested.lock().unwrap().len() == index + 1
-                        && settled(text, ANSWERS[index])
+                    requested.lock().unwrap().len() == index + 1 && settled(text, ANSWERS[index])
                 });
             }
         }
