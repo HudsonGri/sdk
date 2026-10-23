@@ -442,8 +442,8 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
 async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay() -> Result<()> {
     use crate::hooks::{HookEvent, HookOutput, HookSite};
     use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
-    for (event, settled) in HookEvent::at(HookSite::Prompt)
-        .flat_map(|event| [(event, false), (event, true)])
+    for (event, settled) in
+        HookEvent::at(HookSite::Prompt).flat_map(|event| [(event, false), (event, true)])
     {
         let fixture = Fixture::new().await?;
         let provider: Arc<dyn StreamProvider> = fixture.stream.clone();
@@ -485,15 +485,21 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
                     event.name()
                 ))?),
             };
-            let cut = files.inner.snapshot(&Query::File(outcome.clone()), 1).await?;
-            files.inner.append(
-                cut.generation,
-                &FileValue::new(
-                    outcome,
-                    serde_json::to_vec(&HookOutput::default())
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                ),
-            ).await?;
+            let cut = files
+                .inner
+                .snapshot(&Query::File(outcome.clone()), 1)
+                .await?;
+            files
+                .inner
+                .append(
+                    cut.generation,
+                    &FileValue::new(
+                        outcome,
+                        serde_json::to_vec(&HookOutput::default())
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    ),
+                )
+                .await?;
         }
         // An unbound provider is normally a known preparation failure. The
         // retained hook claim prevents that error from settling this command.

@@ -179,70 +179,73 @@ impl LocalFileClient {
     }
 
     #[inline(never)]
-    fn submit<'a>(&'a mut self, file: &'a FileValue) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+    fn submit<'a>(
+        &'a mut self,
+        file: &'a FileValue,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-        validate(file, self.operation)?;
-        // Both -p and JSONL enter through this boundary. Already pinned prompt
-        // resolutions are data, so template expansion is never parsed twice.
-        let normalized;
-        let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
-            Ok(CommandResolution::Prompt {
-                text,
-                source: None,
-                mentions,
-            }) if mentions.is_empty() => {
-                let resolution = self.local.resolve_input(self.operation, &text).await?;
-                let mut captured = file.clone();
-                captured.bytes = serde_json::to_vec(&resolution)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .into();
-                normalized = captured;
-                validate(&normalized, self.operation)?;
-                &normalized
-            }
-            _ => file,
-        };
-        let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
-            .or_else(|_| {
-                serde_json::from_slice::<CommandRequest>(&file.bytes)
-                    .map(|request| CommandResolution::Submit { request })
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        match resolution {
-            CommandResolution::Select { .. }
-            | CommandResolution::Confirm { .. }
-            | CommandResolution::Sdk { .. }
-            | CommandResolution::Submit {
-                request:
-                    CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
-            } => {
-                return Err(Error::Unsupported(
-                    "command requires an interactive client".into(),
-                ));
-            }
-            _ => {}
-        }
-        let cursor = self.query.cursor();
-        let mut expected = Generation {
-            volume: cursor.volume,
-            epoch: cursor.epoch,
-            position: cursor.position,
-            commit: cursor.commit,
-        };
-        loop {
-            match self.local.task_files().write(expected, file).await {
-                Ok(_) => {
-                    self.submitted = true;
-                    return Ok(());
+            validate(file, self.operation)?;
+            // Both -p and JSONL enter through this boundary. Already pinned prompt
+            // resolutions are data, so template expansion is never parsed twice.
+            let normalized;
+            let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
+                Ok(CommandResolution::Prompt {
+                    text,
+                    source: None,
+                    mentions,
+                }) if mentions.is_empty() => {
+                    let resolution = self.local.resolve_input(self.operation, &text).await?;
+                    let mut captured = file.clone();
+                    captured.bytes = serde_json::to_vec(&resolution)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .into();
+                    normalized = captured;
+                    validate(&normalized, self.operation)?;
+                    &normalized
                 }
-                Err(crate::task_volume::Error::Conflict(next))
-                    if next.position > expected.position =>
-                {
-                    expected = next
+                _ => file,
+            };
+            let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
+                .or_else(|_| {
+                    serde_json::from_slice::<CommandRequest>(&file.bytes)
+                        .map(|request| CommandResolution::Submit { request })
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            match resolution {
+                CommandResolution::Select { .. }
+                | CommandResolution::Confirm { .. }
+                | CommandResolution::Sdk { .. }
+                | CommandResolution::Submit {
+                    request:
+                        CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+                } => {
+                    return Err(Error::Unsupported(
+                        "command requires an interactive client".into(),
+                    ));
                 }
-                Err(error) => return Err(error.into()),
+                _ => {}
             }
-        }
+            let cursor = self.query.cursor();
+            let mut expected = Generation {
+                volume: cursor.volume,
+                epoch: cursor.epoch,
+                position: cursor.position,
+                commit: cursor.commit,
+            };
+            loop {
+                match self.local.task_files().write(expected, file).await {
+                    Ok(_) => {
+                        self.submitted = true;
+                        return Ok(());
+                    }
+                    Err(crate::task_volume::Error::Conflict(next))
+                        if next.position > expected.position =>
+                    {
+                        expected = next
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
         })
     }
 
