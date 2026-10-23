@@ -342,6 +342,78 @@ async fn native_claim_recovery_does_not_replay_unacknowledged_input_or_replace_r
 }
 
 #[tokio::test]
+async fn native_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
+    const TURNS: u64 = 3;
+    let mut fixture = Fixture::open().await?;
+    fixture
+        .session(
+            "history",
+            SessionAction::Spawn {
+                prompt: "initial".into(),
+            },
+        )
+        .await?;
+    // Complete real ordered inputs. Retained history exceeds the endpoint
+    // bound, but the live result must remain independent of that history.
+    for turn in 1..=TURNS {
+        if turn > 1 {
+            fixture
+                .session(
+                    "history",
+                    SessionAction::Send {
+                        prompt: "follow-up".into(),
+                    },
+                )
+                .await?;
+        }
+        let claimed = fixture.session("history", SessionAction::Next).await?;
+        assert_eq!(claimed["turn"], turn);
+        fixture
+            .session(
+                "history",
+                SessionAction::Complete {
+                    turn,
+                    outcome: crate::Outcome::Failed {
+                        message: "x".repeat(24 * 1024),
+                    },
+                },
+            )
+            .await?;
+    }
+    let observed = fixture.session("history", SessionAction::Observe).await?;
+    assert_eq!(
+        observed["results"].as_array().map(Vec::len),
+        Some(1),
+        "live observations must not accumulate historical answers"
+    );
+    assert_eq!(observed.pointer("/results/0/turn"), Some(&json!(TURNS)));
+    assert!(serde_json::to_vec(&observed).map_err(storage)?.len() < 65_536);
+    let reference = Component::new("history").map_err(storage)?;
+    let files = fixture.owner.files(fixture.parent).await?;
+    let mut retained_bytes = 0;
+    for turn in 1..=TURNS {
+        let retained = files
+            .snapshot(
+                &Query::File(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Result(turn),
+                }),
+                1,
+            )
+            .await
+            .map_err(storage)?;
+        assert_eq!(retained.files.len(), 1);
+        retained_bytes += retained
+            .files
+            .iter()
+            .map(|file| file.bytes.len())
+            .sum::<usize>();
+    }
+    assert!(retained_bytes > 65_536);
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_builtin_subagents_and_tool_events_do_not_create_harness_forks() -> Result<()> {
     let mut fixture = Fixture::open().await?;
     for event in [
