@@ -11,7 +11,7 @@ impl LocalHarness {
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
+            let snapshot = coordination(|| files.inner.child_lifecycle(None)).await.map_err(storage)?;
             let mut cursor = follow::Follow::new(snapshot.cursor);
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
@@ -24,21 +24,17 @@ impl LocalHarness {
             let mut jobs = FuturesUnordered::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
-            for reference in files.inner.child_references().await.map_err(storage)? {
+            for reference in coordination(|| files.inner.child_references()).await.map_err(storage)? {
                 if needs_work_count(
                     &reference,
                     &values,
                     false,
-                    files
-                        .inner
-                        .child_input_count(&reference)
+                    coordination(|| files.inner.child_input_count(&reference))
                         .await
                         .map_err(storage)?,
                 )? {
                     active.insert(reference.clone());
-                    let request = files
-                        .inner
-                        .child_request(&reference)
+                    let request = coordination(|| files.inner.child_request(&reference))
                         .await
                         .map_err(storage)?;
                     jobs.push(self.service_child(
@@ -81,7 +77,7 @@ impl LocalHarness {
                 if let Some(crate::Outcome::Indeterminate {
                     operation_id,
                     cause,
-                }) = self.runtime.task_host().terminal_status(task).await?
+                }) = coordination(|| self.runtime.task_host().terminal_status(task)).await?
                 {
                     return Err(cause.into_error(operation_id));
                 }
@@ -93,7 +89,7 @@ impl LocalHarness {
             macro_rules! observed {
                 ($work:expr) => {
                     during(
-                        $work,
+                        coordination(|| $work),
                         parent.as_mut(),
                         &mut parent_done,
                         &mut jobs,
@@ -123,7 +119,7 @@ impl LocalHarness {
                         Some(event) => event,
                         None => tokio::select! {
                             biased;
-                            change = follow::next(files.as_ref(), Query::Children, &mut cursor) => Wake::File(change),
+                            change = coordination(|| follow::next(files.as_ref(), Query::Children, &mut cursor)) => Wake::File(change),
                             result = jobs.next(), if !jobs.is_empty() => Wake::child(result),
                             _ = async { inherited.as_ref().unwrap().cancelled().await },
                                 if inherited.is_some() && !inherited_stopped => Wake::Inherited,
@@ -170,7 +166,7 @@ impl LocalHarness {
                 }
             }).await;
             if result.is_err() {
-                draining::finish(
+                coordination(|| draining::finish(
                     async {
                         if parent_done {
                             Ok(())
@@ -181,7 +177,7 @@ impl LocalHarness {
                     &mut jobs,
                     &cancellation,
                     &drained,
-                )
+                ))
                 .await;
             }
             result
@@ -192,9 +188,9 @@ impl LocalHarness {
 // Keep the coordination loop's storage/follow construction separate from the
 // frame which owns parent cancellation and drains every child on failure.
 #[inline(never)]
-fn coordination<'a, F>(build: impl FnOnce() -> F) -> BoxProviderFuture<'a, Result<()>>
+fn coordination<'a, T, F>(build: impl FnOnce() -> F) -> BoxProviderFuture<'a, T>
 where
-    F: Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'a,
+    F: Future<Output = T> + acyclic_stream::ProviderTask + 'a,
 {
     Box::pin(build())
 }

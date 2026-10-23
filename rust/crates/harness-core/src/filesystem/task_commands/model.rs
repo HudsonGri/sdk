@@ -319,7 +319,7 @@ where
             .await;
         }
         BoundedContentFuture::new(io, || async {
-            let execution = self
+            let execution = BoundedContentFuture::new(io, || self
                 .runtime
                 .stock_execution_with_context(
                     Arc::clone(&context),
@@ -330,7 +330,7 @@ where
                     pipeline,
                     tools,
                     command.selected_output_volume.as_ref(),
-                )
+                ))?
                 .await?
                 .with_compaction_policy(compaction.clone())
                 .with_summary_source(command.summary_source);
@@ -341,12 +341,12 @@ where
                 None => execution,
             };
             if reconciliation_only {
-                let result = execution.reconcile_progress(input).await;
+                let result = BoundedContentFuture::new(io, || execution.reconcile_progress(input))?.await;
                 return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
                     .await;
             }
             phase.delegate();
-            Self::model_progress(execution.execute_progress(input).await?, io)
+            Self::model_progress(BoundedContentFuture::new(io, || execution.execute_progress(input))?.await?, io)
         })?
         .await
     }
