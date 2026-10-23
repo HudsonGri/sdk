@@ -31,7 +31,10 @@ impl Profile {
         let Some(totals) = &self.0 else { return };
         let totals = std::mem::take(&mut *totals.lock().unwrap_or_else(PoisonError::into_inner));
         for (name, (elapsed, polls)) in totals {
-            if name.starts_with("acyclic.harness.") {
+            if name.starts_with("acyclic.harness.")
+                || name.starts_with("acyclic.fs.")
+                || name.starts_with("acyclic.stream.")
+            {
                 println!(
                     "profile ending at turn {step}: {name} {:.3} ms / {polls} polls",
                     elapsed.as_secs_f64() * 1000.0

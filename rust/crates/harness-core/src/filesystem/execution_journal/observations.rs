@@ -250,6 +250,11 @@ where
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
+        // Appending returns no caller-owned payload. Validation decoders and
+        // their scratch must retire on success, refusal and cancellation;
+        // authenticated caches retain their own independent ownership pools.
+        let scope = crate::filesystem::PreparationScope::new(io)?;
+        let io = scope.io();
         self.require_operation(operation_id, io)?;
         if claim_id.is_empty() {
             return Err(stock_boundary(

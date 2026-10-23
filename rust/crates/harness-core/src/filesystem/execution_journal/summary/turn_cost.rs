@@ -102,9 +102,7 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
 #[tokio::test]
 async fn append_cost_measurements() -> Result<()> {
     for native in [false, true] {
-        let storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
-        let journal = storage.journal();
+        let journal = journal().await?;
         let operation = OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
@@ -151,18 +149,29 @@ async fn append_cost_measurements() -> Result<()> {
             );
             elapsed.push(started.elapsed().as_micros());
             let after = io.receipt();
-            // Commit acknowledgments echo the newly written records. Those
-            // bytes are accounted as reads too; only an excess is history IO.
-            assert_eq!(
-                after.authority_records_read - before.authority_records_read,
-                after.authority_records_appended - before.authority_records_appended,
-                "append replayed an already authenticated observation at step {step}"
+            // A bounded cache may read cold index pages, never a journal
+            // prefix. Retry and tool-state preloads plus their two updates
+            // each traverse at most 256 branches, a leaf and an external value.
+            let historical = (after.authority_records_read - before.authority_records_read)
+                - (after.authority_records_appended - before.authority_records_appended);
+            assert!(
+                historical <= 4 * 258,
+                "append exceeded fixed-width index work at step {step}"
             );
-            assert_eq!(
-                after.authority_bytes_read - before.authority_bytes_read,
-                after.authority_bytes_written - before.authority_bytes_written,
-                "append reloaded an authenticated journal prefix at step {step}"
-            );
+            {
+                let cache = journal.verified.lock().await;
+                let summary = cache.summary();
+                let entries = summary.retries.len()
+                    + summary.contexts.len()
+                    + summary.models.len()
+                    + summary.tools.len();
+                assert!(
+                    entries
+                        <= crate::filesystem::execution_journal::summary_cache::HOT_SUMMARY_ENTRIES
+                            + 3,
+                    "hot summary grew with history: step={step}, entries={entries}"
+                );
+            }
             assert!(
                 after.bytes_encoded - before.bytes_encoded < 4_096,
                 "append encoding exceeded the fixed per-append bound at step {step}: encoded={}",

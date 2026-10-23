@@ -130,3 +130,7 @@ mod recovery_cost;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "dispatch_admission.rs"]
 mod dispatch_admission;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "cache_eviction.rs"]
+mod cache_eviction;

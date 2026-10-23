@@ -1,5 +1,7 @@
-//! Only pages reachable from the current roots remain in the hot cache.
+//! A bounded hot cache of pages reachable from the current authenticated roots.
 use super::*;
+
+const HOT_PAGES: usize = 128;
 
 struct CachedNode {
     reference: NodeRef,
@@ -39,6 +41,7 @@ pub(in crate::filesystem::execution_journal) struct NodeCache {
     keys: crate::model::DigestIndex<usize>,
     values: Vec<Option<CachedNode>>,
     vacant: Vec<usize>,
+    replacement: usize,
     io: Option<PreparationIo>,
 }
 
@@ -90,6 +93,18 @@ impl NodeCache {
     pub(super) fn insert(&mut self, reference: NodeRef, bytes: &OwnedBytes) -> Result<()> {
         if self.get(reference, self.io.as_ref())?.is_some() {
             return Ok(());
+        }
+        if self.vacant.is_empty() && self.values.len() == HOT_PAGES {
+            let reference = self
+                .values
+                .get(self.replacement)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    invalid(self.io.as_ref(), "execution page eviction slot is missing")
+                })?
+                .reference;
+            self.remove(reference)?;
+            self.replacement = (self.replacement + 1) % HOT_PAGES;
         }
         self.keys.reserve_key(self.io.as_ref())?;
         if self.vacant.is_empty() && self.values.len() == self.values.capacity() {
@@ -224,12 +239,20 @@ mod tests {
     #[tokio::test]
     async fn hot_page_updates_do_not_read_history_or_retain_replaced_pages() -> Result<()> {
         for native in [false, true] {
-            check_hot_pages(native).await?;
+            check_pages(native, 32).await?;
         }
         Ok(())
     }
 
-    async fn check_hot_pages(native: bool) -> Result<()> {
+    #[tokio::test]
+    async fn distinct_historical_keys_do_not_grow_the_hot_page_cache() -> Result<()> {
+        for native in [false, true] {
+            check_pages(native, 1_000).await?;
+        }
+        Ok(())
+    }
+
+    async fn check_pages(native: bool, distinct: u32) -> Result<()> {
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let path = StreamPath::new("hot-index/pages")?;
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -252,7 +275,7 @@ mod tests {
             let before = io.receipt();
             let mut writer = Writer::new(&provider, &path, tail, Some(&io), scratch)?;
             writer.set_cache(cache, Some(&io))?;
-            let key = *blake3::hash(&(update % 32).to_be_bytes()).as_bytes();
+            let key = *blake3::hash(&(update % distinct).to_be_bytes()).as_bytes();
             root = Some(writer.set(root, key, &update.to_be_bytes()).await?);
             cache = writer.prepare_cache()?;
             let outcome = provider
@@ -267,16 +290,28 @@ mod tests {
             tail = writer.tail()?;
             scratch = Some(writer.take_scratch());
             drop(writer);
-            settled.check(
-                update,
-                &cache,
-                scratch.as_ref().expect("recycled index staging"),
-            )?;
-            assert_eq!(
-                io.receipt().authority_records_read - before.authority_records_read,
-                0,
-                "hot index update reread committed pages"
-            );
+            let reads = io.receipt().authority_records_read - before.authority_records_read;
+            if distinct == 32 {
+                settled.check(
+                    update,
+                    &cache,
+                    scratch.as_ref().expect("recycled index staging"),
+                )?;
+                assert_eq!(reads, 0, "hot index update reread committed pages");
+            } else {
+                assert!(
+                    cache.keys.entries().count() <= HOT_PAGES,
+                    "historical pages stayed resident"
+                );
+                assert!(
+                    cache.values.capacity() <= HOT_PAGES,
+                    "historical page slots stayed resident"
+                );
+                assert!(
+                    reads <= 2 * 257,
+                    "update exceeded two fixed-width key paths"
+                );
+            }
         }
         let reader = Reader {
             provider: &provider,
@@ -288,17 +323,34 @@ mod tests {
         };
         let before = io.receipt();
         for value in 968..1_000_u32 {
-            let key = *blake3::hash(&(value % 32).to_be_bytes()).as_bytes();
+            let key = *blake3::hash(&(value % distinct).to_be_bytes()).as_bytes();
             let read = reader.get(root, &key).await?.expect("live cached leaf");
             assert!(
                 matches!(read.node(Some(&io))?, Node::Leaf { value: bytes, .. }
                 if bytes == value.to_be_bytes())
             );
         }
-        assert_eq!(
-            io.receipt().authority_records_read - before.authority_records_read,
-            0
-        );
+        if distinct == 32 {
+            assert_eq!(
+                io.receipt().authority_records_read - before.authority_records_read,
+                0
+            );
+        } else {
+            assert!(
+                2 * distinct as usize - 1 > HOT_PAGES,
+                "unbounded reachable-page negative control did not exceed the cache bound"
+            );
+            let read = reader
+                .get(root, blake3::hash(&0_u32.to_be_bytes()).as_bytes())
+                .await?
+                .expect("evicted historical leaf");
+            assert!(matches!(read.node(Some(&io))?, Node::Leaf { value, .. }
+                if value == 0_u32.to_be_bytes()));
+            assert!(
+                io.receipt().authority_records_read > before.authority_records_read,
+                "historical lookup never exercised a cold authenticated page"
+            );
+        }
         let mut forged = root.expect("live root");
         forged.digest[0] ^= 1;
         assert!(

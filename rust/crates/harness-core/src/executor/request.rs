@@ -92,6 +92,7 @@ impl StockExecution<'_> {
             .map(|(_, prepared)| prepared)
     }
 
+    #[cfg(test)]
     pub(super) async fn canonical_base(
         &self,
         journal: &dyn ExecutionJournal,
@@ -100,29 +101,41 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<crate::context::Context> {
         let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
+        self.canonical_base_for_input(journal, &mut context_input)
+            .await
+    }
+
+    pub(super) async fn canonical_base_for_input(
+        &self,
+        journal: &dyn ExecutionJournal,
+        context_input: &mut ContextInput,
+    ) -> Result<crate::context::Context> {
+        // A stage observes the same input used to assemble its base. Temporarily
+        // remove the owner-resolved checkpoint, then restore its exact reference
+        // before any fallible load or stage can observe the input.
         let checkpoint = context_input
             .selected_context
             .as_mut()
             .and_then(|selected| selected.selection.checkpoint.take());
-        let delta = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
-        let Some(reference) = checkpoint else {
+        let delta = ContextPipeline::base_context(context_input, self.stock.limits, self.io);
+        if let Some(selected) = context_input.selected_context.as_mut() {
+            selected.selection.checkpoint = checkpoint;
+        }
+        let delta = delta?;
+        let Some(selected) = context_input.selected_context.as_ref() else {
+            return Ok(delta);
+        };
+        let Some(reference) = selected.selection.checkpoint.as_ref() else {
             return Ok(delta);
         };
         let (envelope, retained) = load_canonical_checkpoint(
             journal,
-            &reference,
+            reference,
             self.stock.limits,
             self.io.map(|_| &self.stock.tool_scope),
             self.io,
         )
         .await?;
-        let selected = input.selected_context.as_ref().ok_or_else(|| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "checkpoint has no canonical delta",
-            )
-        })?;
         if selected.selection.conversation_revision <= envelope.selection.conversation_revision {
             return Err(stock_boundary(
                 self.io,

@@ -1,6 +1,9 @@
 //! The authenticated suffix and its original accounting context live together.
 use super::*;
 
+/// Entry cache, not an authority: evicted keys remain in the authenticated roots.
+pub(super) const HOT_SUMMARY_ENTRIES: usize = 64;
+
 #[derive(Default)]
 pub(super) struct SummaryCache {
     summary: ExecutionSummary,
@@ -30,6 +33,46 @@ impl SummaryCache {
             self.summary.operation = Some(operation);
         } else if let (Some(retained), Some(current)) = (&mut self.io, io) {
             retained.use_current_context(current);
+        }
+        self.trim_published(io)?;
+        Ok(())
+    }
+
+    fn trim_published(&mut self, current: Option<&PreparationIo>) -> Result<()> {
+        let summary = &self.summary;
+        if summary.retries.len()
+            + summary.contexts.len()
+            + summary.models.len()
+            + summary.tools.len()
+            < HOT_SUMMARY_ENTRIES
+            || !summary
+                .recovery
+                .is_some_and(|cut| cut.indexed && cut.state.tail == summary.tail)
+        {
+            return Ok(());
+        }
+        // Allocate the replacement pool before releasing anything. Pages and
+        // staging own separate pools; pending entries belong to this one and
+        // can retire only after the cut contains their complete publication.
+        let next_io = current.map(PreparationIo::retained_pool).transpose()?;
+        let previous = std::mem::take(&mut self.summary);
+        self.summary = ExecutionSummary {
+            operation: previous.operation,
+            tail: previous.tail,
+            pending_dispatches: previous.pending_dispatches,
+            recovery: previous.recovery,
+            pages: previous.pages,
+            scratch: previous.scratch,
+            partial: true,
+            ..Default::default()
+        };
+        drop(previous.retries);
+        drop(previous.contexts);
+        drop(previous.models);
+        drop(previous.tools);
+        drop(previous.pending_steps);
+        if let Some(io) = std::mem::replace(&mut self.io, next_io) {
+            io.release_retained_pool();
         }
         Ok(())
     }

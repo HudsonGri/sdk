@@ -13,8 +13,9 @@ impl StockExecution<'_> {
         Option<ContextAccounting>,
         crate::model::PreparedModelRequest,
     )> {
+        let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         let base = self
-            .canonical_base(journal, input, step, prior_messages)
+            .canonical_base_for_input(journal, &mut context_input)
             .await?;
         let canonical = if step == 0 && input.selected_context.is_some() {
             Some(
@@ -30,7 +31,6 @@ impl StockExecution<'_> {
         } else {
             None
         };
-        let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         let (projection, prepared) = self
             .prepare_transformed_request(&context_input, base)
             .await?;

@@ -149,7 +149,6 @@ impl<K: SummaryKey, V> SummaryMap<K, V> {
         self.keys.set(0, digest, Some(position), io)
     }
 
-    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.values.len()
     }

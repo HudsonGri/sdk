@@ -149,16 +149,21 @@ impl MemoryStream {
                 .paths
                 .get(&append.path)
                 .and_then(|path| path.history.clone()),
-            CommittedMutation::Fork(fork) => Some(Arc::new(History::Prefix {
-                source: state
+            CommittedMutation::Fork(fork) => {
+                let source = state
                     .paths
                     .get(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .history
-                    .clone(),
-                tail: fork.forked_at,
-                _allocation: self.allocate(std::mem::size_of::<History>())?,
-            })),
+                    .clone();
+                let jump = self.history_jump(source.as_ref(), fork.forked_at)?;
+                Some(Arc::new(History::Prefix {
+                    source,
+                    jump,
+                    tail: fork.forked_at,
+                    _allocation: self.allocate(std::mem::size_of::<History>())?,
+                }))
+            }
         };
         let source = fact_records(fact);
         if source.is_empty() {
@@ -188,11 +193,34 @@ impl MemoryStream {
             records,
             _allocation: claim,
         });
+        let jump = self.history_jump(
+            parent.as_ref(),
+            records
+                .records
+                .first()
+                .ok_or(StreamError::Unavailable)?
+                .sequence,
+        )?;
         Ok(Arc::new(History::Batch {
             parent,
+            jump,
             records,
             _allocation: self.allocate(std::mem::size_of::<History>())?,
         }))
+    }
+
+    fn history_jump(
+        &self,
+        parent: Option<&Arc<History>>,
+        boundary: u64,
+    ) -> Result<HistoryJump, StreamError> {
+        HistoryJump::new(parent, boundary, || {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = &self.work {
+                work.record(inspect(&work.meter, || ()))?;
+            }
+            Ok(())
+        })
     }
 
     fn paths<'a>(
