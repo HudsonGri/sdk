@@ -598,8 +598,12 @@ async fn approval_history_is_independent_of_message_attachment_limits() -> Resul
         }
         Ok::<_, Error>(())
     };
-    let (result, ()) = tokio::try_join!(harness.resume(task), decide)?;
-    assert_eq!(result.text, "done");
+    let (result, decisions) = tokio::join!(harness.resume(task), decide);
+    decisions?;
+    assert!(
+        matches!(result, Err(Error::TaskFailed { task: failed, message })
+        if failed == task && message == "declined")
+    );
     let head = harness
         .workspace()
         .unwrap()
