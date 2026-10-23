@@ -15,7 +15,7 @@ impl StockExecution<'_> {
     )> {
         let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         let base = self
-            .canonical_base_for_input(journal, &mut context_input)
+            .canonical_base_for_turn(journal, input.operation_id, &mut context_input)
             .await?;
         let canonical = if step == 0 && input.selected_context.is_some() {
             Some(

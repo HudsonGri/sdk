@@ -775,6 +775,8 @@ mod tools_1;
 mod tools_2;
 mod transcript_delta;
 mod turn_cost;
+#[cfg(not(target_arch = "wasm32"))]
+mod working_context;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,
     input_schema: Value,

@@ -61,6 +61,7 @@ mod records;
 mod request;
 mod response;
 pub(crate) mod transcript;
+mod working_context;
 pub(crate) use transcript::load_projection as load_response_projection;
 mod summary;
 mod summary_file;
