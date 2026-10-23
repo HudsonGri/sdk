@@ -382,6 +382,7 @@ case "$lane" in
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
     node --test scripts/qualify-main-green-debts.test.mjs
+    python3 scripts/buildbox/cargo_cache.test.py
     node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
     node --test plugin/tests/hosts/login-link.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \

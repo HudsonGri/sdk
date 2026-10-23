@@ -2,7 +2,8 @@
 
 This directory is the maintained source for the coordinator's bb2 runtime.
 `bb-job.py`, `bb-admit.py`, `bb-admit`, `build-slot`, `sccache-rustc`,
-`buildbox-receipt.mjs`, `job_exports.py` and the SDK source-copy pruner install
+`buildbox-receipt.mjs`, `job_exports.py`, `bb_cargo_cache.py`,
+`bb_target_store.py` and the SDK source-copy pruner install
 under `/home/var/bin` on bb2. `buildbox.mjs` and the receipt module install in
 WSL's `/home/var/bin`. `coordinator/pr-gate.sh` installs as `Q:/lanes/pr-gate.sh`;
 `../pr-gate-checks.sh` installs as `Q:/lanes/pr-gate-checks.sh`.
