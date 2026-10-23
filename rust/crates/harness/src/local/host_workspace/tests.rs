@@ -131,7 +131,10 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     ));
     let child = fixture.task(Some(workspace.task())).await?;
     let fork = workspace.fork(&parent, &child).await?;
-    assert!(fork.path().starts_with(mounts.path()));
+    assert!(
+        fork.path()
+            .starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?)
+    );
     assert!(
         !fork
             .path()
@@ -160,7 +163,11 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     );
     let grandchild = fixture.task(Some(fork.task())).await?;
     let nested = fork.fork(&child, &grandchild).await?;
-    assert!(nested.path().starts_with(mounts.path()));
+    assert!(
+        nested
+            .path()
+            .starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?)
+    );
     assert_eq!(
         std::fs::read(nested.path().join("child.txt")).map_err(storage)?,
         b"child only"
@@ -377,7 +384,7 @@ async fn native_private_binding_root_refuses_a_symlink_escape() -> Result<()> {
 }
 
 #[tokio::test]
-async fn native_private_callbacks_and_publication_reject_a_cancelled_owner() -> Result<()> {
+async fn native_private_publication_rejects_a_cancelled_owner() -> Result<()> {
     let fixture = Fixture::open().await?;
     let parent = fixture.task(None).await?;
     let mounts = fixture
@@ -401,6 +408,15 @@ async fn native_private_callbacks_and_publication_reject_a_cancelled_owner() -> 
         .source
         .as_ref()
         .ok_or_else(|| Error::NotFound("fixture scratch projection".into()))?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let head = source
+        .workspace
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
     fixture
         .harness
         .runtime
@@ -409,16 +425,27 @@ async fn native_private_callbacks_and_publication_reject_a_cancelled_owner() -> 
         .await?;
     // Call the filesystem API directly: a preflight-only host check would
     // allow this pending write to publish after task ownership was revoked.
-    let native = source.native().await;
-    assert!(
-        native
-            .as_ref()
-            .ok_or_else(|| Error::NotFound("native projection".into()))?
-            .sync()
+    let projection = source.native().await;
+    let native = projection
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("native projection".into()))?;
+    assert!(native.sync().await.is_err());
+    // ProjFS reports new creates after the physical operation and cannot veto
+    // them. Regardless of the driver's physical outcome, revoked ownership
+    // must prevent those bytes from entering the shared volume's history.
+    let _ = native_write(&fork.path().join(".volumes/scratch/denied.txt"), b"denied");
+    assert!(native.sync().await.is_err());
+    assert_eq!(
+        source
+            .workspace
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .is_err()
+            .map_err(storage)?
+            .value
+            .id(),
+        head
     );
-    assert!(native_write(&fork.path().join(".volumes/scratch/denied.txt"), b"denied").is_err());
     Ok(())
 }
 
@@ -486,7 +513,10 @@ async fn native_children_use_shared_allocations_and_never_dispatch_an_agent() ->
     );
     let child = fixture.harness.bind_host_task(child_task).await?;
     let fork = workspace.fork(&parent, &child).await?;
-    assert!(fork.path().starts_with(mounts.path()));
+    assert!(
+        fork.path()
+            .starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?)
+    );
     assert_eq!(
         std::fs::read(fork.path().join("parent.txt")).map_err(storage)?,
         b"native parent"

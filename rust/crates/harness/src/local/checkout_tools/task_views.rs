@@ -109,10 +109,7 @@ impl CheckoutTools {
         owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
         mounts: Option<Arc<workspace::Mounts>>,
     ) -> Result<Self> {
-        let workspace = self
-            .workspace
-            .mount_task_view(view, owner, mounts, &self.workspace.mount_directory)
-            .await?;
+        let workspace = self.workspace.mount_task_view(view, owner, mounts).await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
             workspace: Arc::clone(&workspace),

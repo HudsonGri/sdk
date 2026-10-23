@@ -75,7 +75,13 @@ async fn failed_and_cancelled_native_tools_leave_capturable_mergeable_views() ->
                 .as_str()
                 .ok_or_else(|| Error::Invalid("view absent".into()))?,
         );
-        assert!(cwd.starts_with(fixture.checkout.path().join(host_workspace::HOST_VIEW_ROOT)));
+        assert!(
+            cwd.starts_with(
+                std::fs::canonicalize(fixture.checkout.path())
+                    .map_err(storage)?
+                    .join(host_workspace::HOST_VIEW_ROOT)
+            )
+        );
         let parent = fixture.owner.attached(fixture.parent)?;
         let attached = fixture.owner.attached(child)?;
         parent

@@ -321,12 +321,7 @@ impl HostWorkspace {
         .map_err(storage)?;
         let workspace = self
             .workspace
-            .mount_task_view(
-                view,
-                child_owner,
-                Some(Arc::clone(&mounts)),
-                self.mount_root.path(),
-            )
+            .mount_task_view(view, child_owner, Some(Arc::clone(&mounts)))
             .await?;
         parent_owner.verify_owner(None)?.await?;
         child_owner.verify_owner(None)?.await?;

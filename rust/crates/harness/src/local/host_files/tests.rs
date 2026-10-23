@@ -57,7 +57,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .map_err(storage)?;
         outside
     };
-    let cwd = checkout.path().to_path_buf();
+    let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     let result = tokio::task::spawn_blocking(move || {
         let result = request(
             &cwd,
@@ -99,7 +99,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     .map_err(storage)??;
     assert_eq!(
         result.get("cwd").unwrap_or(&Value::Null),
-        checkout.path().to_string_lossy().as_ref()
+        std::fs::canonicalize(checkout.path())
+            .map_err(storage)?
+            .to_string_lossy()
+            .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
     tokio::time::timeout(Duration::from_secs(2), async {

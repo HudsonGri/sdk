@@ -74,17 +74,11 @@ impl LocalWorkspace {
         view: workspace::View,
         owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
         mounts: Option<Arc<workspace::Mounts>>,
-        mount_directory: &Path,
     ) -> Result<Arc<LocalWorkspace>> {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
         owner.verify_owner(None)?.await?;
-        if mount_directory != self.mount_directory {
-            return Err(Error::Invalid(
-                "task mount root differs from the shared checkout".into(),
-            ));
-        }
         let path = self
             .held_task_mount_root()?
             .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
@@ -105,7 +99,7 @@ impl LocalWorkspace {
             processes: self.processes.clone(),
             path: path.clone(),
             fresh: false,
-            mount_directory: mount_directory.to_path_buf(),
+            mount_directory: self.mount_directory.clone(),
             view,
             mounted: None,
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
