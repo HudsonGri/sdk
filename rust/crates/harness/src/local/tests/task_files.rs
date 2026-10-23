@@ -527,6 +527,11 @@ async fn approval_history_is_independent_of_message_attachment_limits() -> Resul
             }),
     )
     .await?;
+    let foreign = super::context::admitted(
+        harness
+            .submit(OperationId::new(), "unrelated operation")
+            .await?,
+    )?;
     let task = super::context::admitted(harness.submit(OperationId::new(), "write twice").await?)?;
     let files = harness.runtime.approval_files(task).await?;
     let query = Query::Approvals(Component::new(task.to_string())?);
@@ -587,7 +592,14 @@ async fn approval_history_is_independent_of_message_attachment_limits() -> Resul
                         )?)
                         .map_err(super::super::storage)?,
                     );
-                    harness.submit_approval_decision(&decision).await?;
+                    assert!(
+                        matches!(
+                            harness.submit_operation_approval(foreign, &decision).await,
+                            Err(Error::Unauthorized(_))
+                        ),
+                        "an unrelated admitted operation acquired decision authority"
+                    );
+                    harness.submit_operation_approval(task, &decision).await?;
                     // An exact authenticated retry still finds the settled
                     // canonical binding after it leaves the active index.
                     harness.submit_approval_decision(&decision).await?;

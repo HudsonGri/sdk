@@ -138,3 +138,111 @@ proptest! {
         }
     }
 }
+
+#[tokio::test]
+async fn approval_live_window_matches_snapshot_after_settlement() {
+    use futures::StreamExt as _;
+    let task = component("task");
+    let volume = TaskVolume::open(
+        std::sync::Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_stream::StreamPath::new("approval-live-window").unwrap(),
+    )
+    .await
+    .unwrap();
+    let query = Query::TaskSession {
+        task: task.clone(),
+        session: component("session"),
+    };
+    let mut generation = volume.snapshot(&Query::Root, 16).await.unwrap().generation;
+    let pending = key(
+        &task,
+        TaskFile::ApprovalRequest(component("old-unanswered")),
+    );
+    generation = volume
+        .append(
+            generation,
+            &FileValue::new(pending.clone(), b"pending".to_vec()),
+        )
+        .await
+        .unwrap();
+    let observed = volume
+        .observe_files(query.clone(), None, 8, 1024)
+        .await
+        .unwrap();
+    let snapshot = observed.snapshot.unwrap();
+    let mut old_feed = volume.follow(query.clone(), snapshot.cursor).await.unwrap();
+    let mut live: BTreeMap<_, _> = snapshot
+        .files
+        .into_iter()
+        .map(|file| (file.key.clone(), file))
+        .collect();
+    let mut historical = live.clone();
+    let mut changes = observed.changes;
+    for id in 0..16 {
+        let request = component(&format!("request-{id}"));
+        for file in [
+            TaskFile::ApprovalRequest(request.clone()),
+            TaskFile::ApprovalReview {
+                request: request.clone(),
+                principal: component("human"),
+            },
+            TaskFile::ApprovalDecision {
+                request: request.clone(),
+                principal: component("human"),
+            },
+            TaskFile::ApprovalReview {
+                request,
+                principal: component("late"),
+            },
+        ] {
+            generation = volume
+                .append(
+                    generation,
+                    &FileValue::new(key(&task, file), b"value".to_vec()),
+                )
+                .await
+                .unwrap();
+            let raw = old_feed.next().await.unwrap().unwrap();
+            if let Some(file) = raw.file {
+                historical.insert(file.key.clone(), file);
+            }
+            let change = changes.next().await.unwrap().unwrap();
+            for key in change.removed {
+                live.remove(&key);
+            }
+            for file in change.file.into_iter().chain(change.files) {
+                live.insert(file.key.clone(), file);
+            }
+        }
+        let fresh = volume.snapshot(&query, 8).await.unwrap();
+        assert_eq!(
+            live.keys().cloned().collect::<Vec<_>>(),
+            fresh
+                .files
+                .into_iter()
+                .map(|file| file.key)
+                .collect::<Vec<_>>()
+        );
+        assert!(live.contains_key(&pending));
+        assert_eq!(live.len(), 1);
+    }
+    assert!(
+        historical.len() > 8,
+        "the raw historical follow must exceed the live bound"
+    );
+    assert_eq!(
+        volume
+            .snapshot(
+                &Query::Approval {
+                    task,
+                    request: component("request-0")
+                },
+                8
+            )
+            .await
+            .unwrap()
+            .files
+            .len(),
+        4
+    );
+}

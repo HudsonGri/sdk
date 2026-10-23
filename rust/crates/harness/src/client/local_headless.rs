@@ -15,6 +15,7 @@ const MAXIMUM_BYTES: usize = super::jsonl::MAXIMUM_REQUEST_BYTES;
 const MAXIMUM_FILES: usize = 4096;
 // Request size is a per-file admission bound, independent of retained display.
 const OBSERVATION_BYTES: u64 = 4 * 1024 * 1024;
+mod approvals;
 
 fn session(operation: OperationId) -> Result<Component> {
     Ok(Component::new(
@@ -61,11 +62,7 @@ fn validate(file: &FileValue, operation: OperationId) -> Result<()> {
         file: TaskFile::ApprovalDecision { .. },
     } = &file.key
     {
-        if task.as_str() != crate::runtime::task_id_for_admission(operation).to_string() {
-            return Err(Error::Unauthorized(
-                "stdin decision targets another task".into(),
-            ));
-        }
+        uuid::Uuid::parse_str(task.as_str()).map_err(|error| Error::Invalid(error.to_string()))?;
         crate::interaction::ApprovalDecisionFile::decode(&file.bytes, MAXIMUM_BYTES as u64)?;
         return Ok(());
     }
@@ -108,6 +105,7 @@ pub struct LocalFileClient {
     local: Arc<LocalHarness>,
     operation: OperationId,
     query: ClientQuery,
+    approvals: approvals::Events,
     initial: bool,
     submitted: bool,
     host: Pin<Box<dyn Future<Output = Result<()>>>>,
@@ -156,6 +154,10 @@ impl LocalFileClient {
         )
         .await?;
         Ok(Self {
+            approvals: approvals::follow(
+                local.clone(),
+                crate::runtime::task_id_for_admission(operation),
+            ),
             host: Box::pin(super::commands::run_local_command_files(
                 local.clone(),
                 operation,
@@ -226,10 +228,15 @@ impl LocalFileClient {
             let _ = self.host.as_mut().await;
         }
         let Self {
-            local, host, query, ..
+            local,
+            host,
+            query,
+            approvals,
+            ..
         } = self;
         drop(host);
         drop(query);
+        drop(approvals);
         super::disconnect_local(local).await?;
         outcome
     }
@@ -272,7 +279,10 @@ impl LocalFileClient {
         ) {
             let local = self.local.clone();
             return self
-                .while_driving(local.submit_approval_decision(file))
+                .while_driving(local.submit_operation_approval(
+                    crate::runtime::task_id_for_admission(self.operation),
+                    file,
+                ))
                 .await?;
         }
         // Both -p and JSONL enter through this boundary. Already pinned prompt
@@ -341,7 +351,7 @@ impl LocalFileClient {
     async fn awaiting_approval(&mut self) -> Result<bool> {
         let task = crate::runtime::task_id_for_admission(self.operation);
         let local = self.local.clone();
-        self.while_driving(local.awaiting_external_approval(task))
+        self.while_driving(local.awaiting_operation_approval(task))
             .await?
     }
 
@@ -410,11 +420,13 @@ impl LocalFileClient {
                 Input(Option<Result<String>>),
                 File(Result<()>),
                 Host(Result<()>),
+                Approval(Option<Result<approvals::Event>>),
             }
             let next = tokio::select! {
                 biased;
                 line = input.next(), if input_open => Next::Input(line),
                 change = self.query.publish_next(async |change| publish(output, change)) => Next::File(change),
+                approval = self.approvals.next() => Next::Approval(approval),
                 result = &mut self.host, if !self.host_done => Next::Host(result),
             };
             match next {
@@ -430,6 +442,10 @@ impl LocalFileClient {
                 }
                 Next::File(result) => {
                     result?;
+                }
+                Next::Approval(Some(event)) => event?.publish(output)?,
+                Next::Approval(None) => {
+                    return Err(Error::Storage("approval tree follow ended".into()));
                 }
                 Next::Host(result) => {
                     self.host_done = true;

@@ -1,5 +1,5 @@
 //! Metadata-only display window: one insert, remove and eviction path, no payload custody.
-use super::super::{Change, FileKey, FileValue};
+use super::super::{Change, FileKey, FileValue, TaskFile};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Display kinds 0..=7 are bounded separately; the last slot holds unclassified files.
@@ -26,6 +26,10 @@ pub(super) struct Window {
 }
 
 impl Window {
+    pub(super) fn keys(&self) -> impl Iterator<Item = &FileKey> {
+        self.entries.keys()
+    }
+
     /// Selects the snapshot's window in place; later duplicates replace earlier ones.
     pub(super) fn new(
         files: &mut Vec<FileValue>,
@@ -153,7 +157,21 @@ impl Window {
     /// Removes the oldest (order, key) among the slots; false when they are empty.
     fn evict(&mut self, slots: std::ops::Range<usize>, removed: &mut Vec<FileKey>) -> bool {
         let Some(((_, key), _)) = slots
-            .filter_map(|slot| self.ordered[slot].first().map(|oldest| (oldest, slot)))
+            .filter_map(|slot| {
+                self.ordered[slot]
+                    .iter()
+                    .find(|(_, key)| {
+                        !matches!(
+                            key,
+                            FileKey::Task {
+                                file: TaskFile::ApprovalRequest(_)
+                                    | TaskFile::ApprovalReview { .. },
+                                ..
+                            }
+                        )
+                    })
+                    .map(|oldest| (oldest, slot))
+            })
             .min()
         else {
             return false;

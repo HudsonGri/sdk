@@ -113,9 +113,100 @@ async fn publish_review(
 }
 
 impl LocalHarness {
+    pub(crate) async fn approval_child_files(
+        &self,
+        parent: TaskId,
+        child: TaskId,
+    ) -> Result<Option<Arc<crate::task_volume::TaskFiles<LocalStream>>>> {
+        if self
+            .runtime
+            .task_host()
+            .observe_admission(child)
+            .await?
+            .parent
+            != Some(parent)
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.runtime.approval_files(child).await?))
+    }
+
+    pub(crate) async fn submit_operation_approval(
+        &self,
+        root: TaskId,
+        file: &FileValue,
+    ) -> Result<()> {
+        let FileKey::Task { task, .. } = &file.key else {
+            return Err(Error::Unauthorized("approval task is absent".into()));
+        };
+        let mut task = TaskId::from_bytes(
+            uuid::Uuid::parse_str(task.as_str())
+                .map_err(storage)?
+                .into_bytes(),
+        );
+        let mut visited = std::collections::BTreeSet::new();
+        while task != root {
+            if !visited.insert(task) {
+                return Err(Error::Unauthorized("cyclic approval ancestry".into()));
+            }
+            task = self
+                .runtime
+                .task_host()
+                .observe_admission(task)
+                .await?
+                .parent
+                .ok_or_else(|| {
+                    Error::Unauthorized("stdin decision targets another operation".into())
+                })?;
+        }
+        self.submit_approval_decision(file).await
+    }
+
+    pub(crate) async fn awaiting_operation_approval(&self, root: TaskId) -> Result<bool> {
+        let mut tasks = vec![root];
+        let mut seen = std::collections::BTreeSet::from([root]);
+        let mut index = 0;
+        while index < tasks.len() {
+            let task = tasks[index];
+            if self.awaiting_approval_stage(task, true).await? {
+                return Ok(true);
+            }
+            let mut revision = None;
+            let mut after = None;
+            loop {
+                let page = match self
+                    .runtime
+                    .task_host()
+                    .children(task, revision, after, 64)
+                    .await
+                {
+                    Ok(page) => page,
+                    Err(Error::NotFound(_)) if task == root => return Ok(false),
+                    Err(error) => return Err(error),
+                };
+                for child in page.entries {
+                    if seen.insert(child.task_id) {
+                        tasks.push(child.task_id);
+                    }
+                }
+                revision = Some(page.revision);
+                after = page.next_after;
+                if after.is_none() {
+                    break;
+                }
+            }
+            index += 1;
+        }
+        Ok(false)
+    }
+
     /// Whether a suspended task has reached an external approver. Automatic
     /// stages must finish before a headless client can safely retire its driver.
     pub async fn awaiting_external_approval(&self, task: TaskId) -> Result<bool> {
+        self.awaiting_approval_stage(task, false).await
+    }
+
+    async fn awaiting_approval_stage(&self, task: TaskId, human_only: bool) -> Result<bool> {
         let suspension = match self
             .runtime
             .task_host()
@@ -145,7 +236,7 @@ impl LocalHarness {
                 .await?
             {
                 Some(Stage::Human(principal)) => principal,
-                Some(Stage::Parent(parent)) => format!("parent:{parent}"),
+                Some(Stage::Parent(parent)) if !human_only => format!("parent:{parent}"),
                 _ => continue,
             };
             // The waiting review is published after execution has suspended.

@@ -191,13 +191,17 @@ pub(super) fn observe(
     };
     let snapshot = observation.snapshot.as_mut().ok_or(Error::ResetRequired)?;
     let window = Window::new(&mut snapshot.files, maximum, bytes, recent);
+    let active_approvals = matches!(query, Query::TaskSession { .. });
     observation.changes = Box::pin(futures::stream::try_unfold(
         (observation.changes, window),
-        |(mut changes, mut window)| async move {
+        move |(mut changes, mut window)| async move {
             let Some(change) = changes.next().await else {
                 return Ok(None);
             };
             let mut change = change?;
+            if active_approvals {
+                change = change.active_approval_view(window.keys());
+            }
             window.apply(&mut change);
             Ok(Some((change, (changes, window))))
         },

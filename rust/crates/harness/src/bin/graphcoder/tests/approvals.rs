@@ -24,8 +24,21 @@ enum Case {
     ParentForged,
     ParentCompletes,
     ParentError,
+    ChildHumanAllow,
+    ChildHumanDeny,
+    ChildHumanForged,
+    ChildHumanDisconnected,
 }
 impl Case {
+    fn child_human(self) -> bool {
+        matches!(
+            self,
+            Self::ChildHumanAllow
+                | Self::ChildHumanDeny
+                | Self::ChildHumanForged
+                | Self::ChildHumanDisconnected
+        )
+    }
     fn parent(self) -> bool {
         matches!(
             self,
@@ -37,14 +50,15 @@ impl Case {
         )
     }
     fn human(self) -> bool {
-        matches!(
-            self,
-            Self::HumanAllow
-                | Self::HumanDeny
-                | Self::ForgedPrincipal
-                | Self::ForgedSubject
-                | Self::Chain
-        )
+        self.child_human()
+            || matches!(
+                self,
+                Self::HumanAllow
+                    | Self::HumanDeny
+                    | Self::ForgedPrincipal
+                    | Self::ForgedSubject
+                    | Self::Chain
+            )
     }
     fn allowed(self) -> bool {
         matches!(
@@ -55,12 +69,16 @@ impl Case {
                 | Self::HumanAllow
                 | Self::Chain
                 | Self::ParentAllow
+                | Self::ChildHumanAllow
         )
     }
     fn forged(self) -> bool {
         matches!(
             self,
-            Self::ForgedPrincipal | Self::ForgedSubject | Self::ParentForged
+            Self::ForgedPrincipal
+                | Self::ForgedSubject
+                | Self::ParentForged
+                | Self::ChildHumanForged
         )
     }
 }
@@ -81,6 +99,13 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
         Case::Chain => vec![rule("ask"), llm, human],
+        Case::ChildHumanAllow
+        | Case::ChildHumanDeny
+        | Case::ChildHumanForged
+        | Case::ChildHumanDisconnected => vec![
+            json!({"kind":"rules","principal":"rules","rules":[{"tool":"url_fetch","arguments":null,"verdict":"ask"}],"fallback":"allow"}),
+            human,
+        ],
         Case::ParentAllow
         | Case::ParentDeny
         | Case::ParentForged
@@ -205,7 +230,7 @@ impl Fixture {
             &self.root_calls
         };
         let step = counter.fetch_add(1, Ordering::SeqCst);
-        if !child && self.case.parent() {
+        if !child && (self.case.parent() || self.case.child_human()) {
             return self.parent(body, step);
         }
         if step == 0 {
@@ -231,6 +256,9 @@ impl Fixture {
                 call("wait", &json!({"agents":[reference],"mode":"all"}), step)
             }
             2 => {
+                if self.case.child_human() {
+                    return ANSWER.to_owned();
+                }
                 let result = tool_result(body);
                 let agent = result
                     .get("agents")
@@ -462,6 +490,10 @@ impl Followed {
             } if case.human() && !self.submitted => {
                 if String::from_utf8_lossy(&file.bytes).contains("awaiting authenticated decision")
                 {
+                    if matches!(case, Case::ChildHumanDisconnected) {
+                        self.submitted = true;
+                        return;
+                    }
                     let principal = if matches!(case, Case::ForgedPrincipal) {
                         "rules"
                     } else {
@@ -470,9 +502,9 @@ impl Followed {
                     let mut decision = decision(
                         self.request.as_ref().unwrap(),
                         principal,
-                        !matches!(case, Case::HumanDeny),
+                        !matches!(case, Case::HumanDeny | Case::ChildHumanDeny),
                     );
-                    if matches!(case, Case::ForgedSubject) {
+                    if matches!(case, Case::ForgedSubject | Case::ChildHumanForged) {
                         let mut data: Value = serde_json::from_slice(&decision.bytes).unwrap();
                         *data.get_mut("request_sha256").unwrap() = json!("11".repeat(32));
                         decision.bytes = serde_json::to_vec(&data).unwrap().into();
@@ -499,9 +531,9 @@ impl Followed {
 }
 fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
     let mut process = command.spawn().unwrap();
-    let mut stdin = process.stdin.take().unwrap();
+    let mut stdin = process.stdin.take();
     writeln!(
-        stdin,
+        stdin.as_mut().unwrap(),
         "{}",
         jsonl::request(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
     )
@@ -514,15 +546,36 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
         if reader.read_line(&mut line).unwrap() == 0 {
             break;
         }
-        if let Ok(change) = jsonl::parse_change(&line) {
-            for file in change.file.into_iter().chain(change.files) {
-                lines.push(format!(
-                    "{:?}: {}\n",
-                    file.key,
-                    String::from_utf8_lossy(&file.bytes)
-                ));
-                followed.observe(case, file, &mut stdin);
+        let files = if let Ok(change) = jsonl::parse_change(&line) {
+            change
+                .file
+                .into_iter()
+                .chain(change.files)
+                .collect::<Vec<_>>()
+        } else if let Ok((_, snapshot)) = jsonl::parse_snapshot(&line) {
+            snapshot
+                .files
+                .into_iter()
+                .filter_map(|file| {
+                    (file.segments.len() == 1)
+                        .then(|| FileValue::new(file.key, file.segments[0].clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for file in files {
+            lines.push(format!(
+                "{:?}: {}\n",
+                file.key,
+                String::from_utf8_lossy(&file.bytes)
+            ));
+            if let Some(stdin) = stdin.as_mut() {
+                followed.observe(case, file, stdin);
             }
+        }
+        if matches!(case, Case::ChildHumanDisconnected) && followed.submitted {
+            drop(stdin.take());
         }
     }
     drop(stdin);
@@ -533,7 +586,11 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
     );
     assert_eq!(
         output.status.success(),
-        case.allowed() || matches!(case, Case::ParentDeny | Case::ParentCompletes),
+        case.allowed()
+            || matches!(
+                case,
+                Case::ParentDeny | Case::ParentCompletes | Case::ChildHumanDeny
+            ),
         "{case:?}: {:?}\n{}\n{}",
         output.status.code(),
         lines.concat(),
@@ -546,7 +603,14 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
             lines.concat()
         );
     }
-    if !case.parent() {
+    if matches!(case, Case::ChildHumanDisconnected) {
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "disconnected descendant must remain indeterminate"
+        );
+    }
+    if !case.parent() && !case.child_human() {
         assert_eq!(
             followed.saw_decision,
             !case.forged(),
@@ -604,4 +668,8 @@ cases! {
     approvals_parent_forgery_is_refused => ParentForged,
     approvals_parent_completion_denies_unanswered_request => ParentCompletes,
     approvals_parent_failure_denies_unanswered_request => ParentError,
+    approvals_child_human_allows_live => ChildHumanAllow,
+    approvals_child_human_denies_before_effect => ChildHumanDeny,
+    approvals_child_human_forged_file_is_refused => ChildHumanForged,
+    approvals_child_human_disconnect_is_indeterminate => ChildHumanDisconnected,
 }
