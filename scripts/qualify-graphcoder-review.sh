@@ -10,6 +10,6 @@ cargo test --locked -p acyclic-harness --features "$features" --test main --no-r
 python3 scripts/qualify-graphcoder-run.test.py
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 node --test scripts/graphcoder-e2e/*.test.mjs
-cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features"
+cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features" --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
 cargo check --locked -p graphcoder --target x86_64-pc-windows-gnu --features "$binary_features"
-E2E_OUTPUT=e2e-review-results python3 scripts/qualify-graphcoder-run.py
+E2E_OUTPUT=e2e-review-results python3 scripts/qualify-graphcoder-run.py .bb-sessions-shipping.jsonl

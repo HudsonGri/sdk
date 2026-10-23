@@ -124,9 +124,11 @@ replace(paths[4],'return files.cancel_active().await;','return Ok(());')
 replace(paths[5],'} => self.rewind_checkpoint(operation, required(target)?).await,','} => Err(Error::Unsupported("rewind is unavailable".into())),')
 replace(paths[6],'    if open {','    if false && open {')
 PY
-cargo build --locked -p graphcoder -p harness-mock-model
-binary="$CARGO_TARGET_DIR/debug/graphcoder"
-mock="$CARGO_TARGET_DIR/debug/harness-mock-model"
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
+binary="$SESSIONS_GRAPHCODER_BINARY"
+mock="$SESSIONS_MOCK_BINARY"
 expect_failure() {
  local name=$1; shift
  python3 - "$proof/$name.log" "$name" "$@" <<'PY'
@@ -154,7 +156,9 @@ for case in web-search pty-quit-resume pty-checkpoint-rewind pty-cancel-escape p
 done
 restore
 trap 'rm -rf "$proof"' EXIT
-cargo build --locked -p graphcoder -p harness-mock-model
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
 node scripts/qualify-final-answer.mjs "$binary" completed-only prompt
 node scripts/qualify-final-answer.mjs "$binary" pre-dispatch jsonl
 echo SESSIONS_NEGATIVE_CONTROLS_PASSED

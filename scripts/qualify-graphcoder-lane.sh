@@ -18,7 +18,9 @@ cargo test --locked -p graphcoder --features "$binary_features" --test tui --no-
 cargo test --locked -p harness-mock-model --bin harness-mock-model recorder::tests::
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 node --test scripts/graphcoder-e2e/*.test.mjs
-cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features"
+cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features" --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
 python3 scripts/qualify-graphcoder-run.test.py
-E2E_OUTPUT=e2e-consolidated-results python3 scripts/qualify-graphcoder-run.py
+E2E_OUTPUT=e2e-consolidated-results python3 scripts/qualify-graphcoder-run.py .bb-sessions-shipping.jsonl
 cargo check --locked -p graphcoder --target x86_64-pc-windows-gnu --features "$binary_features"

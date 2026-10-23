@@ -1,6 +1,7 @@
 use super::*;
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -97,7 +98,24 @@ async fn guidance_tracks_deleted_files_and_temporary_plan_mode()
     .await
 }
 
-async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std::error::Error>> {
+type ResponseScript = Arc<Mutex<VecDeque<((bool, bool), String)>>>;
+
+struct Fixture {
+    _directory: tempfile::TempDir,
+    workspace: PathBuf,
+    settings: PathBuf,
+    catalog: PathBuf,
+    script: ResponseScript,
+    server: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let script = Arc::new(Mutex::new(VecDeque::<((bool, bool), String)>::new()));
@@ -129,7 +147,6 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std
                     }
                 }),
             );
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
@@ -146,22 +163,36 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std
         }}))?,
     )?;
 
+    Ok(Fixture {
+        _directory: directory,
+        workspace,
+        settings,
+        catalog,
+        script,
+        server: tokio::spawn(async move { axum::serve(listener, app).await }),
+    })
+}
+
+async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = fixture().await?;
     for (prompt, expected, edit, blocked) in scenarios {
         if let Some(edit) = edit {
-            script
+            fixture
+                .script
                 .lock()
                 .map_err(|error| error.to_string())?
                 .push_back((expected, edit));
         }
-        script
+        fixture
+            .script
             .lock()
             .map_err(|error| error.to_string())?
             .push_back((expected, ANSWER.into()));
         let operation = OperationId::new();
         let output = execute_with(
-            &workspace,
-            &catalog,
-            &settings,
+            &fixture.workspace,
+            &fixture.catalog,
+            &fixture.settings,
             operation,
             Mode::Prompt,
             (prompt, if blocked { 3 } else { 0 }),
@@ -191,12 +222,18 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std
             .collect::<Result<Vec<_>, _>>()?;
         let expected_completion = if blocked { "blocked" } else { "completed" };
         assert_eq!(completions, [json!(expected_completion)]);
-        assert!(script.lock().map_err(|error| error.to_string())?.is_empty());
+        assert!(
+            fixture
+                .script
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
         // Replay, including blocked output, must issue no further HTTP work.
         execute_with(
-            &workspace,
-            &catalog,
-            &settings,
+            &fixture.workspace,
+            &fixture.catalog,
+            &fixture.settings,
             operation,
             Mode::Prompt,
             (prompt, if blocked { 3 } else { 0 }),
@@ -205,19 +242,24 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std
         if blocked {
             for mode in [Mode::Jsonl, Mode::Dumb] {
                 execute_with(
-                    &workspace,
-                    &catalog,
-                    &settings,
+                    &fixture.workspace,
+                    &fixture.catalog,
+                    &fixture.settings,
                     operation,
                     mode,
                     (prompt, 3),
                 )
                 .await;
             }
-            assert!(script.lock().map_err(|error| error.to_string())?.is_empty());
+            assert!(
+                fixture
+                    .script
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .is_empty()
+            );
         }
     }
-    server.abort();
     Ok(())
 }
 

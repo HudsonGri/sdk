@@ -38,7 +38,9 @@ for name,(old,new) in mutations.items():
  path.write_text(text.replace(old,new))
 PY
 cargo test --locked -p acyclic-harness --all-features --test main --no-run --message-format=json-render-diagnostics > "$proof/tests.jsonl"
-cargo build --locked -p graphcoder -p harness-mock-model
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
 python3 - <<'PY'
 import json,os,subprocess,time
 from pathlib import Path
@@ -61,8 +63,7 @@ for name,args,extra,expected in cases:
  assert result.returncode!=0 and expected in result.stdout,(name,result.returncode)
  print('CAPTURE_NEGATIVE_PASS',name,'seconds',elapsed,flush=True)
 start=time.monotonic()
-target=Path(os.environ['CARGO_TARGET_DIR'])
-result=subprocess.run(['node','scripts/graphcoder-e2e/run.mjs',str(target/'debug/graphcoder'),str(target/'debug/harness-mock-model'),'pty-diff-root-metadata'],env=dict(os.environ,E2E_OUTPUT=str(root/'shipping')),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+result=subprocess.run(['node','scripts/graphcoder-e2e/run.mjs',os.environ['SESSIONS_GRAPHCODER_BINARY'],os.environ['SESSIONS_MOCK_BINARY'],'pty-diff-root-metadata'],env=dict(os.environ,E2E_OUTPUT=str(root/'shipping')),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
 elapsed=time.monotonic()-start; (root/'shipping.log').write_text(result.stdout)
 print(result.stdout,flush=True)
 assert result.returncode!=0 and '"status": "fail"' in result.stdout
@@ -74,6 +75,8 @@ print('CAPTURE_NEGATIVE_PASS shipping-root-metadata seconds',elapsed,flush=True)
 PY
 restore
 trap - EXIT
-cargo build --locked -p graphcoder -p harness-mock-model
-E2E_OUTPUT="$proof/restored" node scripts/graphcoder-e2e/run.mjs "$CARGO_TARGET_DIR/debug/graphcoder" "$CARGO_TARGET_DIR/debug/harness-mock-model" pty-diff-root-metadata
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
+E2E_OUTPUT="$proof/restored" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" pty-diff-root-metadata
 echo "CAPTURE_NEGATIVE_CONTROLS_PASS evidence=$proof"

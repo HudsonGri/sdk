@@ -6,15 +6,17 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import runpy
+
+binaries = runpy.run_path(str(Path(__file__).with_name("graphcoder-binaries.py")))["binaries"]
 
 
-def main():
-    target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
+def main(manifest):
+    selected = binaries(manifest)
     start = time.perf_counter()
     result = subprocess.run([
         "node", "scripts/graphcoder-e2e/run.mjs",
-        str(target / "debug" / "graphcoder"),
-        str(target / "debug" / "harness-mock-model"),
+        selected["graphcoder"], selected["harness-mock-model"],
     ])
     wall = time.perf_counter() - start
     output = Path(os.environ["E2E_OUTPUT"])
@@ -26,4 +28,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1]))
