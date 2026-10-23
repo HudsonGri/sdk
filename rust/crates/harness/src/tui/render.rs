@@ -185,13 +185,34 @@ impl ClientRenderer {
 
     fn project_rows(&mut self, old_prefix: usize, archive_changed: usize, task_changed: usize) {
         let prefix = self.archive.rows().len();
+        let archive_dropped = self.archive.dropped();
+        if archive_changed > 0 && archive_dropped > 0 && archive_dropped <= old_prefix {
+            self.wrapped_transcript
+                .replace_range(0..archive_dropped, &[]);
+        }
+        let old_prefix = old_prefix.saturating_sub(if archive_changed > 0 {
+            archive_dropped
+        } else {
+            0
+        });
+        if archive_changed >= old_prefix && prefix == old_prefix && task_changed > 0 {
+            let dropped = self.task.answer_dropped();
+            if dropped > 0 && prefix + dropped <= self.wrapped_transcript.source_len() {
+                self.wrapped_transcript
+                    .replace_range(prefix..prefix + dropped, &[]);
+            }
+        }
         let changed = if archive_changed < old_prefix || prefix != old_prefix {
             archive_changed
         } else {
             prefix + task_changed
         };
         let total = prefix + self.task.rows().len();
-        if changed < total || self.wrapped_transcript.source_len() != total {
+        if archive_dropped > 0
+            || self.task.answer_dropped() > 0
+            || changed < total
+            || self.wrapped_transcript.source_len() != total
+        {
             self.transcript.take();
         }
         if archive_changed >= old_prefix
@@ -216,6 +237,10 @@ impl ClientRenderer {
             }
         }
         let (changed, rows) = self.task.reasoning();
+        let dropped = self.task.reasoning_dropped();
+        if changed > 0 && dropped > 0 && dropped <= self.wrapped_reasoning.source_len() {
+            self.wrapped_reasoning.replace_range(0..dropped, &[]);
+        }
         if changed + 1 == rows.len()
             && self.wrapped_reasoning.source_len() == rows.len()
             && let Some((text, style)) = self.task.reasoning_append()
