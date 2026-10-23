@@ -10,13 +10,13 @@ pub(super) async fn read_pinned(
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
+    crate::executor::with_history_io(io, |work| reference.validate(work))?;
     crate::conversation::BoundedContentFuture::new(io, || {
         let future = async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = io.and_then(PreparationIo::original_native_work) {
                 let scratch = PreparationIo::from_native_work(original)?;
                 let io = &scratch;
-                reference.validate(&mut Some(&mut io.history_io()))?;
                 if reference.volume().provider() != &host.provider
                     || reference.descriptor().byte_length() > maximum_bytes
                 {
@@ -41,7 +41,7 @@ pub(super) async fn read_pinned(
                 let path = rendered.0;
                 let opened = (host).open(&workspace, Some(io)).await?;
                 let pinned = (host).generation(&opened, &generation, Some(io)).await?;
-                acyclic_test_support::differential::record(("read", maximum_bytes));
+                acyclic_differential::record(("read", maximum_bytes));
                 let bytes = pinned
                     .read(&path, maximum_bytes, original, io.cancellation())
                     .await
@@ -49,7 +49,6 @@ pub(super) async fn read_pinned(
                         source: Box::new(source),
                         custody: None,
                     })?;
-                fork_preparer_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
                 })?;
@@ -84,7 +83,7 @@ pub(super) async fn read_pinned(
                 Some(io) => {
                     let opened = (host).open(&workspace, Some(io)).await?;
                     let pinned = (host).generation(&opened, &generation, Some(io)).await?;
-                    acyclic_test_support::differential::record(("read", maximum_bytes));
+                    acyclic_differential::record(("read", maximum_bytes));
                     let bytes = io.receive(
                         pinned
                             .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
@@ -98,7 +97,6 @@ pub(super) async fn read_pinned(
                         )
                     })?;
                     io.retain_owned(capacity as u64)?;
-                    fork_preparer_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {

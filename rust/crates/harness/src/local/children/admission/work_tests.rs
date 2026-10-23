@@ -152,7 +152,6 @@ fn replay_admission_preserves_results_and_errors_with_zero_workspace_work() {
         let admission_read = [
             ("read", *admission_bytes),
             ("verify", *admission_bytes),
-            ("retain", 0),
             ("verify", *admission_bytes),
         ];
         assert_eq!(observations, admission_read.repeat(2));
@@ -223,7 +222,6 @@ fn preparation_status_preserves_bytes_and_errors_without_loading_its_report() {
         vec![
             ("read", bytes),
             ("verify", bytes),
-            ("retain", 0),
             ("verify", bytes)
         ]
     );
