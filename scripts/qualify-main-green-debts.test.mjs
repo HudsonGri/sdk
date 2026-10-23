@@ -77,6 +77,20 @@ test('only the selected Cargo test artifact can start execution', () => {
   }
 });
 
+test('all Cargo library target kinds qualify including combined rlib and cdylib artifacts', () => {
+  const artifact = { reason: 'compiler-artifact', profile: { test: true },
+    target: { name: 'acyclic_harness', kind: ['rlib', 'cdylib'] }, executable: '/fixture/test' };
+  // The former lib-only predicate drops the real Harness artifact despite its
+  // test profile and authoritative executable. No crate-specific exception.
+  assert.equal(artifact.target.kind.includes('lib'), false);
+  for (const kinds of [['lib'], ['rlib'], ['dylib'], ['cdylib'], ['staticlib'], ['proc-macro'], ['rlib', 'cdylib']]) {
+    assert.equal(testExecutable(entry, JSON.stringify({ ...artifact, target: { ...artifact.target, kind: kinds } })), artifact.executable);
+  }
+  for (const kinds of [[], ['lib', 'bin'], ['example'], ['bench'], ['custom-build']]) {
+    assert.throws(() => testExecutable(entry, JSON.stringify({ ...artifact, target: { ...artifact.target, kind: kinds } })), /selected test executable/);
+  }
+});
+
 test('a completed executable preserves its output and failure status', async () => {
   const result = await executeTest(process.execPath, ['-e', 'console.log("fixture output");process.exit(3)']);
   assert.equal(result.status, 3);

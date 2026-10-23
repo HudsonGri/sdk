@@ -37,11 +37,14 @@ export function verify(entry, status, output) {
 
 export function testExecutable(entry, output) {
   cargoArguments(entry);
-  const kind = entry.target === 'lib' ? 'lib' : 'test';
+  const libraryKinds = new Set(['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro']);
+  const selectedKind = kinds => Array.isArray(kinds) && kinds.length > 0
+    && (entry.target === 'lib' ? kinds.every(kind => libraryKinds.has(kind))
+      : kinds.length === 1 && kinds.includes('test'));
   const name = entry.target === 'lib' ? entry.package.replaceAll('-', '_') : entry.target;
   const artifacts = output.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
     .filter(message => message.reason === 'compiler-artifact' && message.profile?.test
-      && message.target?.name === name && message.target.kind.includes(kind) && message.executable);
+      && message.target?.name === name && selectedKind(message.target.kind) && message.executable);
   if (artifacts.length !== 1 || typeof artifacts[0].executable !== 'string') {
     throw new Error('exactly one selected test executable required');
   }
