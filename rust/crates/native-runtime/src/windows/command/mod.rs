@@ -302,7 +302,12 @@ impl Lowered {
 /// Lowers the builder's description of one stream for one start. Nothing
 /// is taken from the builder: the start duplicates a borrowed handle, and
 /// pipes and the null device are created afresh.
-fn lower(stdio: Option<&Stdio>, default: fn() -> Stdio, id: STD_HANDLE) -> io::Result<Lowered> {
+fn lower(
+    stdio: Option<&Stdio>,
+    default: fn() -> Stdio,
+    id: STD_HANDLE,
+    inherited: Option<OwnedHandle>,
+) -> io::Result<Lowered> {
     let readable = id == STD_INPUT_HANDLE;
     let mut lowered = Lowered {
         created: None,
@@ -312,9 +317,8 @@ fn lower(stdio: Option<&Stdio>, default: fn() -> Stdio, id: STD_HANDLE) -> io::R
     let fallback = default();
     let kind = &stdio.unwrap_or(&fallback).0;
     match kind {
-        // The start duplicates it, or gives none when it is closed.
-        // SAFETY: reads this process's standard handle slot.
-        Kind::Inherit => lowered.borrowed = unsafe { GetStdHandle(id) },
+        // Already pinned before this start allocated any pipes or null handles.
+        Kind::Inherit => lowered.created = inherited,
         Kind::Null => lowered.created = Some(open_null(readable)?),
         Kind::Piped => {
             let (ours, theirs) = pipe(!readable)?;
@@ -535,9 +539,23 @@ impl Command {
         let environment = env.map(environment_block).transpose()?;
         let directory = self.cwd.as_deref().map(directory).transpose()?;
         let stdin_default = if needs_stdin { default } else { Stdio::null };
-        let stdin = lower(self.stdin.as_ref(), stdin_default, STD_INPUT_HANDLE)?;
-        let stdout = lower(self.stdout.as_ref(), default, STD_OUTPUT_HANDLE)?;
-        let stderr = lower(self.stderr.as_ref(), default, STD_ERROR_HANDLE)?;
+        let inherited_slot = |stdio: Option<&Stdio>, fallback: fn() -> Stdio, id| {
+            let default = fallback();
+            if matches!(stdio.unwrap_or(&default).0, Kind::Inherit) {
+                // SAFETY: reads this process's standard handle slot.
+                unsafe { GetStdHandle(id) }
+            } else {
+                std::ptr::null_mut()
+            }
+        };
+        let [input, output, error] = start::pin_inherited([
+            inherited_slot(self.stdin.as_ref(), stdin_default, STD_INPUT_HANDLE),
+            inherited_slot(self.stdout.as_ref(), default, STD_OUTPUT_HANDLE),
+            inherited_slot(self.stderr.as_ref(), default, STD_ERROR_HANDLE),
+        ])?;
+        let stdin = lower(self.stdin.as_ref(), stdin_default, STD_INPUT_HANDLE, input)?;
+        let stdout = lower(self.stdout.as_ref(), default, STD_OUTPUT_HANDLE, output)?;
+        let stderr = lower(self.stderr.as_ref(), default, STD_ERROR_HANDLE, error)?;
         let started = start::start(start::Start {
             application: &application,
             command_line: &mut command_line,

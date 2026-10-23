@@ -73,6 +73,28 @@ fn inheritable(handle: HANDLE) -> io::Result<Option<OwnedHandle>> {
     Ok(Some(unsafe { OwnedHandle::from_raw_handle(duplicate) }))
 }
 
+/// Snapshot all inherited slots before any duplicate or pipe can recycle a
+/// closed slot's numeric value. Validation itself allocates no handles.
+pub(super) fn pin_inherited(mut slots: [HANDLE; 3]) -> io::Result<[Option<OwnedHandle>; 3]> {
+    for slot in &mut slots {
+        if slot.is_null() || *slot == INVALID_HANDLE_VALUE {
+            *slot = std::ptr::null_mut();
+            continue;
+        }
+        let mut flags = 0;
+        // SAFETY: queries a raw value without taking ownership or allocating.
+        if unsafe { windows_sys::Win32::Foundation::GetHandleInformation(*slot, &raw mut flags) } == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_INVALID_HANDLE.cast_signed()) {
+                return Err(error);
+            }
+            *slot = std::ptr::null_mut();
+        }
+    }
+    let [input, output, error] = slots;
+    Ok([inheritable(input)?, inheritable(output)?, inheritable(error)?])
+}
+
 /// An initialized attribute list holding one handle list.
 struct HandleList {
     buffer: Vec<u8>,

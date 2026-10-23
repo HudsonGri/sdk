@@ -773,3 +773,21 @@ fn a_service_start_releases_the_owners_output() {
     assert!(!ended, "a std-started service released the owner's output");
     assert!(running, "the std-started service ended");
 }
+
+/// Production pinning classifies every slot before allocating duplicates. A real
+/// closed value remains absent even when later pipe creation can reuse it.
+#[test]
+fn inherited_slots_are_pinned_before_pipe_creation() {
+    use std::os::windows::io::AsRawHandle as _;
+    let live = super::open_null(true).expect("live input");
+    let closed = super::open_null(false).expect("output to close");
+    let stale = closed.as_raw_handle();
+    drop(closed);
+    let [input, output, error] = super::start::pin_inherited([
+        live.as_raw_handle(), stale, std::ptr::null_mut(),
+    ]).expect("pin inherited slots");
+    let _pipe = super::pipe(true).expect("allocate child pipe after pinning");
+    assert!(input.is_some());
+    assert!(output.is_none(), "a closed inherited output acquired a recycled handle");
+    assert!(error.is_none());
+}
