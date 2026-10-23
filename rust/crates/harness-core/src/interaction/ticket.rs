@@ -208,6 +208,8 @@ impl InteractionTicket {
                 "approval artifact disagrees with outcome",
             ));
         }
-        Ok(ApprovalDecisionFile::principal_digest(&decision.0.principal))
+        Ok(ApprovalDecisionFile::principal_digest(
+            &decision.0.principal,
+        ))
     }
 }

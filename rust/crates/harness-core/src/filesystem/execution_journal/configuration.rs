@@ -6,6 +6,12 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Used only after the runtime authenticates the task's retained admission.
+    pub(in crate::filesystem) fn for_approval_projection(mut self, task: crate::TaskId) -> Self {
+        self.approval_task = Some(task);
+        self
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_native_execution_work_matches(
         &self,
@@ -265,6 +271,7 @@ where
             input_verifier: None,
             interactions,
             owner: None,
+            approval_task: None,
             execution: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
@@ -316,7 +323,9 @@ where
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
-        } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
+        } else if self.approval_task.is_none()
+            && self.verifier.audience().kind == crate::core::AggregateKind::Task
+        {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

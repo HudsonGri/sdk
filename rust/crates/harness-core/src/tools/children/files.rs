@@ -15,7 +15,7 @@ pub(super) async fn write<P: StreamProvider + ?Sized>(
     if matches!(
         file.key,
         FileKey::Child {
-            file: ChildFile::Request,
+            file: ChildFile::Request | ChildFile::Inbox(_),
             ..
         }
     ) {
@@ -107,7 +107,7 @@ pub(super) async fn follow<P: StreamProvider + ?Sized>(
             .map_err(storage)?;
         let result = super::super::agent_files::status_at(reference, &values, maximum, inputs)?;
         let ready = if settled {
-            result["settled"] == true
+            result["settled"] == true || !result["approval"].is_null()
         } else {
             !result["execution"].is_null()
         };

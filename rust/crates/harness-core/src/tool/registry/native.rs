@@ -42,6 +42,7 @@ impl ToolRegistry {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         io.retain_owned(REGISTRY_BYTES as u64)?;
         let mut copied = Self::default();
+        copied.requires_approval = self.requires_approval;
         let data = Arc::make_mut(&mut copied.data);
         for ((name, revision), tool) in &self.data.versions {
             io.retain_owned((VERSION_SLOT_BYTES + std::mem::size_of::<ToolDefinition>()) as u64)?;

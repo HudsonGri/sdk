@@ -22,6 +22,12 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
+        use crate::runtime::ToolPolicy as _;
+        if runtime.approval_policy_identity() != Some(config.approval_policy.bind()?.identity()) {
+            return Err(Error::Conflict(
+                "bound runtime and local approval policy differ".into(),
+            ));
+        }
         #[cfg(feature = "native-execution")]
         if checkout.is_some() {
             config = config.prepare_state()?;
@@ -223,7 +229,10 @@ impl BoundComposition {
             scratch: volume.clone(),
             journal: volume,
             verifier,
+            approval_issuer: config.approval_issuer,
             signed,
+            approval_policy: config.approval_policy,
+            approval_models: config.approval_models,
             model,
             provider,
             context_manifest: config.context_manifest,

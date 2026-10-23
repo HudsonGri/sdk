@@ -1,4 +1,5 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod approvals;
 mod catalog_compaction;
 mod goal_review;
 mod input_review;

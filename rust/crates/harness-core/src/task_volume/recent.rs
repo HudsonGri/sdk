@@ -135,6 +135,15 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             }
             files.push(stored.file.clone());
         }
+        for (_, stored) in index
+            .files
+            .range(Query::Approvals(task.clone()).ranges().remove(0))
+        {
+            if files.len() == maximum {
+                return Err(Error::LimitExceeded);
+            }
+            files.push(stored.file.clone());
+        }
         return Ok(files);
     }
     if let Query::TaskView { task, recent, .. } = query {

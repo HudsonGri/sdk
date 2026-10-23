@@ -142,6 +142,8 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
             stream: stream.clone(),
             task_volume: &volume,
             issuer: &issuer,
+            approval_issuer: harness.approval_issuer.as_ref().unwrap(),
+            approval_policy: &config.approval_policy,
             verifier: &verifier,
             agent: harness.signed.agent().unwrap(),
             project: &volume,

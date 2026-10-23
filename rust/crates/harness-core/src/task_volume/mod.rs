@@ -25,7 +25,8 @@ mod publication;
 mod recent;
 #[doc(hidden)]
 pub use publication::publish;
-pub(crate) use publication::{DurableFile, publish_durable};
+#[doc(hidden)]
+pub use publication::{DurableFile, publish_durable};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_open;
 mod opening;
@@ -216,7 +217,7 @@ impl FileValue {
             && !matches!(
                 self.key,
                 FileKey::Child {
-                    file: ChildFile::Request,
+                    file: ChildFile::Request | ChildFile::Inbox(_),
                     ..
                 }
             )
@@ -706,9 +707,15 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
     }
     let command = index.commands.prepare(&index.files, &file.key);
     let display = recent::Views::prepare(&file, position);
-    let previous = index
-        .files
-        .insert(file.key.clone(), StoredFile { file, position, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] native_metadata_bytes: 0 });
+    let previous = index.files.insert(
+        file.key.clone(),
+        StoredFile {
+            file,
+            position,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_bytes: 0,
+        },
+    );
     index.views.record(display, previous.as_ref());
     index.commands.record(command, position, previous.is_some());
 }

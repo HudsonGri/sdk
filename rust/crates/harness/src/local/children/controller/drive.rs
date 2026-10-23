@@ -57,7 +57,7 @@ impl LocalHarness {
                 drained: drained.clone(),
             };
             let parent = async {
-                self.advance_while(task, &scoped, || async {
+                self.advance_while(task, &scoped, control.as_ref(), || async {
                     if cancellation.is_cancelled()
                         || commands
                             .invocation_cancellation()

@@ -318,7 +318,9 @@ impl Query {
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
             (Self::TaskSession { task: selected, .. }, FileKey::Task { task, .. }) => {
-                selected == task && super::super::recent::kind(key).is_some()
+                selected == task
+                    && (super::super::recent::kind(key).is_some()
+                        || Self::Approvals(task.clone()).matches(key))
             }
             (
                 Self::TaskSession {
@@ -453,7 +455,10 @@ impl Query {
                 Self::Approvals(t),
                 FileKey::Task {
                     task,
-                    file: TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. },
+                    file:
+                        TaskFile::ApprovalRequest(_)
+                        | TaskFile::ApprovalReview { .. }
+                        | TaskFile::ApprovalDecision { .. },
                 },
             )
             | (

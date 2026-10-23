@@ -39,6 +39,16 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
                 &mut Some(&mut &io),
             )?;
         }
+        Self::open_authorized_native(provider, volume, maximum_bytes, work).await
+    }
+
+    pub(crate) async fn open_authorized_native(
+        provider: Arc<P>,
+        volume: &VolumeRef,
+        maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<Arc<Self>> {
+        let io = PreparationIo::from_native_work(work)?;
         let name = volume.storage_name(&mut Some(&mut &io))?;
         let length = "harness/task-volumes/".len() + name.len();
         io.retain_owned(length as u64)?;

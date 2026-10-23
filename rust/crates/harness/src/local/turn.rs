@@ -566,7 +566,7 @@ impl LocalHarness {
         task: TaskId,
         commands: &dyn crate::filesystem::TaskCommandHost,
     ) -> Result<()> {
-        self.advance_while(task, commands, || async { Ok(true) })
+        self.advance_while(task, commands, None, || async { Ok(true) })
             .await
     }
 
@@ -574,6 +574,10 @@ impl LocalHarness {
         &self,
         task: TaskId,
         commands: &dyn crate::filesystem::TaskCommandHost,
+        inbox: Option<&(
+            Arc<crate::task_volume::TaskFiles<LocalStream>>,
+            crate::task_volume::Component,
+        )>,
         continue_work: F,
     ) -> Result<()>
     where
@@ -624,6 +628,7 @@ impl LocalHarness {
                     if !continue_work().await? {
                         break;
                     }
+                    self.service_approvals(task, commands, inbox).await?;
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
                     attempt = self

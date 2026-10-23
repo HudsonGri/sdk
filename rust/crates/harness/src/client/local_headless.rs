@@ -51,7 +51,25 @@ pub fn prepare_local_prompt(operation: OperationId, prompt: &str) -> Result<File
 }
 
 fn validate(file: &FileValue, operation: OperationId) -> Result<()> {
-    if file.key != key(operation, TaskFile::Request)? || file.channel.is_some() {
+    if file.channel.is_some() || file.requester.is_some() || file.publication.is_some() {
+        return Err(Error::Unauthorized(
+            "stdin cannot supply owner metadata".into(),
+        ));
+    }
+    if let FileKey::Task {
+        task,
+        file: TaskFile::ApprovalDecision { .. },
+    } = &file.key
+    {
+        if task.as_str() != crate::runtime::task_id_for_admission(operation).to_string() {
+            return Err(Error::Unauthorized(
+                "stdin decision targets another task".into(),
+            ));
+        }
+        crate::interaction::ApprovalDecisionFile::decode(&file.bytes, MAXIMUM_BYTES as u64)?;
+        return Ok(());
+    }
+    if file.key != key(operation, TaskFile::Request)? {
         return Err(Error::Unauthorized(
             "stdin request targets another session or execution owner".into(),
         ));
@@ -137,7 +155,25 @@ impl LocalFileClient {
                 .query
                 .file(&key(self.operation, TaskFile::Request)?)
                 .is_some();
-        if requested && !self.host_done && self.outcome()?.is_none() {
+        if requested && !self.host_done && self.outcome()?.is_none() && outcome.is_err() {
+            // Refused input must still retire a live invocation. Cancellation
+            // uses the existing task owner and publishes status to its follows.
+            let task = crate::runtime::task_id_for_admission(self.operation);
+            self.local
+                .dispatch_command(
+                    OperationId::new(),
+                    None,
+                    CommandResolution::Submit {
+                        request: CommandRequest::Cancel { task },
+                    },
+                )
+                .await?;
+        }
+        if requested
+            && !self.host_done
+            && self.outcome()?.is_none()
+            && !self.awaiting_approval().await?
+        {
             // The one-request headless owner returns after saving its outcome.
             // Keep polling it until native work and publication have settled.
             let _ = self.host.as_mut().await;
@@ -180,6 +216,15 @@ impl LocalFileClient {
 
     async fn submit(&mut self, file: &FileValue) -> Result<()> {
         validate(file, self.operation)?;
+        if matches!(
+            file.key,
+            FileKey::Task {
+                file: TaskFile::ApprovalDecision { .. },
+                ..
+            }
+        ) {
+            return self.local.submit_approval_decision(file).await;
+        }
         // Both -p and JSONL enter through this boundary. Already pinned prompt
         // resolutions are data, so template expansion is never parsed twice.
         let normalized;
@@ -243,6 +288,11 @@ impl LocalFileClient {
         }
     }
 
+    async fn awaiting_approval(&self) -> Result<bool> {
+        let task = crate::runtime::task_id_for_admission(self.operation);
+        self.local.awaiting_external_approval(task).await
+    }
+
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {
         self.query
             .file(&key(self.operation, TaskFile::ExecutionResult)?)
@@ -269,6 +319,9 @@ impl LocalFileClient {
         self.initial(output)?;
         loop {
             let settled = self.outcome()?;
+            if settled.is_none() && !input_open && self.awaiting_approval().await? {
+                return Ok(HeadlessOutcome::Indeterminate);
+            }
             if settled.is_none()
                 && self.host_done
                 && self.query.cursor().position >= self.drain_through

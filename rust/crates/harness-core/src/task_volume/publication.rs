@@ -34,10 +34,10 @@ pub(crate) async fn publish_with_work<P: StreamProvider + ?Sized>(
 }
 
 /// Proof that one exact immutable file is in its provider's durable prefix.
-/// It is built only from the provider's [`DurableReceipt`]: an acknowledgement,
+/// It is built only from the provider's [`acyclic_stream::DurableReceipt`]: an acknowledgement,
 /// including one made under `deferring_durability`, never yields it.
 #[derive(Debug)]
-pub(crate) struct DurableFile {
+pub struct DurableFile {
     key: FileKey,
     _receipt: acyclic_stream::DurableReceipt,
 }
@@ -56,7 +56,7 @@ impl DurableFile {
 /// flushing provider advances the durable prefix over every earlier record,
 /// and asks for the receipt again. Without one it reports
 /// [`Error::AwaitingDurability`] instead of a proof.
-pub(crate) async fn publish_durable<P: StreamProvider + ?Sized>(
+pub async fn publish_durable<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     write: &Write,
     work: NativeWork<'_>,

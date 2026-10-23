@@ -41,7 +41,12 @@ proptest! {
             let spent = native.receipt();
             prop_assert!(spent.items_examined > count as u64);
             prop_assert!(spent.bytes_copied > 0);
-            prop_assert!(actual.files.iter().all(|file| file.bytes.matches_meter(&native.runtime_meter())));
+            // Native memory reads borrow the provider's immutable payloads.
+            // They retain that provider allocation instead of copying it onto
+            // the query ledger; disk-backed reads carry their own native guard.
+            prop_assert!(actual.files.iter().zip(&expected.files).all(|(file, source)|
+                file.bytes.matches_meter(&native.runtime_meter())
+                    || file.bytes.as_ptr() == source.bytes.as_ptr()));
             drop(actual);
             let alias = reopened.clone();
             drop(reopened);

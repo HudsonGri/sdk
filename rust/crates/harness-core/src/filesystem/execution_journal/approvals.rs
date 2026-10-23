@@ -78,11 +78,9 @@ where
     /// authenticated compare-and-set resolve of exactly the submitted binding,
     /// then publishes the owner's copy durably.
     pub async fn write_approval_decision(&self, file: &FileValue, responder: &Scope) -> Result<()> {
-        let Some((owner, _)) = &self.owner else {
-            return Err(Error::Unsupported(
-                "approval decisions require a task journal".into(),
-            ));
-        };
+        let task_id = self.approval_task_id().ok_or_else(|| {
+            Error::Unsupported("approval decisions require a task journal".into())
+        })?;
         let FileKey::Task {
             task,
             file: TaskFile::ApprovalDecision { request, principal },
@@ -92,7 +90,7 @@ where
                 "only approval decisions are approver files".into(),
             ));
         };
-        if task.as_str() != owner.task_id().to_string()
+        if task.as_str() != task_id.to_string()
             || principal.as_str() != ApprovalDecisionFile::principal_file(responder.id())
             || file.channel.is_some()
         {
@@ -112,12 +110,39 @@ where
         let id = InteractionId::from_bytes(id.into_bytes());
         let decision = ApprovalDecisionFile::decode(&file.bytes, self.maximum_payload_bytes)?;
         let host = self.interactions()?;
-        owner.require_interaction_grant(&mut None)?;
-        owner.verify(true, &mut None).await?;
-        host.resolve_decision(id, decision, responder, Some(owner))
+        // The passive route can submit only an already published request in
+        // this task. Its bytes must be the interaction owner's exact request.
+        let ticket = host
+            .read(id, None)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?
+            .0;
+        let key = FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::ApprovalRequest(request.clone()),
+        };
+        let published = self
+            .approval_files()?
+            .snapshot(&crate::task_volume::Query::File(key), 1)
+            .await?;
+        let admitted = host.read_file(&ticket.request, None).await?;
+        if !matches!(published.files.as_slice(), [file] if file.bytes == admitted) {
+            return Err(Error::Unauthorized(
+                "approval request is not owned by this task".into(),
+            ));
+        }
+        let owner = self.owner.as_ref().map(|(owner, _)| owner);
+        if let Some(owner) = owner {
+            owner.require_interaction_grant(&mut None)?;
+            owner.verify(true, &mut None).await?;
+        }
+        host.resolve_decision(id, decision, responder, owner)
             .await?;
         self.published_decision(id, None).await?;
-        owner.verify(true, &mut None).await
+        if let Some(owner) = owner {
+            owner.verify(true, &mut None).await?;
+        }
+        Ok(())
     }
 
     /// Publishes the owner's admitted approval request into the task's files.
@@ -201,7 +226,7 @@ where
                 "approval decision has no decision file",
             )
         })?;
-        let request_bytes = if binding.is_some() || self.owner.is_some() {
+        let request_bytes = if binding.is_some() || self.approval_task_id().is_some() {
             Some(host.read_file(&ticket.request, io).await?)
         } else {
             None
@@ -244,7 +269,7 @@ where
                 "approval decision awaits durability",
             )
         })?;
-        let Some((owner, _)) = &self.owner else {
+        let Some(task_id) = self.approval_task_id() else {
             return Ok(PublishedDecision {
                 approved,
                 _resolution: resolution,
@@ -252,7 +277,7 @@ where
             });
         };
         let files = self.approval_files()?;
-        let task = Component::new(owner.task_id().to_string())?;
+        let task = Component::new(task_id.to_string())?;
         let request = Component::new(ticket.id.to_string())?;
         let request_bytes = request_bytes.ok_or_else(|| {
             canonical_boundary(
@@ -292,6 +317,13 @@ where
             _resolution: resolution,
             _file: Some(proof),
         })
+    }
+
+    fn approval_task_id(&self) -> Option<crate::TaskId> {
+        self.owner
+            .as_ref()
+            .map(|(owner, _)| owner.task_id())
+            .or(self.approval_task)
     }
 
     /// A task journal bound to an interaction owner always carries its files.
