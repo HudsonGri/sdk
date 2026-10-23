@@ -1,9 +1,12 @@
 //! A real GraphCoder TUI on a pseudo-terminal continues one conversation.
 #![cfg(target_os = "linux")]
-use axum::{Json, Router, routing::post};
 use alacritty_terminal::{
-    event::EventListener, grid::Dimensions, term::{Config, Term}, vte::ansi::Processor,
+    event::EventListener,
+    grid::Dimensions,
+    term::{Config, Term},
+    vte::ansi::Processor,
 };
+use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
     fs::File,
@@ -40,9 +43,15 @@ struct Events;
 impl EventListener for Events {}
 struct Grid;
 impl Dimensions for Grid {
-    fn total_lines(&self) -> usize { 40 }
-    fn screen_lines(&self) -> usize { 40 }
-    fn columns(&self) -> usize { 120 }
+    fn total_lines(&self) -> usize {
+        40
+    }
+    fn screen_lines(&self) -> usize {
+        40
+    }
+    fn columns(&self) -> usize {
+        120
+    }
 }
 
 /// Kills and reaps the TUI unless it exited on its own, so a failed step never
@@ -56,7 +65,10 @@ impl Running {
         // output byte. Waiting for it bounds quit without polling the process.
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            match screen.output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            match screen
+                .output
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
                 Ok(bytes) => screen.advance(&bytes),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return self.0.wait().unwrap(),
                 Err(mpsc::RecvTimeoutError::Timeout) => panic!("GraphCoder did not exit on Ctrl+D"),
@@ -85,7 +97,11 @@ impl Screen {
     }
 
     fn visible(&self) -> String {
-        self.terminal.grid().display_iter().map(|cell| cell.c).collect()
+        self.terminal
+            .grid()
+            .display_iter()
+            .map(|cell| cell.c)
+            .collect()
     }
 
     /// Waits for `condition`; the deadline only bounds a hang, nothing is timed.
@@ -106,7 +122,10 @@ impl Screen {
             if condition(&self.visible()) {
                 return;
             }
-            match self.output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            match self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
                 Ok(bytes) => self.advance(&bytes),
                 Err(error) => panic!("no {what} ({error}):\n{}", self.visible()),
             }
@@ -220,7 +239,9 @@ async fn conversation(blocked: bool) {
         let mut buffer = [0; 8192];
         // The read fails with EIO once the child closes the terminal.
         while let Ok(count @ 1..) = output.read(&mut buffer) {
-            if sink.send(buffer[..count].to_vec()).is_err() { break; }
+            if sink.send(buffer[..count].to_vec()).is_err() {
+                break;
+            }
         }
     });
     let requested = bodies.clone();

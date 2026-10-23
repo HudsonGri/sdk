@@ -28,7 +28,9 @@ pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<S
             if !step.text.is_empty() && !step.hold {
                 let item = json!({"type":"message","id":"mock-message","role":"assistant",
                     "content":[{"type":"output_text","text":step.text.concat()}]});
-                output.push(sse(json!({"type":"response.output_item.done","output_index":0,"item":item})));
+                output.push(sse(
+                    json!({"type":"response.output_item.done","output_index":0,"item":item}),
+                ));
                 items.push(item);
             }
             for (index, tool) in step.tools.iter().enumerate() {

@@ -59,8 +59,10 @@ pub fn local_identity(explicit: Option<OperationId>) -> OperationId {
 pub async fn select_local_identity(local: &LocalHarness, operation: OperationId) -> Result<()> {
     let files = local.task_files();
     let key = FileKey::parse(".ui/workspace/interactive.json")?;
-    let value = FileValue::new(key.clone(), serde_json::to_vec(&operation)
-        .map_err(|error| Error::Invalid(error.to_string()))?);
+    let value = FileValue::new(
+        key.clone(),
+        serde_json::to_vec(&operation).map_err(|error| Error::Invalid(error.to_string()))?,
+    );
     loop {
         let saved = files.snapshot(&Query::File(key.clone()), 1).await?;
         match files.write(saved.generation, &value).await {

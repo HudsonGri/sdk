@@ -12,7 +12,7 @@
             "id": "large",
             "name": "bash",
             "arguments": {
-              "command": "head -c 65537 /dev/zero | tr '\\000' x > large.txt"
+              "command": "python3 -c \"from pathlib import Path; Path('large.txt').write_bytes(b'x' * 65537)\""
             }
           }
         ]
@@ -49,7 +49,7 @@
           "when": {
             "contains": [
               "LARGE_DIFF_READY",
-              "\u25cb"
+              "○"
             ]
           },
           "prompt": "/diff "
@@ -81,7 +81,7 @@
           "when": {
             "contains": [
               "SURVIVED_DIFF_LIMIT",
-              "\u25cb"
+              "○"
             ]
           },
           "send": "\u0004"

@@ -16,10 +16,10 @@ use acyclic_harness::{
 use acyclic_stream::MemoryStream;
 use futures::{FutureExt as _, StreamExt as _};
 use std::sync::Arc;
-#[path = "../file_query/diffs.rs"]
-mod diffs;
 #[path = "../file_query/diff_tree.rs"]
 mod diff_tree;
+#[path = "../file_query/diffs.rs"]
+mod diffs;
 #[path = "../file_query/goal_sources.rs"]
 mod goal_sources;
 #[path = "../file_query/goals.rs"]

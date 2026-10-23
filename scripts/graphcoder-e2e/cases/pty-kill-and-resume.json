@@ -51,7 +51,8 @@
           "send": "\u0004"
         }
       ],
-      "resume": true
+      "resume": true,
+      "exit": 1
     }
   ],
   "assert": {

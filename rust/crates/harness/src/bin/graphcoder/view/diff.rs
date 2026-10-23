@@ -7,7 +7,10 @@ pub(super) struct DiffState<W, S> {
 
 impl<W: PartialEq, S> DiffState<W, S> {
     pub(super) fn new() -> Self {
-        Self { accepted: None, subscription: None }
+        Self {
+            accepted: None,
+            subscription: None,
+        }
     }
 
     pub(super) fn needs_refresh(&self, revision: u64) -> bool {
@@ -16,7 +19,11 @@ impl<W: PartialEq, S> DiffState<W, S> {
 
     pub(super) fn select(&mut self, revision: u64, workspace: W, open: impl FnOnce() -> S) -> bool {
         self.accepted = Some(revision);
-        if self.subscription.as_ref().is_some_and(|(selected, _)| selected == &workspace) {
+        if self
+            .subscription
+            .as_ref()
+            .is_some_and(|(selected, _)| selected == &workspace)
+        {
             return false;
         }
         self.subscription = Some((workspace, open()));
@@ -54,8 +61,13 @@ mod tests {
             let open = || futures::stream::iter([Err::<(), _>("query failed")]);
             assert!(state.select(revision, workspace, open));
             for offset in 0..failures as u64 {
-                assert_eq!(state.stream().unwrap().next().await, Some(Err("query failed")));
-                if !retain_failed { state.failed(); }
+                assert_eq!(
+                    state.stream().unwrap().next().await,
+                    Some(Err("query failed"))
+                );
+                if !retain_failed {
+                    state.failed();
+                }
                 // No immediate retry loop while rendering the same error frame.
                 assert!(!state.needs_refresh(revision + offset));
                 assert!(state.needs_refresh(revision + offset + 1));
@@ -64,8 +76,9 @@ mod tests {
                 }
             }
             state.failed();
-            assert!(state.select(revision + failures as u64 + 1, workspace,
-                || futures::stream::iter([Ok(())])));
+            assert!(state.select(revision + failures as u64 + 1, workspace, || {
+                futures::stream::iter([Ok(())])
+            }));
             assert_eq!(state.stream().unwrap().next().await, Some(Ok(())));
             // A healthy stream is reused, but closing always invalidates it.
             assert!(!state.select(revision + failures as u64 + 2, workspace, open));

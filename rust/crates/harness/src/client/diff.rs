@@ -208,15 +208,19 @@ impl DiffView {
                     (None, Some(_)) => DiffKind::Added,
                     (Some(_), None) => DiffKind::Removed,
                     (Some(_), Some(_)) => DiffKind::Modified,
-                    (None, None) => return Err(Error::Invalid("absent diff has a file length".into())),
+                    (None, None) => {
+                        return Err(Error::Invalid("absent diff has a file length".into()));
+                    }
                 };
                 Some(FileDiff::too_large(kind, bytes))
             } else {
                 let before = read(&change.base, reader, limits.file_bytes, &mut work).await?;
                 let after = read(&change.current, reader, limits.file_bytes, &mut work).await?;
                 FileDiff::between_work(
-                    before.as_deref(), after.as_deref(),
-                    limits.render_bytes - rendered, &mut work,
+                    before.as_deref(),
+                    after.as_deref(),
+                    limits.render_bytes - rendered,
+                    &mut work,
                 )?
             };
             if let Some(diff) = &diff {

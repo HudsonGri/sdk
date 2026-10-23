@@ -77,7 +77,9 @@ impl TaskContext {
     /// Borrows the task's configured private files; callers still verify the journal owner.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[doc(hidden)]
-    pub fn task_files(&self) -> Option<&crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>> {
+    pub fn task_files(
+        &self,
+    ) -> Option<&crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>> {
         self.harness.task_files.as_deref()
     }
 

@@ -156,7 +156,10 @@ async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16], failed: 
     let outcome = commands
         .consume(&request, |_, _, _| async {
             if failed {
-                Err(Error::TaskFailed { task: selected, message: "interrupted stream".into() })
+                Err(Error::TaskFailed {
+                    task: selected,
+                    message: "interrupted stream".into(),
+                })
             } else {
                 Ok(json!({"selected_task":selected}))
             }
@@ -180,7 +183,10 @@ async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16], failed: 
                     ..
                 } => {
                     let outcome: Value = serde_json::from_slice(&file.bytes).unwrap();
-                    assert_eq!(outcome["completion"], if failed { "failed" } else { "completed" });
+                    assert_eq!(
+                        outcome["completion"],
+                        if failed { "failed" } else { "completed" }
+                    );
                     assert!(
                         seen_selection,
                         "completion must follow its selected conversation"

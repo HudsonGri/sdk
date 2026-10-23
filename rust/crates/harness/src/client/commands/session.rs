@@ -22,13 +22,13 @@ mod init;
 #[cfg(acyclic_harness_loom)]
 #[path = "session_init_models.rs"]
 mod init_models;
-#[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
-#[path = "session_scroll_models.rs"]
-mod scroll_models;
 #[path = "session_input.rs"]
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
+#[path = "session_scroll_models.rs"]
+mod scroll_models;
 #[path = "session_view.rs"]
 mod view;
 

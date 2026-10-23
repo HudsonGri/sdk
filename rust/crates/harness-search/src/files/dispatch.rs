@@ -59,10 +59,7 @@ pub(crate) async fn dispatch<P: StreamProvider>(
             .map_err(storage)?;
         if let Some(file) = saved.files.first() {
             if bytes.as_ref().is_some_and(|bytes| *bytes != file.bytes) {
-                return Err(crate::rejection(
-                    work,
-                    "search request identity changed",
-                ));
+                return Err(crate::rejection(work, "search request identity changed"));
             }
             break;
         }

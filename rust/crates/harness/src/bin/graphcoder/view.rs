@@ -75,16 +75,18 @@ pub async fn run(
             if diff.needs_refresh(revision) {
                 match local.project_selection().await {
                     Ok(selected) => {
-                        if diff.select(revision, selected, || client::local_diff(
-                            local.clone(),
-                            client::DiffLimits {
-                                files: 4096,
-                                changes: 4096,
-                                file_bytes: 65_536,
-                                render_bytes: 4 * 1024 * 1024,
-                                work: 16 * 1024 * 1024,
-                            },
-                        )) {
+                        if diff.select(revision, selected, || {
+                            client::local_diff(
+                                local.clone(),
+                                client::DiffLimits {
+                                    files: 4096,
+                                    changes: 4096,
+                                    file_bytes: 65_536,
+                                    render_bytes: 4 * 1024 * 1024,
+                                    work: 16 * 1024 * 1024,
+                                },
+                            )
+                        }) {
                             renderer.update_diff(Ok(Vec::new()));
                         }
                     }

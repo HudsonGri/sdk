@@ -67,13 +67,14 @@
           "when": {
             "contains": [
               "declined",
-              "\u25cb"
+              "○"
             ],
             "task_failure": "declined"
           },
           "send": "\u0004"
         }
-      ]
+      ],
+      "exit": 1
     }
   ],
   "assert": {

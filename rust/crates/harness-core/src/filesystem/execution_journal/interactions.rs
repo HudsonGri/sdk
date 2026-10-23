@@ -151,8 +151,11 @@ where
             owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
         }
-        if io.is_none() && self.interactions.is_none() && self.task_files.is_some()
-            && matches!(interaction, Interaction::Approval { .. }) {
+        if io.is_none()
+            && self.interactions.is_none()
+            && self.task_files.is_some()
+            && matches!(interaction, Interaction::Approval { .. })
+        {
             return self.open_file_approval(id, interaction).await;
         }
         let host = self.interactions.as_ref().ok_or_else(|| {

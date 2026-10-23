@@ -31,13 +31,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod conversation;
 
+mod approval_files;
 mod cancellation;
 mod canonical;
 mod chunks;
 mod configuration;
 mod content;
 mod interactions;
-mod approval_files;
 mod observations;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
