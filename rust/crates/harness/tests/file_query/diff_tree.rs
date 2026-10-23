@@ -181,12 +181,7 @@ async fn root_metadata_does_not_interrupt_file_diffs_or_replay() -> TestResult {
         .value;
     root_metadata.modified_ns = acyclic_fs::kernel::MetadataField::Value(1_700_000_000_000_000_000);
     transaction
-        .set_metadata(
-            "/",
-            root_metadata,
-            BOUNDARY_BUDGET,
-            &cancel,
-        )
+        .set_metadata("/", root_metadata, BOUNDARY_BUDGET, &cancel)
         .await?;
     commit(&mut transaction).await?;
     let metadata = stream.next().await.ok_or("root metadata")??;
