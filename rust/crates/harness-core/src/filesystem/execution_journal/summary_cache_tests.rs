@@ -159,6 +159,11 @@ fn a_fresh_invocation_reuses_storage_with_current_cancellation_and_work() -> Res
     })?;
     assert_eq!(work.remaining()?.bytes_hashed, outside_window);
     assert_eq!(second.remaining()?.bytes_hashed, before_second - 17);
+    // Growth must claim new bytes on the current window and retain custody on
+    // the same original ledger even though the first invocation is cancelled.
+    retained.retain_owned(31)?;
+    assert_eq!(retained.owned_bytes()?, retained_bytes + 31);
+    retained.release(31)?;
     second_cancel.cancel();
     assert!(retained.check_cancellation().is_err());
     drop(cache);

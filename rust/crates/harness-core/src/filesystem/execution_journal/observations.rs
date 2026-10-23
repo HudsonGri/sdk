@@ -348,12 +348,32 @@ where
                 return Ok(false);
             }
             summary.validate_next(event, model.as_ref(), limits, io)?;
+            let tail = summary.tail;
+            let sequence = tail.checked_add(1).ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution journal sequence overflows",
+                )
+            })?;
+            // A dispatch claim must not commit until every fallible cache
+            // allocation and admission has succeeded. The edit invalidates
+            // this speculative state on conflict, error or cancellation.
+            let mut edit = cache.edit();
+            let (summary, retained_io) = edit.parts();
+            summary.accept_verified(
+                (sequence, retry_key, event_digest),
+                event,
+                model.as_ref(),
+                limits,
+                retained_io,
+            )?;
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
                     .append_execution(
                         operation_id,
-                        summary.tail,
+                        tail,
                         &key,
                         bytes.clone(),
                         event,
@@ -365,7 +385,7 @@ where
             } else {
                 self.append_local_with_io(
                     &observation,
-                    summary.tail,
+                    tail,
                     key.clone(),
                     bytes.clone(),
                     io,
@@ -373,22 +393,6 @@ where
                 .await?
             };
             if committed {
-                let sequence = summary.tail.checked_add(1).ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "execution journal sequence overflows",
-                    )
-                })?;
-                let mut edit = cache.edit();
-                let (summary, retained_io) = edit.parts();
-                summary.accept_verified(
-                    (sequence, retry_key, event_digest),
-                    event,
-                    model.as_ref(),
-                    limits,
-                    retained_io,
-                )?;
                 edit.finish();
                 drop(key);
                 drop(key_hold);
@@ -398,6 +402,7 @@ where
                 drop(retry_hold);
                 return Ok(true);
             }
+            drop(edit);
         }
     }
 

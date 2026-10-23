@@ -3,6 +3,13 @@ use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
 
 #[tokio::test]
 async fn authenticated_replay_defers_payload_loading_until_consumption() -> Result<()> {
+    for native in [false, true] {
+        check_replay_payload_cost(native).await?;
+    }
+    Ok(())
+}
+
+async fn check_replay_payload_cost(native: bool) -> Result<()> {
     let journal = journal().await?;
     let operation = OperationId::new();
     journal
@@ -31,10 +38,15 @@ async fn authenticated_replay_defers_payload_loading_until_consumption() -> Resu
             None,
         )?
         .await?;
-    let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
-        &acyclic_fs::CancellationToken::new(),
-    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = if native {
+        PreparationIo::from_native_work(&work)?
+    } else {
+        PreparationIo::from_budget(budget, &cancellation)?
+    };
     for cold in [false, true] {
         if cold {
             *journal.verified.lock().await = SummaryCache::default();
@@ -46,7 +58,7 @@ async fn authenticated_replay_defers_payload_loading_until_consumption() -> Resu
         assert_eq!(records.len(), 1);
         let after = io.receipt();
         eprintln!(
-            "replay cold={cold} source_bytes={} authority_bytes={} object_bytes={} hashed_bytes={}",
+            "replay native={native} cold={cold} source_bytes={} authority_bytes={} object_bytes={} hashed_bytes={}",
             after.source_bytes_read - before.source_bytes_read,
             after.authority_bytes_read - before.authority_bytes_read,
             after.object_bytes_read - before.object_bytes_read,
@@ -327,7 +339,7 @@ fn quiescence_work_is_flat_for_a_thousand_settled_dispatches() -> Result<()> {
     Ok(())
 }
 
-async fn journal() -> Result<
+pub(in crate::filesystem::execution_journal) async fn journal() -> Result<
     FilesystemExecutionJournal<
         acyclic_stream::MemoryStream,
         acyclic_fs::MemoryAuthorityBackend,

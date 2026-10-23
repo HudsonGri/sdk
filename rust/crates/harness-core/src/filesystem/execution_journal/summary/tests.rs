@@ -121,4 +121,12 @@ proptest! {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "turn_cost.rs"]
-mod turn_cost;
+pub(in crate::filesystem::execution_journal) mod turn_cost;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "recovery_cost.rs"]
+mod recovery_cost;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "dispatch_admission.rs"]
+mod dispatch_admission;
