@@ -96,10 +96,11 @@ impl LocalStream {
                 &original,
                 std::mem::size_of_val(&worker),
             )?;
-            let task = spawn(async move {
+            let deferred = deferred();
+            let task = spawn(DEFERRED.scope(deferred, async move {
                 let _allocation = allocation;
                 worker.await
-            });
+            }));
             task.await.map_err(std::io::Error::other)?
         })
     }

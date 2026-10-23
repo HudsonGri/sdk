@@ -5,6 +5,17 @@ contract! {
 pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Live ownership of this backend owner, preserved by forwarding adapters.
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims;
+    /// Whether a phase may defer authority flushes until an explicit barrier.
+    fn supports_deferred_durability(&self) -> bool {
+        false
+    }
+    /// Seals all authority writes accepted by this store before the call.
+    fn durability_barrier(
+        &self,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::Retired))
+    }
     /// Whether creation can retain a published-generation prefix.
     fn supports_generation_lineage_prefix(&self) -> bool {
         false

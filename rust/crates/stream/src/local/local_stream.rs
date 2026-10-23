@@ -352,6 +352,17 @@ impl LocalStream {
         Ok(())
     }
 
+    /// Pins the accepted prefix before joining the common group-commit wait.
+    async fn seal_accepted(&self) -> Result<(), StreamError> {
+        self.check_available()?;
+        let target = {
+            let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
+            journal.required = journal.appended;
+            journal.appended
+        };
+        self.await_durable(target).await
+    }
+
     /// Returns once every frame through `sequence` is durable: group commit.
     async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
         let mut synced = self.inner.synced.subscribe();
