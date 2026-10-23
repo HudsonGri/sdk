@@ -4,7 +4,9 @@
 //! its own construction gate, so a child's first call waits only for that
 //! child's construction or retirement, never for its parent's running command.
 //! Settled children are retired under the same gate, so a view is constructed
-//! again only after the previous one is physically retired.
+//! again only after the previous one is physically retired. A view whose
+//! retirement failed is never leased again; its retirement is retried, from
+//! whatever state it reached, before that child's next view is constructed.
 use super::*;
 use crate::sync::SyncMutex;
 use crate::sync::owned::lock_owned;
@@ -26,6 +28,9 @@ struct Index<T> {
 struct Entry<T> {
     gate: StateArc<AsyncMutex<()>>,
     view: Option<Arc<T>>,
+    // A view whose retirement failed: never leased, and retried before a
+    // replacement is constructed and at each settlement.
+    failed: Option<Arc<T>>,
     users: usize,
     // Settled while in use: retire once the last call releases it.
     retired: bool,
@@ -78,10 +83,10 @@ impl<T> Drop for Claim<T> {
         };
         entry.users -= 1;
         if entry.users == 0 && !entry.retiring {
-            if entry.view.is_none() {
-                entries.remove(&self.task);
-            } else if entry.retired {
+            if entry.failed.is_some() || (entry.retired && entry.view.is_some()) {
                 deferred.push(self.task);
+            } else if entry.view.is_none() {
+                entries.remove(&self.task);
             }
         }
     }
@@ -94,13 +99,13 @@ impl<T> ChildViews<T> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Number of children that currently hold a view.
+    /// Number of children whose view is not yet physically retired.
     #[cfg(test)]
     pub(in crate::local) fn live(&self) -> usize {
         self.lock()
             .entries
             .values()
-            .filter(|entry| entry.view.is_some())
+            .filter(|entry| entry.view.is_some() || entry.failed.is_some())
             .count()
     }
 
@@ -132,17 +137,20 @@ impl<T> ChildViews<T> {
     }
 
     /// Returns `task`'s view, constructing it once outside every checkout
-    /// guard. Concurrent first calls for one task share one construction.
+    /// guard. Concurrent first calls for one task share one construction,
+    /// which first finishes retiring the task's failed view, if any.
     pub(in crate::local) async fn acquire(
         views: &StateArc<Self>,
         task: TaskId,
         create: impl AsyncFnOnce() -> Result<T>,
+        retire: impl AsyncFnOnce(&T) -> Result<()>,
     ) -> Result<ChildLease<T>> {
         let gate = {
             let mut index = views.lock();
             let entry = index.entries.entry(task).or_insert_with(|| Entry {
                 gate: StateArc::new(AsyncMutex::new(())),
                 view: None,
+                failed: None,
                 users: 0,
                 retired: false,
                 retiring: false,
@@ -163,16 +171,25 @@ impl<T> ChildViews<T> {
         };
         let (gate, claim) = gate;
         let _gate = lock_owned(gate).await;
-        let installed = views
+        let (installed, failed) = views
             .lock()
             .entries
-            .get(&task)
-            .and_then(|entry| entry.view.clone());
+            .get_mut(&task)
+            .map(|entry| (entry.view.clone(), entry.failed.take()))
+            .unwrap_or_default();
         if let Some(view) = installed {
             return Ok(ChildLease {
                 _claim: claim,
                 view,
             });
+        }
+        if let Some(failed) = failed
+            && let Err(error) = retire(&failed).await
+        {
+            if let Some(entry) = views.lock().entries.get_mut(&task) {
+                entry.failed = Some(failed);
+            }
+            return Err(error);
         }
         let view = Arc::new(create().await?);
         let mut index = views.lock();
@@ -190,8 +207,10 @@ impl<T> ChildViews<T> {
         })
     }
 
-    /// Retires `task`'s view once no call holds it, and any view whose child
-    /// settled while in use. A failed retirement keeps that view installed.
+    /// Retires `task`'s view once no call holds it, any view whose child
+    /// settled while in use, and any view whose retirement failed. A failed
+    /// retirement withdraws its view from use; the next settlement or
+    /// construction for that child retries it.
     pub(in crate::local) async fn settle(
         views: &StateArc<Self>,
         settled: TaskId,
@@ -228,7 +247,7 @@ impl<T> ChildViews<T> {
                 return Ok(());
             };
             // A deferred child that was used again after settling stays live.
-            if !(settled || entry.retired) {
+            if !(settled || entry.retired || entry.failed.is_some()) {
                 return Ok(());
             }
             if entry.users != 0 {
@@ -243,14 +262,14 @@ impl<T> ChildViews<T> {
             let Some(entry) = index.entries.get_mut(&task) else {
                 return Ok(());
             };
-            if !(settled || entry.retired) {
+            if !(settled || entry.retired || entry.failed.is_some()) {
                 return Ok(());
             }
             if entry.users != 0 {
                 entry.retired = true;
                 return Ok(());
             }
-            let Some(view) = entry.view.take() else {
+            let Some(view) = entry.view.take().or_else(|| entry.failed.take()) else {
                 index.entries.remove(&task);
                 return Ok(());
             };
@@ -267,12 +286,12 @@ impl<T> ChildViews<T> {
             return retired;
         };
         entry.retiring = false;
+        entry.retired = false;
         if retired.is_err() {
-            // Keep the owner of a view whose physical retirement failed; the
-            // child's next settlement retries it.
-            entry.view = Some(view);
+            // Keep the owner of a view whose physical retirement failed, out
+            // of use; the next settlement or construction retries it.
+            entry.failed = Some(view);
             if entry.users == 0 {
-                entry.retired = true;
                 deferred.push(task);
             }
         } else if entry.users == 0 {

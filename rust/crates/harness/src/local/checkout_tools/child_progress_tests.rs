@@ -114,8 +114,12 @@ async fn a_child_command_runs_while_its_parent_command_holds_the_checkout() -> R
     drop(command);
 
     assert_eq!(workspace.children.live(), 1);
+    let mounted = root.select(&context).await?.unwrap().workspace.path.clone();
+    assert!(mounted.is_dir());
     workspace.settle_child(child).await?;
     assert_eq!(workspace.children.live(), 0);
+    // Retirement removes the directory the view was mounted on.
+    assert!(!mounted.exists(), "{mounted:?} outlived its view");
     // A settled child that runs again gets a fresh view.
     shell(&root.select(&context).await?.unwrap(), &task).await?;
     assert_eq!(workspace.children.live(), 1);
