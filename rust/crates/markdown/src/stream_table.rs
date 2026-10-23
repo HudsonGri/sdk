@@ -213,6 +213,7 @@ fn completions(
 ) -> (usize, usize) {
     let (mut total, mut committed) = (0usize, 0usize);
     for (event, range) in events {
+        acyclic_markdown_work::record!(scan(1));
         #[cfg(test)]
         work::scan(1);
         if matches!(event, Event::Start(Tag::TableRow)) {
@@ -228,6 +229,7 @@ fn completions(
 }
 
 fn row_cells(row: &str) -> usize {
+    acyclic_markdown_work::record!(scan(row.len() * 3));
     #[cfg(test)]
     work::scan(row.len() * 3);
     let row = row.trim_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);

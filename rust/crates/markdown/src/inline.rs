@@ -733,11 +733,13 @@ fn table_candidate(source: &str) -> bool {
 // break. Keep its source text in the rendered checkpoint, not in parser input.
 fn row_prefix(source: &str) -> String {
     let row = source.rsplit('\n').next().unwrap_or_default();
+    acyclic_markdown_work::record!(scan(row.len() * 2));
     #[cfg(test)]
     work::scan(row.len() * 2);
     if !row.contains('|') {
         return left_context(source);
     }
+    acyclic_markdown_work::record!(scan(row.len()));
     #[cfg(test)]
     work::scan(row.len());
     let (mut escaped, mut content) = (false, false);
@@ -821,6 +823,7 @@ fn boundary(
     sentinel: usize,
 ) -> (usize, Option<Cut>, Vec<Candidate>) {
     let mut scan = LimitScan::new(source);
+    acyclic_markdown_work::record!(scan(source.len() * 2));
     #[cfg(test)]
     work::scan(source.len() * 2);
     for (event, range) in events {

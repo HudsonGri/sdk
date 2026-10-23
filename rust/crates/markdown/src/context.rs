@@ -133,6 +133,7 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
 }
 
 fn columns(source: &str, start: usize) -> usize {
+    acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
     work::scan(source.len());
     source.bytes().fold(start, |column, byte| {
@@ -186,6 +187,7 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
     let raw = source.get(range.clone()).unwrap_or_default();
     let end = prefix.len() + row.len() + raw.len();
     let probe = format!("{prefix}{row}{raw}{row}x\n");
+    acyclic_markdown_work::record!(scan(probe.len()));
     #[cfg(test)]
     {
         work::copy(probe.len());
@@ -193,7 +195,10 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
     }
     Parser::new_ext(&probe, options())
         .into_offset_iter()
-        .any(|(event, range)| matches!(event, Event::End(TagEnd::HtmlBlock)) && range.end <= end)
+        .any(|(event, range)| {
+            acyclic_markdown_work::record!(node());
+            matches!(event, Event::End(TagEnd::HtmlBlock)) && range.end <= end
+        })
 }
 
 pub(super) fn context_prefix(context: &[Container]) -> String {

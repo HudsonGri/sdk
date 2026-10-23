@@ -121,11 +121,13 @@ impl Table {
 
 pub(super) fn width(line: &Line) -> usize {
     if let [span] = line.spans.as_slice() {
+        acyclic_markdown_work::record!(scan(span.text.len()));
         #[cfg(test)]
         crate::work::scan(span.text.len());
         UnicodeWidthStr::width(span.text.as_str())
     } else {
         let text = cell_text(line);
+        acyclic_markdown_work::record!(scan(text.len()));
         #[cfg(test)]
         crate::work::scan(text.len());
         UnicodeWidthStr::width(text.as_str())
@@ -188,6 +190,7 @@ fn trim(mut cell: Line, size: usize) -> Line {
     let mut used = 0;
     let mut remaining = 0;
     for (offset, cluster) in text.grapheme_indices(true) {
+        acyclic_markdown_work::record!(scan(cluster.len()));
         #[cfg(test)]
         crate::work::scan(cluster.len());
         let columns = UnicodeWidthStr::width(cluster);

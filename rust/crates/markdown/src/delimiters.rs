@@ -77,6 +77,7 @@ impl State {
             .filter(|(_, candidate)| candidate.end <= end)
         {
             let opener = &candidate.opener;
+            acyclic_markdown_work::record!(scan(1));
             #[cfg(test)]
             work::scan(1);
             // The reopened span closes inside the reparse without a crossing
@@ -164,6 +165,7 @@ pub(super) fn scan(
         .take_while(|next| *next == byte)
         .count();
     let end = start + count;
+    acyclic_markdown_work::record!(scan(position - start + count));
     #[cfg(test)]
     work::scan(position - start + count);
     let before = source.get(..start)?.chars().next_back().unwrap_or(' ');

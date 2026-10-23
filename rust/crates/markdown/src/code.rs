@@ -134,9 +134,13 @@ pub(crate) fn closing(text: &str, marker: u8, count: usize) -> bool {
     // Ordinary code lines never allocate or invoke this candidate parse.
     let opening = if marker == b'`' { "```" } else { "~~~" };
     let candidate = format!("{opening}\n{input}");
+    acyclic_markdown_work::record!(scan(candidate.len()));
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + candidate.len()));
-    !Parser::new(&candidate).any(|event| matches!(event, Event::Text(_)))
+    !Parser::new(&candidate).any(|event| {
+        acyclic_markdown_work::record!(node());
+        matches!(event, Event::Text(_))
+    })
 }
 
 pub(crate) fn dedent(text: &str, indent: usize) -> std::borrow::Cow<'_, str> {
