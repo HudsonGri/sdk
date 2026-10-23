@@ -133,13 +133,7 @@ impl ControlPlane {
                     "_session_id".to_owned(),
                     Value::String(self.state.root_session_id.clone()),
                 );
-                return Ok(json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "allow",
-                        "updatedInput": updated
-                    }
-                }));
+                return Ok(pre_tool_update(&updated));
             }
             let original =
                 normalize_tool_input(input.get("tool_input").cloned().unwrap_or(Value::Null))?;

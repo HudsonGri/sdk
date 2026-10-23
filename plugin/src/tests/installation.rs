@@ -1,6 +1,16 @@
 use super::*;
 
 #[test]
+fn packaged_claude_manifest_uses_shared_lifecycle_commands() {
+    let packaged: Value =
+        serde_json::from_str(include_str!("../../claude/.claude-plugin/plugin.json")).unwrap();
+    assert_eq!(
+        packaged,
+        acyclic_harness::host_hooks::claude_manifest(env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn pi_install_preserves_foreign_settings_and_refuses_modified_ownership() {
     let fixture = Fixture::new();
     let settings = fixture.data.join("settings.json");
@@ -88,6 +98,32 @@ fn shared_hooks_restore_foreign_entries_and_preserve_edits() {
         fs::write(&path, installed).unwrap();
         remove_owned_json(&path, section, "hooks").unwrap();
         assert_eq!(read_optional_json(&path, "hooks").unwrap(), Some(prior));
+    }
+}
+
+#[test]
+fn installed_claude_hooks_use_the_shared_commands_and_preserve_foreign_hooks() {
+    let fixture = Fixture::new();
+    let settings = fixture.data.join("claude-command.json");
+    let foreign = json!({"hooks":[{"type":"command","command":"foreign"}]});
+    fs::write(
+        &settings,
+        serde_json::to_vec(&json!({
+            "hooks": {"SessionStart": [foreign.clone()]}, "permissions": {"defaultMode":"default"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let executable = fixture.data.join("a path with 'quotes'").join("acyclic");
+    install_claude_hooks_at(&executable, &settings).unwrap();
+    let document = read_optional_json(&settings, "settings").unwrap().unwrap();
+    assert_eq!(document["permissions"], json!({"defaultMode":"default"}));
+    assert_eq!(document["hooks"]["SessionStart"][0], foreign);
+    for (event, groups) in acyclic_harness::host_hooks::claude_hooks(executable.to_str().unwrap()) {
+        assert_eq!(
+            document["hooks"][event].as_array().unwrap().last(),
+            groups.first()
+        );
     }
 }
 

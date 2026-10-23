@@ -216,16 +216,7 @@ pub(crate) fn remove_copilot_hooks_at(path: &Path) -> Result<(), String> {
     remove_owned_json(path, "copilot-hooks", "Copilot hooks")
 }
 
-/// The Claude Code events Acyclic routes, in the order Claude fires them.
-pub(crate) const CLAUDE_HOOK_EVENTS: [&str; 7] = [
-    "SessionStart",
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "SubagentStart",
-    "SubagentStop",
-    "SessionEnd",
-];
+pub(crate) use acyclic_harness::host_hooks::CLAUDE_EVENTS as CLAUDE_HOOK_EVENTS;
 
 pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, String> {
     let path = claude_settings_path(project)?;
@@ -247,29 +238,16 @@ pub(crate) fn install_claude_hooks_at(executable: &Path, path: &Path) -> Result<
                 .cloned()
                 .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?;
             let hooks = object_entry(&mut document, "hooks")?;
-            for event in CLAUDE_HOOK_EVENTS {
+            let executable = executable
+                .to_str()
+                .ok_or_else(|| "Claude hook executable must be UTF-8".to_owned())?;
+            for (event, groups) in acyclic_harness::host_hooks::claude_hooks(executable) {
                 let entries = hooks
                     .entry(event.to_owned())
                     .or_insert_with(|| json!([]))
                     .as_array_mut()
                     .ok_or_else(|| format!("Claude Code hooks.{event} must be an array"))?;
-                let mut group = serde_json::Map::new();
-                if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
-                    group.insert("matcher".to_owned(), Value::String(".*".to_owned()));
-                }
-                // Exec form: Claude Code spawns the executable directly
-                // instead of through bash, Git Bash or PowerShell.
-                group.insert(
-                    "hooks".to_owned(),
-                    json!([{
-                        "type": "command",
-                        "command": executable,
-                        "args": ["__hook", "claude-code", event],
-                        "timeout": claude_hook_timeout(event),
-                        "statusMessage": "Acyclic is routing the workspace"
-                    }]),
-                );
-                entries.push(Value::Object(group));
+                entries.extend(groups);
             }
             Ok(Value::Object(document))
         },
@@ -308,7 +286,9 @@ pub(crate) fn normalize_claude_hook_document(
         let entries = entries
             .as_array_mut()
             .ok_or_else(|| format!("Claude Code hooks.{event} must be an array"))?;
-        entries.retain(|entry| !is_acyclic_claude_hook_group(event, entry));
+        entries.retain(|entry| {
+            acyclic_harness::host_hooks::claude_hook_executable(event, entry).is_none()
+        });
         if entries.is_empty() {
             hooks.remove(event);
         }
@@ -317,55 +297,6 @@ pub(crate) fn normalize_claude_hook_document(
         document.remove("hooks");
     }
     Ok(Some(Value::Object(document)))
-}
-
-pub(crate) fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
-    let Some(group) = group.as_object() else {
-        return false;
-    };
-    let expected_fields = if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
-        2
-    } else {
-        1
-    };
-    if group.len() != expected_fields
-        || expected_fields == 2 && group.get("matcher").and_then(Value::as_str) != Some(".*")
-    {
-        return false;
-    }
-    let Some(hook) = group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .filter(|hooks| hooks.len() == 1)
-        .and_then(|hooks| hooks.first())
-        .and_then(Value::as_object)
-    else {
-        return false;
-    };
-    if hook.len() != 5
-        || hook.get("type").and_then(Value::as_str) != Some("command")
-        || hook.get("args") != Some(&json!(["__hook", "claude-code", event]))
-        || hook.get("timeout").and_then(Value::as_u64) != Some(claude_hook_timeout(event))
-        || hook.get("statusMessage").and_then(Value::as_str)
-            != Some("Acyclic is routing the workspace")
-    {
-        return false;
-    }
-    hook.get("command")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
-        })
-}
-
-pub(crate) fn claude_hook_timeout(event: &str) -> u64 {
-    // Claude bounds SessionEnd separately from ordinary hooks. Keep teardown
-    // within its terminal-hook budget so the process cannot exit while mounts
-    // and service session ownership remain live.
-    if event == "SessionEnd" { 3 } else { 120 }
 }
 
 pub(crate) fn remove_claude_hooks(project: bool) -> Result<(), String> {

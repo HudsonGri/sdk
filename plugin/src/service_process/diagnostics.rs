@@ -496,9 +496,10 @@ pub(crate) fn claude_code_installation_check_at(path: &Path) -> Value {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter(|group| is_acyclic_claude_hook_group(event, group))
-                .filter_map(|group| group.pointer("/hooks/0/command").and_then(Value::as_str))
-                .any(|command| Path::new(command).is_file());
+                .filter_map(|group| {
+                    acyclic_harness::host_hooks::claude_hook_executable(event, group)
+                })
+                .any(|executable| Path::new(&executable).is_file());
             if !routed {
                 return Err(format!(
                     "Claude Code hooks at {} do not route {event} to an installed Acyclic executable",

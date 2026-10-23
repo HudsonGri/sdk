@@ -335,7 +335,6 @@ pub(crate) fn pre_tool_update(updated: &Value) -> Value {
     json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
             "updatedInput": updated
         }
     })

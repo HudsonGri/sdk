@@ -9,7 +9,10 @@ mod bootstrap;
 #[cfg(not(acyclic_harness_loom))]
 mod performance_tests;
 
+mod children;
 mod mounts;
+mod task_views;
+pub(in crate::local) use children::created_project;
 pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(test)]
@@ -125,16 +128,12 @@ impl LocalWorkspace {
     pub(super) async fn created_mounts(
         &self,
         project: &VolumeRef,
-        context: &crate::runtime::ToolContext,
+        context: &crate::runtime::TaskContext,
+        scope: &RuntimeScope,
     ) -> Result<Arc<Mounts>> {
-        let access = context
-            .task()
-            .scope()
-            .created_access
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Unauthorized("child mounts require authenticated allocations".into())
-            })?;
+        let access = context.scope().created_access.as_ref().ok_or_else(|| {
+            Error::Unauthorized("child mounts require authenticated allocations".into())
+        })?;
         let mut private = None;
         for binding in &access.content {
             if binding.volume.class() != VolumeClass::AgentPrivate {
@@ -145,7 +144,7 @@ impl LocalWorkspace {
                 .map(|operation| binding.volume.capability(operation, &mut None))
                 .collect::<Result<Vec<_>>>()?
                 .iter()
-                .all(|grant| context.effective_scope().grants().contains(grant));
+                .all(|grant| scope.grants().contains(grant));
             if granted && private.replace(binding.volume.clone()).is_some() {
                 return Err(Error::Unauthorized(
                     "child private mount is ambiguous".into(),
@@ -456,6 +455,11 @@ async fn held_source(
         &path,
         config,
         &path.join(volumes::INCARNATION_PATH),
+    )?);
+    exclusions.push(volumes::namespace(
+        &path,
+        config,
+        &path.join(super::host_workspace::HOST_VIEW_ROOT),
     )?);
     let source = source
         .exclude(exclusions, &work, cancellation)

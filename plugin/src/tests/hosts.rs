@@ -1,5 +1,29 @@
 use super::*;
 
+#[test]
+fn hook_failure_preserves_native_permissions_and_denies_unisolated_children() {
+    for host in ["codex", "claude-code"] {
+        for event in ["PreToolUse", "PostToolUse", "SessionStart", "SessionEnd"] {
+            let response = HookFailure {
+                host,
+                event,
+                policy: HookFailurePolicy::Continue,
+            }
+            .answer("fixture service failure");
+            assert!(response.get("hookSpecificOutput").is_none());
+            assert!(response.get("permissionDecision").is_none());
+            assert!(response["systemMessage"].is_string());
+        }
+        let response = HookFailure {
+            host,
+            event: "PreToolUse",
+            policy: HookFailurePolicy::Deny,
+        }
+        .answer("fixture isolation failure");
+        assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
+    }
+}
+
 async fn host_state(service: &ConcurrentServiceControl) -> AdapterState {
     let handle = service.session("session").await.unwrap();
     let resume = handle.pause().await;
@@ -41,11 +65,37 @@ fn native_hosts_route_children_and_reject_forged_identity() {
             let child = host_state(&service).await.routes["child"]
                 .active_path()
                 .unwrap();
+            let root_control = native_hook_request(
+                host,
+                "PreToolUse",
+                "session",
+                &fixture.root,
+                json!({"turn_id":"root-turn", "tool_name":"mcp__acyclic__agents",
+                    "tool_use_id":"root-control", "tool_input":{}}),
+            );
+            let (root_updated, _) = service
+                .dispatch_request(root_control, &mut None)
+                .await
+                .unwrap();
+            assert!(
+                root_updated
+                    .pointer("/hookSpecificOutput/permissionDecision")
+                    .is_none()
+            );
+            assert_eq!(
+                root_updated["hookSpecificOutput"]["updatedInput"]["_caller_turn_id"],
+                "root-turn"
+            );
             let input = json!({"turn_id":"child-tool-turn", "agent_id":"child", "agent_type":"explorer",
                 "tool_name":"Bash", "tool_use_id":"tool", "tool_input":{"command":"pwd"}});
             let request =
                 native_hook_request(host, "PreToolUse", "session", &fixture.root, input.clone());
             let (routed, _) = service.dispatch_request(request, &mut None).await.unwrap();
+            assert!(
+                routed
+                    .pointer("/hookSpecificOutput/permissionDecision")
+                    .is_none()
+            );
             assert!(
                 routed["hookSpecificOutput"]["updatedInput"]["command"]
                     .as_str()

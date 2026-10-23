@@ -146,30 +146,15 @@ impl CheckoutTools {
         slot: &mut Option<Cursor>,
         permit: PublicationPermit,
     ) -> Result<()> {
-        let (physical, view) = selected;
-        let Some(owed) = reconciliation::owed_write(physical).await? else {
-            return Ok(());
-        };
-        let (operation, staged) = owed;
-        let head = view
-            .workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(storage)?
-            .value;
-        if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
-            self.capture_changes(
-                selected,
-                slot,
-                OperationId::from_bytes(operation.into_bytes()),
-                1,
-                permit,
-            )
-            .await?;
-        }
-        reconciliation::replace_owed_write(physical, Some(owed), None).await
+        finish_owed_write(
+            (&self.capture_options, &self.capture_policy),
+            selected,
+            slot,
+            permit,
+            &|| async { Ok(()) },
+        )
+        .await
     }
-
     async fn capture_changes(
         &self,
         selected: (&LocalWorkspace, &workspace::View),
@@ -178,78 +163,136 @@ impl CheckoutTools {
         phase: u8,
         permit: PublicationPermit,
     ) -> Result<()> {
-        let (physical, view) = selected;
-        let cancellation = CancellationToken::new();
-        let workspace = view.workspace();
-        let options = &self.capture_options;
-        let policy = &self.capture_policy;
-        // On failure discard the cursor: the next command must establish a new
-        // baseline rather than skip changes consumed before a failed commit.
-        let baseline = slot.is_none();
-        let mut cursor = match slot.take() {
-            Some(cursor) => cursor,
-            None => Cursor::open(physical, &self.capture_policy)?,
-        };
-        if cursor.watcher.root_identity() != physical.identity {
-            return Err(Error::Unauthorized("checkout root was replaced".into()));
-        }
-        let mut checkout = workspace
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
+        record_changes(
+            (&self.capture_options, &self.capture_policy),
+            selected,
+            slot,
+            (operation, phase),
+            permit,
+            &|| async { Ok(()) },
+        )
+        .await
+    }
+}
+pub(in crate::local) async fn finish_owed_write<F, Fut>(
+    configuration: (&CaptureOptions, &CapturePolicy),
+    selected: (&LocalWorkspace, &workspace::View),
+    slot: &mut Option<Cursor>,
+    permit: PublicationPermit,
+    before_effect: &F,
+) -> Result<()>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<()>> + Send,
+{
+    let (physical, view) = selected;
+    let Some(owed) = reconciliation::owed_write(physical).await? else {
+        return Ok(());
+    };
+    let (operation, staged) = owed;
+    let head = view
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(storage)?
+        .value;
+    if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+        record_changes(
+            configuration,
+            selected,
+            slot,
+            (OperationId::from_bytes(operation.into_bytes()), 1),
+            permit,
+            before_effect,
+        )
+        .await?;
+    }
+    before_effect().await?;
+    reconciliation::replace_owed_write(physical, Some(owed), None).await
+}
+
+pub(in crate::local) async fn record_changes<F, Fut>(
+    (options, policy): (&CaptureOptions, &CapturePolicy),
+    selected: (&LocalWorkspace, &workspace::View),
+    slot: &mut Option<Cursor>,
+    (operation, phase): (OperationId, u8),
+    permit: PublicationPermit,
+    before_effect: &F,
+) -> Result<()>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<()>> + Send,
+{
+    before_effect().await?;
+    let (physical, view) = selected;
+    let cancellation = CancellationToken::new();
+    let workspace = view.workspace();
+
+    // On failure discard the cursor: the next command must establish a new
+    // baseline rather than skip changes consumed before a failed commit.
+    let baseline = slot.is_none();
+    let mut cursor = match slot.take() {
+        Some(cursor) => cursor,
+        None => Cursor::open(physical, policy)?,
+    };
+    if cursor.watcher.root_identity() != physical.identity {
+        return Err(Error::Unauthorized("checkout root was replaced".into()));
+    }
+    let mut checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    converge::capture(
+        &mut cursor,
+        &mut checkout,
+        physical,
+        (options, policy),
+        baseline,
+        &cancellation,
+    )
+    .await?;
+    if checkout.has_pending_mutations() {
+        let operation = capture_operation(operation, phase);
+        let committed = checkout
+            .commit(
+                operation,
+                None,
+                None,
+                None,
+                permit,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
+                |_| async {
+                    before_effect().await.map_err(|error| {
+                        acyclic_fs::OperationFailure::new(error, WorkCounters::UNCHARGED)
+                    })?;
+                    Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    })
+                },
             )
             .await
             .map_err(storage)?
             .value;
-        converge::capture(
-            &mut cursor,
-            &mut checkout,
-            physical,
-            (options, policy),
-            baseline,
-            &cancellation,
-        )
-        .await?;
-        if checkout.has_pending_mutations() {
-            let operation = capture_operation(operation, phase);
-            let committed = checkout
-                .commit(
-                    operation,
-                    None,
-                    None,
-                    None,
-                    permit,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                    |_| {
-                        std::future::ready(
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: WorkCounters::UNCHARGED,
-                                },
-                            ),
-                        )
-                    },
-                )
-                .await
-                .map_err(storage)?
-                .value;
-            if !matches!(
-                committed,
-                LivePublicationObservation::Committed { .. }
-                    | LivePublicationObservation::AlreadyCommitted { .. }
-            ) {
-                return Err(Error::Conflict(
-                    "checkout capture publication raced with another writer".into(),
-                ));
-            }
+        if !matches!(
+            committed,
+            LivePublicationObservation::Committed { .. }
+                | LivePublicationObservation::AlreadyCommitted { .. }
+        ) {
+            return Err(Error::Conflict(
+                "checkout capture publication raced with another writer".into(),
+            ));
         }
-        *slot = Some(cursor);
-        Ok(())
     }
+    *slot = Some(cursor);
+    Ok(())
 }
 
 pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::OperationId {
@@ -262,7 +305,9 @@ pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs
     acyclic_fs::OperationId::from_bytes(bytes)
 }
 
-pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOptions, CapturePolicy)> {
+pub(in crate::local) fn configuration(
+    workspace: &LocalWorkspace,
+) -> Result<(CaptureOptions, CapturePolicy)> {
     let config = workspace.view().workspace().volume_config();
     let options = CaptureOptions {
         source_root: workspace.path.clone(),

@@ -489,7 +489,10 @@ impl<'a> HookFailure<'a> {
                 format!("Acyclic denied the tool because workspace isolation failed: {error}"),
             ),
         };
-        if !matches!(self.event, "PreToolUse" | "preToolUse") {
+        if !matches!(self.event, "PreToolUse" | "preToolUse")
+            || (self.policy == HookFailurePolicy::Continue
+                && matches!(self.host, "codex" | "claude-code"))
+        {
             return json!({"systemMessage": notice});
         }
         if self.host == "copilot" {

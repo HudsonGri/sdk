@@ -36,6 +36,8 @@ mod compaction;
 mod config;
 pub(crate) mod context;
 mod files;
+#[cfg(feature = "native-execution")]
+pub mod host_workspace;
 mod inheritance;
 mod input;
 mod open;
