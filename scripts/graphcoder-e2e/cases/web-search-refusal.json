@@ -28,7 +28,7 @@
       },
       {
         "when": {
-          "tool_result": "failed"
+          "tool_result": "rejected"
         },
         "text": [
           "SEARCH_REFUSAL_HANDLED"
@@ -51,7 +51,8 @@
   "assert": {
     "requests": 2,
     "tool_contains": [
-      "failed"
+      "rejected",
+      "search HTTP request rejected"
     ],
     "model_contains": [
       "\"name\":\"web_search\""
