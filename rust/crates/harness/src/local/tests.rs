@@ -773,6 +773,8 @@ mod retained_failure;
 
 #[cfg(feature = "native-execution")]
 mod checked_commands;
+#[cfg(feature = "native-execution")]
+mod capture_latency;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
 #[cfg(all(feature = "native-execution", windows))]

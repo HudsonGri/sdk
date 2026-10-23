@@ -146,24 +146,13 @@ impl CheckoutTools {
                 state.watcher = None;
             }
             workspace::volumes::sync(&state.mounts).await?;
-            {
-                let State {
-                    active, watcher, ..
-                } = &mut *state;
-                let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                self.capture(
-                    (&workspace, view),
-                    watcher,
-                    operation,
-                    0,
-                    PublicationPermit::Unrestricted,
-                    Some((
-                        context.task().ordinary_journal_owner::<LocalStream>()?,
-                        false,
-                    )),
-                )
+            // Preserve the fresh-execution fence without publishing a separate
+            // pre-command generation. The final cut includes external edits.
+            context
+                .task()
+                .ordinary_journal_owner::<LocalStream>()?
+                .verify(false, &mut None)
                 .await?;
-            }
             // Each blocking worker retains this guard through cancellation and
             // child-tree reaping; dropping the caller cannot switch its view.
             let check_workspace = Arc::clone(&workspace);
