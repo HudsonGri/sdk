@@ -214,29 +214,40 @@ pub async fn save_tui_draft<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
-/// Publish prompt actions and transcript offsets through their authorized files.
+/// Publish prompt actions and source anchors through their authorized files.
 pub async fn file_tui_input<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
     reader: &dyn ContentResidencyVerifier,
     effect: InputEffect,
     page_rows: usize,
     maximum_scroll: usize,
+    move_view: impl FnMut(
+        Option<crate::tui::TranscriptAnchor>,
+        isize,
+    ) -> Option<crate::tui::TranscriptAnchor>,
 ) -> Result<()> {
-    if let Some(rows) = super::transcript_motion(&effect, page_rows) {
-        return super::scroll_tui(files, [rows], maximum_scroll).await;
-    }
-    handle_tui_input(files, reader, effect).await
+    file_tui_inputs(
+        files,
+        reader,
+        [effect],
+        page_rows,
+        maximum_scroll,
+        move_view,
+    )
+    .await
 }
 
-/// Publish a burst's effects in order. Each run of view motions folds against
-/// the scroll bounds in memory and publishes once, exactly where publishing
-/// each motion in turn would have ended.
+/// Fold each ordered run of motions into one layout publication.
 pub async fn file_tui_inputs<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
     reader: &dyn ContentResidencyVerifier,
     effects: impl IntoIterator<Item = InputEffect>,
     page_rows: usize,
     maximum_scroll: usize,
+    mut move_view: impl FnMut(
+        Option<crate::tui::TranscriptAnchor>,
+        isize,
+    ) -> Option<crate::tui::TranscriptAnchor>,
 ) -> Result<()> {
     let mut effects = effects.into_iter().peekable();
     while let Some(effect) = effects.next() {
@@ -248,7 +259,9 @@ pub async fn file_tui_inputs<P: StreamProvider + ?Sized>(
                 effects.next();
                 Some(rows)
             }));
-            super::scroll_tui(files, motions, maximum_scroll).await?;
+            super::scroll_tui(files, motions, maximum_scroll, &mut move_view).await?;
+        } else if let InputEffect::ScrollTo { anchor } = effect {
+            super::scroll_files::seek_tui(files, anchor).await?;
         } else {
             handle_tui_input(files, reader, effect).await?;
         }

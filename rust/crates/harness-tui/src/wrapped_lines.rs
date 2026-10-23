@@ -1,4 +1,4 @@
-use crate::{Editor, Layout};
+use crate::{Editor, Layout, buffer::slice, widget::cells as cell_count};
 use ratatui::{
     layout::Alignment,
     style::{Modifier, Style},
@@ -87,6 +87,9 @@ impl WrappedLines {
     }
 
     /// Apply a changed source suffix, then select the wrapping width.
+    ///
+    /// # Panics
+    /// Panics if the projection revision overflows.
     pub fn update(&mut self, source: &[Line<'_>], changed: usize, width: u16) {
         self.replace(source, changed);
         self.reflow(width);
@@ -94,15 +97,16 @@ impl WrappedLines {
 
     /// Ingest only changed source lines and update the search index. Rendering
     /// and resize never need the source slice or rebuild this index.
+    ///
+    /// # Panics
+    /// Panics if the projection revision overflows.
     pub fn replace(&mut self, source: &[Line<'_>], changed: usize) {
         if changed >= source.len() && source.len() == self.sources.len() {
             return;
         }
         let changed = changed.min(source.len()).min(self.sources.len());
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .expect("projection revision overflow");
+        assert!(self.revision < u64::MAX, "projection revision overflow");
+        self.revision += 1;
         let at = self
             .sources
             .get(changed)
@@ -110,7 +114,7 @@ impl WrappedLines {
         self.text.truncate(at);
         self.sources.truncate(changed);
         self.truncate_span(changed);
-        for line in &source[changed..] {
+        for line in source.get(changed..).unwrap_or_default() {
             let offset = self.text.len();
             let mut styles = Vec::new();
             let mut carriage_return = false;
@@ -135,19 +139,20 @@ impl WrappedLines {
                 alignment: line.alignment,
             });
         }
-        let text = &self.text[..self.text.len().saturating_sub(1)];
+        let text = slice(&self.text, ..self.text.len().saturating_sub(1));
         self.index.replace_suffix(text, at.min(text.len()));
     }
 
     /// Change width without ingesting source text or walking the archive.
+    ///
+    /// # Panics
+    /// Panics if the projection revision overflows.
     pub fn reflow(&mut self, width: u16) {
         if self.width != Some(width) {
             self.width = Some(width);
             self.clear_span();
-            self.revision = self
-                .revision
-                .checked_add(1)
-                .expect("projection revision overflow");
+            assert!(self.revision < u64::MAX, "projection revision overflow");
+            self.revision += 1;
         }
     }
 
@@ -177,7 +182,7 @@ impl WrappedLines {
             }
             let line = position.line - self.span.start;
             let rows = self.line_rows(line);
-            let first = self.starts[line] + position.row.min(rows.len().saturating_sub(1));
+            let first = rows.start + position.row.min(rows.len().saturating_sub(1));
             while self.rows.len() - first < height && self.span.end < len {
                 self.extend_back();
             }
@@ -209,6 +214,20 @@ impl WrappedLines {
             top: self.position_at(start),
         };
         self.window
+    }
+
+    /// Distance between two retained source rows; never wraps outside the cache.
+    pub fn cached_distance(&self, from: RowPosition, to: RowPosition) -> Option<isize> {
+        let rank = |position: RowPosition| {
+            if !self.span.contains(&position.line) {
+                return None;
+            }
+            let rows = self.line_rows(position.line - self.span.start);
+            (position.row < rows.len()).then_some(rows.start + position.row)
+        };
+        isize::try_from(rank(to)?)
+            .ok()?
+            .checked_sub(isize::try_from(rank(from)?).ok()?)
     }
 
     /// The shown window, as selected by the last `view`.
@@ -340,7 +359,7 @@ impl WrappedLines {
         if self.span.contains(&line) {
             let index = line - self.span.start;
             let rows = self.line_rows(index);
-            let ranges = &self.ranges[rows.clone()];
+            let ranges = self.ranges.get(rows).unwrap_or_default();
             let row = ranges
                 .partition_point(|range| range.start <= byte)
                 .saturating_sub(1);
@@ -364,7 +383,7 @@ impl WrappedLines {
 
     /// Normalized logical text, shared by wrapping and Unicode search.
     pub fn text(&self) -> &str {
-        &self.text[..self.text.len().saturating_sub(1)]
+        slice(&self.text, ..self.text.len().saturating_sub(1))
     }
 
     /// Changes only when source rows or wrapping change, never on frame ticks.
@@ -385,7 +404,9 @@ impl WrappedLines {
 
     /// The shown rows: `rows()[window]`.
     pub fn shown(&self) -> &[Line<'static>] {
-        &self.rows[self.window.start..self.window.end]
+        self.rows
+            .get(self.window.start..self.window.end)
+            .unwrap_or_default()
     }
 
     fn position_at(&self, row: usize) -> RowPosition {
@@ -393,12 +414,17 @@ impl WrappedLines {
             .get(row)
             .map_or(RowPosition::default(), |&(line, _)| RowPosition {
                 line,
-                row: row - self.starts[line - self.span.start],
+                row: row
+                    - self
+                        .starts
+                        .get(line - self.span.start)
+                        .copied()
+                        .unwrap_or(0),
             })
     }
 
     fn line_rows(&self, index: usize) -> Range<usize> {
-        self.starts[index]
+        self.starts.get(index).copied().unwrap_or(self.rows.len())
             ..self
                 .starts
                 .get(index + 1)
@@ -412,14 +438,16 @@ impl WrappedLines {
             let (rows, cells, layouts) = work.get();
             work.set((rows, cells, layouts + 1));
         });
-        let source = &self.sources[line];
+        let Some(source) = self.sources.get(line) else {
+            return Layout::default();
+        };
         let end = self
             .sources
             .get(line + 1)
             .map_or(self.text.len(), |next| next.offset)
             - 1;
         Layout::new(
-            &Editor::new(&self.text[source.offset..end]),
+            &Editor::new(slice(&self.text, source.offset..end)),
             usize::from(self.width.unwrap_or(1)),
         )
     }
@@ -448,7 +476,7 @@ impl WrappedLines {
             return;
         }
         let index = line - self.span.start;
-        let row = self.starts[index];
+        let row = self.starts.get(index).copied().unwrap_or(self.rows.len());
         self.layouts.truncate(index);
         self.starts.truncate(index);
         self.rows.truncate(row);
@@ -475,7 +503,9 @@ impl WrappedLines {
 
     fn wrap(&self, line: usize) -> (Layout, Vec<Line<'static>>, Vec<Range<usize>>) {
         let layout = self.layout(line);
-        let source = &self.sources[line];
+        let Some(source) = self.sources.get(line) else {
+            return (layout, Vec::new(), Vec::new());
+        };
         let mut rows = Vec::new();
         paint(source, &layout, &mut rows);
         let ranges = visible_rows(&layout)
@@ -530,7 +560,7 @@ impl WrappedLines {
                 .partition_point(|&start| start < until)
                 .max(lines + 1);
             if end < self.starts.len() {
-                let row = self.starts[end];
+                let row = self.starts.get(end).copied().unwrap_or(self.rows.len());
                 self.layouts.truncate(end);
                 self.starts.truncate(end);
                 self.rows.truncate(row);
@@ -556,23 +586,36 @@ impl WrappedLines {
 
     pub(crate) fn render_ranges(
         &self,
-        row: usize,
-        source_offset: usize,
+        row: (usize, usize),
         matches: &[Range<usize>],
         selected: Option<&Range<usize>>,
         selection: Style,
         area: ratatui::layout::Rect,
         buffer: &mut ratatui::buffer::Buffer,
     ) {
+        let (row, source_offset) = row;
         let area = area.intersection(buffer.area);
         if area.is_empty() {
             return;
         }
-        let base = &self.rows[row];
+        let Some(base) = self.rows.get(row) else {
+            return;
+        };
         buffer.set_style(area, base.style);
-        let (line, index) = self.origins[row];
-        let source = &self.sources[line];
-        let cells = &self.layouts[line - self.span.start].rows[index].cells;
+        let Some(&(line, index)) = self.origins.get(row) else {
+            return;
+        };
+        let Some(source) = self.sources.get(line) else {
+            return;
+        };
+        let Some(layout_row) = self
+            .layouts
+            .get(line - self.span.start)
+            .and_then(|layout| layout.rows.get(index))
+        else {
+            return;
+        };
+        let cells = &layout_row.cells;
         crate::transcript_search::view::charge(cells.len(), false);
         #[cfg(any(test, feature = "test-support"))]
         WORK.with(|work| {
@@ -584,10 +627,10 @@ impl WrappedLines {
         let inset = match source.alignment.unwrap_or(ratatui::layout::Alignment::Left) {
             ratatui::layout::Alignment::Left => 0,
             ratatui::layout::Alignment::Center => {
-                area.width.saturating_sub(self.rows[row].width() as u16) / 2
+                area.width.saturating_sub(cell_count(base.width())) / 2
             }
             ratatui::layout::Alignment::Right => {
-                area.width.saturating_sub(self.rows[row].width() as u16)
+                area.width.saturating_sub(cell_count(base.width()))
             }
         };
         for cell in cells {
@@ -600,7 +643,10 @@ impl WrappedLines {
                 .get(base_span)
                 .is_some_and(|span| displayed >= base_end + span.content.len())
             {
-                base_end += base.spans[base_span].content.len();
+                base_end += base
+                    .spans
+                    .get(base_span)
+                    .map_or(0, |span| span.content.len());
                 base_span += 1;
             }
             let mut style = base.style.patch(
@@ -622,7 +668,7 @@ impl WrappedLines {
             let x = area
                 .x
                 .saturating_add(inset)
-                .saturating_add(cell.column as u16);
+                .saturating_add(cell_count(cell.column));
             if x < area.right() && area.height > 0 {
                 if buffer[(x, area.y)].symbol() == cell.symbol {
                     buffer[(x, area.y)].set_style(style);
@@ -643,18 +689,20 @@ impl WrappedLines {
 fn visible_rows(layout: &Layout) -> impl Iterator<Item = (usize, &crate::layout::Row)> {
     layout.rows.iter().enumerate().filter(|(index, row)| {
         !row.cells.is_empty()
-            || index.checked_sub(1).is_none_or(|previous| {
-                let previous = &layout.rows[previous];
-                previous.end != row.start
-                    || previous
-                        .cells
-                        .last()
-                        .is_none_or(|cell| cell.column + cell.width != layout.width)
-            })
+            || index
+                .checked_sub(1)
+                .and_then(|previous| layout.rows.get(previous))
+                .is_none_or(|previous| {
+                    previous.end != row.start
+                        || previous
+                            .cells
+                            .last()
+                            .is_none_or(|cell| cell.column + cell.width != layout.width)
+                })
     })
 }
 
-// Cache normal display spans once per wrap; search borrows their styles and symbols.
+// Cache normal display spans once; search borrows their styles and symbols.
 fn paint(source: &Source, layout: &Layout, output: &mut Vec<Line<'static>>) {
     for (_, row) in visible_rows(layout) {
         #[cfg(any(test, feature = "test-support"))]
@@ -673,14 +721,17 @@ fn paint(source: &Source, layout: &Layout, output: &mut Vec<Line<'static>>) {
                 .styles
                 .get(style_index)
                 .map_or(Style::default(), |(_, style)| *style);
-            if previous.is_some_and(|previous| previous != style) {
-                spans.push(span(&row.cells[group..index], previous.unwrap()));
+            if let Some(previous) = previous.filter(|previous| *previous != style) {
+                spans.push(span(
+                    row.cells.get(group..index).unwrap_or_default(),
+                    previous,
+                ));
                 group = index;
             }
             previous = Some(style);
         }
         if let Some(style) = previous {
-            spans.push(span(&row.cells[group..], style));
+            spans.push(span(row.cells.get(group..).unwrap_or_default(), style));
         }
         let mut line = Line::from(spans).style(source.style);
         line.alignment = source.alignment;

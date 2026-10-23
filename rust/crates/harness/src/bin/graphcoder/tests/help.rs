@@ -128,7 +128,7 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    scroll_tui(&mut files, false, 5, maximum, |_, _| {
+    scroll_tui(&mut files, [-5], maximum, |_, _| {
         unreachable!("modal scroll")
     })
     .await

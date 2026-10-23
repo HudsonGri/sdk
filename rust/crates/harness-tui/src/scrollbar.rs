@@ -22,12 +22,13 @@ impl TranscriptScrollbar<'_> {
             return 0;
         }
         let at = row.saturating_sub(area.y).min(travel);
-        (u128::from(at) * total as u128 / u128::from(travel)) as usize
+        usize::try_from(u128::from(at) * total as u128 / u128::from(travel)).unwrap_or(total)
     }
 }
 
 impl Widget for TranscriptScrollbar<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
+        let area = area.intersection(buffer.area);
         if self.total == 0 || area.width == 0 || area.height == 0 {
             return;
         }
@@ -40,13 +41,18 @@ impl Widget for TranscriptScrollbar<'_> {
             return;
         }
         let height = u128::from(area.height);
-        let thumb = (height * visible as u128 / self.total as u128)
-            .max(1)
-            .min(height) as u16;
+        let thumb = u16::try_from(
+            (height * visible as u128 / self.total as u128)
+                .max(1)
+                .min(height),
+        )
+        .unwrap_or(area.height);
         let travel = area.height - thumb;
         let maximum = self.total - visible;
-        let start =
-            (self.visible.start.min(maximum) as u128 * u128::from(travel) / maximum as u128) as u16;
+        let start = u16::try_from(
+            self.visible.start.min(maximum) as u128 * u128::from(travel) / maximum as u128,
+        )
+        .unwrap_or(travel);
         for row in 0..area.height {
             let active = start <= row && row < start + thumb;
             buffer[(area.x, area.y + row)]

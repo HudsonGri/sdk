@@ -5,7 +5,7 @@ use acyclic_harness::{
     client::{ClientViews, CommandSession},
     task_volume::TaskVolume,
     tui::{
-        ClientRenderer, Editor, PromptInput, ScreenAreas, Viewport,
+        ClientRenderer, Editor, PromptBox, PromptInput, ScreenAreas, Viewport,
         key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
         ratatui::{
             Frame, Terminal,
@@ -127,7 +127,7 @@ pub(super) struct Rig {
     maximum_scroll: usize,
     pub frames: u64,
     /// The transcript band and its top line on the device.
-    shown: Option<(Rect, usize)>,
+    shown: Option<(Rect, acyclic_harness::tui::TranscriptAnchor)>,
     /// Whether moved bands are scrolled on the device, as view.rs does.
     regions: bool,
     /// Device length after each frame.
@@ -143,9 +143,13 @@ impl Output {
     fn draw(
         &mut self,
         size: Size,
-        shown: &mut Option<(Rect, usize)>,
+        shown: &mut Option<(Rect, acyclic_harness::tui::TranscriptAnchor)>,
         regions: bool,
-        position: (Rect, usize),
+        position: (
+            Rect,
+            Option<acyclic_harness::tui::TranscriptAnchor>,
+            Option<isize>,
+        ),
         render: impl FnOnce(&mut Frame<'_>),
     ) {
         match self {
@@ -278,14 +282,23 @@ impl Rig {
             .layout(files, input, size.width, size.height)
             .unwrap();
         let mut areas = ScreenAreas::default();
+        let (source_top, moved) = renderer.presented_position(shown.map(|(_, top)| top));
         let view = renderer.screen_for(files).unwrap();
         let area = Rect::from((Position::ORIGIN, size));
         let maximum_scroll = view.tail_scroll(area, input);
         let scroll = maximum_scroll.saturating_sub(back);
-        let transcript = view.areas(area, input).transcript;
-        screen.draw(size, shown, *regions, (transcript, scroll), |frame| {
-            areas = view.render(frame, input, viewport, scroll, 1000);
-        });
+        let layout = view.areas(area, input);
+        let mut transcript = layout.transcript;
+        transcript.width += layout.scrollbar.width;
+        screen.draw(
+            size,
+            shown,
+            *regions,
+            (transcript, source_top, moved),
+            |frame| {
+                areas = view.render(frame, input, viewport, scroll, 1000);
+            },
+        );
         self.areas = areas;
         self.maximum_scroll = maximum_scroll;
         self.frames += 1;
@@ -743,6 +756,7 @@ fn wheel_rows(height: u16, regions: bool, notches: usize) -> usize {
                 effects.drain(..),
                 page,
                 rig.maximum_scroll,
+                |from, rows| rig.renderer.move_view(from, rows),
             ))
             .unwrap();
         rig.frame();
