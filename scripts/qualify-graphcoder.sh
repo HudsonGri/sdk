@@ -26,6 +26,7 @@ for scenario in kill-mid-turn same-text-twice retry-jsonl; do
   node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$artifact_dir/debug/graphcoder" "$scenario"
 done
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder"
+node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder" interactive-prompt
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder" interactive
 node scripts/test-graphcoder-pty.mjs "$artifact_dir/debug/graphcoder"
 node scripts/test-graphcoder-pty.mjs "$artifact_dir/debug/graphcoder" command-recovery

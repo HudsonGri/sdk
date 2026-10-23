@@ -3,14 +3,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "./graphcoder-fixture.mjs";
 import { Terminal, screenText, hasBoldAnswer } from "./graphcoder-pty/screen.mjs";
 const [binary, mode = "headless"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary));
-assert.ok(["headless", "interactive"].includes(mode));
-const interactive = mode === "interactive";
+assert.ok(["headless", "interactive", "interactive-prompt"].includes(mode));
+const interactive = mode !== "headless";
 const host = await fixture();
 host.holdCount("resume after kill");
 const args = [...host.args, ...(interactive ? [] : ["-p", "resume after kill"])];
@@ -20,7 +20,8 @@ let operation;
 const start = (first, resume = true) => {
   const launchArgs = [...args, ...(resume ? ["--operation", submission] : [])];
   const env = { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
-    USERPROFILE: host.settings, LOCALAPPDATA: host.settings, XDG_DATA_HOME: host.settings,
+    USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
+    APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
     OPENAI_API_KEY: "", GRAPHCODER_MODEL: "", TERM: "xterm-256color" };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const child = interactive
@@ -41,7 +42,8 @@ const start = (first, resume = true) => {
       if (stopped) return;
       const visible = screenText(screen);
       if (first && !submitted && visible.includes("GraphCoder") && stdout.includes("\x1b[?25h")) {
-        submitted = true; child.stdin.write("/delegate resume after kill\r");
+        submitted = true;
+        child.stdin.write(`${mode === "interactive" ? "/delegate " : ""}resume after kill\r`);
       }
       if (!first && !complete && hasBoldAnswer(screen) && visible.includes("○")) {
         complete = true; child.stdin.write("\x04");
