@@ -10,8 +10,8 @@ use acyclic_stream::{BoxProviderFuture, ReadRequest, Record, StreamPath, StreamP
 use futures::StreamExt as _;
 use std::sync::Arc;
 
-mod policy;
 mod diff;
+mod policy;
 mod projection;
 use projection::{Selection, generation};
 
@@ -160,8 +160,15 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                 &serde_json::to_vec(&query).map_err(|_| task_volume::Error::InvalidSegment)?,
             )
             .as_bytes();
-            let FileCut { workspace, current, cursor, supplied, valid_resume, records, permissions } =
-                self.open_cut(query_id, cursor, &io).await?;
+            let FileCut {
+                workspace,
+                current,
+                cursor,
+                supplied,
+                valid_resume,
+                records,
+                permissions,
+            } = self.open_cut(query_id, cursor, &io).await?;
             let selection = Selection::read(
                 &current,
                 &self.volume,
@@ -259,7 +266,15 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             )
             .await?;
         super::access::require_current(&workspace, &permissions, io).await?;
-        Ok(FileCut { workspace, current, cursor, supplied, valid_resume, records, permissions })
+        Ok(FileCut {
+            workspace,
+            current,
+            cursor,
+            supplied,
+            valid_resume,
+            records,
+            permissions,
+        })
     }
 
     fn changes(
