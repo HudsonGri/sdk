@@ -76,10 +76,10 @@ impl PiRootProvider {
         )?;
         expected.validate(&request.binding)?;
         let observed;
-        let allocation = if let Some(allocation) = self.observed_allocation(expected) {
-            let creation = allocation.roots.get(key).ok_or_else(invalid)?;
+        let allocation = if self.observed_allocation(expected, work)? {
+            let creation = expected.roots.get(key).ok_or_else(invalid)?;
             self.verify_live_binding(key, creation, work).await?;
-            allocation
+            expected
         } else {
             let effect = self.effect_id_with_native_work(work)?;
             observed = self
