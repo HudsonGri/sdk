@@ -574,10 +574,7 @@ impl LocalHarness {
         &self,
         task: TaskId,
         commands: &dyn crate::filesystem::TaskCommandHost,
-        inbox: Option<&(
-            Arc<crate::task_volume::TaskFiles<LocalStream>>,
-            crate::task_volume::Component,
-        )>,
+        inbox: Option<&super::approvals::Inbox>,
         continue_work: F,
     ) -> Result<()>
     where
@@ -624,7 +621,8 @@ impl LocalHarness {
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
-                )) => {
+                ))
+                | None => {
                     if !continue_work().await? {
                         break;
                     }
@@ -635,6 +633,9 @@ impl LocalHarness {
                         .runtime
                         .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
                         .await?;
+                    if attempt.is_none() {
+                        break;
+                    }
                 }
                 _ => break,
             }

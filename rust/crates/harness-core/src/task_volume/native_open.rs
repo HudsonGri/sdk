@@ -15,43 +15,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "task-volume replay requires original native work",
             })?;
-        let tail = crate::distributed::native_call_result(
-            work,
-            provider
-                .native_tail(path.clone(), work.runtime_meter())
-                .await,
-        )?;
-        let tail = match tail {
-            Ok(tail) => *tail.value(),
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(Error::from(error).into()),
-        };
-        if tail == 0 {
-            let header = io.encode(
-                &Header {
-                    volume: crate::identity::fresh_uuid(),
-                    epoch: crate::identity::fresh_uuid(),
-                    schema: SCHEMA,
-                },
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                false,
-            )?;
-            crate::distributed::native_call_result(
-                work,
-                provider
-                    .native_append(
-                        AppendRequest {
-                            path: path.clone(),
-                            records: vec![header.into()],
-                            if_tail: Some(0),
-                            idempotency_key: None,
-                        },
-                        work.runtime_meter(),
-                    )
-                    .await,
-            )?
-            .map_err(Error::from)?;
-        }
+        let tail = initialize_header(&provider, &path, io).await?;
         let mut observer = io;
         let mut history = Some(&mut observer as &mut dyn HistoryIo);
         let mut records = crate::store::operations::read_records(
@@ -130,6 +94,57 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             index: Mutex::new(index),
         })
     }
+}
+
+async fn initialize_header<P: StreamProvider + ?Sized>(
+    provider: &Arc<P>,
+    path: &StreamPath,
+    io: &PreparationIo,
+) -> crate::Result<u64> {
+    let work = io
+        .original_native_work()
+        .ok_or(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "task-volume replay requires original native work",
+        })?;
+    let tail = crate::distributed::native_call_result(
+        work,
+        provider
+            .native_tail(path.clone(), work.runtime_meter())
+            .await,
+    )?;
+    let tail = match tail {
+        Ok(tail) => *tail.value(),
+        Err(StreamError::NotFound) => 0,
+        Err(error) => return Err(Error::from(error).into()),
+    };
+    if tail == 0 {
+        let header = io.encode(
+            &Header {
+                volume: crate::identity::fresh_uuid(),
+                epoch: crate::identity::fresh_uuid(),
+                schema: SCHEMA,
+            },
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            false,
+        )?;
+        crate::distributed::native_call_result(
+            work,
+            provider
+                .native_append(
+                    AppendRequest {
+                        path: path.clone(),
+                        records: vec![header.into()],
+                        if_tail: Some(0),
+                        idempotency_key: None,
+                    },
+                    work.runtime_meter(),
+                )
+                .await,
+        )?
+        .map_err(Error::from)?;
+    }
+    Ok(tail)
 }
 
 fn replay(

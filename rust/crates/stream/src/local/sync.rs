@@ -5,6 +5,7 @@ fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
 #[derive(Clone, Copy)]
 struct DeviceFlushed;
 
+#[derive(Clone, Copy)]
 enum SyncCompletion {
     Ordered,
     Flushed(DeviceFlushed),

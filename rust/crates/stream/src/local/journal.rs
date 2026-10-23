@@ -104,15 +104,20 @@ impl Journal {
                 acyclic_native_runtime::LogTail::Corrupt => return Err(LocalStreamError::Corrupt),
             }
         }
-        // Frames a crashed process wrote but never flushed are replayed, so
-        // they are made durable before anything can observe them.
+        journal.sync_recovered_prefix()?;
+        Ok(journal)
+    }
+
+    // Recovered frames become visible only after the configured sync completes.
+    // A barrier can order those frames but cannot certify a device flush.
+    fn sync_recovered_prefix(&mut self) -> Result<(), LocalStreamError> {
         if matches!(
-            sync_file_data(&journal.file, limits.durability)?,
+            sync_file_data(&self.file, self.limits.durability)?,
             SyncCompletion::Flushed(_)
         ) {
-            journal.flushed_sequence = Some(0);
+            self.flushed_sequence = Some(0);
         }
-        Ok(journal)
+        Ok(())
     }
 
     /// Hands every whole frame of a journal `length` long to `recovered`,

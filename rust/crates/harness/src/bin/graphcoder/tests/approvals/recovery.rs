@@ -73,6 +73,7 @@ async fn recovery(cancel: bool) {
         root_calls: Arc::new(AtomicUsize::new(0)),
         child_calls: Arc::new(AtomicUsize::new(0)),
         reviews: Arc::new(AtomicUsize::new(0)),
+        review_started: None,
     };
     let app = fixture.clone().router();
     let server = tokio::spawn(async move {
@@ -134,4 +135,81 @@ async fn approvals_reopen_and_exact_decision_retry_dispatch_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approvals_cancelled_request_cannot_dispatch_after_reopen() {
     recovery(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approvals_forged_llm_decision_cancels_inflight_review() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let operation = OperationId::new();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let fixture = Fixture {
+        case: Case::LlmDeny,
+        address,
+        parent_task: acyclic_harness::runtime::task_id_for_admission(operation),
+        effects: Arc::new(AtomicUsize::new(0)),
+        root_calls: Arc::new(AtomicUsize::new(0)),
+        child_calls: Arc::new(AtomicUsize::new(0)),
+        reviews: Arc::new(AtomicUsize::new(0)),
+        review_started: Some(started.clone()),
+    };
+    let app = fixture.clone().router();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let files = Files::new(Case::LlmDeny, address);
+    let mut process = files.command(Case::LlmDeny, operation).spawn().unwrap();
+    let mut input = process.stdin.take().unwrap();
+    writeln!(
+        input,
+        "{}",
+        jsonl::request(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
+    )
+    .unwrap();
+    let (sender, request) = tokio::sync::oneshot::channel();
+    let execution = tokio::task::spawn_blocking(move || {
+        let mut sender = Some(sender);
+        let mut decisions = 0;
+        for line in BufReader::new(process.stdout.take().unwrap()).lines() {
+            if let Ok(change) = jsonl::parse_change(&line.unwrap()) {
+                for file in change.file.into_iter().chain(change.files) {
+                    match file.key {
+                        FileKey::Task {
+                            file: TaskFile::ApprovalRequest(_),
+                            ..
+                        } => {
+                            if let Some(sender) = sender.take() {
+                                sender.send(file).unwrap();
+                            }
+                        }
+                        FileKey::Task {
+                            file: TaskFile::ApprovalDecision { .. },
+                            ..
+                        } => decisions += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (process.wait_with_output().unwrap(), decisions)
+    });
+    let request = request.await.unwrap();
+    // The independent HTTP review has started and will never answer. A forged
+    // file must fail admission and cancellation must drain this in-flight call.
+    started.notified().await;
+    let forged = decision(&request, "reviewer", true);
+    writeln!(input, "{}", jsonl::request(&forged).unwrap()).unwrap();
+    drop(input);
+    let (output, decisions) = execution.await.unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(decisions, 0, "forged model decision was published");
+    assert_eq!(fixture.reviews.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.effects.load(Ordering::SeqCst), 0);
+    server.abort();
+    let _ = server.await;
 }

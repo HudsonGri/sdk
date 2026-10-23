@@ -14,6 +14,12 @@ mod owner;
 mod parent;
 pub(super) use owner::bind_owner;
 
+pub(in crate::local) struct Inbox {
+    pub files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    pub reference: Component,
+    pub parent_done: acyclic_fs::CancellationToken,
+}
+
 #[derive(Clone, Debug)]
 enum Stage {
     Automatic {
@@ -171,7 +177,6 @@ impl LocalHarness {
     ) -> Result<Option<Stage>> {
         let digest = self.approval_digest()?;
         let hash = fingerprint(request)?;
-        let interaction: Interaction = serde_json::from_slice(&request.bytes).map_err(storage)?;
         let admission = self.runtime.task_host().observe_admission(task).await?;
         let parent = admission.parent;
         for (stage, approver) in self.approval_policy.approvers.iter().enumerate() {
@@ -214,46 +219,11 @@ impl LocalHarness {
             let review = if let Some(review) = review {
                 review
             } else {
-                let (verdict, reason) = match approver {
-                    Approver::Human { .. } => return Ok(Some(Stage::Human(principal))),
-                    Approver::Parent => return Ok(parent.map(Stage::Parent)),
-                    _ if !evaluate => return Ok(None),
-                    Approver::Rules {
-                        rules, fallback, ..
-                    } => {
-                        let verdict = match &interaction {
-                            Interaction::Approval {
-                                subject:
-                                    ApprovalSubject::Tool {
-                                        tool, arguments, ..
-                                    },
-                                ..
-                            } => crate::approvals::ApprovalRule::evaluate(
-                                rules, *fallback, tool, arguments,
-                            ),
-                            _ => RuleVerdict::Ask,
-                        };
-                        (verdict, Some("configured approval rules".into()))
-                    }
-                    Approver::Llm { model, prompt, .. } => {
-                        self.review_model(
-                            task_files,
-                            request,
-                            &principal,
-                            model,
-                            prompt,
-                            admission.limits,
-                        )
-                        .await?
-                    }
-                };
-                let review = ApprovalReviewFile {
-                    verdict,
-                    reason,
-                    ..expected
-                };
-                publish_review(task_files, key, &review).await?;
-                review
+                if !evaluate {
+                    return Ok(None);
+                }
+                self.automatic_review(task_files, request, approver, expected, admission.limits)
+                    .await?
             };
             if review.verdict != RuleVerdict::Ask {
                 return Ok(Some(Stage::Automatic {
@@ -279,6 +249,60 @@ impl LocalHarness {
             verdict: RuleVerdict::Deny,
             reason: Some("approval chain exhausted without permission".into()),
         }))
+    }
+
+    async fn automatic_review(
+        &self,
+        task_files: &crate::task_volume::TaskFiles<LocalStream>,
+        request: &FileValue,
+        approver: &Approver,
+        expected: ApprovalReviewFile,
+        limits: Limits,
+    ) -> Result<ApprovalReviewFile> {
+        let (verdict, reason) = match approver {
+            Approver::Rules {
+                rules, fallback, ..
+            } => {
+                let interaction: Interaction =
+                    serde_json::from_slice(&request.bytes).map_err(storage)?;
+                let verdict = match &interaction {
+                    Interaction::Approval {
+                        subject:
+                            ApprovalSubject::Tool {
+                                tool, arguments, ..
+                            },
+                        ..
+                    } => {
+                        crate::approvals::ApprovalRule::evaluate(rules, *fallback, tool, arguments)
+                    }
+                    _ => RuleVerdict::Ask,
+                };
+                (verdict, Some("configured approval rules".into()))
+            }
+            Approver::Llm { model, prompt, .. } => {
+                self.review_model(
+                    task_files,
+                    request,
+                    &expected.principal,
+                    model,
+                    prompt,
+                    limits,
+                )
+                .await?
+            }
+            Approver::Human { .. } | Approver::Parent => {
+                return Err(Error::Invalid(
+                    "external approver requires a signed decision".into(),
+                ));
+            }
+        };
+        let review = ApprovalReviewFile {
+            verdict,
+            reason,
+            ..expected
+        };
+        publish_review(task_files, review_key(request, &review.principal)?, &review).await?;
+        Ok(review)
     }
 
     async fn settle_approval(
@@ -382,9 +406,10 @@ impl LocalHarness {
         task: TaskId,
         task_files: &crate::task_volume::TaskFiles<LocalStream>,
         files: &BTreeMap<FileKey, FileValue>,
-        inbox: Option<&(Arc<crate::task_volume::TaskFiles<LocalStream>>, Component)>,
-    ) -> Result<bool> {
+        inbox: Option<&Inbox>,
+    ) -> Result<(bool, bool)> {
         let mut settled = false;
+        let mut parent_waiting = false;
         for request in pending(files) {
             match self
                 .approval_stage(task, request, task_files, files, true)
@@ -409,9 +434,11 @@ impl LocalHarness {
                 Some(Stage::Parent(parent)) => {
                     // Parent messages are routed by the child controller's
                     // authenticated file inbox, never by the human client.
-                    settled |= self
+                    let decided = self
                         .service_parent_approval(task, parent, request, inbox)
                         .await?;
+                    settled |= decided;
+                    parent_waiting |= !decided;
                 }
                 None => {
                     return Err(Error::Conflict(
@@ -420,14 +447,14 @@ impl LocalHarness {
                 }
             }
         }
-        Ok(settled)
+        Ok((settled, parent_waiting))
     }
 
     pub(super) fn service_approvals<'a>(
         &'a self,
         task: TaskId,
         commands: &'a dyn crate::filesystem::TaskCommandHost,
-        inbox: Option<&'a (Arc<crate::task_volume::TaskFiles<LocalStream>>, Component)>,
+        inbox: Option<&'a Inbox>,
     ) -> BoxProviderFuture<'a, Result<bool>> {
         Box::pin(async move {
             let task_files = self.runtime.approval_files(task).await?;
@@ -438,7 +465,7 @@ impl LocalHarness {
                 if cancelled {
                     return Ok(false);
                 }
-                let mut inbox_changes = if let Some((files, reference)) = inbox {
+                let mut inbox_changes = if let Some(Inbox { files, reference, .. }) = inbox {
                     #[cfg(feature = "native-execution")]
                     if super::children::commands::state(
                         files,
@@ -478,10 +505,14 @@ impl LocalHarness {
                 if pending.is_empty() {
                     return Ok(false);
                 }
-                if self
-                    .service_pending_approvals(task, &task_files, &files, inbox)
-                    .await?
-                {
+                let (settled, parent_waiting) = tokio::select! {
+                    result = self.service_pending_approvals(task, &task_files, &files, inbox) => result?,
+                    result = self.approval_service_stopped(task, commands, &mut coordinator_changes) => {
+                        result?;
+                        return Ok(false);
+                    }
+                };
+                if settled {
                     return Ok(true);
                 }
                 let cancelled = async {
@@ -491,6 +522,12 @@ impl LocalHarness {
                     }
                 };
                 tokio::select! {
+                    () = async {
+                        match inbox {
+                            Some(inbox) => inbox.parent_done.cancelled().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if parent_waiting => {}
                     result = coordinator_changes.next() => { result.ok_or_else(|| Error::Storage("coordinator follow ended".into()))??; }
                     result = changes.next() => { result.ok_or_else(|| Error::Storage("approval follow ended".into()))??; }
                     result = async {
@@ -501,5 +538,29 @@ impl LocalHarness {
                 }
             }
         })
+    }
+
+    async fn approval_service_stopped(
+        &self,
+        task: TaskId,
+        commands: &dyn crate::filesystem::TaskCommandHost,
+        changes: &mut acyclic_stream::BoxProviderStream<'static, Result<()>>,
+    ) -> Result<()> {
+        loop {
+            tokio::select! {
+                result = changes.next() => {
+                    result.ok_or_else(|| Error::Storage("coordinator follow ended".into()))??;
+                    let (stopped, next) = self.runtime.task_host().cancellation_follow(task).await?;
+                    if stopped { return Ok(()); }
+                    *changes = next;
+                }
+                () = async {
+                    match commands.invocation_cancellation() {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                } => return Ok(()),
+            }
+        }
     }
 }

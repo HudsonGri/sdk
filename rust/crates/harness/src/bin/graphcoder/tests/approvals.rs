@@ -22,12 +22,14 @@ enum Case {
     ParentAllow,
     ParentDeny,
     ParentForged,
+    ParentCompletes,
+    ParentError,
 }
 impl Case {
     fn parent(self) -> bool {
         matches!(
             self,
-            Self::ParentAllow | Self::ParentDeny | Self::ParentForged
+            Self::ParentAllow | Self::ParentDeny | Self::ParentForged | Self::ParentCompletes | Self::ParentError
         )
     }
     fn human(self) -> bool {
@@ -72,7 +74,7 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
         Case::Chain => vec![rule("ask"), llm, human],
-        Case::ParentAllow | Case::ParentDeny | Case::ParentForged => vec![
+        Case::ParentAllow | Case::ParentDeny | Case::ParentForged | Case::ParentCompletes | Case::ParentError => vec![
             json!({"kind":"rules","principal":"rules","rules":[{"tool":"url_fetch","arguments":null,"verdict":"ask"}],"fallback":"allow"}),
             json!({"kind":"parent"}),
             human,
@@ -162,6 +164,7 @@ struct Fixture {
     root_calls: Arc<AtomicUsize>,
     child_calls: Arc<AtomicUsize>,
     reviews: Arc<AtomicUsize>,
+    review_started: Option<Arc<tokio::sync::Notify>>,
 }
 impl Fixture {
     fn review(&self, body: &Value) -> String {
@@ -224,6 +227,12 @@ impl Fixture {
                     !approval.is_null(),
                     "parent was not woken by the approval: {result}"
                 );
+                if matches!(self.case, Case::ParentCompletes) {
+                    return ANSWER.to_owned();
+                }
+                if matches!(self.case, Case::ParentError) {
+                    return "data: malformed\n\n".into();
+                }
                 let principal = format!("parent:{}", self.parent_task);
                 let hash = if matches!(self.case, Case::ParentForged) {
                     "11".repeat(32)
@@ -267,6 +276,13 @@ impl Fixture {
                 post(move |Json(body): Json<Value>| {
                     let fixture = self.clone();
                     async move {
+                        if body["model"] == "reviewer"
+                            && let Some(started) = &fixture.review_started
+                        {
+                            fixture.reviews.fetch_add(1, Ordering::SeqCst);
+                            started.notify_one();
+                            std::future::pending::<()>().await;
+                        }
                         (
                             [("content-type", "text/event-stream")],
                             fixture.model(&body),
@@ -383,6 +399,7 @@ async fn approvals_prompt_mode_drives_admission_and_default_policy() {
         root_calls: Arc::new(AtomicUsize::new(0)),
         child_calls: Arc::new(AtomicUsize::new(0)),
         reviews: Arc::new(AtomicUsize::new(0)),
+        review_started: None,
     };
     let app = fixture.clone().router();
     let server = tokio::spawn(async move {
@@ -494,7 +511,7 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
     );
     assert_eq!(
         output.status.success(),
-        case.allowed() || matches!(case, Case::ParentDeny),
+        case.allowed() || matches!(case, Case::ParentDeny | Case::ParentCompletes),
         "{case:?}: {:?}\n{}\n{}",
         output.status.code(),
         lines.concat(),
@@ -530,6 +547,7 @@ async fn scenario(case: Case) {
         root_calls: Arc::new(AtomicUsize::new(0)),
         child_calls: Arc::new(AtomicUsize::new(0)),
         reviews: Arc::new(AtomicUsize::new(0)),
+        review_started: None,
     };
     let app = fixture.clone().router();
     let server = tokio::spawn(async move {
@@ -562,4 +580,6 @@ cases! {
     approvals_parent_allows => ParentAllow,
     approvals_parent_denies_before_effect => ParentDeny,
     approvals_parent_forgery_is_refused => ParentForged,
+    approvals_parent_completion_denies_unanswered_request => ParentCompletes,
+    approvals_parent_failure_denies_unanswered_request => ParentError,
 }

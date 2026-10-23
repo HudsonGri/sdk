@@ -29,11 +29,24 @@ impl LocalHarness {
         task: TaskId,
         parent: TaskId,
         request: &FileValue,
-        inbox: Option<&(Arc<crate::task_volume::TaskFiles<LocalStream>>, Component)>,
+        inbox: Option<&Inbox>,
     ) -> Result<bool> {
-        let (files, reference) = inbox.ok_or_else(|| {
+        let inbox = inbox.ok_or_else(|| {
             Error::Unauthorized("parent approval requires the retained child inbox".into())
         })?;
+        let Inbox { files, reference, .. } = inbox;
+        let attention_key = FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::ApprovalAttention,
+        };
+        if inbox.parent_done.is_cancelled() {
+            self.settle_approval(
+                task, request, &format!("parent:{parent}"), false,
+                Some("parent completed without deciding this request".into()),
+            ).await?;
+            publish_attention(files, FileValue::new(attention_key, b"null".to_vec())).await?;
+            return Ok(true);
+        }
         let mirror = FileValue::new(
             FileKey::Child {
                 reference: reference.clone(),
@@ -42,10 +55,6 @@ impl LocalHarness {
             request.bytes.clone(),
         );
         crate::task_volume::publish_durable(&files.inner, &mirror, None).await?;
-        let attention_key = FileKey::Child {
-            reference: reference.clone(),
-            file: ChildFile::ApprovalAttention,
-        };
         let attention = serde_json::json!({"task":task,"request":request_id(request)?,
             "request_sha256":fingerprint(request)?,"expected_version":1,
             "subject":serde_json::from_slice::<serde_json::Value>(&request.bytes).map_err(storage)?});
