@@ -282,9 +282,14 @@ where
         if io.is_none() {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
                 let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+                // Storage construction must not occupy the tracing poll frame
+                // while that same storage future drives a generation mutation.
+                let staging = crate::conversation::BoundedContentFuture::new(None, || {
+                    self.stage_with_io(operation, key, bytes, media, None)
+                })?;
                 crate::obs::traced_future(
                     span,
-                    self.stage_with_io(operation, key, bytes, media, None),
+                    staging,
                 )
                 .await
             });
