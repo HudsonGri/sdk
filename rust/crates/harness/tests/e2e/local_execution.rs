@@ -405,6 +405,11 @@ async fn check_publications(
     let mut seen = initial.cursor.position;
     let mut paths = std::collections::BTreeSet::new();
     let mut removed = std::collections::BTreeSet::new();
+    let mut replay = initial
+        .files
+        .iter()
+        .map(|file| (file.key.clone(), file.bytes.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     while seen != target.cursor.position {
         let change = crate::stall::waiting(
             "workspace follow before the settled cut",
@@ -417,22 +422,8 @@ async fn check_publications(
         }
         seen = change.cursor.position;
         for file in &change.files {
-            if case
-                .expect
-                .files
-                .get(&file.key.path())
-                .and_then(Option::as_deref)
-                .map(str::as_bytes)
-                != Some(file.bytes.as_ref())
-            {
-                return Err(format!(
-                    "publication file bytes differ at {}: expected {:?}, got {:?}",
-                    file.key.path(),
-                    case.expect.files.get(&file.key.path()),
-                    String::from_utf8_lossy(file.bytes.as_ref()),
-                )
-                .into());
-            }
+            check_publication_value(&case.expect.files, file, replay.get(&file.key))?;
+            replay.insert(file.key.clone(), file.bytes.clone());
         }
         for key in &change.removed {
             let path = key.path();
@@ -440,12 +431,21 @@ async fn check_publications(
                 return Err(format!("unexpected removal publication: {path}").into());
             }
             removed.insert(path);
+            replay.remove(key);
         }
         if case.expect.diffs.is_some() {
             paths.extend(change.files.iter().map(|file| file.key.path()));
             paths.extend(change.removed.iter().map(|key| key.path()));
         }
         wire.push(serde_json::to_value(&change)?);
+    }
+    let expected = target
+        .files
+        .iter()
+        .map(|file| (file.key.clone(), file.bytes.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if replay != expected {
+        return Err("file publication replay differs from the settled snapshot".into());
     }
     matchers::ordered(&case.expect.wire, &wire, "file publication wire")?;
     for (path, expected) in &case.expect.files {
@@ -459,6 +459,32 @@ async fn check_publications(
         }
     }
     Ok(paths)
+}
+
+fn check_publication_value(
+    expected: &std::collections::BTreeMap<String, Option<String>>,
+    file: &acyclic_harness::task_volume::FileValue,
+    previous: Option<&acyclic_stream::OwnedBytes>,
+) -> TestResult {
+    // Native admission can publish metadata without changing bytes. Accept only
+    // the preceding value or the expected authored value; reverting to seed
+    // bytes after the authored value has appeared must still fail.
+    if expected
+        .get(&file.key.path())
+        .and_then(Option::as_deref)
+        .map(str::as_bytes)
+        != Some(file.bytes.as_ref())
+        && !previous.is_some_and(|previous| previous.as_ref() == file.bytes.as_ref())
+    {
+        return Err(format!(
+            "publication file bytes differ at {}: expected {:?}, got {:?}",
+            file.key.path(),
+            expected.get(&file.key.path()),
+            String::from_utf8_lossy(file.bytes.as_ref()),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 async fn check_diff(

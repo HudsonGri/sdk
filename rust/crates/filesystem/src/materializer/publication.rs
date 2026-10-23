@@ -179,14 +179,7 @@ where
     let allocation = root.1;
     let root = root.0;
     let operation = operation.0;
-    let actual = validate_native_preparation_location(&root, &operation, work)?;
-    if actual != request.source_root_identity {
-        return Err(NativeTreeMaterializationError::AllocationChanged {
-            expected: request.source_root_identity,
-            actual,
-        }
-        .into());
-    }
+    let actual = publication_root_identity(&root, &operation, &request, work)?;
     let store = state.materialization(work.clone());
     let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
         validate_generation_journal(&journal, &request)?;
@@ -273,6 +266,23 @@ where
         }
     }
     Ok((materializer, journal))
+}
+
+fn publication_root_identity(
+    root: &Path,
+    operation: &Path,
+    request: &NativeWorkspacePublication<'_>,
+    work: &NativeMaterializationWork,
+) -> Result<crate::NativeRootIdentity, NativeWorkspacePublicationError> {
+    let actual = validate_native_preparation_location(root, operation, work)?;
+    if actual != request.source_root_identity {
+        return Err(NativeTreeMaterializationError::AllocationChanged {
+            expected: request.source_root_identity,
+            actual,
+        }
+        .into());
+    }
+    Ok(actual)
 }
 
 fn validate_generation_journal(
