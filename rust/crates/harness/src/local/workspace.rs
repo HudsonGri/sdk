@@ -102,6 +102,16 @@ impl LocalWorkspace {
     }
 
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
+        self.mounts_at_from(path, None).await
+    }
+
+    pub(super) async fn mounts_at_from(
+        &self,
+        path: &Path,
+        inherited: Option<&Mounts>,
+    ) -> Result<Arc<Mounts>> {
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let _ = inherited;
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
@@ -119,7 +129,7 @@ impl LocalWorkspace {
                 }),
         )?;
         #[cfg(any(target_os = "linux", windows))]
-        volumes::link(path, &mut mounts)?;
+        volumes::link(path, &mut mounts, inherited)?;
         #[cfg(not(any(target_os = "linux", windows)))]
         volumes::attach(
             &self.filesystem,
