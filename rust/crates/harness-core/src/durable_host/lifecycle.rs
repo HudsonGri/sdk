@@ -419,11 +419,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )?,
             )?;
         }
+        let admission = Arc::new(admission);
+        self.admissions.remember(&admission);
         let owner = TaskJournalOwner {
             host: self.clone(),
             fence,
             workflow,
-            admission: Arc::new(admission),
+            admission,
             input_agent: declared_agent,
             created,
             read_proof: original,

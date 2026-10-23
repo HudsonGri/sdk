@@ -18,9 +18,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(limits)
     }
 
-    /// Reads, verifies and validates the immutable admission of `operation` once per
-    /// host; later reads copy the validated record onto the caller's work. Every reader
-    /// receives and pays for its own copy exactly as if it had decoded one.
+    /// The immutable admission of `operation`. While a live owner holds the validated
+    /// record, a read copies it onto the caller's work instead of re-reading,
+    /// re-verifying and re-decoding it; otherwise the record is read in full. Every
+    /// reader receives and pays for its own copy exactly as if it had decoded one.
     pub(super) async fn admission(
         &self,
         operation: OperationId,
@@ -29,9 +30,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(record) = self.admissions.get(operation) {
             return copy_admission(&record, work);
         }
-        let record = self.read_admission(operation, work).await?;
-        self.admissions.insert(operation, &record);
-        Ok(record)
+        self.read_admission(operation, work).await
     }
 
     pub(super) async fn read_admission(
@@ -192,47 +191,47 @@ fn copy_admission(
     Ok(copied)
 }
 
-/// Validated admissions, immutable once published, kept for the few tasks a host is
-/// serving at once. The memo is bounded by entries and record size, so it is O(1) per
-/// host however many tasks it has served.
+/// The validated admissions that live journal owners hold, shared rather than copied.
+/// The memo holds only weak handles: every record stays charged to the owner that
+/// decoded it and is freed with that owner, so the memo retains no record of its own.
+/// A handle whose owner is gone is dropped at the next access.
 #[derive(Default)]
 pub(super) struct AdmissionMemo(
-    std::sync::Mutex<std::collections::VecDeque<(OperationId, Arc<TaskAdmissionRecord>)>>,
+    std::sync::Mutex<
+        std::collections::VecDeque<(OperationId, std::sync::Weak<TaskAdmissionRecord>)>,
+    >,
 );
 
 impl AdmissionMemo {
     const ENTRIES: usize = 16;
-    const RECORD_BYTES: u64 = 16 * 1024;
-    fn entries(
+    fn live(
         &self,
     ) -> std::sync::MutexGuard<
         '_,
-        std::collections::VecDeque<(OperationId, Arc<TaskAdmissionRecord>)>,
+        std::collections::VecDeque<(OperationId, std::sync::Weak<TaskAdmissionRecord>)>,
     > {
-        self.0
+        let mut entries = self
+            .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|(_, record)| record.strong_count() != 0);
+        entries
     }
     fn get(&self, operation: OperationId) -> Option<Arc<TaskAdmissionRecord>> {
-        self.entries()
+        self.live()
             .iter()
-            .find(|(cached, _)| *cached == operation)
-            .map(|(_, record)| Arc::clone(record))
+            .find(|(held, _)| *held == operation)
+            .and_then(|(_, record)| record.upgrade())
     }
-    fn insert(&self, operation: OperationId, record: &TaskAdmissionRecord) {
-        if !record
-            .logical_owned_bytes()
-            .is_ok_and(|bytes| bytes <= Self::RECORD_BYTES)
-        {
-            return;
-        }
-        let mut entries = self.entries();
-        if entries.iter().any(|(cached, _)| *cached == operation) {
+    /// Shares a live owner's validated admission with later readers on this host.
+    pub(super) fn remember(&self, record: &Arc<TaskAdmissionRecord>) {
+        let mut entries = self.live();
+        if entries.iter().any(|(held, _)| *held == record.operation_id) {
             return;
         }
         if entries.len() == Self::ENTRIES {
             entries.pop_front();
         }
-        entries.push_back((operation, Arc::new(record.clone())));
+        entries.push_back((record.operation_id, Arc::downgrade(record)));
     }
 }
