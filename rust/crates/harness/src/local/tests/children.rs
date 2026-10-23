@@ -18,7 +18,7 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "child-call".into(),
-                "bash".into(),
+                "shell".into(),
                 json!({"command":"printf tool > tool.txt"}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -30,9 +30,9 @@ async fn child_pre_tool_hook_uses_its_own_checkout_and_grants() -> Result<()> {
     let home = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir_all(home.path().join(".claude")).map_err(super::super::storage)?;
     std::fs::write(home.path().join(".claude/settings.json"), json!({"hooks":{
-        "PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"sh",
+        "PreToolUse":[{"matcher":"shell","hooks":[{"type":"command","command":"sh",
             "args":["-c","cat > hook-input.json; printf pre > hook.txt"],"onFailure":"block"}]}],
-        "PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"sh",
+        "PostToolUse":[{"matcher":"shell","hooks":[{"type":"command","command":"sh",
             "args":["-c","cat > post-input.json; printf post > post.txt"],"onFailure":"block"}]}]
     }}).to_string()).map_err(super::super::storage)?;
     let harness = LocalHarness::open(

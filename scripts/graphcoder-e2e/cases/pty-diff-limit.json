@@ -10,7 +10,7 @@
         "tools": [
           {
             "id": "large",
-            "name": "{{shell}}",
+            "name": "shell",
             "arguments": {
               "command": "node -e \"require('node:fs').writeFileSync('large.txt',Buffer.alloc(65537,'x'))\""
             }

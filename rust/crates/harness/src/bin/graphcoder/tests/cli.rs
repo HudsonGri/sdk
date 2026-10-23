@@ -187,7 +187,10 @@ fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Resul
     let environment = [
         format!("<cwd>{cwd}</cwd>"),
         format!("<os>{}</os>", std::env::consts::OS),
-        "<shell>bash</shell>".to_owned(),
+        format!(
+            "<shell>{}</shell>",
+            if cfg!(windows) { "PowerShell" } else { "bash" }
+        ),
         "<current_date>".to_owned(),
         "<timezone>UTC</timezone>".to_owned(),
         format!("<model>{model}</model>"),
@@ -596,7 +599,7 @@ const EFFECT: &str = "effect.txt";
 
 fn tool_call() -> String {
     let call = json!({"type":"response.output_item.done","output_index":0,"item":{
-        "type":"function_call","call_id":"interrupted","name":"bash",
+        "type":"function_call","call_id":"interrupted","name":"shell",
         "arguments":json!({"command":format!("printf x >> {EFFECT}; exec sleep 30")}).to_string()
     }});
     format!(

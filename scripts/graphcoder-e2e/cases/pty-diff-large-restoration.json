@@ -15,7 +15,7 @@
         "tools": [
           {
             "id": "change",
-            "name": "{{shell}}",
+            "name": "shell",
             "arguments": {
               "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'y'),0,1048574,1); fs.closeSync(f); fs.writeFileSync('small.txt','SMALL_DIFF_E2E'+String.fromCharCode(10))\""
             }
@@ -31,7 +31,7 @@
         "tools": [
           {
             "id": "restore",
-            "name": "{{shell}}",
+            "name": "shell",
             "arguments": {
               "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'x'),0,1048574,1); fs.closeSync(f)\""
             }

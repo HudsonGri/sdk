@@ -34,7 +34,7 @@
         "tools": [
           {
             "id": "move",
-            "name": "{{shell}}",
+            "name": "shell",
             "arguments": {
               "command": "node -e \"require('node:fs').renameSync('folder', 'moved')\""
             }

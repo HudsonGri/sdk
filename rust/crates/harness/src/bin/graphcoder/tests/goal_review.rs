@@ -77,7 +77,7 @@ async fn guidance_tracks_deleted_files_and_temporary_plan_mode()
             "hello",
             (true, true),
             Some(tool(
-                "bash",
+                "shell",
                 json!({"command":"rm .volumes/scratch/GOAL.md"}),
             )),
             false,
@@ -86,7 +86,7 @@ async fn guidance_tracks_deleted_files_and_temporary_plan_mode()
             "hello",
             (false, true),
             Some(tool(
-                "bash",
+                "shell",
                 json!({"command":"rm .volumes/scratch/plans/release.md && rmdir .volumes/scratch/plans"}),
             )),
             false,

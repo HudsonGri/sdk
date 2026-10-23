@@ -34,7 +34,7 @@
         "tools": [
           {
             "id": "replace",
-            "name": "{{shell}}",
+            "name": "shell",
             "arguments": {
               "command": "node -e \"const fs=require('node:fs'); fs.unlinkSync('folder/a.txt'); fs.rmdirSync('folder'); fs.writeFileSync('folder', 'REPLACED_E2E'+String.fromCharCode(10))\""
             }
