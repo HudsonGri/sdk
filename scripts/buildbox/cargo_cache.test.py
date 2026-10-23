@@ -12,6 +12,38 @@ import bb_cargo_cache as cache
 
 
 class LocalTargetLease(unittest.TestCase):
+    def test_catalog_lease_reaps_other_key_stages_and_excludes_live_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'staging').mkdir()
+            abandoned=root/'staging'/'old-key-crash';abandoned.mkdir()
+            (abandoned/'artifact').write_text('partial')
+            source=Path(cache.store.__file__).read_text()
+            start=source.index('        # Every stage is created')
+            end=source.index('        started = time.monotonic()',start)
+            old=source[:start]+"        for abandoned in (self.root / 'staging').glob(self.key + '-*'):\n            remove_tree(abandoned)\n"+source[end:]
+            namespace={};exec(compile(old,'old-stage-cleanup','exec'),namespace)
+            old_session=namespace['Session'](root,'new-key',root/'target')
+            old_session.open();old_session.close()
+            self.assertTrue(abandoned.exists())
+            contender='''import sys
+from pathlib import Path
+import bb_target_store as store
+original=store.fcntl.flock
+store.fcntl.flock=lambda fd,flags: original(fd,flags | store.fcntl.LOCK_NB)
+session=store.Session(Path(sys.argv[1]),'new-key',Path(sys.argv[1])/'target')
+try:session.open()
+except BlockingIOError:sys.exit(73)
+finally:session.close()
+'''
+            with (root/'catalog.lock').open('a') as catalog:
+                fcntl.flock(catalog,fcntl.LOCK_EX)
+                result=subprocess.run([sys.executable,'-c',contender,str(root)],cwd=Path(__file__).parent,capture_output=True,text=True)
+                self.assertEqual(result.returncode,73,result.stderr)
+                self.assertTrue(abandoned.exists())
+            session=cache.store.Session(root,'new-key',root/'target')
+            try:session.open();self.assertFalse(abandoned.exists())
+            finally:session.close()
+
     def test_cold_jobs_bypass_store_reads_and_publication_at_both_entries(self):
         class Executed(Exception):pass
         self.assertFalse(cache.store.disabled({}))

@@ -156,10 +156,13 @@ class Session:
         started = time.monotonic()
         fcntl.flock(self.lock, fcntl.LOCK_EX)
         self.receipt['wait_seconds'] = time.monotonic() - started
-        # The kernel releases this key's lease after a crash. No live builder
-        # for this key can own a staging directory while we hold that lease.
-        for abandoned in (self.root / 'staging').glob(self.key + '-*'):
-            remove_tree(abandoned)
+        # Every stage is created and removed under the catalog lease. Holding
+        # it proves all existing stages abandoned, regardless of their key;
+        # cleanup cannot depend on the crashed source/argv being used again.
+        with (self.root / 'catalog.lock').open('a') as catalog:
+            fcntl.flock(catalog, fcntl.LOCK_EX)
+            for abandoned in (self.root / 'staging').iterdir():
+                remove_tree(abandoned)
         started = time.monotonic()
         marker = self.entry / 'complete.json'
         if marker.is_file():
