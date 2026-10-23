@@ -487,9 +487,28 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
             )
             .await;
         assert!(
-            matches!(result, Err(Error::Unsupported(_))),
+            matches!(result, Err(Error::Indeterminate(id)) if id == operation),
             "unfinished hook settled"
         );
+        // Exercise the worker too: a raw Unsupported error is definitive on
+        // current main, even if the command adapter declined to return Ready.
+        let crate::distributed::WorkPull::Claimed(lease) = runtime
+            .task_host()
+            .recover_work(task, &mut None)
+            .await?
+        else {
+            return Err(Error::Invalid("hook fixture lost its lease".into()));
+        };
+        if let TaskWorkerAttempt::Unresolved { error, .. } = runtime
+            .resume_task(lease, &runtime.commands(), 2, None)
+            .await
+        {
+            return Err(error);
+        }
+        assert!(matches!(
+            runtime.task_host().outcome(task).await?,
+            Some(Outcome::Indeterminate { .. })
+        ));
         let outcome = FileKey::Task {
             task: Component::new(task.to_string())?,
             file: TaskFile::Context(Component::new(format!(

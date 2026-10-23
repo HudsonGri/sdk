@@ -33,22 +33,27 @@ where
             Ok(future) => future.await,
             Err(error) => Err(error),
         };
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        if result.is_err()
+            && io.is_none()
+            && let Some(files) = context.task_files()
+        {
+            let operation =
+                crate::filesystem::task_runtime::execution_operation(task, turn, io)?;
+            // Hook claims precede ModelStarted. Raw definitive errors are also
+            // settled by the worker, so preserving the original error here
+            // would still retire a task whose hook capture needs recovery.
+            if !matches!(
+                crate::hooks::effects::unsettled_prompt(&files.inner, task, operation).await,
+                Ok(false)
+            ) {
+                return Err(Error::Indeterminate(operation));
+            }
+        }
         match result {
             Err(error) if !reconciliation_only && phase.can_fail(&error) => {
                 let (journal, operation) =
                     self.command_journal(task, fence, turn, context, io).await?;
-                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-                if io.is_none()
-                    && let Some(files) = context.task_files()
-                {
-                    // Prompt hooks claim effects in the private file ledger,
-                    // before ModelStarted exists in the execution journal.
-                    if crate::hooks::effects::unsettled_prompt(&files.inner, task, operation)
-                        .await?
-                    {
-                        return Err(error);
-                    }
-                }
                 let progress = phase
                     .finish::<TurnOutput>(Err(error), journal.as_ref(), operation, io)
                     .await?;
