@@ -8,6 +8,7 @@ use super::{
 use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
 
+mod approvals;
 mod archive;
 mod selection;
 mod stream_text;
@@ -61,6 +62,15 @@ pub struct ClientRenderer {
 }
 
 impl ClientRenderer {
+    /// Keep optional diff failures inside the pane without ending the session.
+    pub fn update_diff(&mut self, rows: crate::Result<Vec<Line<'static>>>) {
+        self.diff = rows.unwrap_or_else(|error| {
+            vec![Line::styled(
+                super::display_text(&format!("Diff unavailable: {error}")).into_owned(),
+                Style::default().fg(Color::Red),
+            )]
+        });
+    }
     #[cfg(test)]
     pub(crate) fn text_work(&self) -> usize {
         self.task.work() + self.archive.work()
@@ -175,6 +185,8 @@ impl ClientRenderer {
         ]);
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
+        self.notices
+            .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
         self.compose_notices();
     }
 
@@ -366,7 +378,13 @@ impl ClientRenderer {
             let output = files.output_page(0)?;
             self.outcome_notice = output
                 .as_ref()
-                .and_then(|value| value["error"].as_str())
+                .and_then(|value| {
+                    value["error"].as_str().or_else(|| {
+                        value["ok"]
+                            .get("compacted")
+                            .map(|_| "Compacted conversation")
+                    })
+                })
                 .map(|message| Line::raw(message.escape_debug().to_string()));
             self.outcome_cut = Some(cut);
             self.compose_notices();
@@ -404,6 +422,9 @@ impl ClientRenderer {
             .transpose()?
             .unwrap_or(false);
         let mut screen = self.screen();
+        if view != Some("diff") {
+            screen.diff = &[];
+        }
         if reasoning {
             screen.reasoning = if self.wrapped {
                 self.wrapped_reasoning.rows()
@@ -458,7 +479,6 @@ impl ClientRenderer {
 
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
-        // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),

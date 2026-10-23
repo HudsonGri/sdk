@@ -106,7 +106,9 @@ fn merge_changed_record(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
-    /// Resolves changed paths while retaining their actual result allocation.
+    /// Resolves at most `maximum_entries` changed paths, including descendants
+    /// of changed directory bindings. Traversal is bounded by `work`, separately
+    /// from this output bound, while retaining the actual result allocation.
     pub async fn changed_paths<W: crate::facade::FsWork>(
         &self,
         maximum_entries: u32,
@@ -159,12 +161,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                 })),
             accounting,
         )?;
+        let descendants = sorted_changed_file_ids(
+            self.changes.bindings.iter().flat_map(|change| {
+                change
+                    .before
+                    .iter()
+                    .chain(change.after.iter())
+                    .filter(|entry| entry.kind == FileKind::Directory)
+                    .map(|entry| entry.file_id)
+            }),
+            accounting,
+        )?;
         let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
         for (generation, before) in [(&self.from, true), (&self.to, false)] {
             let search = generation
                 .namespace_records_with_accounting(
                     &file_ids.0,
-                    maximum_entries,
+                    &descendants.0,
+                    // Changed-path count is not a checkout traversal limit.
+                    // Every visited entry is charged to the original ledger.
+                    u32::MAX,
                     accounting,
                     cancellation,
                 )
@@ -190,6 +206,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         }
         let id_bytes = workspace_vec_bytes(&file_ids.0);
         reverse_drop(file_ids, id_bytes, accounting)?;
+        let descendant_bytes = workspace_vec_bytes(&descendants.0);
+        reverse_drop(descendants, descendant_bytes, accounting)?;
         let mut retained = 0;
         let mut retired_paths = 0_u64;
         for index in 0..paths.0.len() {
@@ -205,6 +223,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                 _ => true,
             };
             if changed {
+                if retained == maximum_entries as usize {
+                    return Err(WorkspaceError::ChangedPathLimit);
+                }
                 if retained != index {
                     let copied = copy_work((2 * std::mem::size_of::<ChangedPath>()) as u64);
                     accounting.admit(copied)?;

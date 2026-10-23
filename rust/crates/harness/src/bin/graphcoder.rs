@@ -75,6 +75,10 @@ async fn open(
     };
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
+    let search = acyclic_harness::search::SearchConfig::from_file(&settings.search_config_path())?;
+    if let Some(provider) = search.provider()? {
+        config = config.search_provider(provider);
+    }
     config = config.settings(settings).web_tools();
     Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
 }
@@ -93,8 +97,11 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or_default();
     let local = phase(|| open(&args, credentials)).await?;
-    let operation =
-        phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?;
+    let operation = if args.resume {
+        phase(|| client::resume_local_identity(&local, operation)).await?
+    } else {
+        phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?
+    };
     let command = args
         .prompt
         .as_deref()

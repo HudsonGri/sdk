@@ -10,6 +10,7 @@ use acyclic_stream::{BoxProviderFuture, ReadRequest, Record, StreamPath, StreamP
 use futures::StreamExt as _;
 use std::sync::Arc;
 
+mod diff;
 mod projection;
 use projection::{Selection, generation};
 
@@ -130,53 +131,12 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
             let io =
                 PreparationIo::from_budget(self.budget, &acyclic_fs::CancellationToken::new())?;
             self.authorize(&query, &io).await?;
-            let reference = workspace_ref(
-                self.reader.host.provider.clone(),
-                &self.volume.storage_name(&mut None)?,
-            )?;
-            let workspace = self.reader.host.open(&reference, Some(&io)).await?;
-            let (provider, path) = self
-                .reader
-                .host
-                .filesystem
-                .authority_records(workspace.id().volume_id())
-                .map_err(|error| crate::Error::Storage(error.to_string()))?;
-            let genesis = record(provider.as_ref(), &path, 0).await?;
-            let watermarks = provider.watermarks(path.clone()).await?;
-            if watermarks.accepted < 2 || watermarks.durable > watermarks.accepted {
-                return Err(task_volume::Error::ResetRequired);
-            }
-            let mut identity = blake3::Hasher::new();
-            identity.update(path.as_str().as_bytes());
-            identity.update(genesis.commit_id.as_bytes());
-            identity.update(
-                &serde_json::to_vec(&self.volume)
-                    .map_err(|_| task_volume::Error::InvalidSegment)?,
-            );
-            let volume = *identity.finalize().as_bytes();
-            let epoch = uuid::Uuid::from_bytes(
-                genesis.commit_id.as_bytes()[..16]
-                    .try_into()
-                    .map_err(|_| task_volume::Error::InvalidSegment)?,
-            );
             let query_id = *blake3::hash(
                 &serde_json::to_vec(&query).map_err(|_| task_volume::Error::InvalidSegment)?,
             )
             .as_bytes();
-            let supplied = cursor.is_some();
-            let head = Cursor {
-                volume,
-                epoch,
-                schema: SCHEMA,
-                query: query_id,
-                position: watermarks.accepted,
-                accepted: watermarks.accepted,
-                durable: watermarks.durable,
-                commit: [0; 32],
-            };
-            let (cursor, anchor, valid_resume) =
-                cut(provider.as_ref(), &path, cursor, head).await?;
-            let current = generation(&workspace, &anchor, &io).await?;
+            let (_, current, cursor, supplied, valid_resume, records) =
+                self.open_cut(query_id, cursor, &io).await?;
             let selection = Selection::read(
                 &current,
                 &self.volume,
@@ -189,20 +149,13 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
             let snapshot = (!valid_resume).then(|| Snapshot {
                 files: selection.files.values().cloned().collect(),
                 generation: task_volume::Generation {
-                    volume,
-                    epoch,
+                    volume: cursor.volume,
+                    epoch: cursor.epoch,
                     position: cursor.position,
                     commit: cursor.commit,
                 },
                 cursor: cursor.clone(),
             });
-            let records = provider
-                .follow_checked(
-                    path,
-                    cursor.position,
-                    acyclic_stream::CommitId::from_bytes(cursor.commit),
-                )
-                .await?;
             let changes = self.changes(
                 query,
                 current,
@@ -221,6 +174,71 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
 }
 
 impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQuery<P, O> {
+    async fn open_cut(
+        &self,
+        query_id: [u8; 32],
+        cursor: Option<Cursor>,
+        io: &PreparationIo,
+    ) -> task_volume::Result<(
+        acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
+        acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
+        Cursor,
+        bool,
+        bool,
+        acyclic_stream::RecordStream,
+    )> {
+        let reference = workspace_ref(
+            self.reader.host.provider.clone(),
+            &self.volume.storage_name(&mut None)?,
+        )?;
+        let workspace = self.reader.host.open(&reference, Some(&io)).await?;
+        let (provider, path) = self
+            .reader
+            .host
+            .filesystem
+            .authority_records(workspace.id().volume_id())
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        let genesis = record(provider.as_ref(), &path, 0).await?;
+        let watermarks = provider.watermarks(path.clone()).await?;
+        if watermarks.accepted < 2 || watermarks.durable > watermarks.accepted {
+            return Err(task_volume::Error::ResetRequired);
+        }
+        let mut identity = blake3::Hasher::new();
+        identity.update(path.as_str().as_bytes());
+        identity.update(genesis.commit_id.as_bytes());
+        identity.update(
+            &serde_json::to_vec(&self.volume).map_err(|_| task_volume::Error::InvalidSegment)?,
+        );
+        let volume = *identity.finalize().as_bytes();
+        let epoch = uuid::Uuid::from_bytes(
+            genesis.commit_id.as_bytes()[..16]
+                .try_into()
+                .map_err(|_| task_volume::Error::InvalidSegment)?,
+        );
+        let supplied = cursor.is_some();
+        let head = Cursor {
+            volume,
+            epoch,
+            schema: SCHEMA,
+            query: query_id,
+            position: watermarks.accepted,
+            accepted: watermarks.accepted,
+            durable: watermarks.durable,
+            commit: [0; 32],
+        };
+        let (cursor, anchor, valid_resume) = cut(provider.as_ref(), &path, cursor, head).await?;
+        let current = generation(&workspace, &anchor, &io).await?;
+
+        let records = provider
+            .follow_checked(
+                path,
+                cursor.position,
+                acyclic_stream::CommitId::from_bytes(cursor.commit),
+            )
+            .await?;
+        Ok((workspace, current, cursor, supplied, valid_resume, records))
+    }
+
     fn changes(
         &self,
         query: Query,

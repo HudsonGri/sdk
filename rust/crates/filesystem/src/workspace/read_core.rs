@@ -112,6 +112,64 @@ pub(super) async fn read_range<
     work.finish(result, &accounting)
 }
 
+pub(super) async fn matches_content<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    W: crate::facade::FsWork,
+>(
+    workspace: &Workspace<A, O>,
+    selected: GenerationId,
+    original: GenerationId,
+    path: &str,
+    work: W,
+    cancellation: &CancellationToken,
+) -> W::Output<bool, WorkspaceError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = async {
+        let (mut checkout, path) = workspace
+            .open_read_path(
+                GenerationSelector::Exact(selected),
+                path,
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
+        let record = checkout
+            .value
+            .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
+            .await?
+            .0
+            .record;
+        let mut original = workspace
+            .open_checkout(
+                GenerationSelector::Exact(original),
+                CheckoutMode::read_only_pinned(),
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
+        let expected = original
+            .value
+            .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
+            .await?
+            .0
+            .record;
+        let matches = match (record, expected) {
+            (Some(record), Some(expected)) => {
+                record.kind == FileKind::Regular
+                    && expected.kind == record.kind
+                    && expected.payload == record.payload
+            }
+            _ => false,
+        };
+        original.retire(&mut accounting)?;
+        checkout.retire(&mut accounting)?;
+        Ok(matches)
+    }
+    .await;
+    work.finish(result, &accounting)
+}
+
 pub(super) async fn read_link<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,

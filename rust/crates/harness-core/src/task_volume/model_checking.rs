@@ -63,7 +63,8 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-pub(crate) fn enabled(fault: Fault) -> bool {
+/// Reports the selected mutation to actors in crates using the production model.
+pub fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
 
@@ -89,5 +90,4 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
     );
 }
 
-#[cfg(test)]
-pub(crate) use super::files::model_files as files;
+pub use super::files::model_files as files;

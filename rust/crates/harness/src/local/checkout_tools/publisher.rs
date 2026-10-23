@@ -124,6 +124,7 @@ impl CheckoutPublisher {
                     self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
                 }
             }
+            self.tools.retain_diff_base(workspace).await?;
             let file = match publication {
                 Publication::Once { media, display, .. } => {
                     writer.stage_once(operation, &relative, bytes, media, display, None)?.await?.0

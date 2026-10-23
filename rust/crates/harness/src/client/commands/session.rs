@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
 #[path = "session_activity.rs"]
 mod activity;
+#[path = "session_approval.rs"]
+mod approval;
 #[path = "session_archive.rs"]
 mod archive;
 #[path = "session_confirmation.rs"]
@@ -20,6 +22,9 @@ mod init;
 #[cfg(acyclic_harness_loom)]
 #[path = "session_init_models.rs"]
 mod init_models;
+#[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
+#[path = "session_scroll_models.rs"]
+mod scroll_models;
 #[path = "session_input.rs"]
 mod input;
 #[path = "session_publish.rs"]
@@ -396,12 +401,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         name: &str,
         value: &Value,
     ) -> Result<()> {
-        self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
-            false,
-        )
-        .await?;
+        self.publish_state(root, name, value).await?;
         if root == CommandFileRoot::Session && name == "layout.json" {
             self.load_task_settings().await?;
         }

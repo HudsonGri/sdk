@@ -10,6 +10,7 @@ use acyclic_stream::BoxProviderFuture;
 
 mod capture;
 mod children;
+pub(in crate::local) mod diff;
 mod git;
 #[cfg(test)]
 #[cfg(all(unix, not(acyclic_harness_loom)))]

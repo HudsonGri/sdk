@@ -14,6 +14,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let search = self
                 .namespace_records_with_accounting(
                     &[file_id],
+                    &[],
                     maximum_entries,
                     &mut accounting,
                     cancellation,
@@ -57,6 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         let ids = sorted_changed_file_ids(file_ids, &mut accounting)?;
         self.namespace_records_with_accounting(
             &ids.0,
+            &[],
             maximum_entries,
             &mut accounting,
             &cancellation,
@@ -78,6 +80,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     pub(super) async fn namespace_records_with_accounting(
         &self,
         ids: &[FileId],
+        descendants: &[FileId],
         maximum_entries: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
@@ -110,6 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             checkout.value.root(),
             generation_root,
             ids,
+            descendants,
             maximum_entries,
             accounting,
             cancellation,
