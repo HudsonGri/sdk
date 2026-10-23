@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 #![doc = include_str!("../README.md")]
 
 /// Rust-owned semantic projections for generated SDK metadata.
@@ -245,11 +246,11 @@ mod tests {
         use tracing_subscriber::layer::SubscriberExt as _;
 
         use acyclic_grpc_observability::tests::Capture;
-        // A second live dispatcher keeps callsites consulting this test's subscriber.
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Capture::default();
-        let _guard =
-            tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
+        let dispatch = acyclic_test_support::capture::dispatch(
+            tracing_subscriber::registry().with(seen.clone()),
+        );
+        let _guard = tracing::dispatcher::set_default(&dispatch);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -315,3 +316,6 @@ mod tests {
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod grpc_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_capture;

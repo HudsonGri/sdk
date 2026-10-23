@@ -195,3 +195,6 @@ pub use process_error::ProcessError;
 /// Cargo-provided build metadata, isolated from ambient user environment discovery.
 #[doc(hidden)]
 pub mod build_metadata;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_capture;

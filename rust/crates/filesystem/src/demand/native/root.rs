@@ -183,8 +183,8 @@ impl NativeDemandSource {
                             })
                         })();
                         (result, context)
-                    },
-                ))
+                    }),
+                )
                 .await
                 .map_err(|_| DemandError::WorkerUnavailable)?,
                 Err(error) => (Err(error), context),

@@ -45,8 +45,9 @@ tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] 
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+ctor = { version = "=1.0.13", default-features = false }
 async-trait.workspace = true
-acyclic-test-support = { path = "../test-support" }
+acyclic-test-support = { path = "../test-support", features = ["capture"] }
 loom = "0.7"
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

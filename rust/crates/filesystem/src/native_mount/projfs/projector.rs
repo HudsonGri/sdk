@@ -60,7 +60,9 @@ impl Projector {
         let queue = MaterializeQueue::new(directories);
         std::thread::scope(|scope| {
             for _ in 1..workers {
-                scope.spawn(|| self.materialize_from(&projection, &queue));
+                acyclic_grpc_observability::task::scoped_thread(scope, || {
+                    self.materialize_from(&projection, &queue)
+                });
             }
             self.materialize_from(&projection, &queue);
         });
@@ -402,10 +404,11 @@ impl Projector {
 
     pub(super) fn attach(self: &Arc<Self>, runtime: Arc<Runtime>) -> Result<(), NativeMountError> {
         let projector = Arc::clone(self);
-        let worker = std::thread::Builder::new()
-            .name("acyclic-projfs-projector".to_owned())
-            .spawn(move || projector.run_lifecycle(runtime))
-            .map_err(NativeMountError::Io)?;
+        let worker = acyclic_grpc_observability::task::named_thread(
+            std::thread::Builder::new().name("acyclic-projfs-projector".to_owned()),
+            move || projector.run_lifecycle(runtime),
+        )
+        .map_err(NativeMountError::Io)?;
         *lock_recover(&self.worker) = Some(worker);
         Ok(())
     }

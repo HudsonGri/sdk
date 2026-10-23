@@ -177,33 +177,34 @@ fn traced_future_retains_one_payload_and_records_only_when_ready() {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
 fn filtered_operation_cannot_record_failure_on_its_parent() {
-    let (seen, _guard) = capture::install();
-    let parent = obs_span!(INFO, "acyclic.harness.test.parent");
-    parent.in_scope(|| {
-        for boxed in [false, true] {
-            let span = OperationSpan::new(tracing::Span::none());
-            let future =
-                std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
-            let result = if boxed {
-                futures::executor::block_on(traced(span, future))
-            } else {
-                futures::executor::block_on(traced_future(span, future))
-            };
-            assert!(result.is_err());
-        }
+    capture::sync(|seen| {
+        let parent = obs_span!(INFO, "acyclic.harness.test.parent");
+        parent.in_scope(|| {
+            for boxed in [false, true] {
+                let span = OperationSpan::new(tracing::Span::none());
+                let future =
+                    std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
+                let result = if boxed {
+                    futures::executor::block_on(traced(span, future))
+                } else {
+                    futures::executor::block_on(traced_future(span, future))
+                };
+                assert!(result.is_err());
+            }
+        });
+        assert!(!capture::has(
+            &seen,
+            "acyclic.harness.test.parent",
+            "outcome",
+            "err"
+        ));
+        assert!(capture::has(
+            &seen,
+            "acyclic.harness.test.parent",
+            "outcome",
+            ""
+        ));
     });
-    assert!(!capture::has(
-        &seen,
-        "acyclic.harness.test.parent",
-        "outcome",
-        "err"
-    ));
-    assert!(capture::has(
-        &seen,
-        "acyclic.harness.test.parent",
-        "outcome",
-        ""
-    ));
 }
 
 /// Span-test capture layer shared by the crate's test modules.
@@ -262,16 +263,33 @@ pub(crate) mod capture {
         }
     }
 
-    /// Captures this thread's spans until the guard drops.
-    pub(crate) fn install() -> (Seen, impl Sized) {
+    /// Captures synchronous work without exposing a thread guard to async tests.
+    pub(crate) fn sync<T>(test: impl FnOnce(Seen) -> T) -> T {
+        let (seen, dispatch) = subscriber();
+        tracing::dispatcher::with_default(&dispatch, || test(seen))
+    }
+
+    fn subscriber() -> (Seen, tracing::Dispatch) {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
-        let guard = tracing::subscriber::set_default(
+        let dispatch = acyclic_test_support::capture::dispatch(
             tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
         );
-        (seen, (guard, second))
+        (seen, dispatch)
     }
+
+    /// Installs the test's subscriber only while its future is being polled.
+    /// Spawned tasks must carry this dispatcher with `with_current_subscriber`.
+    pub(crate) async fn run<T, F: Future<Output = T>>(test: impl FnOnce(Seen) -> F) -> T {
+        use tracing::instrument::WithSubscriber as _;
+        let (seen, dispatch) = subscriber();
+        async move { test(seen).await }
+            .with_subscriber(dispatch)
+            .await
+    }
+
+    #[cfg(test)]
+    mod tests;
 
     pub(crate) fn has(seen: &Seen, span: &str, field: &str, value: &str) -> bool {
         let seen = seen.lock().unwrap();

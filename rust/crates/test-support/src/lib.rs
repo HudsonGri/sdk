@@ -4,6 +4,8 @@
 //! link, and a dependency would silently replace the allocator of every
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
+#[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+pub mod capture;
 pub mod differential;
 mod fixtures;
 pub use fixtures::source_path;

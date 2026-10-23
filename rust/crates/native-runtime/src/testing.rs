@@ -338,6 +338,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    use tracing::instrument::WithSubscriber as _;
+    let future = future.with_current_subscriber();
     let Some(context) = Context::current() else {
         return TaskHandle::native(tokio::spawn(crate::deadline::simulation::inherit_future(future)));
     };
@@ -361,6 +363,8 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    let work = move || tracing::dispatcher::with_default(&dispatch, work);
     let owner = if let Some(context) = Context::current() {
         let active = context.accept("blocking");
         let owned = active.0.clone();
