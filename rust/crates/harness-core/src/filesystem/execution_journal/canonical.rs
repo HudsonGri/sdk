@@ -1,5 +1,13 @@
 use super::*;
 
+#[cfg(all(
+    test,
+    feature = "test-support",
+    not(acyclic_harness_loom),
+    not(target_arch = "wasm32")
+))]
+mod tests;
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -27,8 +35,7 @@ where
         };
         crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
         let projection =
-            crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection, io)
-                .await?;
+            crate::executor::load_response_projection(self, projection, limits, io).await?;
         crate::context::validate_projected_context(&projection.0.context, limits, io)?;
         let Some(reference) = &projection.0.checkpoint else {
             if projection.0.canonical.is_some() {
@@ -295,25 +302,35 @@ where
                         "canonical summary belongs to another step",
                     )
                 })?;
-            let (_, records, hold) = crate::executor::replay_execution(
+            let (_, records, hold) = crate::executor::selected_step_records(
                 self,
-                operation,
-                limits.model_events_per_step.saturating_add(2),
-                |event| {
-                    matches!(
-                        event,
-                        ExecutionEvent::ContextPrepared { step: 0, .. }
-                            | ExecutionEvent::ModelStarted {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                            | ExecutionEvent::Model {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                    )
+                crate::executor::ExecutionRecordQuery {
+                    operation,
+                    step: 0,
+                    include_started: false,
+                    maximum_step_records: crate::executor::ExecutionRecordQuery::step_bound(limits),
+                    maximum: limits.model_events_per_step.saturating_add(2),
+                    select: &|event| {
+                        matches!(
+                            event,
+                            ExecutionEvent::ContextPrepared { step: 0, .. }
+                                | ExecutionEvent::ModelStarted {
+                                    step: 0,
+                                    purpose: ModelPurpose::Summary,
+                                    ..
+                                }
+                                | ExecutionEvent::Model {
+                                    step: 0,
+                                    purpose: ModelPurpose::Summary,
+                                    ..
+                                }
+                                | ExecutionEvent::ModelInline {
+                                    step: 0,
+                                    purpose: ModelPurpose::Summary,
+                                    ..
+                                }
+                        )
+                    },
                 },
                 io,
             )
@@ -328,10 +345,8 @@ where
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
                         prepared = Some(
-                            crate::executor::load_json::<crate::executor::ResponseProjection>(
-                                self, projection, io,
-                            )
-                            .await?,
+                            crate::executor::load_response_projection(self, projection, limits, io)
+                                .await?,
                         );
                     }
                     ExecutionEvent::ModelStarted {
@@ -342,11 +357,20 @@ where
                                 .await?,
                         );
                     }
-                    ExecutionEvent::Model { event, .. } => {
+                    ExecutionEvent::Model { .. } | ExecutionEvent::ModelInline { .. } => {
+                        let scratch = crate::filesystem::PreparationScope::new(io)?;
                         let event =
-                            crate::executor::load_json::<ModelEvent>(self, event, io).await?;
-                        admission.observe(&event.0, limits, io)?;
-                        match &event.0 {
+                            crate::executor::load_model_event(self, &record.event, scratch.io())
+                                .await?
+                                .ok_or_else(|| {
+                                    canonical_boundary(
+                                        io,
+                                        crate::wire::ErrorCode::Storage,
+                                        "canonical model event is missing",
+                                    )
+                                })?;
+                        admission.observe(&event, limits, io)?;
+                        match &event {
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }

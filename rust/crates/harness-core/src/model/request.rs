@@ -18,6 +18,8 @@ pub struct ModelRequest {
 }
 impl ModelRequest {
     pub(super) fn validate(&mut self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _span = tracing::debug_span!("acyclic.harness.request.validate").entered();
         with_history_io(io, |work| limits.validate(work))?;
         charge_items(io, 1)?;
         charge_items(
@@ -231,8 +233,26 @@ pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
+    admitted_limits: Limits,
 }
 impl PreparedModelRequest {
+    pub(crate) const fn admitted_limits(&self) -> Limits {
+        self.admitted_limits
+    }
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn preparation_owned_bytes(&self, io: &PreparationIo) -> Result<u64> {
+        let bytes = add(
+            size_of::<Self>() as u64,
+            self.request.retained_payload_bytes()?,
+        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if io.original_native_work().is_some() {
+            return Ok(bytes);
+        }
+        let _ = io;
+        add(bytes, self.bytes.retained_capacity().unwrap_or(0) as u64)
+    }
+
     /// Decodes and verifies exact canonical input on the optional ledger.
     pub fn decode(bytes: &[u8], limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
         let request: ModelRequest = match io {
@@ -284,6 +304,7 @@ impl PreparedModelRequest {
                 request,
                 bytes,
                 request_digest,
+                admitted_limits: limits,
             });
         }
         Self::encode_admitted(request, limits, io)
@@ -293,6 +314,8 @@ impl PreparedModelRequest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _span = tracing::debug_span!("acyclic.harness.request.prepare").entered();
         #[cfg(all(
             any(test, feature = "test-support"),
             feature = "filesystem",
@@ -324,6 +347,7 @@ impl PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            admitted_limits: limits,
         })
     }
     /// Admitted values for provider-specific encoding.

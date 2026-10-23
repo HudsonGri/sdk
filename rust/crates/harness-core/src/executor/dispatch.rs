@@ -18,6 +18,7 @@ impl StockExecution<'_> {
             Box::pin(self.dispatch_model_step(journal, input, step, prior_messages, purpose));
         match futures::future::select(cancellation, execution).await {
             Either::Left((result, _)) => {
+                super::phase::seal(journal, self.io).await?;
                 result?;
                 Err(Error::InteractionRejected(
                     crate::InteractionRejection::Cancelled,
@@ -52,14 +53,17 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let request = self
-            .resolve_model_request(
-                journal,
-                input,
-                (step, prior_messages, purpose),
-                retained_request,
-            )
-            .await?;
+        let preparation = self.resolve_model_request(
+            journal,
+            input,
+            (step, prior_messages, purpose),
+            retained_request,
+        );
+        let request = if started {
+            preparation.await?
+        } else {
+            super::phase::run(journal, io, preparation).await?
+        };
         let request_digest = request.request_digest();
         let purpose_key = match purpose {
             ModelPurpose::Response => "model",
@@ -103,13 +107,13 @@ impl StockExecution<'_> {
                 _continuation_hold = None;
             }
             if !started {
-                self.claim_model_dispatch(
+                super::phase::claim(self.claim_model_dispatch(
                     journal,
                     input,
                     (step, purpose, purpose_key),
                     &request,
                     dispatch,
-                )
+                ))
                 .await?;
             } else if replayed.is_empty()
                 && !self.stock.reconciliation_only
@@ -150,16 +154,19 @@ impl StockExecution<'_> {
             let generated = self.stock.provider.generate(request, dispatch);
             Either::Right(generated)
         };
-        let observed = self
-            .record_model_events(
+        let observed = super::phase::run(
+            journal,
+            io,
+            self.record_model_events(
                 journal,
                 input.operation_id,
                 (step, purpose, purpose_key),
                 replayed,
                 &mut admission,
                 stream,
-            )
-            .await?;
+            ),
+        )
+        .await?;
         crate::obs::obs_record!("items" = observed.len());
         Ok(observed)
     }
@@ -269,15 +276,31 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let reference = stage_bytes(
-            journal,
-            input.operation_id,
-            &request_key,
-            request.bytes(),
-            true,
-            io,
-        )
-        .await?;
+        let projection = if purpose == ModelPurpose::Response {
+            current.iter().rev().find_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared { projection, .. }
+                | ExecutionEvent::ContextCompacted { projection, .. } => Some(projection),
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let reference = match projection {
+            Some(projection) => {
+                transcript::projection_request(journal, projection, request_digest, io).await?
+            }
+            None => {
+                transcript::stage_request(
+                    journal,
+                    input.operation_id,
+                    &request_key,
+                    request,
+                    None,
+                    io,
+                )
+                .await?
+            }
+        };
         self.claim_task_model(dispatch).await?;
         match journal
             .append_if_tail(
@@ -429,19 +452,15 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                let reference = stage_json(journal, operation_id, &key, event, io).await?;
-                journal
-                    .append(
-                        operation_id,
-                        &key,
-                        &ExecutionEvent::Model {
-                            step,
-                            purpose,
-                            event: reference,
-                        },
-                        io,
-                    )?
-                    .await?;
+                super::model_observation::append(
+                    journal,
+                    operation_id,
+                    &key,
+                    (step, purpose),
+                    event,
+                    io,
+                )
+                .await?;
             }
         }
         Ok(observed)

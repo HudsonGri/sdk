@@ -67,6 +67,8 @@ include!("retained.rs");
 
 include!("replay.rs");
 
+include!("commit_index.rs");
+
 include!("path_state.rs");
 
 include!("history.rs");

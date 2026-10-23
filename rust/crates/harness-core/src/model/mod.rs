@@ -4,6 +4,7 @@ mod call_id;
 mod content;
 mod instruction_identity;
 mod instruction_index;
+pub(crate) use instruction_index::Index as DigestIndex;
 mod instruction_sources;
 pub(crate) use instruction_sources::InstructionSources;
 mod instruction_reads;
@@ -11,6 +12,8 @@ mod instructions;
 pub use instruction_identity::{InstructionIdentity, ProjectInstruction};
 pub(crate) use instruction_reads::deduplicate_reads;
 mod inventory;
+#[cfg(feature = "filesystem")]
+mod retained_inventory;
 pub use instructions::InstructionSource;
 pub(crate) use instructions::{project_instruction, reserve_instruction_bodies};
 mod image;

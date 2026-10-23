@@ -180,6 +180,8 @@ pub(super) fn result_bound(
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _span = tracing::debug_span!("acyclic.harness.request.hash", bytes = bytes.len()).entered();
     #[cfg(feature = "filesystem")]
     let charge = acyclic_fs::WorkCounters {
         bytes_hashed: bytes.len() as u64,
@@ -369,6 +371,8 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage],
     io: Option<&PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _span = tracing::debug_span!("acyclic.harness.context.clone_messages").entered();
     if io.is_none() {
         return Ok(messages.to_vec());
     }
