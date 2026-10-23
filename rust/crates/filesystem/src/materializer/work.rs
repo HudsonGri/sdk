@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub struct NativeMaterializationWork {
     pub(crate) state: Arc<crate::demand::NativeDemandReadMeter>,
     pub(crate) resource: Option<Arc<NativeResourceAllowance>>,
-    pub(crate) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    pub(crate) capture_origin: Option<crate::demand::CaptureCustody>,
     pub(crate) invocation: Option<Arc<NativeInvocationView>>,
     pub(crate) window: Option<Arc<NativeWorkWindow>>,
     #[cfg(feature = "native-mount")]
@@ -132,7 +132,7 @@ impl NativeMaterializationWork {
     #[inline]
     fn view(
         &self,
-        custody: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+        custody: Option<crate::demand::CaptureCustody>,
     ) -> crate::demand::NativeView {
         crate::demand::NativeView {
             invocation: self.invocation.as_ref().map(Arc::downgrade),

@@ -310,8 +310,9 @@ impl NativeMountAllocationCustody {
             .original
             .as_ref()
             .and_then(|work| work.capture_origin.as_ref())
-            .and_then(std::sync::Weak::upgrade);
-        self.retain_allocation(bytes, work, capture.as_deref())
+            .filter(|capture| capture.is_open())
+            .map(|capture| &**capture);
+        self.retain_allocation(bytes, work, capture)
     }
     #[cfg(feature = "native-watch")]
     fn retain_allocation(

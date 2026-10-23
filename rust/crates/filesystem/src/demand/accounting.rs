@@ -15,7 +15,7 @@ pub struct DemandWork {
     pub(super) cancellation: CancellationToken,
     pub(crate) native_resource: Option<Weak<NativeResourceAllowance>>,
     pub(crate) native_invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
-    pub(crate) capture_custody: Option<Weak<CaptureTransientCustody>>,
+    pub(crate) capture_custody: Option<CaptureCustody>,
     pub(crate) recheck_items: bool,
     pub(super) roots: Admissions,
 }
@@ -24,7 +24,7 @@ pub struct DemandWork {
 pub(crate) struct NativeView {
     pub(crate) invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
     pub(crate) resource: Option<Weak<NativeResourceAllowance>>,
-    pub(crate) custody: Option<Weak<CaptureTransientCustody>>,
+    pub(crate) custody: Option<CaptureCustody>,
     pub(crate) recheck_items: bool,
 }
 impl DemandWork {
@@ -101,8 +101,11 @@ impl DemandWork {
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
-    pub(crate) fn capture_custody(&self) -> Option<Arc<CaptureTransientCustody>> {
-        self.capture_custody.as_ref().and_then(Weak::upgrade)
+    pub(crate) fn capture_custody(&self) -> Option<CaptureCustody> {
+        self.capture_custody
+            .as_ref()
+            .filter(|owner| owner.is_open())
+            .cloned()
     }
     pub(crate) fn check(&self) -> Result<(), DemandError> {
         if self.roots.poisoned {
@@ -117,7 +120,7 @@ impl DemandWork {
         if self
             .capture_custody
             .as_ref()
-            .is_some_and(|owner| owner.strong_count() == 0)
+            .is_some_and(|owner| !owner.is_open())
         {
             return Err(DemandError::NativeWorkUnavailable);
         }
@@ -294,7 +297,7 @@ impl DemandWork {
     pub(crate) fn retain_native_owned(
         &mut self,
         bytes: u64,
-        capture: &Option<Arc<CaptureTransientCustody>>,
+        capture: &Option<CaptureCustody>,
     ) -> Result<(), DemandError> {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
@@ -314,7 +317,7 @@ impl DemandWork {
     pub(crate) fn record_native_owned_completed(
         &mut self,
         bytes: u64,
-        capture: &Option<Arc<CaptureTransientCustody>>,
+        capture: &Option<CaptureCustody>,
     ) -> (u64, Result<(), DemandError>) {
         if let Err(error) = self.allocations.record_owned_bytes(bytes, &mut self.work) {
             return (0, Err(error.into_work_or(DemandError::InvalidRequest)));

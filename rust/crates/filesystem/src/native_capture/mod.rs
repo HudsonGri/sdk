@@ -19,6 +19,8 @@ use thiserror::Error;
 mod accounting;
 #[cfg(test)]
 mod capture_policy_tests;
+#[cfg(all(test, not(acyclic_fs_loom), feature = "memory"))]
+mod custody_lifetime_tests;
 mod entry;
 mod model;
 #[cfg(test)]
