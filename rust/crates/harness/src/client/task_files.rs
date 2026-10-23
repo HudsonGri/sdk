@@ -190,6 +190,17 @@ impl TaskFileClient {
         }
         Ok(())
     }
+    /// Apply one selected document delivery before committing its resume cut.
+    pub fn apply_document_change(
+        &mut self,
+        documents: &mut super::DocumentFiles,
+        update: super::DocumentUpdate,
+    ) -> Result<()> {
+        if documents.apply_change(update, &mut self.views)? {
+            self.advance_presentation();
+        }
+        Ok(())
+    }
     /// Select only push sources; consuming a source and folding it cannot be cancelled apart.
     pub async fn next_change(&mut self) -> Result<()> {
         let commands = &mut self.commands;

@@ -19,7 +19,7 @@ struct Fixture {
     completions: CompletionFiles,
     prompt: PromptInput,
     renderer: ClientRenderer,
-    documents: crate::task_volume::ChangeStream,
+    documents: crate::client::DocumentFiles,
     owner: wire::Authority,
     terminal: Terminal<TestBackend>,
     expected: serde_json::Value,
@@ -51,11 +51,14 @@ async fn fixture(publications: usize) -> Fixture {
     let completions = CompletionFiles::observe(volume.as_ref(), &mut prompt, None, 128)
         .await
         .unwrap();
-    let mut observed = volume.observe(Query::Inputs, None, 128).await.unwrap();
-    client
-        .views_mut()
-        .query_snapshot(Query::Inputs, observed.snapshot.take().unwrap(), 128, 65536)
-        .unwrap();
+    let documents = crate::client::DocumentFiles::observe(
+        volume.as_ref(),
+        client.views_mut(),
+        &[(Query::Inputs, 128)],
+        65536,
+    )
+    .await
+    .unwrap();
     // A separate publisher ensures the UI must consume its followed updates.
     let mut publisher = CommandSession::open(volume, session, 65536, 128)
         .await
@@ -80,7 +83,7 @@ async fn fixture(publications: usize) -> Fixture {
         completions,
         prompt,
         renderer: ClientRenderer::default(),
-        documents: observed.changes,
+        documents,
         owner,
         terminal: Terminal::new(TestBackend::new(80, 20)).unwrap(),
         expected,
