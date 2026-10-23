@@ -188,9 +188,17 @@ impl Fixture {
                 None,
             )?;
         }
-        let approval_issuer = AuthorityIssuer::new("approvals", [8;32], Authority {
-            kind: AggregateKind::Conversation, id: "approval-fixture".into() });
-        let approval_policy = serde_json::from_slice(include_bytes!("../../bin/graphcoder/approval-policy.json")).map_err(storage)?;
+        let approval_issuer = AuthorityIssuer::new(
+            "approvals",
+            [8; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "approval-fixture".into(),
+            },
+        );
+        let approval_policy =
+            serde_json::from_slice(include_bytes!("../../bin/graphcoder/approval-policy.json"))
+                .map_err(storage)?;
         let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
             files: files.clone(),
             #[cfg(feature = "native-execution")]

@@ -1,4 +1,18 @@
 use super::*;
+use proptest::prelude::*;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn approval_rules_deny_wins_in_either_order(allow_first in any::<bool>(), path in "[a-z]{1,32}") {
+        let mut rules = [RuleVerdict::Allow, RuleVerdict::Deny].map(|verdict| ApprovalRule {
+            tool: Some("write".into()), arguments: None, verdict,
+        });
+        if allow_first { rules.reverse(); }
+        prop_assert_eq!(ApprovalRule::evaluate(&rules, RuleVerdict::Ask, "write", &serde_json::json!({"path":path})), RuleVerdict::Deny);
+        prop_assert_eq!(ApprovalRule::evaluate(&rules, RuleVerdict::Ask, "read", &Value::Null), RuleVerdict::Ask);
+    }
+}
 
 #[test]
 fn approval_rules_bind_exact_arguments_and_policy_order() -> Result<()> {

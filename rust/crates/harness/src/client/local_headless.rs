@@ -117,6 +117,32 @@ pub struct LocalFileClient {
 }
 
 impl LocalFileClient {
+    // Task metadata can need a coordinator guard held by the paused driver.
+    // Poll both futures so that its IO can release that guard.
+    async fn while_driving<T>(&mut self, work: impl Future<Output = T>) -> Result<T> {
+        if self.host_done {
+            return Ok(work.await);
+        }
+        futures::pin_mut!(work);
+        match futures::future::select(work, self.host.as_mut()).await {
+            futures::future::Either::Left((result, _)) => Ok(result),
+            futures::future::Either::Right((result, work)) => {
+                self.host_done = true;
+                self.host_error = result.err();
+                let result = work.await;
+                self.drain_through = self
+                    .local
+                    .task_files()
+                    .inner
+                    .snapshot(&selection(self.operation)?, MAXIMUM_FILES)
+                    .await?
+                    .cursor
+                    .position;
+                Ok(result)
+            }
+        }
+    }
+
     pub(super) async fn open(local: Arc<LocalHarness>, operation: OperationId) -> Result<Self> {
         let query = ClientQuery::open(
             &local.task_files().inner,
@@ -159,15 +185,36 @@ impl LocalFileClient {
             // Refused input must still retire a live invocation. Cancellation
             // uses the existing task owner and publishes status to its follows.
             let task = crate::runtime::task_id_for_admission(self.operation);
-            self.local
-                .dispatch_command(
-                    OperationId::new(),
-                    None,
-                    CommandResolution::Submit {
-                        request: CommandRequest::Cancel { task },
-                    },
-                )
-                .await?;
+            let cancel = self.local.dispatch_command(
+                OperationId::new(),
+                None,
+                CommandResolution::Submit {
+                    request: CommandRequest::Cancel { task },
+                },
+            );
+            // The driver may hold a coordinator guard across pending IO. Keep
+            // polling it while cancellation acquires and updates that owner.
+            match futures::future::select(Box::pin(cancel), self.host.as_mut()).await {
+                futures::future::Either::Left((result, _)) => {
+                    if matches!(result, Err(Error::NotFound(_))) {
+                        // No task has been admitted, so there is no invocation
+                        // to drain and no permission to start one during cleanup.
+                        self.host_done = true;
+                    } else {
+                        result?;
+                        let _ = self.host.as_mut().await;
+                        self.host_done = true;
+                    }
+                }
+                futures::future::Either::Right((_, cancel)) => {
+                    self.host_done = true;
+                    if let Err(error) = cancel.await {
+                        if !matches!(error, Error::NotFound(_)) {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
         }
         if requested
             && !self.host_done
@@ -223,7 +270,10 @@ impl LocalFileClient {
                 ..
             }
         ) {
-            return self.local.submit_approval_decision(file).await;
+            let local = self.local.clone();
+            return self
+                .while_driving(local.submit_approval_decision(file))
+                .await?;
         }
         // Both -p and JSONL enter through this boundary. Already pinned prompt
         // resolutions are data, so template expansion is never parsed twice.
@@ -288,9 +338,11 @@ impl LocalFileClient {
         }
     }
 
-    async fn awaiting_approval(&self) -> Result<bool> {
+    async fn awaiting_approval(&mut self) -> Result<bool> {
         let task = crate::runtime::task_id_for_admission(self.operation);
-        self.local.awaiting_external_approval(task).await
+        let local = self.local.clone();
+        self.while_driving(local.awaiting_external_approval(task))
+            .await?
     }
 
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {

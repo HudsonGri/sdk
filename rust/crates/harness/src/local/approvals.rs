@@ -10,8 +10,8 @@ use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
 mod llm;
-mod parent;
 mod owner;
+mod parent;
 pub(super) use owner::bind_owner;
 
 #[derive(Clone, Debug)]
@@ -74,21 +74,35 @@ fn pending(files: &BTreeMap<FileKey, FileValue>) -> Vec<&FileValue> {
         .collect()
 }
 
-fn retained_review(file: Option<&FileValue>, expected: &ApprovalReviewFile) -> Result<Option<ApprovalReviewFile>> {
+fn retained_review(
+    file: Option<&FileValue>,
+    expected: &ApprovalReviewFile,
+) -> Result<Option<ApprovalReviewFile>> {
     file.map(|file| {
         let review: ApprovalReviewFile = serde_json::from_slice(&file.bytes).map_err(storage)?;
-        if review.principal != expected.principal || review.request_sha256 != expected.request_sha256
-            || review.policy_digest != expected.policy_digest || review.stage != expected.stage {
+        if review.principal != expected.principal
+            || review.request_sha256 != expected.request_sha256
+            || review.policy_digest != expected.policy_digest
+            || review.stage != expected.stage
+        {
             return Err(Error::Conflict("approval review binding changed".into()));
         }
         Ok(review)
-    }).transpose()
+    })
+    .transpose()
 }
 
-async fn publish_review(files: &crate::task_volume::TaskFiles<LocalStream>, key: FileKey,
-    review: &ApprovalReviewFile) -> Result<()> {
-    crate::task_volume::publish_durable(&files.inner,
-        &FileValue::new(key, serde_json::to_vec(review).map_err(storage)?), None).await?;
+async fn publish_review(
+    files: &crate::task_volume::TaskFiles<LocalStream>,
+    key: FileKey,
+    review: &ApprovalReviewFile,
+) -> Result<()> {
+    crate::task_volume::publish_durable(
+        &files.inner,
+        &FileValue::new(key, serde_json::to_vec(review).map_err(storage)?),
+        None,
+    )
+    .await?;
     Ok(())
 }
 
@@ -154,12 +168,12 @@ impl LocalHarness {
         let digest = self.approval_digest()?;
         let hash = fingerprint(request)?;
         let interaction: Interaction = serde_json::from_slice(&request.bytes).map_err(storage)?;
-        let parent = self
+        let admission = self
             .runtime
             .task_host()
             .observe_admission(task)
-            .await?
-            .parent;
+            .await?;
+        let parent = admission.parent;
         for (stage, approver) in self.approval_policy.approvers.iter().enumerate() {
             let principal = match approver {
                 Approver::Rules { principal, .. }
@@ -172,13 +186,20 @@ impl LocalHarness {
             };
             let key = review_key(request, &principal)?;
             let expected = ApprovalReviewFile {
-                principal: principal.clone(), request_sha256: hash.clone(),
-                policy_digest: digest, stage, verdict: RuleVerdict::Ask, reason: None,
+                principal: principal.clone(),
+                request_sha256: hash.clone(),
+                policy_digest: digest,
+                stage,
+                verdict: RuleVerdict::Ask,
+                reason: None,
             };
             let review = retained_review(files.get(&key), &expected)?;
             if matches!(approver, Approver::Human { .. } | Approver::Parent) {
                 if evaluate && review.is_none() {
-                    let waiting = ApprovalReviewFile { reason: Some("awaiting authenticated decision".into()), ..expected };
+                    let waiting = ApprovalReviewFile {
+                        reason: Some("awaiting authenticated decision".into()),
+                        ..expected
+                    };
                     publish_review(task_files, key, &waiting).await?;
                 }
                 return Ok(Some(match approver {
@@ -207,20 +228,21 @@ impl LocalHarness {
                                         tool, arguments, ..
                                     },
                                 ..
-                            } => rules
-                                .iter()
-                                .find(|rule| rule.matches(tool, arguments))
-                                .map_or(*fallback, |rule| rule.verdict),
+                            } => crate::approvals::ApprovalRule::evaluate(rules, *fallback, tool, arguments),
                             _ => RuleVerdict::Ask,
                         };
                         (verdict, Some("configured approval rules".into()))
                     }
                     Approver::Llm { model, prompt, .. } => {
-                        self.review_model(task_files, request, &principal, model, prompt)
+                        self.review_model(task_files, request, &principal, model, prompt, admission.limits)
                             .await?
                     }
                 };
-                let review = ApprovalReviewFile { verdict, reason, ..expected };
+                let review = ApprovalReviewFile {
+                    verdict,
+                    reason,
+                    ..expected
+                };
                 publish_review(task_files, key, &review).await?;
                 review
             };
@@ -358,46 +380,49 @@ impl LocalHarness {
         self.admit_approval_file(task, file, &principal).await
     }
 
-    async fn service_pending_approvals(&self, task: TaskId,
+    async fn service_pending_approvals(
+        &self,
+        task: TaskId,
         task_files: &crate::task_volume::TaskFiles<LocalStream>,
         files: &BTreeMap<FileKey, FileValue>,
-        inbox: Option<&(Arc<crate::task_volume::TaskFiles<LocalStream>>, Component)>) -> Result<bool> {
+        inbox: Option<&(Arc<crate::task_volume::TaskFiles<LocalStream>>, Component)>,
+    ) -> Result<bool> {
         let mut settled = false;
-                for request in pending(files) {
-                    match self
-                        .approval_stage(task, request, task_files, files, true)
-                        .await?
-                    {
-                        Some(Stage::Automatic {
-                            principal,
-                            verdict,
-                            reason,
-                        }) => {
-                            self.settle_approval(
-                                task,
-                                request,
-                                &principal,
-                                verdict == RuleVerdict::Allow,
-                                reason,
-                            )
-                            .await?;
-                            settled = true;
-                        }
-                        Some(Stage::Human(_)) => {}
-                        Some(Stage::Parent(parent)) => {
-                            // Parent messages are routed by the child controller's
-                            // authenticated file inbox, never by the human client.
-                            settled |= self
-                                .service_parent_approval(task, parent, request, inbox)
-                                .await?;
-                        }
-                        None => {
-                            return Err(Error::Conflict(
-                                "automatic approval stage was not evaluated".into(),
-                            ));
-                        }
-                    }
+        for request in pending(files) {
+            match self
+                .approval_stage(task, request, task_files, files, true)
+                .await?
+            {
+                Some(Stage::Automatic {
+                    principal,
+                    verdict,
+                    reason,
+                }) => {
+                    self.settle_approval(
+                        task,
+                        request,
+                        &principal,
+                        verdict == RuleVerdict::Allow,
+                        reason,
+                    )
+                    .await?;
+                    settled = true;
                 }
+                Some(Stage::Human(_)) => {}
+                Some(Stage::Parent(parent)) => {
+                    // Parent messages are routed by the child controller's
+                    // authenticated file inbox, never by the human client.
+                    settled |= self
+                        .service_parent_approval(task, parent, request, inbox)
+                        .await?;
+                }
+                None => {
+                    return Err(Error::Conflict(
+                        "automatic approval stage was not evaluated".into(),
+                    ));
+                }
+            }
+        }
         Ok(settled)
     }
 
@@ -456,7 +481,10 @@ impl LocalHarness {
                 if pending.is_empty() {
                     return Ok(false);
                 }
-                if self.service_pending_approvals(task, &task_files, &files, inbox).await? {
+                if self
+                    .service_pending_approvals(task, &task_files, &files, inbox)
+                    .await?
+                {
                     return Ok(true);
                 }
                 let cancelled = async {

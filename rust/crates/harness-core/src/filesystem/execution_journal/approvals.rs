@@ -93,6 +93,8 @@ where
         if task.as_str() != task_id.to_string()
             || principal.as_str() != ApprovalDecisionFile::principal_file(responder.id())
             || file.channel.is_some()
+            || file.requester.is_some()
+            || file.publication.is_some()
         {
             return Err(Error::Unauthorized(
                 "approval decision principal or task differs".into(),

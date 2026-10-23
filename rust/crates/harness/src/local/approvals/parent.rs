@@ -10,6 +10,19 @@ struct ParentDecision {
     approval_decision: FileValue,
 }
 
+async fn publish_attention(
+    files: &crate::task_volume::TaskFiles<LocalStream>,
+    value: FileValue,
+) -> Result<()> {
+    let snapshot = files.snapshot(&Query::File(value.key.clone()), 1).await?;
+    crate::task_volume::publish(&files.inner, snapshot.generation, &value, || {
+        std::future::ready(Ok::<_, Error>((Vec::new(), None)))
+    })
+    .await?;
+    crate::task_volume::publish_durable(&files.inner, &value, None).await?;
+    Ok(())
+}
+
 impl LocalHarness {
     pub(super) async fn service_parent_approval(
         &self,
@@ -36,13 +49,12 @@ impl LocalHarness {
         let attention = serde_json::json!({"task":task,"request":request_id(request)?,
             "request_sha256":fingerprint(request)?,"expected_version":1,
             "subject":serde_json::from_slice::<serde_json::Value>(&request.bytes).map_err(storage)?});
-        crate::task_volume::publish_durable(
-            &files.inner,
-            &FileValue::new(
+        publish_attention(
+            files,
+            FileValue::new(
                 attention_key.clone(),
                 serde_json::to_vec(&attention).map_err(storage)?,
             ),
-            None,
         )
         .await?;
         let snapshot = files
@@ -88,12 +100,7 @@ impl LocalHarness {
                 &format!("parent:{parent}"),
             )
             .await?;
-            crate::task_volume::publish_durable(
-                &files.inner,
-                &FileValue::new(attention_key, b"null".to_vec()),
-                None,
-            )
-            .await?;
+            publish_attention(files, FileValue::new(attention_key, b"null".to_vec())).await?;
             return Ok(true);
         }
         Ok(false)

@@ -19,6 +19,7 @@ impl LocalHarness {
         principal: &str,
         selection: &str,
         prompt: &str,
+        limits: Limits,
     ) -> Result<(RuleVerdict, Option<String>)> {
         let (model, provider) = self
             .approval_models
@@ -47,7 +48,7 @@ impl LocalHarness {
                 tools: Vec::new(),
                 max_output_tokens: Some(output),
             },
-            self.limits,
+            limits,
             None,
         )?;
         let input = provider
@@ -89,46 +90,48 @@ impl LocalHarness {
             crate::task_volume::publish_durable(&task_files.inner, &started, None).await?;
             provider.generate(prepared, dispatch)
         };
-        collect_review(events, self.limits).await
+        collect_review(events, limits).await
     }
 }
 
-async fn collect_review(mut events: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
-    limits: Limits) -> Result<(RuleVerdict, Option<String>)> {
-        let mut text = String::new();
-        let mut count = 0;
-        let mut completed = false;
-        while let Some(event) = events.next().await {
-            count += 1;
-            if count > limits.model_events_per_step {
-                return Err(Error::Invalid("approver event bound exceeded".into()));
-            }
-            match event? {
-                ModelEvent::Content { delta } => {
-                    if text.len().saturating_add(delta.len()) as u64 > limits.render_bytes {
-                        return Err(Error::Invalid(
-                            "approver response exceeds render bound".into(),
-                        ));
-                    }
-                    text.push_str(&delta);
-                }
-                ModelEvent::Completed { .. } => {
-                    completed = true;
-                    break;
-                }
-                ModelEvent::Reasoning { .. } | ModelEvent::ReasoningBlock { .. } => {}
-                ModelEvent::ToolCall(_) => {
-                    return Err(Error::Unauthorized(
-                        "approver model attempted a tool call".into(),
+async fn collect_review(
+    mut events: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
+    limits: Limits,
+) -> Result<(RuleVerdict, Option<String>)> {
+    let mut text = String::new();
+    let mut count = 0;
+    let mut completed = false;
+    while let Some(event) = events.next().await {
+        count += 1;
+        if count > limits.model_events_per_step {
+            return Err(Error::Invalid("approver event bound exceeded".into()));
+        }
+        match event? {
+            ModelEvent::Content { delta } => {
+                if text.len().saturating_add(delta.len()) as u64 > limits.render_bytes {
+                    return Err(Error::Invalid(
+                        "approver response exceeds render bound".into(),
                     ));
                 }
+                text.push_str(&delta);
+            }
+            ModelEvent::Completed { .. } => {
+                completed = true;
+                break;
+            }
+            ModelEvent::Reasoning { .. } | ModelEvent::ReasoningBlock { .. } => {}
+            ModelEvent::ToolCall(_) => {
+                return Err(Error::Unauthorized(
+                    "approver model attempted a tool call".into(),
+                ));
             }
         }
-        if !completed {
-            return Err(Error::Invalid(
-                "approver model response is incomplete".into(),
-            ));
-        }
-        let review: Review = serde_json::from_str(&text).map_err(storage)?;
-        Ok((review.verdict, review.reason))
+    }
+    if !completed {
+        return Err(Error::Invalid(
+            "approver model response is incomplete".into(),
+        ));
+    }
+    let review: Review = serde_json::from_str(&text).map_err(storage)?;
+    Ok((review.verdict, review.reason))
 }

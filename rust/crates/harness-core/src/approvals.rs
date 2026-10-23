@@ -24,7 +24,7 @@ pub enum Approver {
     Rules {
         /// Authenticated rule identity.
         principal: String,
-        /// First matching exact selector wins.
+        /// Matching refusals take precedence over matching permissions.
         rules: Vec<ApprovalRule>,
         /// Verdict when no selector matches.
         fallback: RuleVerdict,
@@ -138,6 +138,16 @@ impl ApprovalPolicy {
 }
 
 impl ApprovalRule {
+    /// A matching refusal wins over every matching permission in one rule set.
+    pub fn evaluate(rules: &[Self], fallback: RuleVerdict, tool: &str, arguments: &Value) -> RuleVerdict {
+        rules.iter().filter(|rule| rule.matches(tool, arguments)).map(|rule| rule.verdict)
+            .reduce(|left, right| match (left, right) {
+                (RuleVerdict::Deny, _) | (_, RuleVerdict::Deny) => RuleVerdict::Deny,
+                (RuleVerdict::Ask, _) | (_, RuleVerdict::Ask) => RuleVerdict::Ask,
+                _ => RuleVerdict::Allow,
+            }).unwrap_or(fallback)
+    }
+
     /// Matches the exact subject that the interaction owner published.
     pub fn matches(&self, tool: &str, arguments: &Value) -> bool {
         self.tool.as_deref().is_none_or(|expected| expected == tool)
