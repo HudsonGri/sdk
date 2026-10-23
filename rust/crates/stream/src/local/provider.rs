@@ -54,7 +54,7 @@ impl StreamProvider for LocalStream {
             bytes = request
                 .records
                 .iter()
-                .map(crate::OwnedBytes::len)
+                .map(crate::AppendRecord::payload_bytes)
                 .sum::<usize>(),
             rev = Empty,
             outcome = Empty,
@@ -115,8 +115,13 @@ impl StreamProvider for LocalStream {
         obs::finish(&observation.span, result)
     }
 
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, None).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, None, filter).await
     }
 
     async fn follow_checked(
@@ -124,8 +129,19 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         from: u64,
         preceding: crate::CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, Some(preceding)).await
+        self.follow_from(path, from, Some(preceding), filter).await
+    }
+
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.progress_from(path, from, preceding, filter).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {

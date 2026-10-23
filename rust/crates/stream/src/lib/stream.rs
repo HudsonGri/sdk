@@ -39,14 +39,17 @@ impl<P: StreamProvider> Stream<P> {
     }
 
     /// Unconditionally appends one record.
-    pub async fn append(&self, value: impl Into<Bytes>) -> Result<AppendOutcome, StreamError> {
+    pub async fn append(
+        &self,
+        value: impl Into<AppendRecord>,
+    ) -> Result<AppendOutcome, StreamError> {
         self.append_batch(vec![value.into()], None, None).await
     }
 
     /// Appends one record only at the exact tail.
     pub async fn append_at(
         &self,
-        value: impl Into<Bytes>,
+        value: impl Into<AppendRecord>,
         if_tail: u64,
     ) -> Result<AppendOutcome, StreamError> {
         self.append_batch(vec![value.into()], Some(if_tail), None)
@@ -56,7 +59,7 @@ impl<P: StreamProvider> Stream<P> {
     /// Atomically appends a contiguous batch.
     pub async fn append_batch(
         &self,
-        records: Vec<Bytes>,
+        records: Vec<AppendRecord>,
         if_tail: Option<u64>,
         idempotency_key: Option<IdempotencyKey>,
     ) -> Result<AppendOutcome, StreamError> {
@@ -109,8 +112,12 @@ impl<P: StreamProvider> Stream<P> {
     }
 
     /// Replays from `from`, then remains live.
-    pub async fn follow(&self, from: u64) -> Result<RecordStream, StreamError> {
-        self.provider.follow(self.path.clone(), from).await
+    pub async fn follow(
+        &self,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.provider.follow(self.path.clone(), from, filter).await
     }
 }
 
@@ -157,12 +164,17 @@ fn new_idempotency_key() -> IdempotencyKey {
 
 /// Transport callers keep this allocation instead of copying a domain wrapper.
 fn new_identity_bytes() -> bytes::Bytes {
+    bytes::Bytes::copy_from_slice(&new_identity())
+}
+
+/// Fresh provider identities share the same seeded entropy boundary.
+fn new_identity() -> [u8; 16] {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     {
         let mut bytes = [0; 16];
         if acyclic_native_runtime::testing::fill_seeded(&mut bytes) {
-            return bytes::Bytes::copy_from_slice(&bytes);
+            return bytes;
         }
     }
-    bytes::Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes())
+    uuid::Uuid::new_v4().into_bytes()
 }

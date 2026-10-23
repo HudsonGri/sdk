@@ -48,6 +48,65 @@ pub struct Record {
     pub commit_id: CommitId,
     /// Stable replicated commit time in Unix microseconds.
     pub committed_at_micros: u64,
+    /// Canonically sorted indexed keys, authenticated with the value.
+    pub headers: RecordHeaders,
+}
+
+/// One immutable single-valued indexed header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Attribute {
+    /// Header name.
+    pub name: String,
+    /// Opaque header value.
+    pub value: Bytes,
+}
+
+/// Record value and its indexed headers, admitted atomically on every write path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppendRecord {
+    /// Opaque application value.
+    pub value: Bytes,
+    /// Canonical indexed keys and attributes, sharing their original owner.
+    pub headers: RecordHeaders,
+}
+
+impl From<Bytes> for AppendRecord {
+    fn from(value: Bytes) -> Self {
+        Self {
+            value,
+            headers: RecordHeaders::default(),
+        }
+    }
+}
+
+impl From<bytes::Bytes> for AppendRecord {
+    fn from(value: bytes::Bytes) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<Vec<u8>> for AppendRecord {
+    fn from(value: Vec<u8>) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<&[u8]> for AppendRecord {
+    fn from(value: &[u8]) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<&str> for AppendRecord {
+    fn from(value: &str) -> Self {
+        Self::from(Bytes::from(value))
+    }
+}
+
+impl From<String> for AppendRecord {
+    fn from(value: String) -> Self {
+        Self::from(Bytes::from(value))
+    }
 }
 
 /// Successful contiguous append.
@@ -81,7 +140,7 @@ pub struct AppendRequest {
     /// Permanent destination.
     pub path: StreamPath,
     /// Nonempty contiguous batch.
-    pub records: Vec<Bytes>,
+    pub records: Vec<AppendRecord>,
     /// Optional exact tail condition.
     pub if_tail: Option<u64>,
     /// Optional stable recovery identity.
@@ -265,7 +324,7 @@ pub enum CommitMutation {
         /// Destination.
         path: StreamPath,
         /// Opaque records.
-        records: Vec<Bytes>,
+        records: Vec<AppendRecord>,
     },
     /// Fork one pre-commit prefix into a new destination, then append
     Fork {
@@ -276,7 +335,7 @@ pub enum CommitMutation {
         /// Exact source prefix end.
         at_tail: u64,
         /// Opaque records appended after the prefix; may be empty.
-        records: Vec<Bytes>,
+        records: Vec<AppendRecord>,
     },
 }
 
@@ -390,5 +449,23 @@ pub struct IdempotencyObservation {
 
 /// Backpressured finite read or long-lived follow.
 pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
+
+/// An ordered filtered follow observation. Skipped records carry only a cursor
+/// and an immutable history anchor, never their values or indexed headers.
+#[derive(Debug)]
+pub enum FollowUpdate {
+    /// A matching record after provider-side projection.
+    Record(Record),
+    /// A contiguous skipped prefix before the next matching record.
+    Progress {
+        /// Exclusive offset of the examined prefix.
+        next: u64,
+        /// Commit at `next - 1`, including filtered-out records.
+        preceding: CommitId,
+    },
+}
+
+/// Ordered records and skipped-prefix observations from one atomic follow.
+pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
 pub type ChildStream = BoxProviderStream<'static, Result<Child, StreamError>>;

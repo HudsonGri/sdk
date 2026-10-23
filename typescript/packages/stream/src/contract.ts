@@ -1,7 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  AbsentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
+  AppendRecordSchema, AbsentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
@@ -48,8 +48,8 @@ function initializeStreamWasmSync(): boolean {
   return true;
 }
 
-function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly __wbindgen_free: unknown }): void {
-  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.__wbindgen_free !== "function") {
+function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly streamResource: unknown; readonly streamResourcePath: unknown; readonly __wbindgen_free: unknown }): void {
+  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.streamResource !== "function" || typeof instance.streamResourcePath !== "function" || typeof instance.__wbindgen_free !== "function") {
     throw new StreamError("configuration", "stream WASM exports do not match the packaged contract");
   }
 }
@@ -201,7 +201,7 @@ export function wireAppendRequest(path: string, records: readonly Uint8Array[], 
   if (options?.ifTail !== undefined) requireSequenceType(options.ifTail);
   if (options?.idempotencyKey !== undefined) requireBytesType(options.idempotencyKey);
   return toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-    path, records: [...records],
+    path, records: records.map(value => create(AppendRecordSchema, { value })),
     ...(options?.ifTail === undefined ? {} : { ifTail: options.ifTail }),
     ...(options?.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
   }));
@@ -245,14 +245,14 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
     });
     const mutations = request.mutations.map(mutation => {
       if ("append" in mutation) return create(CommitMutationSchema, {
-        mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: [...mutation.append.values] }) },
+        mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: mutation.append.values.map(value => create(AppendRecordSchema, { value })) }) },
       });
       if ("fork" in mutation) return create(CommitMutationSchema, {
         mutation: { case: "fork", value: create(ForkMutationSchema, {
           source: mutation.fork.source,
           destination: mutation.fork.destination,
           atTail: mutation.fork.atTail,
-          records: mutation.fork.values.map((value: Uint8Array) => value.slice()),
+          records: mutation.fork.values.map(value => create(AppendRecordSchema, { value: value.slice() })),
         }) },
       });
       throw new StreamError("invalid_argument", "commit mutation is invalid");
@@ -287,15 +287,18 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
         case "append": return {
           append: {
             path: mutation.mutation.value.path,
-            values: mutation.mutation.value.records.map(record => record.slice()),
+            values: mutation.mutation.value.records.map(record => record.value.slice()),
           },
         };
         case "fork": {
           const value = mutation.mutation.value;
-          return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, values: value.records.map(record => record.slice()) } };
+          return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, values: value.records.map(record => record.value.slice()) } };
         }
         default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
       }
     }),
   };
 }
+
+// Resource spelling stays in the same Rust codec as node admission.
+export { streamResource, streamResourcePath } from "../generated/wasm/acyclic_stream_wasm.js";

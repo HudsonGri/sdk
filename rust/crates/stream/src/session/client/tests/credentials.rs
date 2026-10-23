@@ -65,7 +65,12 @@ impl RotatingFixture {
         });
         let (controls, _) = tokio::sync::broadcast::channel(8);
         let host = RotatingHost {
-            service: crate::session::Service::new(provider, node.into(), Limits::default()),
+            service: crate::session::Service::new(
+                provider,
+                crate::session::testing::authority(),
+                node.into(),
+                Limits::default(),
+            ),
             calls,
             changed,
             controls: controls.clone(),
@@ -113,17 +118,17 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
         )
         .await?;
         let resolutions = std::sync::Arc::new(AtomicUsize::new(0));
-        let count = resolutions.clone();
-        let client = grpc::Client::connect_eager_with_credential(
-            &old.endpoint,
-            grpc::CredentialProvider::new(move || {
-                let index = count.fetch_add(1, Ordering::SeqCst) + 1;
-                future::ready(Ok(format!("rotated-{index}")))
-            }),
-            Some(certificate.as_bytes()),
-        )
-        .await?;
-        let mut records = client.follow(StreamPath::new("events")?, 0).await?;
+        let client = rotating_client(&old.endpoint, &certificate, resolutions.clone()).await?;
+        client
+            .session_client()?
+            .register_credential(0, crate::session::testing::credential())?;
+        let mut records = client
+            .follow(
+                StreamPath::new("events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         assert_eq!(next(&mut records).await?.sequence, 0);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         old.controls.send(Err(Status::unavailable("disconnect")))?;
@@ -163,7 +168,13 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             future::ready(Err(grpc::CredentialError::Invalid))
         }));
         assert!(matches!(
-            denied.follow(StreamPath::new("events")?, 0).await,
+            denied
+                .follow(
+                    StreamPath::new("events")?,
+                    0,
+                    crate::FollowFilter::default()
+                )
+                .await,
             Err(StreamError::AccessDenied)
         ));
         assert_eq!(
@@ -175,4 +186,18 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
     })
     .await??;
     Ok(())
+}
+
+async fn rotating_client(endpoint: &str, certificate: &str, resolutions: std::sync::Arc<AtomicUsize>) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
+        let count = resolutions;
+        let client = grpc::Client::connect_eager_with_credential(
+            endpoint,
+            grpc::CredentialProvider::new(move || {
+                let index = count.fetch_add(1, Ordering::SeqCst) + 1;
+                future::ready(Ok(format!("rotated-{index}")))
+            }),
+            Some(certificate.as_bytes()),
+        )
+        .await?;
+    Ok(client)
 }

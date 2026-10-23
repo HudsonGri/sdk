@@ -32,7 +32,10 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     }
     let initial = AppendRequest {
         path: source.clone(),
-        records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+        records: vec![
+            Bytes::from_static(b"one").into(),
+            Bytes::from_static(b"two").into(),
+        ],
         if_tail: Some(0),
         idempotency_key: Some(append_key.clone()),
     };
@@ -50,7 +53,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     if provider
         .append(AppendRequest {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"different")],
+            records: vec![Bytes::from_static(b"different").into()],
             if_tail: Some(0),
             idempotency_key: Some(append_key.clone()),
         })
@@ -72,7 +75,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     if provider
         .append(AppendRequest {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"never")],
+            records: vec![Bytes::from_static(b"never").into()],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -155,7 +158,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     provider
         .append(AppendRequest {
             path: path("conformance/paging-new")?,
-            records: vec![Bytes::from_static(b"created")],
+            records: vec![Bytes::from_static(b"created").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -172,11 +175,13 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     {
         return Err(StreamError::Unavailable);
     }
-    let mut follow = provider.follow(child.clone(), 1).await?;
+    let mut follow = provider
+        .follow(child.clone(), 1, crate::FollowFilter::default())
+        .await?;
     provider
         .append(AppendRequest {
             path: child.clone(),
-            records: vec![Bytes::from_static(b"live")],
+            records: vec![Bytes::from_static(b"live").into()],
             if_tail: Some(1),
             idempotency_key: None,
         })
@@ -244,7 +249,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
         }],
         mutations: vec![CommitMutation::Append {
             path: absent.clone(),
-            records: vec![Bytes::from_static(b"must-not-commit")],
+            records: vec![Bytes::from_static(b"must-not-commit").into()],
         }],
         idempotency_key: absent_key.clone(),
     };
@@ -358,8 +363,8 @@ async fn verify_fork_with_records(
             destination: destination.clone(),
             at_tail: 1,
             records: vec![
-                Bytes::from_static(b"extended"),
-                Bytes::from_static(b"again"),
+                Bytes::from_static(b"extended").into(),
+                Bytes::from_static(b"again").into(),
             ],
         }],
         idempotency_key: key(b"stream-fork-with-records")?,

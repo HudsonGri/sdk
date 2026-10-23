@@ -76,6 +76,8 @@ pub use logical_objects::LogicalObjectStore;
 pub mod facade;
 #[macro_use]
 pub mod foundation;
+mod publication_changes;
+pub use publication_changes::PublicationChanges;
 #[cfg(all(feature = "native-watch", target_os = "macos"))]
 mod fsevents;
 pub mod git_compat;
@@ -179,6 +181,7 @@ pub use facade::{
     LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation,
     NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
     ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
+    VolumeInitialization,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{

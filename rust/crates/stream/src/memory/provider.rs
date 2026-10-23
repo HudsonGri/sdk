@@ -116,8 +116,13 @@ impl StreamProvider for MemoryStream {
         .boxed())
     }
 
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, None).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, None, filter).await
     }
 
     async fn follow_checked(
@@ -125,8 +130,19 @@ impl StreamProvider for MemoryStream {
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, Some(preceding)).await
+        self.follow_from(path, from, Some(preceding), filter).await
+    }
+
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.progress_from(path, from, preceding, filter).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -445,9 +461,10 @@ impl StreamProvider for MemoryStream {
                             .iter()
                             .map(|mutation| match mutation {
                                 CommitMutation::Append { records, .. }
-                                | CommitMutation::Fork { records, .. } => {
-                                    records.iter().map(Bytes::len).sum::<usize>()
-                                }
+                                | CommitMutation::Fork { records, .. } => records
+                                    .iter()
+                                    .map(AppendRecord::payload_bytes)
+                                    .sum::<usize>(),
                             })
                             .sum();
                         work.reserve_write(bytes).map_err(E::from)?;
@@ -517,7 +534,13 @@ impl StreamProvider for MemoryStream {
                 Err(error) => return work.finish(Err(error)),
             };
             if !existing
-                && let Err(error) = work.reserve_write(request.records.iter().map(Bytes::len).sum())
+                && let Err(error) = work.reserve_write(
+                    request
+                        .records
+                        .iter()
+                        .map(AppendRecord::payload_bytes)
+                        .sum(),
+                )
             {
                 return work.finish(Err(error));
             }

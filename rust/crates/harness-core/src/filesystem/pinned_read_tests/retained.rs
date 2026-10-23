@@ -1,16 +1,22 @@
 use super::*;
+use acyclic_stream::StreamProvider as _;
 use acyclic_test_support::{AllocationInfo, differential};
 use std::cell::Cell;
 
 thread_local! {
     static REOPEN: Cell<bool> = const { Cell::new(false) };
-    static ITEMS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+    static ITEMS: Cell<Option<(bool, [u64; 2])>> = const { Cell::new(None) };
 }
 
 pub(in crate::filesystem) fn sample_items(finished: bool, io: Option<&PreparationIo>) {
-    let mut items = ITEMS.get();
-    items[usize::from(finished)] = io.map_or(0, |io| io.receipt().items_examined);
-    ITEMS.set(items);
+    let Some(io) = io else {
+        ITEMS.set(None);
+        return;
+    };
+    let native = io.original_native_work().is_some();
+    let (_, mut items) = ITEMS.get().unwrap_or((native, [0; 2]));
+    items[usize::from(finished)] = io.receipt().items_examined;
+    ITEMS.set(Some((native, items)));
 }
 
 pub(in crate::filesystem) fn reopen() -> bool {
@@ -39,9 +45,11 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
     );
     let scope = issuer.issue(
         "owner",
-        &crate::Capabilities::new([file
-            .volume()
-            .capability(VolumeOperation::Write, &mut None)?]),
+        &crate::Capabilities::new([
+            file.volume()
+                .capability(VolumeOperation::Write, &mut None)?,
+            file.volume().capability(VolumeOperation::Read, &mut None)?,
+        ]),
         Some(AgentId::from_bytes([1; 16])),
         None,
         &mut None,
@@ -64,6 +72,18 @@ impl acyclic_stream::UnixMillisClock for Clock {
 }
 
 async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, ContentGrant)> {
+    let (host, file, grant, _) = initialize_with_stream(prefix, bytes).await?;
+    Ok((host, file, grant))
+}
+
+type Initialized = (
+    Arc<Host>,
+    FileRef,
+    ContentGrant,
+    Arc<acyclic_stream::MemoryStream>,
+);
+
+async fn initialize_with_stream(prefix: usize, bytes: &[u8]) -> Result<Initialized> {
     // Authority timestamps are part of the independently initialized read
     // history. A wall clock changes its encoded work between the two runs.
     let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
@@ -71,7 +91,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
         Arc::new(Clock),
     ));
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let filesystem = Fs::from_memory_providers(stream, Arc::new(objects), bucket);
+    let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects), bucket);
     let (host, file) = fixture_with_filesystem(b"seed", filesystem).await?;
     let grant = grant(&file)?;
     let workspace = workspace_ref(
@@ -103,7 +123,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
             4096,
             &IdempotencyKey::new("retained")?,
             None,
-            None,
+            crate::conversation::ContentAccess::default(),
         )
         .await?;
     host.apply(
@@ -116,7 +136,7 @@ async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, 
         &IdempotencyKey::new("later-head")?,
     )
     .await?;
-    Ok((host, target, grant))
+    Ok((host, target, grant, stream))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -146,7 +166,7 @@ async fn execute(
                 4096,
                 &IdempotencyKey::new("next")?,
                 None,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await
         }
@@ -161,7 +181,7 @@ async fn execute(
                 4096,
                 &IdempotencyKey::new("retained")?,
                 None,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await
         }
@@ -172,7 +192,7 @@ async fn execute(
                 &IdempotencyKey::new("retained")?,
                 "retained",
                 4096,
-                io,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )
             .await?
             .ok_or_else(|| Error::NotFound("retained publication".into())),
@@ -202,7 +222,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                         },
                         |(host, source, grant)| {
                             with_reopen(old, || {
-                                ITEMS.set([0; 2]);
+                                ITEMS.set(None);
                                 let mut result = None;
                                 let mut receipt = WorkCounters::default();
                                 let allocations = acyclic_test_support::measure(|| {
@@ -240,6 +260,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                         }
                                     });
                                 });
+                                let sampled = ITEMS.get();
                                 differential::record(("publication verified", 0_u64));
                                 let value = result.unwrap();
                                 assert!(value.is_ok(), "{entry:?} {mode:?}: {value:?}");
@@ -273,9 +294,13 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                         .as_ref(),
                                     b"later head"
                                 );
-                                let primitive_items = match mode {
+                                // Recovery may introduce an internal ledger even
+                                // when its caller omitted one. Compare its read
+                                // against the primitive on the ledger actually
+                                // sampled, rather than assuming it did no work.
+                                let primitive_items = match sampled {
                                     None => 0,
-                                    Some(native) => {
+                                    Some((native, _)) => {
                                         let opened =
                                             runtime.block_on(host.open(&workspace, None)).unwrap();
                                         let pinned = runtime
@@ -297,13 +322,14 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                         .items_examined
                                     }
                                 };
-                                let [start, end] = ITEMS.get();
+                                let [start, end] = sampled.map_or([0; 2], |(_, items)| items);
                                 (
                                     (file, actual.as_ref().to_vec()),
                                     allocations,
                                     receipt,
                                     end.checked_sub(start).unwrap(),
                                     primitive_items,
+                                    u64::from(sampled.is_some_and(|(native, _)| !native)) * 2,
                                 )
                             })
                         },
@@ -430,7 +456,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
         // Tree searches charge actual comparisons, which vary with
         // history. Independently meter the necessary generation read;
         // the retained wrapper must add only its path formatting.
-        let overhead = u64::from(mode == Some(false)) * 2;
+        let overhead = after.0.5;
         assert_eq!(
             after.0.3,
             after.0.4 + overhead,
@@ -578,7 +604,18 @@ fn published_content_retries_and_recovery_do_not_append_retention_records() -> R
         .map_err(|error| Error::Storage(error.to_string()))?;
     for entry in [Entry::Create, Entry::Retry, Entry::Observe] {
         for native in [false, true] {
-            let (host, source, grant) = runtime.block_on(initialize(0, b"original"))?;
+            let (host, source, grant, stream) =
+                runtime.block_on(initialize_with_stream(0, b"original"))?;
+            let page =
+                runtime.block_on(stream.children_page(acyclic_stream::ChildrenPageRequest {
+                    parent: Some(acyclic_stream::StreamPath::new(".acyclic/fs")?),
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 2,
+                }))?;
+            assert_eq!(page.children.len(), 1, "one fixture volume change stream");
+            let path = page.children[0].path.clone();
+            let before = runtime.block_on(stream.tail(path.clone()))?;
             let (result, receipt, _, _, _, _) = accounted(native, 64 * 1024 * 1024, false, |io| {
                 runtime.block_on(execute(
                     &host,
@@ -591,11 +628,26 @@ fn published_content_retries_and_recovery_do_not_append_retention_records() -> R
             })
             .map_err(|(error, receipt)| Error::Storage(format!("{error}: {receipt:?}")))?;
             let file = result?;
+            let changes = runtime
+                .block_on(stream.tail(path))?
+                .checked_sub(before)
+                .ok_or_else(|| Error::Storage("change stream regressed".into()))?;
+            assert_eq!(changes, u64::from(matches!(entry, Entry::Create)));
             if matches!(entry, Entry::Create) {
-                assert!(receipt.authority_records_appended > 0);
+                // The required B10 change record shares this publication commit.
+                // Preserve the original four-record bound for authority metadata.
+                let valid = |records: u64| {
+                    records
+                        .checked_sub(changes)
+                        .is_some_and(|metadata| metadata > 0 && metadata <= 4)
+                };
                 assert!(
-                    receipt.authority_records_appended <= 4,
+                    valid(receipt.authority_records_appended),
                     "published content appended redundant retention: {receipt:?}"
+                );
+                assert!(
+                    !valid(receipt.authority_records_appended + 1),
+                    "an extra retention record must fail the original bound"
                 );
             } else {
                 assert_eq!(

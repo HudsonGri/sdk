@@ -22,6 +22,7 @@ async fn append_follow_latency() -> TestResult {
                 wire::stream_session_service_server::StreamSessionServiceServer::new(
                     crate::session::Service::new(
                         provider,
+                        crate::session::testing::authority(),
                         "latency-node".into(),
                         crate::session::Limits::default(),
                     ),
@@ -35,6 +36,9 @@ async fn append_follow_latency() -> TestResult {
         .connect()
         .await?;
     let transport = Client::from_channel(channel, authorization("latency-fixture")?);
+    transport
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
     let result = measure(&transport, &transport, "grpc_tcp").await;
     server.abort();
     result
@@ -50,7 +54,9 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
             idempotency_key: None,
         })
         .await?;
-    let mut follow = reader.follow(path.clone(), 1).await?;
+    let mut follow = reader
+        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();

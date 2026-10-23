@@ -59,7 +59,7 @@ fn normalized_request(mut request: CommitRequest) -> CommitRequest {
         };
         if path.as_str().contains("/effect-heads/") && path.as_str().ends_with("/cuts") {
             for bytes in records {
-                let root = decode_certificate(path.as_str().contains("/v2/"), bytes).0;
+                let root = decode_certificate(path.as_str().contains("/v2/"), &bytes.value).0;
                 *bytes = crate::contract::canonical_json_bytes(&(root, "format-specific MAC"))
                     .unwrap()
                     .into();
@@ -115,9 +115,10 @@ impl StreamProvider for Observed {
         &self,
         path: StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<RecordStream, StreamError> {
         record(("follow", normalized_path(&path), from));
-        self.0.follow(path, from).await
+        self.0.follow(path, from, filter).await
     }
     async fn children(
         &self,
@@ -144,12 +145,12 @@ impl StreamProvider for Observed {
     }
 }
 
-fn decode_certificate(old: bool, bytes: &[u8]) -> (Option<Digest>, Digest) {
+fn decode_certificate(old: bool, bytes: &[u8]) -> (Option<Digest>, Vec<u8>) {
     if old {
         serde_json::from_slice(bytes).unwrap()
     } else {
         // Independent of the candidate codec, including the absent-root padding.
-        assert_eq!(bytes.len(), 65);
+        assert_eq!(bytes.len(), 97);
         let root: Digest = bytes[1..33].try_into().unwrap();
         let root = match bytes[0] {
             0 => {
@@ -159,7 +160,7 @@ fn decode_certificate(old: bool, bytes: &[u8]) -> (Option<Digest>, Digest) {
             1 => Some(root),
             _ => panic!("invalid certificate tag"),
         };
-        (root, bytes[33..].try_into().unwrap())
+        (root, bytes[33..].to_vec())
     }
 }
 
@@ -230,17 +231,13 @@ fn file(bytes: &[u8], media: &str) -> crate::conversation::FileRef {
     .unwrap()
 }
 
-async fn workflow(
-    client: Arc<Observed>,
-    old: bool,
-    seed: u8,
-    reorder: bool,
-    break_verification: bool,
-) -> Vec<std::result::Result<Option<Digest>, String>> {
-    let owner = authority();
-    let verifier = issuer().verifier(&mut None).unwrap();
-    let mut reducer = Reducer::new(owner.clone(), verifier.clone(), SchemaRegistry::new());
-    let mut outcomes = Vec::new();
+fn prepared_events(seed: u8) -> Vec<crate::core::Event> {
+    let mut reducer = Reducer::new(
+        authority(),
+        issuer().verifier(&mut None).unwrap(),
+        SchemaRegistry::new(),
+    );
+    let mut events = Vec::new();
     for number in 1..=3 {
         let action = if number == 1 {
             Action::TransitionLifecycle {
@@ -282,9 +279,28 @@ async fn workflow(
             causal_parent: None,
             action,
         };
-        let ApplyResult::Applied { event } = reducer.plan(&command).unwrap() else {
+        let ApplyResult::Applied { event } = reducer.apply(&command).unwrap() else {
             panic!("fresh command")
         };
+        events.push(event);
+    }
+    events
+}
+
+async fn workflow(
+    client: Arc<Observed>,
+    old: bool,
+    events: &[crate::core::Event],
+    reorder: bool,
+    break_verification: bool,
+) -> Vec<std::result::Result<Option<Digest>, String>> {
+    let owner = authority();
+    let verifier = issuer().verifier(&mut None).unwrap();
+    let mut reducer = Reducer::new(owner.clone(), verifier.clone(), SchemaRegistry::new());
+    let mut outcomes = Vec::new();
+    for event in events {
+        let event = event.clone();
+        let number = event.revision;
         let publication = if old {
             old_effect_heads::publication(&client, &reducer, &event, &mut None)
                 .await
@@ -302,8 +318,9 @@ async fn workflow(
         let expected = if old {
             effect_root_tests::old_proof(&verifier, event.revision, digest, root, &mut None)
                 .unwrap()
+                .to_vec()
         } else {
-            effect_root_tests::reference(&verifier, event.revision, digest, root)
+            effect_root_tests::reference(&verifier, event.revision, digest, root).to_vec()
         };
         assert_eq!(proof, expected);
         let mut unmetered = None;
@@ -324,7 +341,7 @@ async fn workflow(
         };
         publication.verify(&envelope, &mut None).unwrap();
         reducer.apply_committed(event, &mut None).unwrap();
-        let result = root_at(&client, old, &verifier, number.into(), 1_000_000).await;
+        let result = root_at(&client, old, &verifier, number, 1_000_000).await;
         assert_eq!(result.as_ref().unwrap().0, root);
         outcomes.push(
             result
@@ -364,11 +381,10 @@ async fn workflow(
         "valid", "proof", "split", "anchor", "cut", "quota", "audience",
     ] {
         let copy = Arc::new(Observed::default());
-        let proof = if fault == "proof" {
-            [proof[0] ^ 1; 32]
-        } else {
-            proof
-        };
+        let mut proof = proof.clone();
+        if fault == "proof" {
+            proof[0] ^= 1;
+        }
         let bytes: OwnedBytes = if old {
             crate::contract::canonical_json_bytes(&(root, proof)).unwrap()
         } else {
@@ -383,13 +399,13 @@ async fn workflow(
         if fault != "anchor" {
             mutations.push(CommitMutation::Append {
                 path: source,
-                records: vec![canonical.clone()],
+                records: vec![canonical.clone().into()],
             });
         }
         if fault != "cut" {
             mutations.push(CommitMutation::Append {
                 path: cut_path(old),
-                records: vec![bytes],
+                records: vec![bytes.into()],
             });
         }
         let groups = if fault == "split" {
@@ -453,10 +469,11 @@ async fn workflow(
 }
 
 fn compare(seed: u8, reorder: bool, break_verification: bool) {
+    let events = prepared_events(seed);
     let [(old, before), (new, after)] = differential::pair::<_, _, effect_root_tests::Observation>(
         || Arc::new(Observed::default()),
         |client, old| {
-            futures::executor::block_on(workflow(client, old, seed, reorder, break_verification))
+            futures::executor::block_on(workflow(client, old, &events, reorder, break_verification))
         },
     );
     assert_eq!(old, new);

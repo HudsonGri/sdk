@@ -73,7 +73,7 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
     let path = StreamPath::new("model")?;
     let outcome = block_on(provider.append(AppendRequest {
         path: path.clone(),
-        records: vec![Bytes::from_static(b"anchor")],
+        records: vec![Bytes::from_static(b"anchor").into()],
         if_tail: Some(0),
         idempotency_key: None,
     }))?;
@@ -149,14 +149,16 @@ fn subscription_and_append(omit_wake: bool) {
                 }
                 block_on(provider.append(AppendRequest {
                     path,
-                    records: vec![Bytes::from_static(b"next")],
+                    records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 }))
             }
         });
         block_on(async {
-            let mut stream = provider.follow_checked(path, 1, anchor).await?;
+            let mut stream = provider
+                .follow_checked(path, 1, anchor, crate::FollowFilter::default())
+                .await?;
             let record = stream.next().await.ok_or("follow ended")??;
             assert_eq!(record.sequence, 1);
             assert_eq!(record.value.as_slice(), b"next");
@@ -188,7 +190,10 @@ fn subscription_and_recovery(retain_old: bool) {
             }
         });
         block_on(async {
-            match provider.follow_checked(path, 1, anchor).await {
+            match provider
+                .follow_checked(path, 1, anchor, crate::FollowFilter::default())
+                .await
+            {
                 Ok(mut stream) => assert!(matches!(
                     stream.next().await,
                     Some(Err(StreamError::NotFound
@@ -220,7 +225,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
         let replacement = MemoryStream::default();
         block_on(replacement.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"replaced")],
+            records: vec![Bytes::from_static(b"replaced").into()],
             if_tail: Some(0),
             idempotency_key: None,
         }))?;
@@ -237,7 +242,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
             }],
             mutations: vec![CommitMutation::Append {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"obsolete")],
+                records: vec![Bytes::from_static(b"obsolete").into()],
             }],
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"write"))?,
         };
@@ -311,8 +316,8 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
         block_on(replacement.append(AppendRequest {
             path: path.clone(),
             records: vec![
-                Bytes::from_static(b"replacement"),
-                Bytes::from_static(b"new tail"),
+                Bytes::from_static(b"replacement").into(),
+                Bytes::from_static(b"new tail").into(),
             ],
             if_tail: Some(0),
             idempotency_key: None,
@@ -324,15 +329,22 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
         });
         block_on(async {
             let follow = wire::SessionFollow {
-                path: path.as_str().into(),
+                resource: crate::wire_codec::session::stream_resource(path.as_str()),
                 delivery: wire::SessionDelivery::All as i32,
                 ..Default::default()
             };
             let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
             let registered = if omit_anchor {
-                provider.follow(path, cursor.next).await
+                provider
+                    .follow(path, cursor.next, crate::FollowFilter::default())
+                    .await
             } else {
-                wire_codec::session::follow_records(&provider, &follow, &cursor).await
+                wire_codec::session::follow_records(
+                    &provider,
+                    &follow,
+                    &cursor,
+                )
+                .await
             };
             let error = match registered {
                 Err(error) => error,

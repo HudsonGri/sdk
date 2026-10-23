@@ -9,6 +9,7 @@ impl EffectRegistry {
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
+        issuer.authorize_effect(effect_id, effect, work)?;
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         if effect.status != EffectStatus::Dispatched {
             return Err(crate::store::guarded_boundary(
@@ -81,6 +82,7 @@ impl EffectRegistry {
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<EffectAttestation>> {
+        issuer.authorize_effect(effect_id, effect, work)?;
         let provider = self.resolve(effect, work)?;
         let attempt_id = effect.attempts.last().copied().ok_or_else(|| {
             crate::store::guarded_boundary(
@@ -92,8 +94,8 @@ impl EffectRegistry {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             let future = provider.reconcile_with_native_work(attempt_id, native)?;
-            return match future.await? {
-                Some((observation, custody)) => Ok(Some(
+            if let Some((observation, custody)) = future.await? {
+                return Ok(Some(
                     self.attest_native_observation(
                         issuer,
                         effect_id,
@@ -102,22 +104,24 @@ impl EffectRegistry {
                         work,
                     )
                     .await?,
-                )),
-                None => Ok(None),
-            };
+                ));
+            }
+            issuer.authorize_effect(effect_id, effect, work)?;
+            return Ok(None);
         }
         if work.is_some() {
             return Err(Error::Unsupported(
                 "effect observer has no original native ledger".into(),
             ));
         }
-        match provider.reconcile(attempt_id).await? {
-            Some(observation) => Ok(Some(
+        if let Some(observation) = provider.reconcile(attempt_id).await? {
+            return Ok(Some(
                 self.attest_provider_observation(issuer, effect_id, effect, observation, work)
                     .await?,
-            )),
-            None => Ok(None),
+            ));
         }
+        issuer.authorize_effect(effect_id, effect, work)?;
+        Ok(None)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -208,12 +212,13 @@ impl EffectRegistry {
                 )?;
             } else {
                 let bytes = resolver
-                    .read(result, result.descriptor().byte_length(), None)?
+                    .read(result, result.descriptor().byte_length(), None, None)?
                     .await?;
                 let schema_bytes = resolver
                     .read(
                         &effect.result_schema,
                         effect.result_schema.descriptor().byte_length(),
+                        None,
                         None,
                     )?
                     .await?;

@@ -42,7 +42,14 @@ async fn check_recovery(terminal: bool) -> TestResult {
         std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
     );
-    let mut records = client.follow(StreamPath::new("events")?, 1).await?;
+    client.register_credential(0, crate::session::testing::credential())?;
+    let mut records = client
+        .follow(
+            StreamPath::new("events")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     let connections = client.connections();
     let first = connections.changed(0).await?;
     fixture.reset()?;

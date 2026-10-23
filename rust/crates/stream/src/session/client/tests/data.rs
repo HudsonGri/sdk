@@ -2,9 +2,11 @@ use super::*;
 
 fn subscription(path: &str, delivery: wire::SessionDelivery) -> wire::SessionSubscription {
     wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         resume: Some(wire::SessionCursor::default()),
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: path.into(),
+            resource: crate::wire_codec::session::stream_resource(path),
             delivery: delivery as i32,
             ..Default::default()
         })),
@@ -23,6 +25,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut all = client
         .subscribe(subscription("events", wire::SessionDelivery::All))
         .await?;
@@ -34,9 +37,11 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         return Err("expected record".into());
     };
     let checked = wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         resume: data.after,
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: "events".into(),
+            resource: crate::wire_codec::session::stream_resource("events"),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: value.commit_id,
         })),
@@ -49,6 +54,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         Body::Watermark(wire::SessionWatermark {
             accepted: 1,
             durable: 1,
+            ..Default::default()
         }),
     )))?;
     let mark = tokio::time::timeout(Duration::from_secs(1), all.next())
@@ -58,7 +64,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         mark.body,
         Some(Body::Watermark(wire::SessionWatermark {
             accepted: 1,
-            durable: 1
+            durable: 1,
+            ..
         }))
     ));
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
@@ -94,6 +101,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut latest = client
         .subscribe(subscription("status", wire::SessionDelivery::Latest))
         .await?;
@@ -135,5 +143,20 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         }
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn filtered_loopback_preserves_idle_cuts_matches_and_checked_resume() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let fixture = Fixture::open(provider, "filtered-node").await?;
+    let client = fixture.client()?;
+    tokio::time::timeout(
+        Duration::from_secs(4),
+        crate::filtered_follow_tests::qualify_progress(&client),
+    )
+    .await??;
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     Ok(())
 }

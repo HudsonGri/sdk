@@ -273,7 +273,10 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let created = fs
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "measured-recovery",
-            VolumeConfig::portable(Lifecycle::Ephemeral),
+            acyclic_fs::VolumeInitialization::new(
+                VolumeConfig::portable(Lifecycle::Ephemeral),
+                None,
+            ),
             operation,
             budget,
             &CancellationToken::new(),
@@ -443,8 +446,9 @@ mod source_bound_lost_ack {
             &self,
             path: StreamPath,
             from: u64,
+            filter: acyclic_stream::FollowFilter,
         ) -> Result<acyclic_stream::RecordStream, StreamError> {
-            self.inner.follow(path, from).await
+            self.inner.follow(path, from, filter).await
         }
 
         async fn children(
@@ -543,7 +547,7 @@ mod source_bound_lost_ack {
             "stream-lost-ack",
             source.clone(),
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization::new(config, None),
             operation,
             &mut accounting,
         )
@@ -634,7 +638,7 @@ mod source_bound_lost_ack {
             "stream-lost-ack",
             source,
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization::new(config, None),
             operation,
             &mut accounting,
         )
@@ -679,7 +683,7 @@ mod source_bound_lost_ack {
             let failure = reopened
                 .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "stream-lost-ack",
-                    requested_config,
+                    acyclic_fs::VolumeInitialization::new(requested_config, None),
                     requested_operation,
                     budget,
                     &cancellation,

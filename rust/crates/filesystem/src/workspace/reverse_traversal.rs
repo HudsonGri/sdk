@@ -86,7 +86,7 @@ fn reverse_insert(
     Ok(())
 }
 
-fn reverse_sort(
+pub(super) fn reverse_sort(
     records: &mut NamespaceRecords,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
@@ -166,36 +166,14 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     }
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
-    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
-    if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
-        volume.fs.objects(),
+    let view = super::namespace_view::NamespaceView {
+        objects: volume.fs.objects(),
+        config: volume.config(),
         root,
-        &namespace_root,
-        volume.config(),
-        accounting,
-        cancellation,
-        None,
-    )
-    .await?
-    .record
-        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok()
-    {
-        let allocation = accounting.claim_owned(0, 0)?;
-        reverse_insert(
-            &mut matches.0.records,
-            &mut matches.1,
-            (
-                NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?,
-                allocation,
-            ),
-            record,
-            accounting,
-        )?;
-    }
-    if !walk_namespace(
-        volume,
-        root,
-        ids,
+    };
+    if !collect_namespace(
+        &view,
+        Some(ids),
         maximum_entries,
         &mut matches,
         accounting,
@@ -312,35 +290,114 @@ async fn answer_from_cache<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(false)
 }
 
+pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
+    view: &super::namespace_view::NamespaceView<'_, O>,
+    ids: Option<&[FileId]>,
+    maximum_entries: u32,
+    matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    // Closure validation authenticates each record's exact namespace link
+    // count. Once every requested binding has been found, unrelated subtrees
+    // cannot contain another alias and need not be traversed.
+    let mut remaining = if let Some(ids) = ids {
+        let (records, allocation) = crate::kernel::lookup_file_records_async_with_accounting(
+            view.objects,
+            view.root.file_table,
+            ids,
+            u32::try_from(ids.len()).map_err(|_| crate::WorkError::Overflow)?,
+            crate::kernel::DecodeLimits::for_volume(view.config),
+            accounting,
+            cancellation,
+            None,
+        )
+        .await?;
+        let owned = (records, allocation);
+        let mut count = 0_u64;
+        for record in &owned.0 {
+            accounting.charge_items(1)?;
+            count = count
+                .checked_add(record.as_ref().map_or(0, |record| record.link_count))
+                .ok_or(crate::WorkError::Overflow)?;
+        }
+        let bytes = workspace_vec_bytes(&owned.0);
+        reverse_drop(owned, bytes, accounting)?;
+        Some(count)
+    } else {
+        None
+    };
+    if remaining == Some(0) {
+        return Ok(true);
+    }
+    let limits = view.config.limits;
+    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
+    if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
+        view.objects,
+        view.root,
+        &namespace_root,
+        view.config,
+        accounting,
+        cancellation,
+        None,
+    )
+    .await?
+    .record
+        && namespace_selected(ids, record.file_id, accounting)?
+    {
+        let allocation = accounting.claim_owned(0, 0)?;
+        reverse_insert(
+            &mut matches.0.records,
+            &mut matches.1,
+            (
+                NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?,
+                allocation,
+            ),
+            record,
+            accounting,
+        )?;
+        if let Some(remaining) = remaining.as_mut() {
+            *remaining = remaining.checked_sub(1).ok_or(FsError::InvalidDiff)?;
+        }
+    }
+    if remaining == Some(0) {
+        return Ok(true);
+    }
+    walk_namespace(
+        view,
+        ids,
+        remaining,
+        maximum_entries,
+        matches,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
 /// Walks the namespace from its root, inserting every path that binds one of
 /// `ids` into `matches`. Returns false when the walk stopped at
 /// `maximum_entries` before examining every entry.
-async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    volume: &Volume<A, O>,
-    root: &crate::kernel::GenerationRoot,
-    ids: &[FileId],
+async fn walk_namespace<O: AsyncObjectStore>(
+    view: &super::namespace_view::NamespaceView<'_, O>,
+    ids: Option<&[FileId]>,
+    mut remaining: Option<u64>,
     maximum_entries: u32,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<bool, FsError> {
-    let limits = volume.config.limits;
-    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
-    let allocation = accounting.claim_owned(0, 0)?;
-    let mut pending = (Vec::new(), allocation);
-    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
-    let allocation = accounting.claim_owned(0, 0)?;
-    pending.0.push((namespace_root, allocation));
+    let limits = view.config.limits;
+    let mut pending = initial_walk(limits, accounting)?;
     let mut examined = 0_u32;
     while let Some(directory) = pending.0.pop() {
         let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
         loop {
-            let (page, allocation) =
-                crate::facade::list_directory_records_to_file_root_with_accounting(
-                    volume,
-                    root,
+            let (page, allocation) = view
+                .list(
                     &directory.0,
                     after.as_ref().map(|name| &name.0),
+                    ids,
                     maximum_entries
                         .saturating_sub(examined)
                         .saturating_add(1)
@@ -349,7 +406,7 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     cancellation,
                 )
                 .await?;
-            let mut page = (page, allocation);
+            let page = (page, allocation);
             for entry in &page.0.entries {
                 accounting.charge_items(1)?;
                 if examined == maximum_entries {
@@ -359,11 +416,14 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     return Ok(false);
                 }
                 examined += 1;
-                let found = binary_search_with_accounting(ids, accounting, |id| {
-                    id.cmp(&entry.record.file_id)
-                })?
-                .is_ok();
-                let is_directory = entry.record.kind == FileKind::Directory;
+                let Some(record) = entry.record else {
+                    continue;
+                };
+                let found = namespace_selected(ids, record.file_id, accounting)?;
+                let is_directory = record.kind == FileKind::Directory;
+                if found && let Some(remaining) = remaining.as_mut() {
+                    *remaining = remaining.checked_sub(1).ok_or(FsError::InvalidDiff)?;
+                }
                 if !found && !is_directory {
                     continue;
                 }
@@ -381,7 +441,7 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         &mut matches.0.records,
                         &mut matches.1,
                         (copy, allocation),
-                        entry.record,
+                        record,
                         accounting,
                     )?;
                 } else if found {
@@ -389,28 +449,28 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         &mut matches.0.records,
                         &mut matches.1,
                         path,
-                        entry.record,
+                        record,
                         accounting,
                     )?;
+                    if remaining == Some(0) {
+                        reverse_sort(&mut matches.0.records, accounting)?;
+                        drop_page(page, accounting)?;
+                        abandon_walk(after, directory, pending, accounting)?;
+                        return Ok(true);
+                    }
                     continue;
                 }
-                reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
-                pending.0.push(path);
+                if remaining == Some(0) {
+                    let bytes = path.0.retained_bytes();
+                    reverse_drop(path, bytes, accounting)?;
+                    reverse_sort(&mut matches.0.records, accounting)?;
+                    drop_page(page, accounting)?;
+                    abandon_walk(after, directory, pending, accounting)?;
+                    return Ok(true);
+                }
+                enqueue_directory(&mut pending, path, found && ids.is_some(), accounting)?;
             }
-            let next = if page.0.has_more {
-                let name = page.0.entries.pop().ok_or(FsError::NotFound)?.name;
-                let allocation =
-                    crate::kernel::split_allocation(&mut page.1, name.retained_bytes() as u64)?;
-                Some((name, allocation))
-            } else {
-                None
-            };
-            drop_page(page, accounting)?;
-            if let Some(old) = after.take() {
-                let bytes = old.0.retained_bytes() as u64;
-                reverse_drop(old, bytes, accounting)?;
-            }
-            after = next;
+            after = advance_walk_page(page, after, accounting)?;
             if after.is_none() {
                 break;
             }
@@ -423,9 +483,49 @@ async fn walk_namespace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(true)
 }
 
+// Already located directory identities remain eligible for descendant matches,
+// but unresolved sibling directories are searched first. Otherwise finding a
+// large retained subtree can force a complete walk before a nearby sibling.
+fn enqueue_directory(
+    pending: &mut (
+        Vec<(NamespacePath, KernelOwnedAllocation)>,
+        KernelOwnedAllocation,
+    ),
+    path: (NamespacePath, KernelOwnedAllocation),
+    defer: bool,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
+    if defer {
+        let bytes = pending
+            .0
+            .len()
+            .checked_mul(std::mem::size_of::<(NamespacePath, KernelOwnedAllocation)>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(crate::WorkError::Overflow)?;
+        accounting.charge(copy_work(bytes))?;
+        pending.0.insert(0, path);
+    } else {
+        pending.0.push(path);
+    }
+    Ok(())
+}
+
+fn namespace_selected(
+    ids: Option<&[FileId]>,
+    file_id: FileId,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<bool, FsError> {
+    match ids {
+        Some(ids) => binary_search_with_accounting(ids, accounting, |id| id.cmp(&file_id))
+            .map(|position| position.is_ok()),
+        None => Ok(true),
+    }
+}
+
 /// Releases one listed directory page.
 fn drop_page(
-    page: (crate::DirectoryRecordPage, KernelOwnedAllocation),
+    page: (super::namespace_view::NamespacePage, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     let page_bytes = workspace_vec_bytes(&page.0.entries)
@@ -482,4 +582,43 @@ pub(crate) fn namespace_records_bytes(records: &NamespaceRecords) -> u64 {
                         .sum::<u64>()
             })
             .sum::<u64>()
+}
+
+fn advance_walk_page(
+    mut page: (super::namespace_view::NamespacePage, KernelOwnedAllocation),
+    after: Option<(LogicalName, KernelOwnedAllocation)>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError> {
+    let next = if page.0.has_more {
+        let name = page.0.entries.pop().ok_or(FsError::NotFound)?.name;
+        let allocation =
+            crate::kernel::split_allocation(&mut page.1, name.retained_bytes() as u64)?;
+        Some((name, allocation))
+    } else {
+        None
+    };
+    drop_page(page, accounting)?;
+    if let Some(old) = after {
+        let bytes = old.0.retained_bytes() as u64;
+        reverse_drop(old, bytes, accounting)?;
+    }
+    Ok(next)
+}
+
+type PendingDirectories = (
+    Vec<(NamespacePath, KernelOwnedAllocation)>,
+    KernelOwnedAllocation,
+);
+
+fn initial_walk(
+    limits: crate::model::VolumeLimits,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<PendingDirectories, FsError> {
+    let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
+    let allocation = accounting.claim_owned(0, 0)?;
+    let mut pending = (Vec::new(), allocation);
+    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
+    let allocation = accounting.claim_owned(0, 0)?;
+    pending.0.push((namespace_root, allocation));
+    Ok(pending)
 }

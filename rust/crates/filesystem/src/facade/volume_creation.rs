@@ -4,6 +4,25 @@ pub(super) const ROOT_FILE_DOMAIN: &[u8] = b"acyclic-fs-root-file-v1\0";
 pub(super) const CREATION_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-create-operation-v1\0";
 pub(super) const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-fingerprint-v1\0";
 
+/// Immutable semantics and optional policy published in the first generation.
+#[derive(Clone, Copy)]
+pub struct VolumeInitialization<'a> {
+    /// Owning volume's native name semantics and limits.
+    pub config: VolumeConfig,
+    /// Owner-validated versioned policy bytes; absence grants no access.
+    pub access_policy: Option<&'a [u8]>,
+}
+
+impl<'a> VolumeInitialization<'a> {
+    /// Select immutable volume semantics and the initial owner policy.
+    pub const fn new(config: VolumeConfig, access_policy: Option<&'a [u8]>) -> Self {
+        Self {
+            config,
+            access_policy,
+        }
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a fresh volume and its authenticated empty generation.
     pub async fn create_volume(
@@ -27,7 +46,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result = self
             .create_volume_operation(
                 volume_id,
-                config,
+                VolumeInitialization {
+                    config,
+                    access_policy: None,
+                },
                 None,
                 &mut accounting,
                 cancellation,
@@ -115,7 +137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(super) async fn create_volume_operation<E, G>(
         &self,
         volume_id: VolumeId,
-        config: VolumeConfig,
+        initialization: VolumeInitialization<'_>,
         operation_id: Option<OperationId>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -127,10 +149,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
     {
         accounting.check()?;
+        let config = initialization.config;
         validate_volume_capabilities(config, self.inner.capabilities)?;
         let proven_at = self.inner.objects.collection_sweeps();
         let produced = self
-            .build_empty_generation(volume_id, config, accounting, cancellation)
+            .build_empty_generation(volume_id, initialization, accounting, cancellation)
             .await?;
         let generation_root = produced[3];
         let proof = self
@@ -195,7 +218,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::kernel::encode_volume_created(creation, observe, allocation_error)
             })?;
         let capacity = encoded.0.capacity() as u64;
-        let commit = creation_commit(operation_id, encoded, accounting)?;
+        let mut commit = creation_commit(operation_id, encoded, accounting)?;
+        commit.publication = Some(crate::PublicationChanges::initial(
+            &self.inner.objects, creation, accounting, cancellation,
+        ).await?);
         let hold = self
             .flush_publication(
                 crate::PublicationScope::Closure {
@@ -208,6 +234,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?;
         accounting.check()?;
         let mut authority = authority_work(accounting, cancellation)?;
+        let changes = commit.publication.clone();
         let result = self
             .inner
             .authority
@@ -218,7 +245,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 guard,
             )
             .await;
-        record_authority_work(accounting, &authority)?;
+        let recorded = record_authority_work(accounting, &authority);
+        if let Some(changes) = changes {
+            changes.retire(accounting)?;
+        }
+        recorded?;
         if readonly_standalone_live(accounting).is_some() {
             accounting.release_owned(&mut KernelOwnedAllocation::Standalone, capacity)?;
         }
@@ -284,17 +315,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(super) async fn build_empty_generation(
         &self,
         volume_id: VolumeId,
-        config: VolumeConfig,
+        initialization: VolumeInitialization<'_>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<[ObjectId; 4], FsError> {
+        let config = initialization.config;
+        let metadata = match initialization.access_policy {
+            Some(bytes) => {
+                self.initial_policy_metadata(volume_id, config, bytes, accounting, cancellation)
+                    .await?
+            }
+            None => FileMetadata::default(),
+        };
         let encoded =
             crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-                crate::kernel::encode_file_metadata(
-                    FileMetadata::default(),
-                    observe,
-                    allocation_error,
-                )
+                crate::kernel::encode_file_metadata(metadata, observe, allocation_error)
             })?;
         let metadata = self
             .put_encoded_with_accounting(ObjectKind::Metadata, encoded, accounting, cancellation)
@@ -427,6 +462,7 @@ pub(super) fn creation_commit(
         payload.bytes = allocation.bytes();
         let payload = Bytes::from_owner(payload);
         return Ok(ProposedCommit {
+            publication: None,
             operation_id,
             fingerprint,
             payload,
@@ -440,6 +476,7 @@ pub(super) fn creation_commit(
     let payload = Bytes::from(encoded.0);
     accounting.record_completed(owner)?;
     Ok(ProposedCommit {
+        publication: None,
         operation_id,
         fingerprint,
         payload,

@@ -9,9 +9,9 @@ async fn seeded() -> MemoryResult<MemoryStream> {
         .append(AppendRequest {
             path: path("native/read")?,
             records: vec![
-                OwnedBytes::from_static(b"aa"),
-                OwnedBytes::from_static(b"bb"),
-                OwnedBytes::from_static(b"cc"),
+                (OwnedBytes::from_static(b"aa")).into(),
+                (OwnedBytes::from_static(b"bb")).into(),
+                OwnedBytes::from_static(b"cc").into(),
             ],
             if_tail: Some(0),
             idempotency_key: None,
@@ -77,7 +77,7 @@ async fn tail_read_fits_its_budget_without_hydrating_older_batches() -> MemoryRe
         provider
             .append(AppendRequest {
                 path: path("native/read")?,
-                records: vec![OwnedBytes::from_static(b"aa")],
+                records: vec![(OwnedBytes::from_static(b"aa")).into()],
                 if_tail: Some(sequence),
                 idempotency_key: None,
             })

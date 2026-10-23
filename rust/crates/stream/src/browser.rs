@@ -180,7 +180,7 @@ impl BrowserStream {
         &self,
         transaction: &Transaction<'_>,
         cache: &mut Cache,
-        changed: &mut std::collections::BTreeSet<publication::Key>,
+        changed: &mut publication::Changes,
     ) -> Result<(u64, u64), StreamError> {
         if !cache.valid {
             cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
@@ -241,7 +241,7 @@ impl BrowserStream {
             };
             replay(&cache.provider, command).await?;
             if let Some(before) = before {
-                before.collect(&cache.provider, changed).await?;
+                before.collect(&cache.provider, changed, &self.inner.publications).await?;
                 cache.announced = cache.cursor + 1;
             }
             cache.cursor += 1;
@@ -365,7 +365,7 @@ impl BrowserStream {
         // or abort, and same-handle readers also share the cache lock.
         self.inner.publications.publish()?;
         transaction.commit().await.map_err(backend)?;
-        before.collect(&cache.provider, &mut dispatch.keys).await?;
+        before.collect(&cache.provider, &mut dispatch.keys, &self.inner.publications).await?;
         cache.cursor = count + 1;
         cache.announced = cache.cursor;
         cache.valid = true;
@@ -476,15 +476,30 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.read_commit(id).await)
             .await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, None).await
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, None, filter).await
+    }
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.progress_from(path, from, preceding, filter).await
     }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, Some(preceding)).await
+        self.follow_from(path, from, Some(preceding), filter).await
     }
 }

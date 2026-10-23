@@ -150,6 +150,7 @@ macro_rules! records {
     ($($record:ty => $schema:ident),* $(,)?) => {$(impl PreparationRecord for $record { fn json_value_schema() -> &'static Schema { Schema::$schema } })*};
 }
 records!(
+    crate::Capabilities => None,
     crate::context::Context => Context, crate::context::SummarySource => SummarySource, crate::context::CanonicalContextCheckpoint => None, crate::context::CompactionReference => None,
     crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
@@ -157,6 +158,26 @@ records!(
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
+impl PreparationRecord for acyclic_fs::access::Policy {
+    fn maximum_slot_bytes() -> u64 {
+        preparation_slot_bytes::<acyclic_fs::access::Rule>()
+    }
+    fn container_collection_slots() -> bool {
+        // Rule headers belong to parsed objects, not each action enum or string.
+        // Every lexical item still funds serde Content buffering and strings.
+        true
+    }
+}
+impl PreparationRecord for acyclic_fs::access::Capability {
+    fn maximum_slot_bytes() -> u64 {
+        preparation_slot_bytes::<acyclic_fs::access::Grant>()
+    }
+    fn container_collection_slots() -> bool {
+        // Grant vectors grow at their object/array openings. Scalar actions
+        // retain their separate Content allowance without another Grant header.
+        true
+    }
+}
 impl PreparationRecord for crate::workflow::WorkflowRecord {
     fn diagnostic_source_bytes(shape: JsonValueShape) -> u64 {
         // The closed workflow envelope's Value fields accept any admitted
@@ -245,6 +266,11 @@ impl UploadRecord for FileRef {
         FileRef::logical_owned_bytes(self)
     }
 }
+impl PreparationRecord for (FileRef, Option<crate::resources::GenerationRef>) {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
+    }
+}
 impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.0
@@ -257,5 +283,11 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
                     .unwrap_or(0),
             )
             .ok_or_else(|| Error::Invalid("upload generation ownership overflow".into()))
+    }
+}
+
+impl PreparationRecord for crate::resources::GenerationRef {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
     }
 }

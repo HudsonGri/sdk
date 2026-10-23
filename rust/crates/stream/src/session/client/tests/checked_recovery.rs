@@ -74,7 +74,7 @@ async fn append_one(provider: &MemoryStream, ledger: &mut Vec<CommitId>) -> Test
     provider
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: vec![OwnedBytes::from(vec![sequence.to_le_bytes()[0]])],
+            records: vec![(OwnedBytes::from(vec![sequence.to_le_bytes()[0]])).into()],
             if_tail: Some(sequence as u64),
             idempotency_key: None,
         })
@@ -159,16 +159,18 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             as crate::BoxProviderFuture<'static, Result<transport::Endpoint, StreamError>>
     });
     let client = Client::with_transport(home, connect, std::sync::Arc::new(PlatformExecutor));
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut data = client
         .follow_data(
             wire::SessionFollow {
-                path: "events".into(),
+                resource: crate::wire_codec::session::stream_resource("events"),
                 delivery: wire::SessionDelivery::All as i32,
                 preceding_commit_id: Bytes::copy_from_slice(
                     ledger.first().ok_or("empty ledger")?.as_bytes(),
                 ),
             },
             1,
+            crate::FollowFilter::default(),
         )
         .await?;
     // Independent state: a ledger supplied by accepted appends and a cursor

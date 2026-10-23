@@ -26,7 +26,7 @@ async fn seed(provider: &impl StreamProvider, children: bool) {
         .append(AppendRequest {
             path: StreamPath::new("root").unwrap(),
             records: (0..COUNT)
-                .map(|_| OwnedBytes::from_static(b"record"))
+                .map(|_| OwnedBytes::from_static(b"record").into())
                 .collect(),
             if_tail: None,
             idempotency_key: None,
@@ -38,7 +38,7 @@ async fn seed(provider: &impl StreamProvider, children: bool) {
             provider
                 .append(AppendRequest {
                     path: StreamPath::new(format!("root/c{i:03}")).unwrap(),
-                    records: vec![OwnedBytes::from_static(b"child")],
+                    records: vec![(OwnedBytes::from_static(b"child")).into()],
                     if_tail: None,
                     idempotency_key: None,
                 })
@@ -77,7 +77,7 @@ async fn records(provider: BaselineProvider) -> RecordStream {
     let local = matches!(&provider, BaselineProvider::Local(_));
     let (_, cursor) = provider
         .memory()
-        .prepare_follow(&path, 0, None)
+        .prepare_follow(&path, 0, None, crate::FollowFilter::default())
         .await
         .unwrap();
     let records = stream::unfold(
@@ -89,7 +89,12 @@ async fn records(provider: BaselineProvider) -> RecordStream {
                 match &provider {
                     BaselineProvider::Memory(provider) => {
                         provider
-                            .next_checked_record(&path, &mut cursor, &mut anchor)
+                            .next_checked_record(
+                                &path,
+                                &mut cursor,
+                                &mut anchor,
+                                &crate::FollowFilter::default(),
+                            )
                             .await
                     }
                     BaselineProvider::Local(provider) => {
@@ -98,6 +103,7 @@ async fn records(provider: BaselineProvider) -> RecordStream {
                                 &path,
                                 &mut cursor,
                                 &mut anchor,
+                                &crate::FollowFilter::default(),
                             ))
                             .await?
                     }
@@ -233,7 +239,13 @@ async fn prepare<P: StreamProvider>(
 ) -> ReadyPair {
     let path = StreamPath::new("root").unwrap();
     // Compare exact errors as well as all record bytes/metadata and observer order.
-    let errors = [old, candidate].map(|provider| provider.follow(path.clone(), COUNT as u64 + 1));
+    let errors = [old, candidate].map(|provider| {
+        provider.follow(
+            path.clone(),
+            COUNT as u64 + 1,
+            crate::FollowFilter::default(),
+        )
+    });
     let [old_error, candidate_error] = errors;
     assert_eq!(old_error.await.err(), Some(StreamError::OutOfRange));
     assert_eq!(candidate_error.await.err(), Some(StreamError::OutOfRange));
@@ -252,7 +264,11 @@ async fn prepare<P: StreamProvider>(
         ReadyPair::Records(
             records(baseline).await,
             candidate
-                .follow(StreamPath::new("root").unwrap(), 0)
+                .follow(
+                    StreamPath::new("root").unwrap(),
+                    0,
+                    crate::FollowFilter::default(),
+                )
                 .await
                 .unwrap(),
         )

@@ -45,6 +45,7 @@ async fn created_with(
             .create_first_record(
                 AUTHORITY,
                 ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes([8; 16]),
                     fingerprint: Digest::from_bytes([9; 32]),
                     payload,
@@ -326,7 +327,7 @@ async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence()
                 }],
                 mutations: vec![CommitMutation::Append {
                     path,
-                    records: vec![OwnedBytes::from(encoded)],
+                    records: vec![OwnedBytes::from(encoded).into()],
                 }],
                 idempotency_key: stream_key(b"corrupt-head", &[u8::from(corrupt_sequence)])?,
             })

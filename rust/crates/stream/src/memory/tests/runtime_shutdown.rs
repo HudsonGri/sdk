@@ -26,7 +26,7 @@ fn append(provider: &MemoryStream) -> crate::AppendReceipt {
     let AppendOutcome::Committed(receipt) =
         futures::executor::block_on(provider.append(AppendRequest {
             path: StreamPath::new("watched").unwrap(),
-            records: vec![Bytes::from_static(b"x")],
+            records: vec![(Bytes::from_static(b"x")).into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -61,9 +61,18 @@ fn pending_stream_survives_its_polling_runtime() {
                 .boxed()
             } else {
                 let follow = if checked {
-                    futures::executor::block_on(provider.follow_checked(path, 1, seed.commit_id))
+                    futures::executor::block_on(provider.follow_checked(
+                        path,
+                        1,
+                        seed.commit_id,
+                        crate::FollowFilter::default(),
+                    ))
                 } else {
-                    futures::executor::block_on(provider.follow(path, 0))
+                    futures::executor::block_on(provider.follow(
+                        path,
+                        0,
+                        crate::FollowFilter::default(),
+                    ))
                 }
                 .unwrap();
                 follow

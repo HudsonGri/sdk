@@ -138,21 +138,23 @@ fn open(
         .map_err(fail)?;
     boundary(pool, model, wakes & 2 != 0)?;
     let (ready, _opened) = oneshot::channel();
-    let command = Command::Open {
+    let command = Command::Open(Box::new(OpenCommand {
+        filter: None,
+        credential: 0,
         id,
         attempt_epoch: 0,
         acknowledge: false,
         raw: false,
         progress,
         kind: Kind::Follow(wire::SessionFollow {
-            path: format!("view/{id}"),
+            resource: crate::wire_codec::session::stream_resource(&format!("view/{id}")),
             delivery: wire::SessionDelivery::All as i32,
             ..Default::default()
         }),
         records,
         ready,
         observation: cursor.observation.operation.clone(),
-    };
+    }));
     boundary(pool, model, wakes & 4 != 0)?;
     model.open(id);
     if broken {
@@ -278,6 +280,7 @@ fn deliver(pool: &mut Pool, model: &mut Model, id: u64) -> TestCaseResult {
                     accepted: sequence + 1,
                     durable: sequence + 1,
                     item: Some(Item::Record(wire_codec::record_wire(crate::Record {
+                        headers: Default::default(),
                         sequence,
                         value: vec![sequence.to_le_bytes()[0]].into(),
                         commit_id: crate::CommitId::from_bytes([1; 32]),

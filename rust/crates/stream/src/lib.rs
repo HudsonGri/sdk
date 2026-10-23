@@ -11,10 +11,12 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod filtered_follow_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod follow_tests;
-#[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -51,6 +53,8 @@ mod local;
 mod memory;
 mod operation_claim;
 pub use operation_claim::{OperationClaim, OperationClaims};
+mod follow_filter;
+mod follow_index;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
@@ -61,10 +65,11 @@ pub mod query_sync;
 mod snapshot;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
+pub use follow_filter::FollowFilter;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::WasmStream;
+pub use wasm::{WasmSessionAuthority, WasmStream};
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
@@ -98,6 +103,8 @@ pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
     reason = "generated prost and tonic bindings"
 )]
 pub mod wire {
+    // All session data variants have total equality, including repeated headers.
+    impl Eq for SessionData {}
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.
@@ -151,6 +158,13 @@ mod path;
 pub use path::StreamPath;
 
 include!("lib/domain.rs");
+
+mod record_headers;
+mod changes;
+pub use changes::ChangeEntryRef;
+pub use record_headers::{
+    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders,
+};
 
 include!("lib/provider.rs");
 

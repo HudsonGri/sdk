@@ -6,8 +6,10 @@ use std::collections::HashSet;
 use zeroize::Zeroizing;
 
 mod effective;
+mod signer;
 mod wire;
-pub use effective::{Effective, ScopedFilter};
+pub use effective::{Effective, ScopedFilter, ScopedPin};
+pub use signer::CertifiedSigner;
 
 /// Authentication, structural admission or authority failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -107,7 +109,7 @@ pub struct VerifiedCapability {
 /// authority must still be checked against current trust/time at each admission.
 pub fn verify(
     bytes: &[u8],
-    trust: &impl Trust,
+    trust: &(impl Trust + ?Sized),
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
     let envelope = wire::decode(bytes)?;
@@ -244,6 +246,20 @@ pub fn verify(
 }
 
 impl VerifiedCapability {
+    /// Whether this chain has irreversibly discarded its append authority.
+    pub fn is_sealed(&self) -> bool {
+        matches!(self.proof, Proof::Sealed(_))
+    }
+
+    /// Account authenticated by the environment birth certificate.
+    pub fn account_id(&self) -> Result<&str, VerifyError> {
+        self.blocks
+            .first()
+            .and_then(|block| block.certificates.as_ref())
+            .map(|certificates| certificates.birth.birth.account_id.as_str())
+            .ok_or(VerifyError::Malformed)
+    }
+
     /// Borrow effective principal, conjunctive grant/filter sets and numeric minima.
     pub fn effective(&self) -> Effective<'_> {
         Effective { capability: self }
@@ -253,8 +269,25 @@ impl VerifiedCapability {
         &self.ids
     }
 
+    /// Every chain and certificate ancestor whose revocation invalidates this workload.
+    pub fn revocation_ids(&self) -> impl Iterator<Item = &[u8]> {
+        self.ids.iter().map(|id| id.as_slice()).chain(
+            self.blocks
+                .first()
+                .into_iter()
+                .flat_map(|block| block.certificates.iter())
+                .flat_map(|certificates| &certificates.keys)
+                .flat_map(|certificate| &certificate.key.parent_revocation_ids)
+                .map(Vec::as_slice),
+        )
+    }
+
     /// Recheck the current trust snapshot and clock without repeating signatures.
-    pub fn check(&self, trust: &impl Trust, now_unix_seconds: u64) -> Result<(), VerifyError> {
+    pub fn check(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        now_unix_seconds: u64,
+    ) -> Result<(), VerifyError> {
         if now_unix_seconds < self.not_before || now_unix_seconds >= self.expires_at {
             return Err(VerifyError::Time);
         }
@@ -316,12 +349,50 @@ impl VerifiedCapability {
     /// Authorize against fresh revocations/time and the owner's policy result.
     pub fn authorize(
         &self,
-        trust: &impl Trust,
+        trust: &(impl Trust + ?Sized),
         request: &authority::Request<'_>,
         policy: authority::PolicyDecision,
     ) -> Result<(), VerifyError> {
         self.check(trust, request.now_unix_seconds)?;
         authority::permits(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
+    /// Admit only a Streams follow, deferring record filters and pins to the
+    /// provider's mandatory predicate. All other caveats are checked now.
+    pub fn authorize_follow(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_follow(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
+    /// Admit children discovery, including discovery above a granted prefix.
+    /// Every returned child still needs its own grant and mandatory predicate.
+    pub fn authorize_children(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_children(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
+    /// Admit filesystem change discovery. Record filters and pins are deferred
+    /// to the owning provider; each returned full path still needs `authorize`
+    /// with the current volume policy. This method cannot authorize content.
+    pub fn authorize_resource_follow(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_resource_follow(&self.blocks, request, policy)
+            .map_err(VerifyError::Denied)
     }
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
@@ -383,7 +454,16 @@ impl VerifiedCapability {
         Ok(self)
     }
 
-    /// Sensitive transport bytes. The returned buffer is scrubbed when dropped.
+    /// Exact encoded length, without allocating or exposing the append secret.
+    pub fn encoded_len(&self) -> usize {
+        let proof_len = match &self.proof {
+            Proof::Append(_) => 32,
+            Proof::Sealed(_) => 64,
+        };
+        wire::encoded_len(&self.signed, proof_len, VERSION)
+    }
+
+    /// Encodes this capability, zeroizing the returned append secret on drop.
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
         match &self.proof {
             Proof::Append(key) => {

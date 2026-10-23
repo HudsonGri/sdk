@@ -14,7 +14,7 @@ fn check<const OMIT_ANCHOR: bool>() {
         let path = StreamPath::new("model").unwrap();
         let AppendOutcome::Committed(receipt) = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"old")],
+            records: vec![Bytes::from_static(b"old").into()],
             if_tail: Some(0),
             idempotency_key: None,
         }))
@@ -25,8 +25,8 @@ fn check<const OMIT_ANCHOR: bool>() {
         block_on(replacement.append(AppendRequest {
             path: path.clone(),
             records: vec![
-                Bytes::from_static(b"replacement"),
-                Bytes::from_static(b"next"),
+                Bytes::from_static(b"replacement").into(),
+                Bytes::from_static(b"next").into(),
             ],
             if_tail: Some(0),
             idempotency_key: None,
@@ -49,11 +49,18 @@ fn check<const OMIT_ANCHOR: bool>() {
             } else {
                 Some(receipt.commit_id)
             };
-            let (_, mut cursor) = provider.prepare_follow(&path, 1, anchor).await?;
+            let (_, mut cursor) = provider
+                .prepare_follow(&path, 1, anchor, crate::FollowFilter::default())
+                .await?;
             changed
                 .next(async || {
                     provider
-                        .next_checked_record(&path, &mut cursor, &mut anchor)
+                        .next_checked_record(
+                            &path,
+                            &mut cursor,
+                            &mut anchor,
+                            &crate::FollowFilter::default(),
+                        )
                         .await
                 })
                 .await

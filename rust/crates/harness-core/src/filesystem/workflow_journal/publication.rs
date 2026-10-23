@@ -105,6 +105,7 @@ where
                 &key,
                 Some(InternalContentClass::Workflow),
                 None,
+                None,
                 io,
             )
             .await
@@ -192,7 +193,7 @@ where
                 .await
             }
             None => stream
-                .append_batch(vec![bytes], Some(revision), Some(key))
+                .append_batch(vec![bytes.into()], Some(revision), Some(key))
                 .await
                 .map_err(|error| match error {
                     StreamError::Unavailable => Error::Indeterminate(operation),

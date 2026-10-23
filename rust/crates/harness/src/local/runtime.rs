@@ -150,6 +150,7 @@ pub(super) async fn open(
         None,
     )
     .await?
+    .with_authority_custodian(config.issuer)?
     .with_output_volume(config.project, None)?
     .with_task_files(task_files.clone())?;
     runtime.bind_task_files(Some(projection_files.clone()));
@@ -161,6 +162,7 @@ pub(super) async fn open(
                     workspace,
                     config.project,
                     config.clock,
+                    &signed,
                     Arc::clone(&projection_files),
                 )
                 .await?,
@@ -170,7 +172,6 @@ pub(super) async fn open(
                 config.files,
                 config.project,
                 config.verifier,
-                &signed,
                 config.limits.file_bytes,
             );
             runtime

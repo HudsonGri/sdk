@@ -6,6 +6,29 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         identity: wire::SessionChannel,
         record: Result<Event, StreamError>,
     ) -> Result<(), StreamError> {
+        if let Some(channel) = self.channels.get(&identity.channel_id)
+            && channel.generation == identity.generation
+        {
+            if let Err(reason) = self.validate_authority(identity.channel_id) {
+                return self.close_authority(identity, reason);
+            }
+            if let Ok(Event::Child(child, _)) = &record {
+                let count = self.channels.len();
+                let binding = self
+                    .channels
+                    .get_mut(&identity.channel_id)
+                    .and_then(|channel| channel.binding.as_mut())
+                    .ok_or(StreamError::AccessDenied)?;
+                match self
+                    .authority
+                    .permits_child(&self.slots, binding, &child.path, count)
+                {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(()),
+                    Err(reason) => return self.close_authority(identity, reason),
+                }
+            }
+        }
         let Some(channel) = self.channels.get(&identity.channel_id).filter(|channel| {
             channel.generation == identity.generation && channel.ending.is_none()
         }) else {
@@ -24,6 +47,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 ));
                 return Ok(());
             }
+            Ok(Event::Progress(mark)) => {
+                let channel = self
+                    .channels
+                    .get_mut(&identity.channel_id)
+                    .ok_or(StreamError::Unavailable)?;
+                channel.progress = Some(mark);
+                self.flush_progress(identity.channel_id)?;
+                self.refresh_source(identity.channel_id);
+                return Ok(());
+            }
             Ok(Event::Child(child, after)) => (
                 after,
                 Item::Child(wire::Child {
@@ -31,20 +64,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }),
                 None,
             ),
-            Ok(Event::Publication(data)) => {
-                let after = data.after.ok_or(StreamError::InvalidArgument)?;
-                let Some(Item::FsPublication(value)) = data.item else {
-                    return Err(StreamError::InvalidArgument);
-                };
-                if after.next <= channel.sent.next {
-                    return Err(StreamError::InvalidArgument);
-                }
-                (
-                    after,
-                    Item::FsPublication(value),
-                    channel.latest.then(|| Bytes::from_static(b"fs")),
-                )
-            }
             Ok(Event::Record(record)) => {
                 let next = record
                     .sequence
@@ -184,6 +203,21 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let Some((_, id)) = selected else {
             return Ok(None);
         };
+        if let Err(reason) = self.validate_authority(id) {
+            let generation = self
+                .channels
+                .get(&id)
+                .ok_or(StreamError::Unavailable)?
+                .generation;
+            self.close_authority(
+                wire::SessionChannel {
+                    channel_id: id,
+                    generation,
+                },
+                reason,
+            )?;
+            return Ok(self.controls.pop_front());
+        }
         if let Some(revalidate) = self
             .channels
             .get(&id)
@@ -225,7 +259,27 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
         }
         self.finish_if_drained(id)?;
+        self.flush_progress(id)?;
         self.refresh_source(id);
         Ok(Some(pending.frame))
+    }
+
+    fn flush_progress(&mut self, id: u64) -> Result<(), StreamError> {
+        let Some(channel) = self.channels.get_mut(&id) else {
+            return Ok(());
+        };
+        if !channel.pending.is_empty() {
+            return Ok(());
+        }
+        if let Some(mark) = channel.progress.take() {
+            let after = mark.after.as_ref().ok_or(StreamError::Unavailable)?;
+            if after.next <= channel.sent.next {
+                return Err(StreamError::Unavailable);
+            }
+            channel.sent = after.clone();
+            self.controls
+                .push_back(frame(id, channel.generation, Body::Watermark(mark)));
+        }
+        Ok(())
     }
 }

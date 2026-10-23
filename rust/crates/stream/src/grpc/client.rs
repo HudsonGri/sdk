@@ -28,13 +28,14 @@ impl Client {
         &self,
         follow: wire::SessionFollow,
         from: u64,
+        filter: crate::FollowFilter,
     ) -> Result<
         futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
         StreamError,
     > {
         Ok(self
             .session()?
-            .follow_data_with_ack(follow, from, self.acknowledge_deliveries)
+            .follow_data_with_ack(follow, from, self.acknowledge_deliveries, filter)
             .await?
             .boxed())
     }
@@ -174,7 +175,11 @@ impl StreamProvider for Client {
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let body = wire::AppendRequest {
             path: request.path.to_string(),
-            records: request.records.into_iter().map(Bytes::from_owner).collect(),
+            records: request
+                .records
+                .into_iter()
+                .map(crate::wire_codec::append_record_wire)
+                .collect(),
             if_tail: request.if_tail,
             idempotency_key: Some(retry_identity(request.idempotency_key)),
         };
@@ -220,9 +225,14 @@ impl StreamProvider for Client {
         Ok(stream::iter(first).chain(records).boxed())
     }
 
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         self.session()?
-            .follow_with_ack(path, from, self.acknowledge_deliveries)
+            .follow_with_ack(path, from, self.acknowledge_deliveries, filter)
             .await
     }
 
@@ -230,14 +240,32 @@ impl StreamProvider for Client {
         self.session()?.children(request).await
     }
 
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.session()?
+            .follow_updates_with_ack(path, from, preceding, self.acknowledge_deliveries, filter)
+            .await
+    }
     async fn follow_checked(
         &self,
         path: StreamPath,
         from: u64,
         preceding: CommitId,
+        filter: crate::FollowFilter,
     ) -> Result<RecordStream, StreamError> {
         self.session()?
-            .follow_records(path, from, Some(preceding), self.acknowledge_deliveries)
+            .follow_records(
+                path,
+                from,
+                Some(preceding),
+                self.acknowledge_deliveries,
+                filter,
+            )
             .await
     }
 

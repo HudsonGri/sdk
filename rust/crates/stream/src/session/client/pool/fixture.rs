@@ -6,6 +6,7 @@ pub(in crate::session::client) fn fixture(
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
+        credentials: BTreeMap::new(),
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
@@ -42,6 +43,7 @@ pub(in crate::session::client) fn fixture(
         pool.links.insert(
             node.into(),
             Link {
+                opening_credentials: BTreeMap::new(),
                 observation: None,
                 epoch,
                 credit: wire::SessionWindow {
@@ -81,7 +83,7 @@ pub(in crate::session::client) fn fixture(
             "good",
             Kind::Follow(wire::SessionFollow {
                 delivery: wire::SessionDelivery::All as i32,
-                path: "healthy".into(),
+                resource: crate::wire_codec::session::stream_resource("healthy"),
                 ..Default::default()
             }),
             records,
@@ -97,8 +99,11 @@ pub(in crate::session::client) fn route(
     records: mpsc::Sender<Result<Delivery, StreamError>>,
 ) -> Route {
     Route {
+        filter: None,
+        credential: 0,
         raw: false,
         watermark: None,
+        buffered_data: 0,
         node: node.into(),
         attempt_epoch: 0,
         kind,

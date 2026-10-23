@@ -1,3 +1,4 @@
+import { streamResourcePath } from "../src/contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { StreamLimit, type Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
@@ -67,7 +68,7 @@ export class SessionNode {
     for (let index = 0; index < count; index += 1) {
       const commit = new Uint8Array(32);
       new DataView(commit.buffer).setBigUint64(0, BigInt(history.length + 1), true);
-      history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), commitId: commit, committedAtMicros: 0n });
+      history.push({ $typeName: "acyclic.stream.v1.Record", sequence: BigInt(history.length), value: new Uint8Array([7]), keys: [], attributes: [], commitId: commit, committedAtMicros: 0n });
     }
     for (const connection of this.connections) this.pump(connection);
   }
@@ -108,7 +109,7 @@ export class SessionNode {
           if (subscription.kind.case === "actorSocket" || subscription.kind.case === "actorCall") this.actorChannels += 1;
           if ((subscription.kind.case !== "follow" && subscription.kind.case !== "children") || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
           const children = subscription.kind.case === "children";
-          const path = subscription.kind.case === "follow" ? subscription.kind.value.path : subscription.kind.value.parent ?? "";
+          const path = subscription.kind.case === "follow" ? streamResourcePath(subscription.kind.value.resource) : subscription.kind.value.parent ?? "";
           if (children && subscription.resume.next > 0n) {
             const prior = this.children.get(path)?.[Number(subscription.resume.next - 1n)];
             if (new TextDecoder().decode(subscription.resume.opaque) !== prior) throw new Error("child cursor did not resume from the yielded path");

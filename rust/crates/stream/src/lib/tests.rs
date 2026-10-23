@@ -119,8 +119,13 @@ mod replay_tests {
                 std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
             })))
         }
-        async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-            self.inner.follow(path, from).await
+        async fn follow(
+            &self,
+            path: StreamPath,
+            from: u64,
+            filter: crate::FollowFilter,
+        ) -> Result<RecordStream, StreamError> {
+            self.inner.follow(path, from, filter).await
         }
         async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
             self.inner.children(request).await
@@ -138,7 +143,7 @@ mod replay_tests {
         let mut next = 0;
         while next < records {
             let batch = (next..records.min(next + 500))
-                .map(|sequence| Bytes::from(sequence.to_be_bytes().to_vec()))
+                .map(|sequence| crate::AppendRecord::from(sequence.to_be_bytes().to_vec()))
                 .collect::<Vec<_>>();
             next += batch.len() as u64;
             stream.append_batch(batch, None, None).await.unwrap();

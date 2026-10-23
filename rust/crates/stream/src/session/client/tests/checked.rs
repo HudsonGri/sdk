@@ -27,15 +27,27 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
-    let mut ordinary = client.follow(path.clone(), 1).await?;
+    let mut ordinary = client
+        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .await?;
     assert!(matches!(
         client
-            .follow_checked(path.clone(), 1, CommitId::from_bytes([42; 32]))
+            .follow_checked(
+                path.clone(),
+                1,
+                CommitId::from_bytes([42; 32]),
+                crate::FollowFilter::default()
+            )
             .await,
         Err(StreamError::PrefixNotRetained)
     ));
     let mut checked = client
-        .follow_checked(path.clone(), 1, anchor(&provider, "events", 0).await?)
+        .follow_checked(
+            path.clone(),
+            1,
+            anchor(&provider, "events", 0).await?,
+            crate::FollowFilter::default(),
+        )
         .await?;
     append(&provider, "events", 1).await?;
     assert_eq!(next(&mut checked).await?.sequence, 1);
@@ -53,10 +65,17 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
     let fixture = Fixture::configured(Arc::clone(&provider), "legacy", false, false).await?;
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
-    let mut ordinary = client.follow(path.clone(), 3).await?;
+    let mut ordinary = client
+        .follow(path.clone(), 3, crate::FollowFilter::default())
+        .await?;
     assert!(matches!(
         client
-            .follow_checked(path.clone(), 1, anchor(&provider, "events", 0).await?)
+            .follow_checked(
+                path.clone(),
+                1,
+                anchor(&provider, "events", 0).await?,
+                crate::FollowFilter::default()
+            )
             .await,
         Err(StreamError::Unsupported)
     ));
@@ -85,9 +104,15 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let path = StreamPath::new("events")?;
     let mut records = client
-        .follow_checked(path, 1, anchor(&provider, "events", 0).await?)
+        .follow_checked(
+            path,
+            1,
+            anchor(&provider, "events", 0).await?,
+            crate::FollowFilter::default(),
+        )
         .await?;
     append(&provider, "events", 1).await?;
     let yielded = next(&mut records).await?;
@@ -152,13 +177,14 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
             StreamPath::new("events")?,
             1,
             anchor(&provider, "events", 0).await?,
+            crate::FollowFilter::default(),
         )
         .await?;
     let replacement = MemoryStream::default();
     replacement
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: vec![OwnedBytes::from_static(b"replacement")],
+            records: vec![(OwnedBytes::from_static(b"replacement")).into()],
             if_tail: None,
             idempotency_key: None,
         })

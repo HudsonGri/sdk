@@ -114,6 +114,12 @@ pub type PublicationFailure = OperationFailure<PublicationError>;
 /// Fail-closed generation-publication errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum PublicationError {
+    /// Complete namespace changes exceeded the caller's admitted work.
+    #[error("publication change paths exceed the admitted traversal bound")]
+    ChangeLimit,
+    /// Namespace change facts could not be authenticated.
+    #[error("publication change validation failed: {0}")]
+    ChangeValidation(#[source] Box<crate::FsError>),
     /// The request targeted an authority other than the volume's canonical authority.
     #[error("authority {actual:?} does not own volume {volume_id:?}; expected {expected:?}")]
     AuthorityMismatch {
@@ -132,6 +138,12 @@ pub enum PublicationError {
         /// Volume authenticated by the generation root.
         actual: VolumeId,
     },
+    /// A physical projection still holds the prior policy revision.
+    #[error("policy metadata cannot change while a native projection is active")]
+    ActiveProjection,
+    /// The current or candidate policy metadata could not be authenticated.
+    #[error("projection policy validation failed: {0}")]
+    ProjectionValidation(#[source] Box<crate::FsError>),
     /// Whole-generation authentication failed.
     #[error(transparent)]
     Closure(#[from] ClosureError),
@@ -156,6 +168,7 @@ mod construction;
 pub(crate) use construction::contextual_publication_fingerprint;
 use construction::*;
 mod engine;
+mod projection;
 use engine::*;
 mod api;
 pub use api::publish_generation;

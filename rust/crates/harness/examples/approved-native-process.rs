@@ -197,7 +197,7 @@ where
             128,
             &IdempotencyKey::new("example-source")?,
             None,
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
     let work = capture::work()?;
@@ -359,7 +359,7 @@ where
             &serde_json::to_vec(&request)?,
             "application/json",
             "request.json",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -370,7 +370,7 @@ where
             b"{\"type\":\"object\"}",
             "application/schema+json",
             "schema.json",
-            None,
+            acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -673,7 +673,7 @@ async fn verify_stored_result(
         return Err(format!("unobserved native result: {status:?}").into());
     };
     let output: NativeProcessResult =
-        serde_json::from_slice(&content.read(result, 1_000_000, None)?.await?)?;
+        serde_json::from_slice(&content.read(result, 1_000_000, None, None)?.await?)?;
     if request.mcp_stdio.is_some() {
         mcp_peer::verify_result(request, &output, lost_response)?;
     } else if !output.success
@@ -738,6 +738,15 @@ mod recovery;
 mod task;
 use recovery::Restart;
 
+fn report_failure(failure: &dyn std::error::Error) {
+    eprintln!("scenario failed: {failure}");
+    let mut cause = failure.source();
+    while let Some(error) = cause {
+        eprintln!("  caused by: {error}");
+        cause = error.source();
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
@@ -789,7 +798,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .filter_map(std::result::Result::err)
             .collect::<Vec<_>>();
         for failure in &failures {
-            eprintln!("scenario failed: {failure}");
+            report_failure(failure.as_ref());
         }
         failures.into_iter().next().map_or(Ok(()), Err)
     } else {

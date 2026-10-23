@@ -57,13 +57,14 @@ impl Fixture {
         .await
     }
     fn client(&self) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
-        match &self.tls_client {
-            Some(client) => Ok(client.with_credential("fixture")?),
-            None => Ok(grpc::Client::from_channel(
-                self._channel.clone(),
-                "Bearer fixture".parse()?,
-            )),
-        }
+        let client = match &self.tls_client {
+            Some(client) => client.with_credential("fixture")?,
+            None => grpc::Client::from_channel(self._channel.clone(), "Bearer fixture".parse()?),
+        };
+        client
+            .session_client()?
+            .register_credential(0, crate::session::testing::credential())?;
+        Ok(client)
     }
 }
 
@@ -71,7 +72,7 @@ async fn append(provider: &MemoryStream, path: &str, count: usize) -> Result<(),
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from_static(b"delta"); count],
+            records: vec![(OwnedBytes::from_static(b"delta")).into(); count],
             if_tail: None,
             idempotency_key: None,
         })
@@ -92,8 +93,13 @@ async fn public_follow_shares_one_session_and_slow_channels_do_not_block_others(
     append(&provider, "fast", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
-    let mut slow = client.follow(StreamPath::new("slow")?, 1).await?;
-    let mut fast = client.clone().follow(StreamPath::new("fast")?, 1).await?;
+    let mut slow = client
+        .follow(StreamPath::new("slow")?, 1, crate::FollowFilter::default())
+        .await?;
+    let mut fast = client
+        .clone()
+        .follow(StreamPath::new("fast")?, 1, crate::FollowFilter::default())
+        .await?;
     append(&provider, "slow", 20).await?;
     append(&provider, "fast", 20).await?;
     for sequence in 1..=20 {
@@ -117,8 +123,16 @@ async fn refused_channel_does_not_close_the_shared_session() -> TestResult {
     append(&provider, "fast", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
-    let mut fast = client.follow(StreamPath::new("fast")?, 1).await?;
-    let mut refused = client.follow(StreamPath::new("missing")?, 0).await?;
+    let mut fast = client
+        .follow(StreamPath::new("fast")?, 1, crate::FollowFilter::default())
+        .await?;
+    let mut refused = client
+        .follow(
+            StreamPath::new("missing")?,
+            0,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     assert_eq!(refused.next().await, Some(Err(StreamError::NotFound)));
     assert!(refused.next().await.is_none());
     append(&provider, "fast", 1).await?;
@@ -139,7 +153,11 @@ async fn node_subscription_fan_in_reuses_the_same_client_session_protocol() -> T
     for index in 0..16 {
         follows.push(
             client
-                .follow(StreamPath::new(format!("agents/{index}"))?, 1)
+                .follow(
+                    StreamPath::new(format!("agents/{index}"))?,
+                    1,
+                    crate::FollowFilter::default(),
+                )
                 .await?,
         );
     }
@@ -190,8 +208,13 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         None,
         connect,
     );
-    let mut moving = client.follow(StreamPath::new("move")?, 1).await?;
-    let mut staying = client.follow(StreamPath::new("stay")?, 1).await?;
+    client.register_credential(0, crate::session::testing::credential())?;
+    let mut moving = client
+        .follow(StreamPath::new("move")?, 1, crate::FollowFilter::default())
+        .await?;
+    let mut staying = client
+        .follow(StreamPath::new("stay")?, 1, crate::FollowFilter::default())
+        .await?;
     append(&provider, "move", 4).await?;
     assert_eq!(next(&mut moving).await?.sequence, 1);
     old.controls.send(Ok(frame(
@@ -260,12 +283,14 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
     provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"seed")],
+            records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: None,
             idempotency_key: None,
         })
         .await?;
-    let mut follow = provider.follow(path.clone(), 1).await?;
+    let mut follow = provider
+        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();
@@ -275,7 +300,7 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
                     provider
                         .append(AppendRequest {
                             path: path.clone(),
-                            records: vec![OwnedBytes::from_static(b"delta")],
+                            records: vec![(OwnedBytes::from_static(b"delta")).into()],
                             if_tail: None,
                             idempotency_key: None,
                         })
@@ -310,8 +335,12 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
     }
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
-    let mut a = client.follow(StreamPath::new("a")?, 1).await?;
-    let mut b = client.follow(StreamPath::new("b")?, 1).await?;
+    let mut a = client
+        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .await?;
+    let mut b = client
+        .follow(StreamPath::new("b")?, 1, crate::FollowFilter::default())
+        .await?;
     for path in ["a", "b"] {
         append(&provider, path, 4).await?;
     }
@@ -371,10 +400,14 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
         None,
         None,
     );
-    let mut cancelled = Box::pin(client.follow(StreamPath::new("a")?, 1));
+    client.register_credential(0, crate::session::testing::credential())?;
+    let mut cancelled =
+        Box::pin(client.follow(StreamPath::new("a")?, 1, crate::FollowFilter::default()));
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
-    let mut follow = client.follow(StreamPath::new("a")?, 1).await?;
+    let mut follow = client
+        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .await?;
     append(&provider, "a", 1).await?;
     assert_eq!(next(&mut follow).await?.sequence, 1);
     assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 1);
@@ -387,7 +420,9 @@ async fn aggregate_credit_is_replenished_beyond_the_initial_window() -> TestResu
     append(&provider, "a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
-    let mut records = client.follow(StreamPath::new("a")?, 1).await?;
+    let mut records = client
+        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .await?;
     append(&provider, "a", crate::MAX_ITEMS).await?;
     append(&provider, "a", 17).await?;
     for sequence in 1..=u64::try_from(crate::MAX_ITEMS + 17)? {
@@ -403,7 +438,9 @@ async fn translating_follow_releases_credit_without_application_acknowledgements
     append(&provider, "a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?.without_delivery_acknowledgements();
-    let mut records = client.follow(StreamPath::new("a")?, 1).await?;
+    let mut records = client
+        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .await?;
     append(&provider, "a", 17).await?;
     for sequence in 1..=17 {
         assert_eq!(next(&mut records).await?.sequence, sequence);
@@ -420,10 +457,22 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
     append(&memory, "healthy", 1).await?;
     let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
     let client = fixture.client()?;
-    let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
+    let mut healthy = client
+        .follow(
+            StreamPath::new("healthy")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     for sequence in 1..=crate::MAX_ITEMS + 8 {
         let before = fixture.counts.sent.load(Ordering::Relaxed);
-        let unread = client.follow(StreamPath::new("unread")?, 0).await?;
+        let unread = client
+            .follow(
+                StreamPath::new("unread")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let changed = fixture.counts.changed.notified();
@@ -457,8 +506,8 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     let one = StreamPath::new("one")?;
     let two = StreamPath::new("two")?;
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
-        let first = client.follow(one, 0);
-        let second = client.follow(two, 0);
+        let first = client.follow(one, 0, crate::FollowFilter::default());
+        let second = client.follow(two, 0, crate::FollowFilter::default());
         futures::pin_mut!(first, second);
         for attempt in 1..=3 {
             // Neither logical follow may finish before all physical handshake
@@ -487,7 +536,13 @@ async fn child_replay_and_records_share_the_native_node_session() -> TestResult 
     append(&provider, "agents/a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "children").await?;
     let client = fixture.client()?;
-    let mut records = client.follow(StreamPath::new("agents/m")?, 1).await?;
+    let mut records = client
+        .follow(
+            StreamPath::new("agents/m")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),
@@ -520,6 +575,7 @@ async fn child_replay_and_records_share_the_native_node_session() -> TestResult 
 async fn largest_child_path_fits_its_channel_credit() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let path = "a".repeat(crate::MAX_PATH_BYTES);
+    assert!(crate::RecordHeaders::new(vec![path.as_str().into()], vec![]).is_err());
     append(&provider, &path, 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "large-child").await?;
     let client = fixture.client()?;
@@ -537,6 +593,71 @@ async fn largest_child_path_fits_its_channel_credit() -> TestResult {
             .as_str(),
         path
     );
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hidden_children_preserve_the_consumed_resume_cut_and_shared_connection() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    for path in ["agents/private", "agents/public"] {
+        append(&provider, path, 1).await?;
+    }
+    let fixture = Fixture::open(Arc::clone(&provider), "filtered-children").await?;
+    let client = fixture.client()?;
+    let session = client.session_client()?;
+    let subscription = |resume| wire::SessionSubscription {
+        channel: None,
+        credential: 0,
+        resume: Some(resume),
+        filter: Some(wire::SessionFilter {
+            keys: vec![wire::KeyRange {
+                start: b"agents/public".as_slice().into(),
+                end: b"agents/public~".as_slice().into(),
+            }],
+            ..Default::default()
+        }),
+        kind: Some(Kind::Children(wire::ChildrenRequest {
+            parent: Some("agents".into()),
+            limit: 8,
+        })),
+    };
+    let mut children = session
+        .subscribe(subscription(super::super::cursor(0)))
+        .await?;
+    let cut = loop {
+        let input = tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("filtered children ended")??;
+        if let Some(Body::Data(data)) = input.body {
+            assert!(
+                matches!(data.item, Some(Item::Child(wire::Child { path })) if path == "agents/public")
+            );
+            let after = data.after.ok_or("child cursor missing")?;
+            assert_eq!(after.next, 2);
+            assert_eq!(after.opaque.as_ref(), b"agents/public");
+            break after;
+        }
+    };
+    drop(children);
+    let mut resumed = session.subscribe(subscription(cut)).await?;
+    append(&provider, "agents/public-new", 1).await?;
+    loop {
+        let input = tokio::time::timeout(Duration::from_secs(1), resumed.next())
+            .await?
+            .ok_or("resumed children ended")??;
+        if let Some(Body::Data(data)) = input.body {
+            assert!(
+                matches!(data.item, Some(Item::Child(wire::Child { path })) if path == "agents/public-new")
+            );
+            assert_eq!(data.after.ok_or("resumed cursor missing")?.next, 3);
+            break;
+        }
+    }
+    let mut records = client
+        .follow(StreamPath::new("agents/public")?, 0, Default::default())
+        .await?;
+    assert_eq!(next(&mut records).await?.sequence, 0);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
 }
@@ -571,13 +692,20 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
         None,
         connect,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),
             limit: 1,
         })
         .await?;
-    let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
+    let mut healthy = client
+        .follow(
+            StreamPath::new("healthy")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     assert_eq!(
         children.next().await.ok_or("missing child")??.path.as_str(),
         "agents/m"

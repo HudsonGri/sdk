@@ -31,7 +31,7 @@ pub(crate) mod parking_model;
 mod snapshot;
 
 use crate::{
-    AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenPage,
+    AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildStream, ChildrenPage,
     ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
     CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork,
     CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
@@ -58,6 +58,7 @@ include!("memory_limits.rs");
 include!("memory_stream.rs");
 include!("provider.rs");
 include!("follow.rs");
+include!("follow_progress.rs");
 
 include!("state.rs");
 include!("children.rs");

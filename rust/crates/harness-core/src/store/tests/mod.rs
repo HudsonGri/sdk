@@ -107,6 +107,7 @@ impl ContentResidencyVerifier for MigrationContentStore {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() {
@@ -141,6 +142,7 @@ impl ContentResidencyVerifier for TestContent {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() {
@@ -175,7 +177,10 @@ async fn with_content<P: StreamProvider>(client: &Arc<P>) -> Result<StreamAggreg
 }
 
 fn issuer() -> AuthorityIssuer {
-    AuthorityIssuer::new("test", [7; 32], authority())
+    static RUNTIME: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| AuthorityIssuer::new("test", [7; 32], authority()))
+        .clone()
 }
 
 fn schemas() -> SchemaRegistry {

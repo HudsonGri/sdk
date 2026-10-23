@@ -29,12 +29,13 @@ async fn reviewed_follow(client: &Client, path: StreamPath) -> Result<RecordStre
     let received = client
         .open_kind(
             Kind::Follow(wire::SessionFollow {
-                path: path.to_string(),
+                resource: crate::wire_codec::session::stream_resource(path.as_str()),
                 delivery: wire::SessionDelivery::All as i32,
                 ..Default::default()
             }),
             1,
             true,
+            Some(crate::FollowFilter::default().transport_filter()?),
         )
         .await?
         .boxed();
@@ -71,8 +72,15 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
         None,
         None,
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     // Keep one interest alive so both arms share one warm physical Session.
-    let anchor = client.follow(StreamPath::new("events")?, 1).await?;
+    let anchor = client
+        .follow(
+            StreamPath::new("events")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     acyclic_test_support::measure(|| {});
     let mut before = (0, 0);
     let mut after = (0, 0);
@@ -87,7 +95,8 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
             let allocation = if legacy {
                 completion_allocations(reviewed_follow(&client, path)).await?
             } else {
-                completion_allocations(client.follow(path, 1)).await?
+                completion_allocations(client.follow(path, 1, crate::FollowFilter::default()))
+                    .await?
             };
             let total = if legacy { &mut before } else { &mut after };
             total.0 += allocation.count_total;
@@ -100,8 +109,8 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
     assert_eq!(before.0, 3 * FOLLOWS);
     public_box_budget(after.0, FOLLOWS);
     assert_eq!(
-        before.1 - after.1,
-        2 * FOLLOWS * std::mem::size_of::<RecordStream>() as u64
+        before.1.checked_sub(after.1),
+        Some(2 * FOLLOWS * std::mem::size_of::<RecordStream>() as u64)
     );
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
@@ -160,13 +169,13 @@ fn opening_budget(
     follows: u64,
 ) {
     assert_eq!(
-        before.count - after.count,
-        follows * (2 + path.count_total),
+        before.count.checked_sub(after.count),
+        Some(follows * (2 + path.count_total)),
         "every opening poll must avoid the discarded path and two internal boxes"
     );
     assert_eq!(
-        before.bytes - after.bytes,
-        follows * (2 * std::mem::size_of::<RecordStream>() as u64 + path.bytes_total)
+        before.bytes.checked_sub(after.bytes),
+        Some(follows * (2 * std::mem::size_of::<RecordStream>() as u64 + path.bytes_total))
     );
 }
 
@@ -186,10 +195,24 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     };
     let before_client = client();
     let after_client = client();
+    before_client.register_credential(0, crate::session::testing::credential())?;
+    after_client.register_credential(0, crate::session::testing::credential())?;
     // Separate clients keep 10k live interests in each arm, with identical
     // registration/cache state and one warm physical Session per client.
-    let before_anchor = before_client.follow(StreamPath::new("events")?, 1).await?;
-    let after_anchor = after_client.follow(StreamPath::new("events")?, 1).await?;
+    let before_anchor = before_client
+        .follow(
+            StreamPath::new("events")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
+    let after_anchor = after_client
+        .follow(
+            StreamPath::new("events")?,
+            1,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     let path_copy = acyclic_test_support::measure(|| {
         drop(black_box(StreamPath::new("events").unwrap()));
     });
@@ -213,7 +236,9 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
                         // inside the measured public opening future.
                         drop(black_box(StreamPath::new(path.as_str())?));
                     }
-                    after_client.follow(path, 1).await
+                    after_client
+                        .follow(path, 1, crate::FollowFilter::default())
+                        .await
                 };
                 all_poll_allocations(public, &mut after).await?
             };

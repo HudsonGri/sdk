@@ -74,8 +74,9 @@ impl StreamProvider for PausingStream {
         &self,
         path: StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.follow(path, from).await
+        self.inner.follow(path, from, filter).await
     }
 
     async fn children(
@@ -176,6 +177,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
     );
 
     let proposal = ProposedCommit {
+        publication: None,
         operation_id: OperationId::from_bytes([8; 16]),
         fingerprint: Digest::from_bytes([9; 32]),
         payload: bytes::Bytes::from_static(b"generation"),
@@ -295,6 +297,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         AppendOutcome::Committed(_)
     ));
     let conflicting = ProposedCommit {
+        publication: None,
         fingerprint: Digest::from_bytes([10; 32]),
         ..proposal.clone()
     };
@@ -467,6 +470,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
                 Epoch::GENESIS,
                 Head::genesis(Epoch::GENESIS),
                 ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes([18; 16]),
                     ..proposal
                 },
@@ -639,6 +643,7 @@ async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn 
                 Epoch::GENESIS,
                 Head::genesis(Epoch::GENESIS),
                 ProposedCommit {
+                    publication: None,
                     operation_id: OperationId::from_bytes([40; 16]),
                     fingerprint: Digest::from_bytes([41; 32]),
                     payload: bytes::Bytes::from_static(b"inflight"),
@@ -1117,7 +1122,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
     streams
         .append(AppendRequest {
             path: StreamPath::new(format!("{prefix}/records"))?,
-            records: vec![OwnedBytes::from_static(b"conflict")],
+            records: vec![OwnedBytes::from_static(b"conflict").into()],
             if_tail: Some(0),
             idempotency_key: None,
         })

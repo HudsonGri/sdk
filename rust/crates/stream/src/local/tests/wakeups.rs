@@ -15,7 +15,7 @@ impl Wake for Push {
 async fn append(provider: &LocalStream, path: StreamPath) -> Result<(), StreamError> {
     deferring_durability(provider.append(AppendRequest {
         path,
-        records: vec![Bytes::from_static(b"accepted")],
+        records: vec![(Bytes::from_static(b"accepted")).into()],
         if_tail: None,
         idempotency_key: None,
     }))
@@ -54,7 +54,9 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
         let parent = StreamPath::new(format!("agents/a{id}"))?;
         let path = StreamPath::new(format!("{}/data", parent.as_str()))?;
         append(&provider, path.clone()).await?;
-        let mut follow = provider.follow(path, 1).await?;
+        let mut follow = provider
+            .follow(path, 1, crate::FollowFilter::default())
+            .await?;
         wakes.push(probe(follow.as_mut()));
         records.push(follow);
         let mut discovery = provider
@@ -157,7 +159,7 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
                 .boxed()
         } else {
             provider
-                .follow(path, 0)
+                .follow(path, 0, crate::FollowFilter::default())
                 .await?
                 .map(|item| item.map(|_| ()))
                 .boxed()

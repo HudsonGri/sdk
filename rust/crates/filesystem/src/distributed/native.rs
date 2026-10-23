@@ -135,7 +135,7 @@ impl<'a> AuthorityWork<'a> {
         self.plain_bytes(buffer.0)
     }
 
-    fn plain_bytes(&mut self, buffer: Vec<u8>) -> Result<Bytes, AuthorityStoreError> {
+    pub(super) fn plain_bytes(&mut self, buffer: Vec<u8>) -> Result<Bytes, AuthorityStoreError> {
         let owner = WorkCounters {
             allocation_operations: u64::from(buffer.capacity() != buffer.len()),
             ..WorkCounters::UNCHARGED
@@ -361,7 +361,7 @@ impl<'a> AuthorityWork<'a> {
             for record in records {
                 delta = delta.checked_add(WorkCounters {
                     authority_records_appended: 1,
-                    authority_bytes_written: record.len() as u64,
+                    authority_bytes_written: record.payload_bytes() as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
             }
@@ -376,7 +376,7 @@ impl<'a> AuthorityWork<'a> {
         values: [acyclic_stream::OwnedBytes; N],
     ) -> Result<(), AuthorityStoreError> {
         let mut records = self.vec(N)?;
-        records.extend(values);
+        records.extend(values.into_iter().map(Into::into));
         if mutations.len() == mutations.capacity() {
             return Err(AuthorityStoreError::RejectedStatic(
                 "request exceeded its admitted vector capacity",

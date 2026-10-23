@@ -1,5 +1,189 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    changes: &ChangeSet<A, O>,
+    maximum_entries: u32,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, crate::AuthorityAllocation), WorkspaceError> {
+    changes
+        .changed_paths(maximum_entries, original, cancellation)
+        .await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    changes: &ChangeSet<A, O>,
+    maximum_entries: u32,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    let mut accounting = KernelAccounting::native(original, cancellation);
+    let from = changes
+        .from
+        .workspace
+        .open_checkout(
+            GenerationSelector::Exact(changes.from.id),
+            CheckoutMode::read_only_pinned(),
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+    let to = changes
+        .to
+        .workspace
+        .open_checkout(
+            GenerationSelector::Exact(changes.to.id),
+            CheckoutMode::read_only_pinned(),
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+    let endpoints = [
+        super::super::namespace_view::NamespaceView {
+            objects: changes.from.workspace.volume.fs.objects(),
+            config: changes.from.workspace.volume.config(),
+            root: from.value.root(),
+        },
+        super::super::namespace_view::NamespaceView {
+            objects: changes.to.workspace.volume.fs.objects(),
+            config: changes.to.workspace.volume.config(),
+            root: to.value.root(),
+        },
+    ];
+    let result = {
+        crate::workspace::complete_changed_paths(
+            endpoints.map(Some),
+            maximum_entries,
+            &mut accounting,
+            cancellation,
+        )
+        .await
+    };
+    to.retire(&mut accounting)?;
+    from.retire(&mut accounting)?;
+    result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn complete_creation_delta_matches_full_path_resolution_and_bounds()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("created-publication"))?;
+    workspace.write_text("/unchanged", "retained").await?;
+    let cancellation = CancellationToken::new();
+    for linked in [false, true] {
+        let before = unbounded!(workspace, head())?;
+        let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+        if linked {
+            unbounded!(
+                transaction,
+                write("/linked", OwnedBytes::from_static(b"alias"))
+            )?;
+            unbounded!(transaction, hard_link("/linked", "/second"))?;
+        } else {
+            unbounded!(transaction, create_dir_all("/created/nested"))?;
+            unbounded!(
+                transaction,
+                write("/created/nested/file", OwnedBytes::from_static(b"new"))
+            )?;
+        }
+        let TransactionCommit::Committed(after) = commit(&mut transaction).await? else {
+            return Err("creation was not committed".into());
+        };
+        let changes = unbounded!(before, diff_to(&after, 64))?.0;
+        let original =
+            crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+                .map_err(|(error, _)| error)?;
+        let (complete, complete_guard) =
+            raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+        let (resolved, resolved_guard) =
+            raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+        assert_eq!(complete, resolved);
+        assert_eq!(complete.len(), if linked { 2 } else { 3 });
+        assert!(
+            complete
+                .iter()
+                .all(|path| path.before.is_none() && path.after.is_some())
+        );
+        drop((complete, complete_guard, resolved, resolved_guard));
+        assert!(matches!(
+            raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
+            Err(WorkspaceError::ChangedPathLimit)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("renamed-publication"))?;
+    let mut initial = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(initial, create_dir_all("/before/nested"))?;
+    unbounded!(
+        initial,
+        write("/before/nested/file", OwnedBytes::from_static(b"same"))
+    )?;
+    unbounded!(
+        initial,
+        hard_link("/before/nested/file", "/unchanged-alias")
+    )?;
+    let TransactionCommit::Committed(before) = commit(&mut initial).await? else {
+        return Err("initial namespace was not committed".into());
+    };
+    let mut renamed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(renamed, rename("/before", "/after", true))?;
+    let TransactionCommit::Committed(after) = commit(&mut renamed).await? else {
+        return Err("renamed namespace was not committed".into());
+    };
+    let changes = unbounded!(before, diff_to(&after, 64))?.0;
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
+    let (paths, guard) = raw_endpoint_paths(&changes, 64, &original, &cancellation).await?;
+    let names: Vec<_> = paths
+        .iter()
+        .map(|change| super::namespace_path_text(&change.path))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        names,
+        [
+            "/after",
+            "/after/nested",
+            "/after/nested/file",
+            "/before",
+            "/before/nested",
+            "/before/nested/file"
+        ]
+    );
+    assert!(
+        paths
+            .iter()
+            .all(|change| change.before.is_some() != change.after.is_some())
+    );
+    drop(paths);
+    drop(guard);
+    // Selecting only changed file IDs loses descendants whose records did not
+    // change. Such a producer would miss both narrow-prefix watch notifications.
+    let (incomplete, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+    assert!(!incomplete.iter().any(|change| {
+        super::namespace_path_text(&change.path).is_ok_and(|path| path.ends_with("/nested/file"))
+    }));
+    drop(incomplete);
+    drop(guard);
+    assert!(matches!(
+        raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -181,6 +365,18 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             .changed_paths(64, &original, &cancellation)
             .await?;
         assert_eq!(native_paths, paths);
+        let (raw_paths, raw_guard) =
+            raw_changed_paths(&native_changes, 64, &original, &cancellation).await?;
+        assert_eq!(
+            raw_paths, paths,
+            "kernel and facade endpoint deltas must agree"
+        );
+        drop(raw_paths);
+        drop(raw_guard);
+        assert!(matches!(
+            raw_changed_paths(&native_changes, 1, &original, &cancellation).await,
+            Err(WorkspaceError::ChangedPathLimit)
+        ));
         drop(native_paths);
         drop(path_guard);
         assert!(matches!(
@@ -201,6 +397,11 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             assert!(
                 native_changes
                     .changed_paths(64, &denied, &cancellation)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                raw_changed_paths(&native_changes, 64, &denied, &cancellation)
                     .await
                     .is_err()
             );

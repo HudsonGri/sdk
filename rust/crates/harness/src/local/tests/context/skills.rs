@@ -117,7 +117,12 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     let stream = harness.task_stream();
     let storage = harness.workspace.as_ref().unwrap().filesystem.clone();
     let volume = harness.journal.clone();
-    let verifier = harness.verifier.clone();
+    let issuer = crate::core::AuthorityIssuer::new(
+        "bound-skills",
+        [38; 32],
+        harness.verifier.audience().clone(),
+    );
+    let verifier = issuer.verifier(&mut None)?;
     let files = harness.files.clone();
     let provider = scripted([ScriptedTurn::Text("done".into())]);
     let config = checkout_config(checkout.path(), (model()?, provider.clone()))?
@@ -136,7 +141,7 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
             workspace: None,
             stream: stream.clone(),
             task_volume: &volume,
-            issuer: harness.issuer.as_ref().unwrap(),
+            issuer: &issuer,
             verifier: &verifier,
             agent: harness.signed.agent().unwrap(),
             project: &volume,
@@ -232,7 +237,10 @@ async fn selected_child_authored_skill_loads_with_native_work_from_its_retained_
             &skill.source.path,
             Some(&skill.source.generation),
             4096,
-            Some(&io),
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
         )?
         .await?;
     assert_eq!(bytes.as_ref(), body.as_bytes());

@@ -143,6 +143,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -250,10 +251,14 @@ dependencies = [
 name = "acyclic-fs-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-fs",
+ "acyclic-stream",
+ "futures",
  "libfuzzer-sys",
  "loom",
  "proptest",
+ "prost",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -265,6 +270,7 @@ name = "acyclic-fs-napi"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-harness",
  "acyclic-native-runtime",
  "bytes",
  "napi",
@@ -424,6 +430,7 @@ name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-machines",
@@ -438,6 +445,7 @@ dependencies = [
  "bytes",
  "diffy",
  "dirs",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -478,6 +486,7 @@ dependencies = [
  "tracing-subscriber",
  "tsify",
  "uuid",
+ "zeroize",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

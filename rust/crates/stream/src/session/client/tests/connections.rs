@@ -39,6 +39,7 @@ impl transport::Transport for ReplacedNode {
             }
             let output = super::super::super::serve(
                 self.provider.clone(),
+                crate::session::testing::authority(),
                 node.into(),
                 Limits::default(),
                 Box::pin(stream::once(future::ready(Ok(hello))).chain(source.map(Ok))),
@@ -71,12 +72,25 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
             Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
             Arc::new(super::super::super::runtime::PlatformExecutor),
         );
-        let mut first = client.follow(StreamPath::new("events")?, 0).await?;
+        client.register_credential(0, crate::session::testing::credential())?;
+        let mut first = client
+            .follow(
+                StreamPath::new("events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         assert_eq!(next(&mut first).await?.sequence, 0);
         endpoint.replacement.store(1, Ordering::Release);
         drop(first);
         endpoint.closed.notified().await;
-        let mut second = client.follow(StreamPath::new("events")?, 0).await?;
+        let mut second = client
+            .follow(
+                StreamPath::new("events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         assert_eq!(next(&mut second).await?.sequence, 0);
         assert_eq!(*endpoint.destinations.lock().unwrap(), ["", ""]);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
@@ -224,7 +238,9 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     provider
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: (0..6).map(|index| OwnedBytes::from(vec![index])).collect(),
+            records: (0..6)
+                .map(|index| OwnedBytes::from(vec![index]).into())
+                .collect(),
             if_tail: None,
             idempotency_key: None,
         })
@@ -246,7 +262,13 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     )
     .await?;
     let client = fixture.client()?;
-    let mut records = client.follow(StreamPath::new("events")?, 0).await?;
+    let mut records = client
+        .follow(
+            StreamPath::new("events")?,
+            0,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     for _ in 0..2 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
@@ -269,7 +291,13 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     for _ in 2..6 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
-    let mut later = client.follow(StreamPath::new("events")?, 6).await?;
+    let mut later = client
+        .follow(
+            StreamPath::new("events")?,
+            6,
+            crate::FollowFilter::default(),
+        )
+        .await?;
     append(&provider, "events", 1).await?;
     let mut tail = provider
         .read(crate::ReadRequest {
@@ -314,8 +342,11 @@ async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
     );
+    client.register_credential(0, crate::session::testing::credential())?;
     let connections = client.connections();
-    let _idle = client.follow(StreamPath::new("idle")?, 1).await?;
+    let _idle = client
+        .follow(StreamPath::new("idle")?, 1, crate::FollowFilter::default())
+        .await?;
     let first = connections.changed(0).await?;
     fixture.reset()?;
     let second = tokio::time::timeout(Duration::from_secs(1), connections.changed(first)).await??;

@@ -52,28 +52,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             });
         }
         let (gate, gate_tail, active) = self.reservation_gate(authority_id, work).await?;
-        let admitted = match permit {
-            PublicationPermit::Unrestricted => active.is_none(),
-            PublicationPermit::Reservation {
-                operation_id,
-                gate_tail: tail,
-                expected: head,
-            } => {
-                tail == gate_tail
-                    && active == Some(OperationId::from_bytes(operation_id))
-                    && head == expected
-            }
-            PublicationPermit::Lease {
-                authority_id: authority,
-                workspace_id,
-                ..
-            } => {
-                active.is_none()
-                    && AuthorityId::from_bytes(authority) == authority_id
-                    && volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
-                        == authority_id
-            }
-        };
+        let admitted = permits_append(permit, authority_id, expected, gate_tail, active);
         if !admitted {
             return Ok(FsAppendOutcome::Fenced {
                 actual_epoch: snapshot.head.epoch,
@@ -102,7 +81,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let records = work.path(authority_id, "/records", None)?;
         let epochs = work.path(authority_id, "/epochs", None)?;
         let retirement = work.path(authority_id, "/retirement", None)?;
-        let mut conditions = work.vec(8)?;
+        // Four authority fences, lease, operation locator, changes, and two
+        // generation lineage fences must all fit the admitted allocation.
+        let mut conditions = work.vec(9)?;
         conditions.extend([
             CommitCondition::Absent { path: retirement },
             CommitCondition::Tail {
@@ -152,7 +133,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         } else {
             (None, None)
         };
-        let mut mutations = work.vec(4)?;
+        // Authority, operation locator, lineage, generation locator and changes.
+        let mut mutations = work.vec(5)?;
         work.append_record(&mut mutations, records.clone(), [encoded])?;
         self.locate_operation_in(
             authority_id,
@@ -164,6 +146,28 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if let Some(generation) =
             generation_from_payload(authority_id, sequence, durable.payload, work)?
         {
+            let (path, records) = self.publication_changes(
+                authority_id,
+                &commit,
+                generation,
+                (expected.sequence != Sequence::GENESIS).then_some(expected),
+                sequence,
+                work,
+            )?;
+            let tail = match self.tail(path.clone(), work).await {
+                Ok(tail) => tail,
+                Err(error) if authority_missing(&error) => 0,
+                Err(error) => return Err(error.into()),
+            };
+            conditions.push(if tail == 0 {
+                CommitCondition::Absent { path: path.clone() }
+            } else {
+                CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: tail,
+                }
+            });
+            mutations.push(CommitMutation::Append { path, records });
             let lineage = work.path(authority_id, "/lineage", None)?;
             let locator = work.path(authority_id, "/generations/", Some(generation))?;
             match self.tail(locator.clone(), work).await {
@@ -367,6 +371,37 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 actual_epoch: epoch,
             }),
             Err(error) => Err(error),
+        }
+    }
+}
+
+fn permits_append(
+    permit: PublicationPermit,
+    authority_id: AuthorityId,
+    expected: Head,
+    gate_tail: u64,
+    active: Option<OperationId>,
+) -> bool {
+    match permit {
+        PublicationPermit::Unrestricted => active.is_none(),
+        PublicationPermit::Reservation {
+            operation_id,
+            gate_tail: tail,
+            expected: head,
+        } => {
+            tail == gate_tail
+                && active == Some(OperationId::from_bytes(operation_id))
+                && head == expected
+        }
+        PublicationPermit::Lease {
+            authority_id: authority,
+            workspace_id,
+            ..
+        } => {
+            active.is_none()
+                && AuthorityId::from_bytes(authority) == authority_id
+                && volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
+                    == authority_id
         }
     }
 }

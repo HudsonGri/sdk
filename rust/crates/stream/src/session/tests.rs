@@ -1,3 +1,4 @@
+mod filtered_progress;
 mod properties;
 mod queue_scaling;
 
@@ -13,6 +14,7 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
         0,
         0,
         Body::Hello(wire::SessionHello {
+            credentials: vec![crate::session::testing::credential()],
             version: 1,
             client_id: Bytes::from_static(b"client"),
             destination_node: "node".into(),
@@ -23,13 +25,15 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
 }
 fn subscribe(id: u64, path: &str, from: u64, latest: bool) -> wire::SessionSubscription {
     wire::SessionSubscription {
+        credential: 0,
+        filter: None,
         channel: Some(wire::SessionChannel {
             channel_id: id,
             generation: 1,
         }),
         resume: Some(cursor(from)),
         kind: Some(Kind::Follow(wire::SessionFollow {
-            path: path.into(),
+            resource: crate::wire_codec::session::stream_resource(path),
             delivery: if latest {
                 wire::SessionDelivery::Latest
             } else {
@@ -64,7 +68,7 @@ async fn append(provider: &MemoryStream, path: &str, value: Bytes) -> Result<(),
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from(value)],
+            records: vec![(OwnedBytes::from(value)).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -93,6 +97,7 @@ async fn follows_share_one_session_and_credit_is_per_channel() -> TestResult {
     )))?;
     let mut output = serve(
         Arc::clone(&provider),
+        crate::session::testing::authority(),
         "node".into(),
         Limits::default(),
         receiver.boxed(),
@@ -154,6 +159,7 @@ async fn checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_chann
     )))?;
     let mut output = serve(
         Arc::clone(&provider),
+        crate::session::testing::authority(),
         "node".into(),
         Limits::default(),
         receiver.boxed(),
@@ -222,6 +228,7 @@ async fn backpressure_keeps_one_value_per_key_and_preserves_attention() -> TestR
     sender.unbounded_send(Ok(window(1)))?;
     let mut output = serve(
         Arc::clone(&provider),
+        crate::session::testing::authority(),
         "node".into(),
         Limits::default(),
         receiver.boxed(),
@@ -264,6 +271,7 @@ async fn replacement_resumes_from_cursor_and_ignores_stale_source() -> TestResul
     sender.unbounded_send(Ok(window(1)))?;
     let mut output = serve(
         Arc::clone(&provider),
+        crate::session::testing::authority(),
         "node".into(),
         Limits::default(),
         receiver.boxed(),
@@ -317,6 +325,7 @@ async fn malformed_latest_value_closes_only_its_own_channel() -> TestResult {
     sender.unbounded_send(Ok(window(3)))?;
     let mut output = serve(
         Arc::clone(&provider),
+        crate::session::testing::authority(),
         "node".into(),
         Limits::default(),
         receiver.boxed(),

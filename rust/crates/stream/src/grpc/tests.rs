@@ -27,7 +27,15 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
     ))
 }
 
-pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TestClientError {
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+    #[error(transparent)]
+    Stream(#[from] StreamError),
+}
+
+pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, TestClientError> {
     let provider = Arc::new(provider);
     let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
         tower::service_fn(move |_| {
@@ -44,6 +52,7 @@ pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectEr
                             wire::stream_session_service_server::StreamSessionServiceServer::new(
                                 crate::session::Service::new(
                                     provider,
+                                    crate::session::testing::authority(),
                                     "fixture".into(),
                                     crate::session::Limits::default(),
                                 ),
@@ -56,7 +65,11 @@ pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectEr
             }
         }),
     );
-    Ok(Client::from_channel(channel, authorization("fixture")?))
+    let client = Client::from_channel(channel, authorization("fixture")?);
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    Ok(client)
 }
 
 fn unconnected() -> Result<Client, ConnectError> {
@@ -101,7 +114,12 @@ impl StreamProvider for EndingFollow {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+        filter: crate::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
         if self.finite {
             return if attempt == 0 {
@@ -123,7 +141,44 @@ impl StreamProvider for EndingFollow {
         if self.deny {
             return Err(StreamError::AccessDenied);
         }
-        self.inner.follow(path, from).await
+        self.inner.follow(path, from, filter).await
+    }
+    async fn follow_updates(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        filter: crate::FollowFilter,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
+        if self.finite {
+            return if attempt == 0 {
+                self.inner
+                    .read(ReadRequest {
+                        path,
+                        from,
+                        limit: u32::try_from(crate::MAX_ITEMS)
+                            .map_err(|_| StreamError::LimitExceeded)?,
+                    })
+                    .await
+                    .map(|records| {
+                        records
+                            .map(|record| record.map(crate::FollowUpdate::Record))
+                            .boxed()
+                    })
+            } else {
+                Ok(stream::empty().boxed())
+            };
+        }
+        if attempt == 0 {
+            return Ok(stream::empty().boxed());
+        }
+        if self.deny {
+            return Err(StreamError::AccessDenied);
+        }
+        self.inner
+            .follow_updates(path, from, preceding, filter)
+            .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         if self.deny {
@@ -150,7 +205,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
     transport
         .append(AppendRequest {
             path: path.clone(),
-            records: values.clone(),
+            records: values.iter().cloned().map(Into::into).collect(),
             if_tail: None,
             idempotency_key: None,
         })
@@ -181,7 +236,14 @@ async fn service_rejects_oversized_commands_before_provider_dispatch() {
     let service = Service::new(Arc::new(MemoryStream::default()));
     let request = wire::AppendRequest {
         path: "x".repeat(crate::MAX_PATH_BYTES),
-        records: vec![Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]); 16],
+        records: vec![
+            wire::AppendRecord {
+                value: Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]),
+                keys: vec![],
+                attributes: vec![]
+            };
+            16
+        ],
         if_tail: None,
         idempotency_key: None,
     };
@@ -232,13 +294,15 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         .inner
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"resumed")],
+            records: vec![(OwnedBytes::from_static(b"resumed")).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
         .await?;
     let transport = client(provider)?;
-    let mut records = transport.follow(path, 0).await?;
+    let mut records = transport
+        .follow(path, 0, crate::FollowFilter::default())
+        .await?;
     let record = tokio::time::timeout(Duration::from_secs(1), records.next())
         .await?
         .ok_or("follow ended")??;
@@ -257,7 +321,11 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
     let items = tokio::time::timeout(
         Duration::from_secs(1),
         transport
-            .follow(StreamPath::new("accounts/events")?, 0)
+            .follow(
+                StreamPath::new("accounts/events")?,
+                0,
+                crate::FollowFilter::default(),
+            )
             .await?
             .collect::<Vec<_>>(),
     )
@@ -443,7 +511,7 @@ async fn translating_client_does_not_ack_before_downstream_delivery() -> TestRes
     provider
         .append(AppendRequest {
             path: StreamPath::new("accounts/events")?,
-            records: vec![OwnedBytes::from(b"delivered".to_vec())],
+            records: vec![(OwnedBytes::from(b"delivered".to_vec())).into()],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -500,7 +568,7 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
         .inner
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![OwnedBytes::from_static(b"record"); 20],
+            records: vec![(OwnedBytes::from_static(b"record")).into(); 20],
             if_tail: None,
             idempotency_key: None,
         })
@@ -508,7 +576,10 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
     let client = client(provider)?;
     let result = tokio::time::timeout(
         Duration::from_secs(1),
-        client.follow(path, 0).await?.collect::<Vec<_>>(),
+        client
+            .follow(path, 0, crate::FollowFilter::default())
+            .await?
+            .collect::<Vec<_>>(),
     )
     .await?;
     assert_eq!(result.len(), 21);

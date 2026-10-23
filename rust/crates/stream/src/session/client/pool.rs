@@ -203,17 +203,50 @@ impl Pool {
     fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
-            Command::Open {
-                id,
-                attempt_epoch,
-                acknowledge,
-                kind,
-                raw,
-                progress,
-                records,
-                ready,
-                observation,
-            } => {
+            Command::Credential { slot, credential } => {
+                let total = self
+                    .credentials
+                    .values()
+                    .map(Bytes::len)
+                    .sum::<usize>()
+                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
+                    .and_then(|current| current.checked_add(credential.len()))
+                    .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
+                    .ok_or(StreamError::Capacity)?;
+                let _ = total;
+                let encoded = frame(
+                    0,
+                    0,
+                    Body::Credential(wire::SessionCredential {
+                        slot,
+                        credential: credential.clone(),
+                    }),
+                );
+                if credential.is_empty() {
+                    self.credentials.remove(&slot);
+                } else {
+                    self.credentials.insert(slot, credential);
+                }
+                let nodes = self.links.keys().cloned().collect::<Vec<_>>();
+                for node in nodes {
+                    self.send(&node, encoded.clone())?;
+                }
+                Ok(())
+            }
+            Command::Open(open) => {
+                let OpenCommand {
+                    id,
+                    attempt_epoch,
+                    acknowledge,
+                    kind,
+                    filter,
+                    credential,
+                    raw,
+                    progress,
+                    records,
+                    ready,
+                    observation,
+                } = *open;
                 self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
@@ -233,8 +266,11 @@ impl Pool {
                         node: self.home.clone(),
                         attempt_epoch,
                         kind,
+                        filter,
+                        credential,
                         raw,
                         watermark: None,
+                        buffered_data: 0,
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
@@ -275,6 +311,16 @@ impl Pool {
         } = released;
         if bytes != 0 {
             self.release(&node, epoch, bytes)?;
+        }
+        // A route owns buffered deliveries across reconnect generations. Old
+        // deliveries still occupy its window until their actual credit retires.
+        if bytes != 0
+            && let Some(route) = self.routes.get_mut(&id)
+        {
+            route.buffered_data = route
+                .buffered_data
+                .checked_sub(1)
+                .ok_or(StreamError::Unavailable)?;
         }
         self.flush_watermark(id)?;
         let Some(route) = self.routes.get_mut(&id) else {
@@ -379,15 +425,53 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
-                if route.raw {
-                    route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
+            Some(Body::Watermark(mark))
+                if mark.durable <= mark.accepted && mark.accepted >= route.received =>
+            {
+                if Self::watermark(route, id, input.generation, mark)? {
                     self.flush_watermark(id)
                 } else {
                     Ok(())
                 }
             }
             _ => Err(StreamError::Unavailable),
+        }
+    }
+    fn watermark(
+        route: &mut Route,
+        id: u64,
+        generation: u64,
+        mut mark: wire::SessionWatermark,
+    ) -> Result<bool, StreamError> {
+        if let Some(after) = &mark.after {
+            if !matches!(route.kind, Kind::Follow(_))
+                || !after.opaque.is_empty()
+                || after.next < route.received
+                || after.next > mark.accepted
+                || mark.preceding_commit_id.len() != 32
+                || after.next == 0
+            {
+                return Err(StreamError::Unavailable);
+            }
+            route.received = after.next;
+        }
+        if route.raw || mark.after.is_some() {
+            // A durability-only update cannot erase an unconsumed
+            // skipped-prefix cut. Both describe the same channel order.
+            if mark.after.is_none()
+                && let Some(wire::SessionFrame {
+                    body: Some(Body::Watermark(previous)),
+                    ..
+                }) = &route.watermark
+            {
+                mark.after.clone_from(&previous.after);
+                mark.preceding_commit_id
+                    .clone_from(&previous.preceding_commit_id);
+            }
+            route.watermark = Some(frame(id, generation, Body::Watermark(mark)));
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
     /// Accept an Open reply that resumes exactly where the route left off.
@@ -466,6 +550,7 @@ impl Pool {
         length: u64,
         epoch: u64,
     ) -> Result<(), StreamError> {
+        // Pending skipped progress shares the next data envelope in wire order.
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
         let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
         let sequence = match (&route.kind, data.item.as_ref()) {
@@ -475,17 +560,16 @@ impl Pool {
             (Kind::Children(request), Some(Item::Child(child))) => {
                 let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
                 if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
-                    || after.next
-                        != route
-                            .received
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?
+                    || after.next <= route.received
+                    || after.opaque.as_ref() != child.path.as_bytes()
                     || data.durable > data.accepted
                     || data.accepted < after.next
                 {
                     return Err(StreamError::Unavailable);
                 }
-                route.received
+                // The provider cursor includes undisclosed children. Preserve
+                // its cut without transferring any hidden path to the client.
+                after.next - 1
             }
             _ => return Err(StreamError::Unavailable),
         };
@@ -503,7 +587,13 @@ impl Pool {
         } else {
             return Err(StreamError::Unavailable);
         };
+        route.buffered_data = route
+            .buffered_data
+            .checked_add(1)
+            .filter(|count| usize::try_from(*count).is_ok_and(|count| count <= QUEUE))
+            .ok_or(StreamError::Capacity)?;
         let delivery = Delivery {
+            before: route.watermark.take(),
             item,
             sequence,
             opaque,
@@ -544,6 +634,7 @@ impl Pool {
             .ok_or(StreamError::Unavailable)?
             .epoch;
         let delivery = Delivery {
+            before: None,
             item: Received::Frame(value),
             sequence: route.received,
             opaque: route.received_opaque.clone(),
@@ -636,3 +727,7 @@ pub(super) fn poll_dials(
     }
     std::task::Poll::Pending
 }
+
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod filtered_credit_tests;

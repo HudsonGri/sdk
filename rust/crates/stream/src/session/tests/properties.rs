@@ -4,9 +4,13 @@ use proptest::prelude::*;
 
 pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
     Session {
+        authority: testing::authority(),
+        slots: testing::slots(),
+        trust_revision: 0,
+        deadline: Some(1000),
         provider: Arc::new(MemoryStream::default()),
         executor: Arc::new(runtime::PlatformExecutor),
-        publications: None,
+        resources: None,
         limits: Limits::default(),
         node: "node".into(),
         hello: true,
@@ -15,11 +19,13 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         channels: BTreeMap::from([(
             1,
             Channel {
+                binding: Some(testing::binding()),
                 opaque_cursor: false,
                 revalidate: None,
                 generation: 1,
                 latest,
                 pending: VecDeque::new(),
+                progress: None,
                 indexed: None,
                 credit: wire::SessionWindow::default(),
                 sent: cursor(0),
@@ -76,7 +82,7 @@ proptest! {
             let value = wire::SessionLatestValue {
                 key: Bytes::copy_from_slice(&[*key]), value: Bytes::copy_from_slice(&[*value]), attention: *attention,
             }.encode_to_vec();
-            let record = Record {
+            let record = Record { headers: Default::default(),
                 sequence: index as u64, value: OwnedBytes::from(value),
                 commit_id: CommitId::from_bytes([1; 32]), committed_at_micros: 0,
             };
@@ -151,6 +157,7 @@ fn exercise_admission(operations: &[u8], broken: bool) {
                             generation: 1,
                         },
                         Ok(Event::Record(Record {
+                            headers: Default::default(),
                             sequence,
                             value: vec![0].into(),
                             commit_id: CommitId::from_bytes([1; 32]),

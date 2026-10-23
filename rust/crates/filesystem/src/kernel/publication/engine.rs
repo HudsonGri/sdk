@@ -5,8 +5,9 @@ use super::*;
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
-pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
+pub(super) async fn publish_generation_async_inner<O, A, E, F, Fut, G, Dispatch, R>(
     objects: &O,
+    authority: &A,
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
@@ -20,6 +21,7 @@ pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>
 ) -> Result<(PublicationReceipt, ProofGuard), E>
 where
     O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
     E: From<crate::FsError> + Send,
     F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
     Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
@@ -127,7 +129,7 @@ where
     let operation_context =
         permit_context(intent.operation_context, fingerprint_permit, accounting)
             .map_err(E::from)?;
-    let commit = prepare_publication_commit(
+    let mut commit = prepare_publication_commit(
         request,
         operation_context,
         intent.original_evidence,
@@ -163,6 +165,37 @@ where
             },
             output.1,
         ));
+    }
+    commit.publication = crate::PublicationChanges::between(
+        objects,
+        authority,
+        request,
+        &output.0.root,
+        accounting,
+        cancellation,
+    )
+    .await
+    .map_err(E::from)?;
+    // The lease spans validation and the authority CAS. It excludes new physical
+    // projections; existing projections admit only candidates preserving policy.
+    let (_projection_fence, projected) =
+        crate::access::projection::publication(authority.operation_claims(), request.volume_id)
+            .map_err(E::from)?;
+    if projected {
+        projection::check(
+            objects,
+            authority,
+            projection::Candidate {
+                request,
+                root: &output.0.root,
+                lease: &_projection_fence,
+            },
+            closure_limits.decode,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(E::from)?;
     }
     let scope = if cache.is_some() && objects.collection().is_none() {
         crate::PublicationScope::Everything
@@ -219,7 +252,12 @@ where
         KernelAccounting::NativeOriginal { .. } => None,
         _ => Some(accounting.remaining().map_err(E::from)?),
     };
-    let appended = accept_step(accounting, dispatch(append, allowance).await)?;
+    let changes = append.commit.publication.clone();
+    let appended = accept_step(accounting, dispatch(append, allowance).await);
+    if let Some(changes) = changes {
+        changes.retire(accounting).map_err(E::from)?;
+    }
+    let appended = appended?;
     // Only a durable generation's proof may stand in for its closure later.
     if let Some(pending) = pending {
         pending.publish(&appended);
@@ -243,7 +281,7 @@ pub(super) fn publication_error(error: crate::FsError) -> PublicationError {
         crate::FsError::Authority(error) => error.into(),
         crate::FsError::Work(error) => error.into(),
         crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled.into(),
-        _ => unreachable!("unguarded publication has no caller-owned error"),
+        error => PublicationError::ChangeValidation(Box::new(error)),
     }
 }
 

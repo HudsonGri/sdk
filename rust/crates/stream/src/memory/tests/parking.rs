@@ -9,7 +9,7 @@ async fn unpolled_streams_do_not_block_appends() {
         let AppendOutcome::Committed(seed) = provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"seed")],
+                records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -27,17 +27,25 @@ async fn unpolled_streams_do_not_block_appends() {
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))
-                .boxed()
+                .boxed_local()
         } else {
             let follow = if checked {
                 provider
-                    .follow_checked(path.clone(), 1, seed.commit_id)
+                    .follow_checked(
+                        path.clone(),
+                        1,
+                        seed.commit_id,
+                        crate::FollowFilter::default(),
+                    )
                     .await
                     .unwrap()
             } else {
-                provider.follow(path.clone(), 0).await.unwrap()
+                provider
+                    .follow(path.clone(), 0, crate::FollowFilter::default())
+                    .await
+                    .unwrap()
             };
-            follow.map(|item| item.map(|_| ())).boxed()
+            follow.map(|item| item.map(|_| ())).boxed_local()
         };
         let held = provider.state.write().await;
         assert!(
@@ -51,7 +59,7 @@ async fn unpolled_streams_do_not_block_appends() {
             provider
                 .append(AppendRequest {
                     path,
-                    records: vec![Bytes::from_static(b"next")],
+                    records: vec![(Bytes::from_static(b"next")).into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 })
@@ -75,7 +83,7 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"seed")],
+                records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -90,14 +98,14 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))
-                .boxed()
+                .boxed_local()
         } else {
             provider
-                .follow(path, 0)
+                .follow(path, 0, crate::FollowFilter::default())
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))
-                .boxed()
+                .boxed_local()
         };
         let held = provider.state.write().await;
         assert!(

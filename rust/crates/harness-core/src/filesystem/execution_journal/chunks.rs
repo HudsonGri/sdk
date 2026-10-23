@@ -20,7 +20,10 @@ where
             .append_validated(operation, expected_tail, key, event, io)
             .await?;
         if accepted {
-            self.publish_chunk(key, event, io).await?;
+            crate::conversation::BoundedContentFuture::new(io, || {
+                self.publish_chunk(key, event, io)
+            })?
+            .await?;
         }
         Ok(accepted)
     }

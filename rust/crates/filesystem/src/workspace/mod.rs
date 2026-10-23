@@ -29,6 +29,9 @@ use unicode_normalization::UnicodeNormalization;
 const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 
+pub(crate) mod access;
+#[cfg(all(test, feature = "memory"))]
+mod access_tests;
 mod checkout;
 mod commit;
 mod content;
@@ -49,6 +52,7 @@ mod join_resolution;
 mod lifecycle;
 mod materialize;
 mod metadata;
+mod namespace_view;
 mod outcomes;
 mod path_apply;
 mod paths;
@@ -65,6 +69,7 @@ mod transaction_write;
 mod writes;
 
 pub use commit::{TransactionCommit, TransactionRebase};
+pub(crate) use diff::complete_changed_paths;
 pub use diff::{ChangeSet, ChangedPath};
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use errors::workspace_bounded_error;
@@ -84,6 +89,7 @@ use join_helpers::{
     namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
 };
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
+pub(crate) use namespace_view::NamespaceView;
 pub use outcomes::{
     ApplyOptions, JoinApplication, JoinOutcome, WorkspaceDelete, WorkspacePathApply,
     WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore,
@@ -132,3 +138,8 @@ fn item_work(items: u64) -> crate::WorkCounters {
 pub(crate) use reverse_traversal::{
     namespace_records_bytes, namespace_records_to_file_root_with_accounting,
 };
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod access_read_model;
+#[cfg(all(test, acyclic_fs_loom))]
+mod access_write_model;

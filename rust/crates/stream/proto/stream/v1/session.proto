@@ -23,6 +23,7 @@ message SessionFrame {
     SessionClosed closed = 18;
     SessionMoved moved = 19;
     SessionWatermark watermark = 20;
+    SessionCredential credential = 21;
   }
 }
 message SessionHello {
@@ -31,7 +32,10 @@ message SessionHello {
   string destination_node = 3;
   uint64 receive_bytes = 4; // finite aggregate payload credit
   uint32 receive_frames = 5; // finite aggregate frame credit
+  repeated bytes credentials = 6; // bounded slots, oldest index first
 }
+// Empty credential drops the slot and closes every channel bound to it.
+message SessionCredential { uint32 slot = 1; bytes credential = 2; }
 message SessionWelcome {
   uint32 version = 1;
   string node_id = 2;
@@ -53,10 +57,13 @@ message SessionInterestApplied {
 message SessionSubscription {
   SessionChannel channel = 1;
   SessionCursor resume = 2;
+  uint32 credential = 3;
+  SessionFilter filter = 4;
+  reserved 12; // retired filesystem-publications channel
+  reserved "fs_publications";
   oneof kind {
     SessionFollow follow = 10;
     ChildrenRequest children = 11;
-    bytes fs_publications = 12; // acyclic.filesystem.v2.SessionFsSubscription
     bytes actor_socket = 13; // RESERVED FOR actor-sockets: encoded Actors message
     bytes actor_call = 14; // RESERVED FOR actor-sockets: encoded Actors message
   }
@@ -67,7 +74,7 @@ enum SessionDelivery {
   SESSION_DELIVERY_LATEST = 2;
 }
 message SessionFollow {
-  string path = 1;
+  string resource = 1; // canonical streams:/path, fs:/volume, or another product resource
   SessionDelivery delivery = 2;
   // Optional 32-byte commit at resume.next - 1; requires ALL and next > 0.
   // The provider must check this anchor and register the follow atomically,
@@ -77,7 +84,7 @@ message SessionFollow {
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
-  bytes opaque = 2; // children anchor or acyclic.filesystem.v2.SessionFsCursor
+  bytes opaque = 2; // provider-owned children anchor; empty for record follows
 }
 message SessionOpened {
   SessionCursor resume = 1;
@@ -91,10 +98,11 @@ message SessionData {
   SessionCursor after = 1;
   uint64 accepted = 2;
   uint64 durable = 3;
+  reserved 12; // filesystem changes use ordinary Record entries
+  reserved "fs_publication";
   oneof item {
     Record record = 10;
     Child child = 11;
-    bytes fs_publication = 12; // acyclic.filesystem.v2.SessionFsPublication
     bytes actor_socket = 13;
     bytes actor_call = 14;
     SessionLatestValue latest_value = 15;
@@ -133,6 +141,10 @@ message SessionMoved {
 message SessionWatermark {
   uint64 accepted = 1;
   uint64 durable = 2;
+  // Ordered skipped-prefix cut; absent for durability-only observations.
+  // It never passes an earlier matching data frame on this channel.
+  SessionCursor after = 3;
+  bytes preceding_commit_id = 4; // commit at after.next - 1
 }
 message SessionLatestValue {
   bytes key = 1;

@@ -15,7 +15,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
         let path = StreamPath::new("watched").unwrap();
         let AppendOutcome::Committed(seed) = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -36,9 +36,15 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
             .boxed()
         } else {
             let follow = if checked {
-                block_on(provider.follow_checked(path.clone(), 1, seed.commit_id)).unwrap()
+                block_on(provider.follow_checked(
+                    path.clone(),
+                    1,
+                    seed.commit_id,
+                    crate::FollowFilter::default(),
+                ))
+                .unwrap()
             } else {
-                block_on(provider.follow(path.clone(), 0)).unwrap()
+                block_on(provider.follow(path.clone(), 0, crate::FollowFilter::default())).unwrap()
             };
             follow
                 .map(move |record| {
@@ -63,7 +69,7 @@ pub(crate) fn verify(retain_pending: bool, children: bool, checked: bool) {
         drop(held);
         park(provider.append(AppendRequest {
             path,
-            records: vec![Bytes::from_static(b"next")],
+            records: vec![Bytes::from_static(b"next").into()],
             if_tail: Some(1),
             idempotency_key: None,
         }))
@@ -90,7 +96,7 @@ pub(crate) fn shutdown(
         let path = StreamPath::new("watched").unwrap();
         let AppendOutcome::Committed(seed) = block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -107,9 +113,14 @@ pub(crate) fn shutdown(
             .boxed()
         } else {
             let follow = if checked {
-                block_on(provider.follow_checked(path.clone(), 1, seed.commit_id))
+                block_on(provider.follow_checked(
+                    path.clone(),
+                    1,
+                    seed.commit_id,
+                    crate::FollowFilter::default(),
+                ))
             } else {
-                block_on(provider.follow(path.clone(), 0))
+                block_on(provider.follow(path.clone(), 0, crate::FollowFilter::default()))
             }
             .unwrap();
             follow
@@ -151,7 +162,7 @@ pub(crate) fn shutdown(
             drop(held);
             park(provider.append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from_static(b"next")],
+                records: vec![Bytes::from_static(b"next").into()],
                 if_tail: Some(1),
                 idempotency_key: None,
             }))
@@ -165,7 +176,7 @@ pub(crate) fn shutdown(
         drop(held);
         park(provider.append(AppendRequest {
             path,
-            records: vec![Bytes::from_static(b"next")],
+            records: vec![Bytes::from_static(b"next").into()],
             if_tail: Some(1),
             idempotency_key: None,
         }))
@@ -191,7 +202,7 @@ pub(crate) fn abandon(
         let path = StreamPath::new("watched").unwrap();
         block_on(provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -205,7 +216,7 @@ pub(crate) fn abandon(
             .map(|child| child.map(|_| ()))
             .boxed()
         } else {
-            block_on(provider.follow(path, 0))
+            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()

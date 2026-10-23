@@ -30,7 +30,7 @@ async fn append(provider: &MemoryStream, path: &str) -> Result<(), StreamError> 
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from_static(b"delta")],
+            records: vec![(OwnedBytes::from_static(b"delta")).into()],
             if_tail: None,
             idempotency_key: None,
         })
@@ -61,11 +61,12 @@ async fn latest_overview(
     let mut overview = client
         .follow_data(
             wire::SessionFollow {
-                path: "status".into(),
+                resource: crate::wire_codec::session::stream_resource("status"),
                 delivery: wire::SessionDelivery::Latest as i32,
                 ..Default::default()
             },
             0,
+            crate::FollowFilter::default(),
         )
         .await?;
     let data = overview.next().await.ok_or("latest ended")??;
@@ -126,6 +127,7 @@ async fn serve(
     let host = Host {
         service: crate::session::Service::new(
             Arc::clone(provider),
+            crate::session::testing::authority(),
             "node".into(),
             crate::session::Limits::default(),
         ),
@@ -149,7 +151,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
     let sessions = Arc::new(AtomicUsize::new(0));
     let (endpoint, server) = serve(&provider, &connections, &sessions).await?;
     let result: TestResult = async {
-        let client = HttpStream::new(&endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
+        let client = authenticated_client(&endpoint)?;
         let _overview = latest_overview(&provider, &client).await?;
         let path = StreamPath::new("events")?;
         assert_eq!(
@@ -160,9 +162,12 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             }
         );
         let clones: Vec<_> = (0..64).map(|_| client.clone()).collect();
-        let mut follows =
-            futures::future::try_join_all(clones.iter().map(|clone| clone.follow(path.clone(), 1)))
-                .await?;
+        let mut follows = futures::future::try_join_all(
+            clones
+                .iter()
+                .map(|clone| clone.follow(path.clone(), 1, crate::FollowFilter::default())),
+        )
+        .await?;
         let anchor = provider
             .read(ReadRequest {
                 path: path.clone(),
@@ -176,11 +181,18 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             .commit_id;
         assert!(matches!(
             client
-                .follow_checked(path.clone(), 1, CommitId::from_bytes([42; 32]))
+                .follow_checked(
+                    path.clone(),
+                    1,
+                    CommitId::from_bytes([42; 32]),
+                    crate::FollowFilter::default()
+                )
                 .await,
             Err(StreamError::PrefixNotRetained)
         ));
-        let mut checked = client.follow_checked(path.clone(), 1, anchor).await?;
+        let mut checked = client
+            .follow_checked(path.clone(), 1, anchor, crate::FollowFilter::default())
+            .await?;
         let mut children = client
             .children(ChildrenRequest {
                 parent: Some(StreamPath::new("agents")?),
@@ -246,6 +258,7 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
     let host = Host {
         service: crate::session::Service::new(
             Arc::clone(&provider),
+            crate::session::testing::authority(),
             "tls".into(),
             crate::session::Limits::default(),
         ),
@@ -264,7 +277,17 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
             MAX_COMMAND_BYTES,
             Some(pem.as_bytes()),
         )?;
-        let mut records = client.follow(StreamPath::new("events")?, 1).await?;
+        client
+            .session_client()?
+            .session_client()?
+            .register_credential(0, crate::session::testing::credential())?;
+        let mut records = client
+            .follow(
+                StreamPath::new("events")?,
+                1,
+                crate::FollowFilter::default(),
+            )
+            .await?;
         let mut children = client
             .children(ChildrenRequest {
                 parent: Some(StreamPath::new("agents")?),
@@ -294,4 +317,15 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
     .await;
     server.abort();
     result
+}
+
+fn authenticated_client(
+    endpoint: &str,
+) -> Result<HttpStream, Box<dyn std::error::Error + Send + Sync>> {
+    let client = HttpStream::new(endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
+    client
+        .session_client()?
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    Ok(client)
 }

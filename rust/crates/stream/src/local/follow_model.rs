@@ -18,7 +18,7 @@ pub(crate) fn registration(omit_wake: bool) {
         let path = StreamPath::new("watched").unwrap();
         let seed = block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"anchor")],
+            records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -37,7 +37,7 @@ pub(crate) fn registration(omit_wake: bool) {
                         .provider
                         .append(AppendRequest {
                             path,
-                            records: vec![Bytes::from_static(b"accepted")],
+                            records: vec![Bytes::from_static(b"accepted").into()],
                             if_tail: Some(1),
                             idempotency_key: None,
                         })
@@ -48,7 +48,7 @@ pub(crate) fn registration(omit_wake: bool) {
         });
         block_on(async {
             let mut follow = provider
-                .follow_checked(path, 1, seed.commit_id)
+                .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
                 .await
                 .unwrap();
             let record = follow.next().await.unwrap().unwrap();
@@ -67,13 +67,15 @@ pub(crate) fn cancellation(retain: bool) {
         let path = StreamPath::new("watched").unwrap();
         block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
         .unwrap();
-        let mut cancelled = block_on(provider.follow(path.clone(), 1)).unwrap();
-        let mut kept = block_on(provider.follow(path.clone(), 1)).unwrap();
+        let mut cancelled =
+            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
+        let mut kept =
+            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
         let (_, wake) = crate::discovery_verification::probe();
         assert!(
             cancelled
@@ -100,7 +102,7 @@ pub(crate) fn cancellation(retain: bool) {
                 .provider
                 .append(AppendRequest {
                     path: path.clone(),
-                    records: vec![Bytes::from_static(b"next")],
+                    records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
                     idempotency_key: None,
                 })
@@ -139,7 +141,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
         let path = StreamPath::new("watched").unwrap();
         let seed = block_on(provider.inner.provider.append(AppendRequest {
             path: path.clone(),
-            records: vec![Bytes::from_static(b"seed")],
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: None,
         }))
@@ -169,7 +171,10 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
             drop(ManuallyDrop::into_inner(held));
         } else {
             block_on(async {
-                match provider.follow_checked(path, 1, seed.commit_id).await {
+                match provider
+                    .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+                    .await
+                {
                     Err(error) => assert_eq!(error, StreamError::Unavailable),
                     Ok(mut follow) => {
                         assert_eq!(follow.next().await, Some(Err(StreamError::Unavailable)))

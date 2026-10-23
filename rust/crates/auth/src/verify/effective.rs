@@ -29,9 +29,30 @@ impl<'a> ScopedFilter<'a> {
     }
     /// Acting identity frozen at the declaring block, unaffected by later appends.
     pub fn subject_id(&self) -> &'a str {
-        self.principal.lineage[..self.visible_lineage]
-            .last()
+        self.visible_lineage.checked_sub(1)
+            .and_then(|index| self.principal.lineage.get(index))
             .map_or(self.principal.id.as_str(), String::as_str)
+    }
+}
+
+/// A mandatory attribute pin with its declaring-block identity.
+pub struct ScopedPin<'a> {
+    declaring_block: usize,
+    pin: &'a Pin,
+    subject_id: &'a str,
+}
+impl<'a> ScopedPin<'a> {
+    /// Zero-based declaring block index, authenticated by the chain signature.
+    pub fn declaring_block(&self) -> usize {
+        self.declaring_block
+    }
+    /// Attribute constraint declared by this block.
+    pub fn pin(&self) -> &'a Pin {
+        self.pin
+    }
+    /// Acting identity frozen when this pin was declared.
+    pub fn subject_id(&self) -> &'a str {
+        self.subject_id
     }
 }
 
@@ -63,8 +84,7 @@ impl<'a> Effective<'a> {
                     }),
             )
     }
-    /// Every returned filter must hold, using its declaring-block identity.
-    pub fn filters(&self) -> impl Iterator<Item = ScopedFilter<'a>> {
+    fn scoped_caveats(&self) -> impl Iterator<Item = (usize, &'a Caveat, usize)> {
         let mut visible_lineage = self.capability.blocks[0]
             .certificates
             .as_ref()
@@ -75,9 +95,6 @@ impl<'a> Effective<'a> {
             .iter()
             .enumerate()
             .flat_map(move |(index, block)| {
-                // Every filter in a block binds after all lineage appends in
-                // that block, independent of caveat order. Visit each block
-                // twice, never any descendant once per filter.
                 for caveat in &block.caveats {
                     #[cfg(test)]
                     filter_work();
@@ -86,19 +103,39 @@ impl<'a> Effective<'a> {
                     }
                 }
                 let visible_lineage = visible_lineage;
-                block.caveats.iter().filter_map(move |caveat| {
+                block.caveats.iter().map(move |caveat| {
                     #[cfg(test)]
                     filter_work();
-                    match &caveat.kind {
-                        CaveatKind::Filter(filter) => Some(ScopedFilter {
-                            declaring_block: index,
-                            filter,
-                            principal: &self.capability.principal,
-                            visible_lineage,
-                        }),
-                        _ => None,
-                    }
+                    (index, caveat, visible_lineage)
                 })
+            })
+    }
+    /// Every returned filter must hold, using its declaring-block identity.
+    pub fn filters(&self) -> impl Iterator<Item = ScopedFilter<'a>> {
+        self.scoped_caveats()
+            .filter_map(|(index, caveat, visible_lineage)| match &caveat.kind {
+                CaveatKind::Filter(filter) => Some(ScopedFilter {
+                    declaring_block: index,
+                    filter,
+                    principal: &self.capability.principal,
+                    visible_lineage,
+                }),
+                _ => None,
+            })
+    }
+    /// Pins also constrain read subscriptions; they cannot be dropped while
+    /// deferring record facts at channel admission.
+    pub fn pins(&self) -> impl Iterator<Item = ScopedPin<'a>> {
+        self.scoped_caveats()
+            .filter_map(|(index, caveat, visible_lineage)| match &caveat.kind {
+                CaveatKind::Pin(pin) => Some(ScopedPin {
+                    declaring_block: index,
+                    pin,
+                    subject_id: visible_lineage.checked_sub(1)
+                        .and_then(|index| self.capability.principal.lineage.get(index))
+                        .map_or(self.capability.principal.id.as_str(), String::as_str),
+                }),
+                _ => None,
             })
     }
     /// Per-dimension minimum; metering remains at the root's owning ledger.
