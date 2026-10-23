@@ -9,6 +9,8 @@ prs="$*"; n=$(echo $prs | tr ' ' '+'); W=Q:/wt/pr-gate; L=Q:/lanes/pr-gate; mkdi
 # Local preparation failures have a separate held state, never a bb2 retry.
 python Q:/lanes/gate-prepare.py prepare $prs; preparation_rc=$?
 [ "$preparation_rc" = 0 ] || exit "$preparation_rc"
+python Q:/lanes/gate-merge.py record $prs; pin_rc=$?
+[ "$pin_rc" = 0 ] || exit "$pin_rc"
 # Standing rule: rebase, never merge main. A PR whose own commits include a merge is refused (exit 3 like a conflict, so the
 # rest of the batch still gates); the author moves it to a rebased superseding PR.
 for p in $prs; do if [ -n "$(git -C Q:/sdk log --merges --format=%h origin/main..refs/pr-gate/$p)" ]; then echo "GATE FAIL #$n: #$p contains a merge commit"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_MERGECOMMIT #$p contains a merge commit; needs a rebased superseding PR" >> ~/.codex-fleet/alerts.log; echo $p > $L/.conflict; exit 3; fi; done
