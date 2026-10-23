@@ -193,10 +193,10 @@ fn reflow_preserves_the_source_and_search_index() {
     candidate.replace(&[Line::raw("searchable source")], 0);
     candidate.reflow(80);
     let text = candidate.text().to_owned();
-    let revision = candidate.index.revision;
+    let revision = candidate.search_index().revision;
     let measured = acyclic_test_support::measure(|| candidate.reflow(40));
     assert_eq!(candidate.text(), text);
-    assert_eq!(candidate.index.revision, revision);
+    assert_eq!(candidate.search_index().revision, revision);
     assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
 }
 
