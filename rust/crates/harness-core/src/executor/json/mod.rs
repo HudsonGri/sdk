@@ -30,11 +30,17 @@ pub(crate) use serialization::canonical_digest_with_work;
 pub(crate) use serialization::count_json_bytes_trusted;
 mod copy;
 mod decode;
+mod layout;
+pub(crate) use layout::{Alloc, JsonLayout};
+#[cfg(test)]
+pub(crate) use layout::{FALLBACK_SLOT, UNDESCRIBED};
 mod schema;
 mod serialization;
+#[cfg(test)]
+pub(crate) use admission::admit_json_layout;
+pub(crate) use admission::json_owned_value_shape_bounded;
 #[cfg(feature = "filesystem")]
 pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
-pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
 pub use records::json_value_logical_owned_bytes;
 pub(crate) use records::json_value_retained_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};

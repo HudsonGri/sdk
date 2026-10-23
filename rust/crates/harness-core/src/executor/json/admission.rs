@@ -1,3 +1,4 @@
+use super::layout::{Entries, JsonLayout, LayoutCost, Placement};
 use super::schema::{JsonValueSchema, NONE, ROOT, UNKNOWN};
 use super::*;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -78,6 +79,7 @@ struct Walk<'a, 'b> {
     depth: u32,
     virtual_value: bool,
     raw: Option<&'static JsonValueSchema>,
+    layout: Option<Placement<'a>>,
     charge: &'a Charge<'b>,
     failed: &'a RefCell<Option<Error>>,
 }
@@ -102,10 +104,12 @@ impl<'a, 'b> Walk<'a, 'b> {
         &self,
         schema: &'static JsonValueSchema,
         raw: Option<&'static JsonValueSchema>,
+        layout: Option<Placement<'a>>,
     ) -> Walk<'a, 'b> {
         Walk {
             schema,
             raw,
+            layout,
             depth: self.depth + 1,
             virtual_value: self.virtual_value,
             charge: self.charge,
@@ -151,6 +155,9 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         Ok(self.base())
     }
     fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Branches, E> {
+        if let Some(layout) = self.layout {
+            layout.string(text.len());
+        }
         let mut counts = self.base();
         // Value accepts every JSON string. These decoded source bytes cannot
         // appear in an invalid-type diagnostic at a typed metadata boundary.
@@ -167,6 +174,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                 let mut nested = document(
                     text.as_bytes(),
                     &ROOT,
+                    None,
                     self.depth,
                     true,
                     self.charge,
@@ -197,12 +205,15 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         mut values: A,
     ) -> std::result::Result<Branches, A::Error> {
         let mut counts = self.base();
+        let mut entries = Entries::new(self.layout, false);
         let mut index = 0;
         loop {
             let (schema, gate) = self.schema.child(b"", Some(index));
-            let Some(child) = values.next_element_seed(self.child(schema, None))? else {
+            let layout = entries.child(None, index);
+            let Some(child) = values.next_element_seed(self.child(schema, None, layout))? else {
                 break;
             };
+            entries.count += 1;
             counts
                 .add(child, gate)
                 .map_err(|error| self.error::<A::Error>(error))?;
@@ -215,9 +226,13 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         mut fields: A,
     ) -> std::result::Result<Branches, A::Error> {
         let mut counts = self.base();
+        let mut entries = Entries::new(self.layout, true);
         let (mut index, mut tag) = (0, None);
         while let Some(key) = fields.next_key::<String>()? {
+            entries.count += 1;
+            entries.key(key.len());
             let key = key.as_bytes();
+            let layout = entries.child(Some(key), index);
             if !self.virtual_value && std::ptr::eq(self.schema, &ROOT) {
                 counts.always.value_string_bytes = checked(
                     counts
@@ -247,11 +262,13 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                 } else {
                     self.schema.mask(label.as_bytes())
                 });
-                self.child(schema, None).base()
+                self.child(schema, None, layout).base()
             } else {
-                fields.next_value_seed(
-                    self.child(schema, (index == 0 && key == RAW).then_some(schema)),
-                )?
+                fields.next_value_seed(self.child(
+                    schema,
+                    (index == 0 && key == RAW).then_some(schema),
+                    layout,
+                ))?
             };
             if std::ptr::eq(schema, &NONE) {
                 child = Branches::default();
@@ -272,6 +289,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
 fn document(
     bytes: &[u8],
     schema: &'static JsonValueSchema,
+    layout: Option<Placement<'_>>,
     depth: u32,
     virtual_value: bool,
     charge: &Charge<'_>,
@@ -289,6 +307,7 @@ fn document(
         depth,
         virtual_value,
         raw: None,
+        layout,
         charge,
         failed,
     }
@@ -387,8 +406,18 @@ impl Lexical {
 
 pub(super) fn source(
     bytes: &[u8],
+    bounds: JsonBounds,
+    schema: Option<&'static JsonValueSchema>,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<JsonValueShape> {
+    laid_out(bytes, bounds, schema, None, code, charge)
+}
+fn laid_out(
+    bytes: &[u8],
     mut bounds: JsonBounds,
     schema: Option<&'static JsonValueSchema>,
+    layout: Option<Placement<'_>>,
     code: Option<crate::wire::ErrorCode>,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
@@ -410,6 +439,7 @@ pub(super) fn source(
     let counts = document(
         bytes,
         schema.unwrap_or(&UNKNOWN),
+        layout,
         0,
         false,
         &charge,
@@ -468,13 +498,32 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(
 ) -> Result<()> {
     source(bytes, bounds, Some(JsonValueSchema::None), None, charge).map(|_| ())
 }
-pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
+
+/// Admits a typed document's value shape and the heap its decode allocates
+/// at each described position of `layout`.
+pub(crate) fn admit_json_layout<F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8],
     bounds: JsonBounds,
     schema: &'static JsonValueSchema,
+    layout: &'static JsonLayout,
     charge: &mut F,
-) -> Result<JsonValueShape> {
-    source(bytes, bounds, Some(schema), None, charge)
+) -> Result<(JsonValueShape, LayoutCost)> {
+    let cost = RefCell::new(LayoutCost::default());
+    let shape = laid_out(
+        bytes,
+        bounds,
+        Some(schema),
+        Some(Placement::root(layout, &cost)),
+        None,
+        charge,
+    )?;
+    // An incomplete walk saw only a prefix: charge every value as undescribed.
+    let cost = if shape.unresolved_raw() {
+        LayoutCost::undescribed(shape.lexical_items(), shape.input_bytes())
+    } else {
+        cost.into_inner()
+    };
+    Ok((shape, cost))
 }
 
 pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result<()>>(

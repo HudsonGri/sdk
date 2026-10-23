@@ -71,7 +71,7 @@ impl Snapshot {
             },
         );
         quota.adopt(admitted)?;
-        let (_, conversation_allowance) = admission?;
+        admission?;
         let mut decoder = serde_json::Deserializer::from_slice(bytes);
         decoder.disable_recursion_limit();
         let decoded =
@@ -94,7 +94,6 @@ impl Snapshot {
                 return Err(Error::Storage(source.to_string()));
             }
         };
-        quota.relinquish(conversation_allowance)?;
         let Snapshot {
             format_version,
             authority,
