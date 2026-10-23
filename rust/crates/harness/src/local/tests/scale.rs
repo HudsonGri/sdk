@@ -158,11 +158,19 @@ impl ScaleProvider {
                 },
             ]
         };
-        // A child answers from one model call: concurrent sibling writes into
-        // the parent's workspace currently fail admission with a generation
-        // conflict (see #1030), so children measure dispatch cost only.
+        // A child runs one checkout command, which gives it a native task
+        // view that retires when its turn settles, then answers. It writes
+        // nothing: concurrent sibling writes into the parent's workspace
+        // currently fail admission with a generation conflict (see #1030).
         if agent.contains('c') {
-            return Ok(done());
+            return Ok(if results.is_empty() {
+                call(
+                    crate::tools::shell::PLATFORM.name,
+                    json!({"command": "echo child"}),
+                )
+            } else {
+                done()
+            });
         }
         // A root writes, reads and rewrites its file, then spawns its children
         // one per step and waits for all of them. The rewrite goes by path:
@@ -720,6 +728,26 @@ fn a_descriptor_leaked_per_agent_fails_the_bound() -> Result<()> {
         "{stdout}
 {stderr}"
     );
+    Ok(())
+}
+
+/// Children that ran a checkout command through the stock controller keep no
+/// task view once their turns settle; the views really existed.
+#[cfg(feature = "native-execution")]
+#[tokio::test(flavor = "multi_thread")]
+async fn settled_children_keep_no_task_view() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let provider = Arc::new(ScaleProvider {
+        children: 2,
+        started: Instant::now(),
+        timings: Arc::default(),
+        content: None,
+    });
+    let harness = open_agent(directory.path(), provider).await?;
+    let output = harness.run("scale agent 0").await?;
+    assert!(output.text.starts_with("done "), "{output:?}");
+    let views = &harness.workspace.as_ref().unwrap().children;
+    assert_eq!((views.constructed(), views.live()), (2, 0));
     Ok(())
 }
 
