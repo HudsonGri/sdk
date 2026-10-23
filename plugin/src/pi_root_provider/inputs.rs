@@ -288,7 +288,9 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
     }
 }
 
-pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Serialize>(
+pub(super) async fn read_root_artifact_with_native_work<
+    T: DeserializeOwned + Serialize + acyclic_harness::HeapLayout,
+>(
     owner: &PiOwnerConfig,
     context: &TaskContext,
     reference: &FileRef,
@@ -320,7 +322,9 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
 ///
 /// Any other spelling of the same value, including the unreleased declared-field-order
 /// encoding, is a typed `Invalid` boundary error: there is no second accepted form.
-pub(super) fn decode_root_artifact<T: DeserializeOwned + Serialize>(
+pub(super) fn decode_root_artifact<
+    T: DeserializeOwned + Serialize + acyclic_harness::HeapLayout,
+>(
     owner: &PiOwnerConfig,
     bytes: &[u8],
     schema: &'static JsonValueSchema,

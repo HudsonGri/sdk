@@ -463,7 +463,7 @@ impl PiSession {
         }
     }
 
-    fn spawn_input<'a, T: DeserializeOwned + Send>(
+    fn spawn_input<'a, T: DeserializeOwned + acyclic_harness::HeapLayout + Send>(
         &self,
         owner: &'a pi_owner::PiOwnerConfig,
         operation: OperationId,

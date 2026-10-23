@@ -22,7 +22,6 @@ use std::{
 mod allocation;
 mod completion;
 pub(super) mod journal;
-mod journal_allocation;
 mod journal_encoding;
 #[cfg(test)]
 mod journal_properties;

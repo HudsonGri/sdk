@@ -24,33 +24,11 @@ pub(crate) fn owned_vector<T>(
         })
 }
 
-/// Conservative closed-DTO admission without building a second DTO.
-pub(crate) fn owned_bytes<T: Serialize + ?Sized>(value: &T) -> Result<u64> {
-    use crate::executor::json::{JsonBounds, JsonCodecCharge, count_json_bytes_trusted};
-    let mut nodes = 0_u64;
-    let bytes = count_json_bytes_trusted(
-        value,
-        JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: u64::MAX,
-            maximum_depth: 256,
-        },
-        None,
-        &mut |charge| {
-            if let JsonCodecCharge::Work { items, .. } = charge {
-                nodes = owned_sum([nodes, items])?;
-            }
-            Ok(())
-        },
-    )?;
-    bytes
-        .checked_mul(2)
-        .and_then(|bytes| {
-            nodes
-                .checked_mul(Snapshot::LOGICAL_SCHEMA_SLOT_BYTES)
-                .and_then(|slots| bytes.checked_add(slots))
-        })
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(value) as u64))
+/// A record's own size and the heap its typed decode allocates, charged at
+/// each position of its layout while walking its serialization in place.
+pub(crate) fn owned_bytes<T: Serialize + crate::HeapLayout + ?Sized>(value: &T) -> Result<u64> {
+    crate::executor::json::serialized_layout_bytes(value, T::LAYOUT)?
+        .checked_add(std::mem::size_of_val(value) as u64)
         .ok_or_else(|| Error::Invalid("record ownership overflows".into()))
 }
 
@@ -76,7 +54,9 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     ])
 }
 
-fn owned_records<T: Serialize>(values: impl IntoIterator<Item = T>) -> Result<u64> {
+fn owned_records<T: Serialize + crate::HeapLayout>(
+    values: impl IntoIterator<Item = T>,
+) -> Result<u64> {
     values
         .into_iter()
         .try_fold(0, |sum, value| owned_sum([sum, owned_bytes(&value)?]))

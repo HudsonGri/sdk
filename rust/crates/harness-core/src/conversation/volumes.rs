@@ -5,6 +5,7 @@ pub(super) mod canonical;
 /// The three independently governed file namespaces.
 #[derive(
     Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+    crate::HeapLayout,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum VolumeClass {
@@ -19,6 +20,7 @@ pub enum VolumeClass {
 /// Logical owner used for routing; access still requires an authenticated grant.
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+    crate::HeapLayout,
 )]
 #[serde(
     tag = "kind",
@@ -28,22 +30,23 @@ pub enum VolumeClass {
 )]
 pub enum VolumeOwner {
     /// Project workspace owner.
-    Project(#[serde(deserialize_with = "deserialize_label")] String),
+    Project(#[serde(deserialize_with = "deserialize_label")] #[heap_layout(scalar)] String),
     /// Agent private-volume owner.
     Agent(#[schemars(with = "String")] AgentId),
     /// Shared session-volume owner.
-    Session(#[serde(deserialize_with = "deserialize_label")] String),
+    Session(#[serde(deserialize_with = "deserialize_label")] #[heap_layout(scalar)] String),
 }
 
 /// Globally addressable volume identity with no embedded capability or endpoint.
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+    crate::HeapLayout,
 )]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct VolumeRef {
     pub(super) provider: ProviderRef,
-    #[serde(deserialize_with = "deserialize_label")]
+    #[serde(deserialize_with = "deserialize_label")] #[heap_layout(scalar)]
     pub(super) id: String,
     pub(super) class: VolumeClass,
     pub(super) owner: VolumeOwner,

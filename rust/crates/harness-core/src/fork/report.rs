@@ -1,7 +1,7 @@
 //! report fork protocol.
 use super::*;
 /// Prepared capture report; no child is visible until its seed is published.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ForkReport {
     /// The original immutable request.

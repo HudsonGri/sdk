@@ -1,6 +1,6 @@
 use super::*;
 /// Strength advertised by an external effect provider.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectGuarantee {
     /// Provider proves one externally observable application.
@@ -12,7 +12,7 @@ pub enum EffectGuarantee {
 }
 
 /// Current durable status of an effect.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[allow(
     clippy::large_enum_variant,
@@ -47,7 +47,7 @@ impl EffectStatus {
 }
 
 /// Host-attested provider observation accepted by the pure reducer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct EffectAttestation {
     /// Provider that produced the observation.
     pub provider: String,
@@ -80,7 +80,7 @@ impl EffectAttestation {
 }
 
 /// Complete durable projection of one external effect.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct EffectState {
     /// Provider selected before dispatch.
     pub provider: String,

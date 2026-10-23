@@ -165,6 +165,7 @@ macro_rules! uuid_id {
         #[doc = $description]
         #[derive(
             Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+            crate::HeapLayout,
         )]
         #[serde(transparent)]
         pub struct $name(Uuid);
@@ -231,7 +232,7 @@ uuid_id!(
 uuid_id!(InteractionId, "Identity of one typed open interaction.");
 
 /// Caller-selected identity used to reconcile uncertain admission.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(transparent)]
 pub struct IdempotencyKey(pub String);
 
@@ -253,7 +254,7 @@ impl IdempotencyKey {
 }
 
 /// One admission result per submitted input.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Admission<T> {
     /// Work was accepted.
@@ -272,7 +273,7 @@ pub enum Admission<T> {
 }
 
 /// Terminal outcome of admitted work.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Outcome<T> {
     /// Work completed successfully.
@@ -298,7 +299,7 @@ mod indeterminate;
 pub use indeterminate::{CommandIndeterminacy, CommandIndeterminacyReason, IndeterminateCause};
 
 /// Stable wire identity used during compatibility handshakes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(all(feature = "wasm", target_arch = "wasm32"), derive(tsify::Tsify))]
 pub struct ProtocolIdentity {
     /// Semantic protocol version.
@@ -308,7 +309,7 @@ pub struct ProtocolIdentity {
 }
 
 /// Deterministic capability set.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Capabilities(pub(crate) BTreeSet<String>);
 
@@ -402,7 +403,7 @@ impl Capabilities {
 }
 
 /// One explicit authority policy layer; grants intersect and denials always win.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct AuthorityPolicy {
     /// Capabilities this layer permits.
     pub grants: Capabilities,
@@ -411,7 +412,7 @@ pub struct AuthorityPolicy {
 }
 
 /// Ordered authority-resolution level from the runtime root to one invocation.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(all(feature = "wasm", target_arch = "wasm32"), derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityLevel {
@@ -432,7 +433,7 @@ pub enum AuthorityLevel {
 }
 
 /// One named layer in an explicit authority chain.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct PolicyLayer {
     /// Hierarchy position.
     pub level: AuthorityLevel,

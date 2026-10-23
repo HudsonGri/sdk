@@ -1,7 +1,7 @@
 //! Selected provider revisions and fork preparation.
 use super::*;
 /// One exact retained resource revision selected for a child.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", content = "reference", rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ResourceRevision {
@@ -160,7 +160,7 @@ impl ResourceRevision {
 }
 
 /// Required or optional exact resource selection.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkSelection {
@@ -171,7 +171,7 @@ pub struct ForkSelection {
 }
 
 /// Provider evidence of a consistent boundary across selected resources.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct AttestedBoundary {
@@ -199,7 +199,7 @@ impl AttestedBoundary {
 }
 
 /// Selection of authoritative logical history before a fork is admitted.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ForkHistoryPolicy {
@@ -213,7 +213,7 @@ pub enum ForkHistoryPolicy {
 }
 
 /// Immutable provider allocation and context bounds for one fork operation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ForkPreparation {

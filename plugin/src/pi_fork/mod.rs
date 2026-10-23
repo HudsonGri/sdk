@@ -134,7 +134,8 @@ fn operation_id(
     Ok(OperationId::from_bytes(id))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiForkOperations {
     pub(crate) child: OperationId,
@@ -155,7 +156,8 @@ impl PiForkOperations {
     }
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RetainedSpawnCommit {
     pub(crate) sdk_operation: String,
@@ -167,7 +169,8 @@ pub(crate) struct RetainedSpawnCommit {
     pub(crate) launch: PiNativeLaunchIntent,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiForkPlan {
     pub(crate) original: OperationId,

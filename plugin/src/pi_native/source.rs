@@ -1,6 +1,7 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiNativeSourceMode {
     CallerTool,
@@ -8,7 +9,8 @@ pub(crate) enum PiNativeSourceMode {
 }
 
 /// Exact native source selection retained in the original child admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PiNativeSourceCut {
     pub(crate) mode: PiNativeSourceMode,
@@ -28,7 +30,8 @@ pub(crate) const PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES: u64 = 957;
 
 const NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES: u64 = 103;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 struct NativeHeader {
     #[serde(rename = "type")]

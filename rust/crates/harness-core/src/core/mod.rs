@@ -45,7 +45,6 @@ pub(crate) use ownership::resource_creation_clone_reservation;
 pub(crate) use ownership::{
     event_owned_bytes, owned_buffer, owned_bytes, owned_effect, owned_sum, owned_vector,
 };
-pub(crate) use snapshot::SNAPSHOT_LAYOUT;
 pub use snapshot::Snapshot;
 
 pub use authority::{
@@ -77,4 +76,3 @@ pub(in crate::core) use records::{
     validate_interaction_transition, validate_lifecycle,
 };
 pub use reducer::Reducer;
-pub(in crate::core) use registry::ExtensionBinding;

@@ -417,6 +417,7 @@ name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-machines",
