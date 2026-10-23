@@ -7,6 +7,7 @@ use super::{
 };
 use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
+use std::sync::OnceLock;
 
 mod archive;
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,14 +37,11 @@ pub struct ClientRenderer {
     tool_details: bool,
     task: task::TaskRows,
     archive: archive::Archive,
-    reasoning_rows: Vec<Line<'static>>,
-    transcript: Vec<Line<'static>>,
+    transcript: OnceLock<Vec<Line<'static>>>,
     wrapped: bool,
     top: Option<super::TranscriptAnchor>,
     view_height: usize,
     reasoning_visible: bool,
-    transcript_changed: usize,
-    reasoning_changed: usize,
     wrapped_transcript: super::WrappedLines,
     wrapped_tools: super::WrappedLines,
     tools_changed: usize,
@@ -150,37 +148,7 @@ impl ClientRenderer {
             self.tool_details,
             owner,
         );
-        if self.task.tools_changed() {
-            self.tools_changed = 0;
-        }
-        let prefix = self.archive.rows().len();
-        let changed = if archive_changed < old_prefix || prefix != old_prefix {
-            self.transcript.truncate(archive_changed);
-            self.transcript
-                .extend_from_slice(&self.archive.rows()[archive_changed..]);
-            self.transcript.extend_from_slice(self.task.rows());
-            archive_changed
-        } else {
-            let changed = prefix + task_changed;
-            self.transcript.truncate(changed);
-            self.transcript
-                .extend_from_slice(&self.task.rows()[task_changed..]);
-            changed
-        };
-        self.transcript_changed = self.transcript_changed.min(changed);
-        let (changed, rows) = self.task.reasoning();
-        self.reasoning_rows.truncate(changed);
-        self.reasoning_rows.extend_from_slice(&rows[changed..]);
-        self.reasoning_changed = self.reasoning_changed.min(changed);
-        self.wrapped_transcript
-            .replace(&self.transcript, self.transcript_changed);
-        self.wrapped_tools
-            .replace(self.task.tools(), self.tools_changed);
-        self.wrapped_reasoning
-            .replace(&self.reasoning_rows, self.reasoning_changed);
-        self.transcript_changed = self.transcript.len();
-        self.tools_changed = self.task.tools().len();
-        self.reasoning_changed = self.reasoning_rows.len();
+        self.project_rows(old_prefix, archive_changed, task_changed);
         self.documents(views);
         self.busy = self.task.busy();
         self.header = Line::from(vec![
@@ -195,6 +163,45 @@ impl ClientRenderer {
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
         self.compose_notices();
+    }
+
+    fn project_rows(&mut self, old_prefix: usize, archive_changed: usize, task_changed: usize) {
+        if self.task.tools_changed() {
+            self.tools_changed = 0;
+        }
+        let prefix = self.archive.rows().len();
+        let changed = if archive_changed < old_prefix || prefix != old_prefix {
+            archive_changed
+        } else {
+            prefix + task_changed
+        };
+        let total = prefix + self.task.rows().len();
+        if changed < total || self.wrapped_transcript.source_len() != total {
+            self.transcript.take();
+        }
+        if archive_changed >= old_prefix
+            && prefix == old_prefix
+            && self.wrapped_transcript.source_len() == total
+            && changed + 1 == total
+            && let Some((text, style)) = self.task.answer_append()
+        {
+            self.wrapped_transcript.append_line(&text, style);
+        } else {
+            self.wrapped_transcript
+                .replace_parts(&[self.archive.rows(), self.task.rows()], changed);
+        }
+        self.wrapped_tools
+            .replace(self.task.tools(), self.tools_changed);
+        let (changed, rows) = self.task.reasoning();
+        if changed + 1 == rows.len()
+            && self.wrapped_reasoning.source_len() == rows.len()
+            && let Some((text, style)) = self.task.reasoning_append()
+        {
+            self.wrapped_reasoning.append_line(&text, style);
+        } else {
+            self.wrapped_reasoning.replace(rows, changed);
+        }
+        self.tools_changed = self.task.tools().len();
     }
 
     fn documents(&mut self, views: &ClientViews) {
@@ -264,8 +271,8 @@ impl ClientRenderer {
         if self.tool_details != details || self.archive.after() != after {
             self.tool_details = details;
             self.task = task::TaskRows::default();
-            self.transcript.clear();
-            self.transcript_changed = 0;
+            self.transcript.take();
+            self.wrapped_transcript.replace(&[], 0);
             self.archive = archive::Archive::new(after);
             self.update(views, authority);
         }
@@ -286,7 +293,7 @@ impl ClientRenderer {
         height: u16,
     ) -> crate::Result<()> {
         let area = super::ratatui::layout::Rect::new(0, 0, width, height);
-        self.wrapped = false;
+        self.wrapped = true;
         let areas = self.screen_for(files)?.areas(area, input);
         let width = areas.transcript.width;
         self.wrapped_transcript.reflow(width);
@@ -410,7 +417,7 @@ impl ClientRenderer {
             screen.reasoning = if self.wrapped {
                 self.wrapped_reasoning.shown()
             } else {
-                &self.reasoning_rows
+                self.task.reasoning().1
             };
         }
         match view {
@@ -456,6 +463,17 @@ impl ClientRenderer {
         Ok(screen)
     }
 
+    fn source_rows(&self) -> &[Line<'static>] {
+        self.transcript.get_or_init(|| {
+            self.archive
+                .rows()
+                .iter()
+                .chain(self.task.rows())
+                .cloned()
+                .collect()
+        })
+    }
+
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
         // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
@@ -465,7 +483,7 @@ impl ClientRenderer {
             transcript: if self.wrapped {
                 self.wrapped_transcript.shown()
             } else {
-                &self.transcript
+                self.source_rows()
             },
             tools: if self.wrapped {
                 self.wrapped_tools.shown()
@@ -501,26 +519,31 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
         line.spans
             .iter()
             .map(|span| {
-                let mut style = Style::default();
-                if let Some(acyclic_markdown::Color(r, g, b)) = span.style.foreground {
-                    style = style.fg(Color::Rgb(r, g, b));
-                }
-                for (set, modifier) in [
-                    (span.style.bold, Modifier::BOLD),
-                    (span.style.italic, Modifier::ITALIC),
-                    (span.style.dim, Modifier::DIM),
-                    (span.style.underline, Modifier::UNDERLINED),
-                    (span.style.strikethrough, Modifier::CROSSED_OUT),
-                ] {
-                    if set {
-                        style = style.add_modifier(modifier);
-                    }
-                }
+                let style = style(span.style);
                 // TODO(#604): emit queried OSC 8 link metadata through the terminal backend.
                 Span::styled(super::display_text(&span.text).into_owned(), style)
             })
             .collect::<Vec<_>>(),
     )
+}
+
+fn style(source: acyclic_markdown::Style) -> Style {
+    let mut style = Style::default();
+    if let Some(acyclic_markdown::Color(r, g, b)) = source.foreground {
+        style = style.fg(Color::Rgb(r, g, b));
+    }
+    for (set, modifier) in [
+        (source.bold, Modifier::BOLD),
+        (source.italic, Modifier::ITALIC),
+        (source.dim, Modifier::DIM),
+        (source.underline, Modifier::UNDERLINED),
+        (source.strikethrough, Modifier::CROSSED_OUT),
+    ] {
+        if set {
+            style = style.add_modifier(modifier);
+        }
+    }
+    style
 }
 
 #[cfg(test)]
@@ -557,3 +580,6 @@ mod viewport_cost;
 #[cfg(test)]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod scrollbar_tests;
+
+#[cfg(test)]
+mod revision_tests;
