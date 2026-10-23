@@ -492,10 +492,8 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
         );
         // Exercise the worker too: a raw Unsupported error is definitive on
         // current main, even if the command adapter declined to return Ready.
-        let crate::distributed::WorkPull::Claimed(lease) = runtime
-            .task_host()
-            .recover_work(task, &mut None)
-            .await?
+        let crate::distributed::WorkPull::Claimed(lease) =
+            runtime.task_host().recover_work(task, &mut None).await?
         else {
             return Err(Error::Invalid("hook fixture lost its lease".into()));
         };

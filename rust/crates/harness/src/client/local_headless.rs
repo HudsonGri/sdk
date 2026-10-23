@@ -282,7 +282,8 @@ impl LocalFileClient {
                         .host_error
                         .take()
                         .unwrap_or(Error::Indeterminate(operation));
-                    return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate {
+                    return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate
+                    {
                         Ok(HeadlessOutcome::Indeterminate)
                     } else {
                         Err(error)
@@ -385,7 +386,8 @@ impl HeadlessClient for LocalFileClient {
         validate(&command, operation)?;
         self.initial(output)?;
         self.submit(&command).await?;
-        self.run(operation, futures::stream::empty(), false, output).await
+        self.run(operation, futures::stream::empty(), false, output)
+            .await
     }
     async fn input<W: Write>(
         &mut self,

@@ -38,8 +38,7 @@ where
             && io.is_none()
             && let Some(files) = context.task_files()
         {
-            let operation =
-                crate::filesystem::task_runtime::execution_operation(task, turn, io)?;
+            let operation = crate::filesystem::task_runtime::execution_operation(task, turn, io)?;
             // Hook claims precede ModelStarted. Raw definitive errors are also
             // settled by the worker, so preserving the original error here
             // would still retire a task whose hook capture needs recovery.
