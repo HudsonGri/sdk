@@ -43,17 +43,32 @@ fn crashed_owner() -> TestResult {
     Err("crash fixture must be killed".into())
 }
 
-struct CrashRoots(tempfile::TempDir);
+struct CrashRoots(Option<tempfile::TempDir>);
 
 impl Drop for CrashRoots {
     fn drop(&mut self) {
-        for name in ["owned", "foreign"] {
-            if let Ok(path) = CString::new(self.0.path().join(name).as_os_str().as_bytes()) {
-                // SAFETY: only the two mount destinations created by this fixture.
-                unsafe {
-                    libc::unmount(path.as_ptr(), libc::MNT_FORCE);
+        let Some(root) = self.0.take() else { return };
+        let cleanup = (|| -> TestResult {
+            let canonical = root.path().canonicalize()?;
+            for mount in super::super::reclaim::mount_table()? {
+                let destination = super::super::reclaim::field(&mount.f_mntonname)?.to_bytes();
+                if ["owned", "foreign"]
+                    .into_iter()
+                    .any(|name| canonical.join(name).as_os_str().as_bytes() == destination)
+                {
+                    // The fixture owns both exact destinations, including its
+                    // deliberately unfenced foreign transport.
+                    super::super::reclaim::detach_stale_mount(&mount)?;
                 }
             }
+            Ok(())
+        })();
+        if let Err(error) = cleanup {
+            // Never recursively remove a directory while a dead NFS mount may
+            // cover it. Preserve the fixture for recovery and fail the proof.
+            let retained = root.keep();
+            eprintln!("crash fixture retirement failed at {retained:?}: {error}");
+            assert!(std::thread::panicking(), "crash fixture retirement failed");
         }
     }
 }
@@ -61,8 +76,13 @@ impl Drop for CrashRoots {
 #[test]
 #[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
-    let root = CrashRoots(tempfile::tempdir()?);
-    let canonical = root.0.path().canonicalize()?;
+    let root = CrashRoots(Some(tempfile::tempdir()?));
+    let canonical = root
+        .0
+        .as_ref()
+        .ok_or("missing crash fixture")?
+        .path()
+        .canonicalize()?;
     for name in ["owned", "foreign"] {
         std::fs::create_dir(canonical.join(name))?;
     }
@@ -95,6 +115,7 @@ fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -
     };
     assert!(mounted(&canonical.join("owned"))?);
     assert!(mounted(&canonical.join("foreign"))?);
+    println!("RECLAIM_CRASH_WITNESS owned=attached foreign=attached");
     // A historical SDK fence alone must not authorize detaching a different
     // transport's mount subsequently placed at the same destination.
     let (foreign_fence, _) =
@@ -124,5 +145,8 @@ fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -
     );
     replacement.stop()?;
     live.stop()?;
+    println!(
+        "RECLAIM_RECOVERY_VERIFIED owned=retired live=preserved foreign=preserved replacement=writable"
+    );
     Ok(())
 }
