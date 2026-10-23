@@ -26,6 +26,7 @@ paths=[
  'rust/crates/harness/src/local/commands.rs',
  'rust/crates/harness/src/bin/graphcoder/view.rs',
  'rust/crates/harness-core/src/filesystem/task_runtime/dispatch.rs',
+ 'rust/crates/harness-core/src/executor/tool_resolution.rs',
 ]
 (root/'paths').write_text('\n'.join(paths))
 for name in paths:
@@ -121,6 +122,15 @@ pub async fn local_identity(
 '''
 s=s[:start]+old+'\n'+s[end:];s=s.replace('{FileKey, FileValue, Query}','{Component, FileKey, FileValue, Query, TaskFile}');p.write_text(s)
 replace(paths[4],'return files.cancel_active().await;','return Ok(());')
+replace(paths[8],'''        let decision = journal.interaction_outcome(approval, self.io)?;
+        futures::pin_mut!(decision);
+        let outcome = match futures::future::select(journal.model_cancellation(), decision).await {
+            futures::future::Either::Left((cancelled, _)) => {
+                cancelled?;
+                Some(InteractionOutcome::Cancelled {})
+            }
+            futures::future::Either::Right((outcome, _)) => outcome?,
+        };''','''        let outcome = journal.interaction_outcome(approval, self.io)?.await?;''')
 replace(paths[5],'} => self.rewind_checkpoint(operation, required(target)?).await,','} => Err(Error::Unsupported("rewind is unavailable".into())),')
 replace(paths[6],'    if open {','    if false && open {')
 PY
@@ -151,7 +161,7 @@ expect_failure final-jsonl node scripts/qualify-final-answer.mjs "$binary" compl
 expect_failure pre-prompt node scripts/qualify-final-answer.mjs "$binary" pre-dispatch prompt
 expect_failure pre-jsonl node scripts/qualify-final-answer.mjs "$binary" pre-dispatch jsonl
 expect_failure fresh-retry node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$binary" kill-mid-turn
-for case in web-search pty-quit-resume pty-checkpoint-rewind pty-cancel-escape pty-diff-modified; do
+for case in web-search pty-quit-resume pty-checkpoint-rewind pty-cancel-escape pty-approval-cancel-escape pty-approval-cancel-ctrl-c pty-diff-modified; do
  expect_failure "$case" env E2E_OUTPUT="$proof/$case" node scripts/graphcoder-e2e/run.mjs "$binary" "$mock" "$case"
 done
 restore

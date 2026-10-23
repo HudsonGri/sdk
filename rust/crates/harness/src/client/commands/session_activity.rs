@@ -79,10 +79,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .ok_or_else(|| Error::Invalid("no active turn".into()))?;
         // One immutable request per admitted task. It is intentionally outside
         // the prompt inbox: cancellation is observed while that inbox is busy.
-        let key = files::FileKey::Task {
-            task: component(task.to_string())?,
-            file: files::TaskFile::Request(component(format!("cancel-{task}"))?),
-        };
+        let key = files::cancellation_key(task)?;
         let request = CommandResolution::Submit {
             request: CommandRequest::Cancel { task },
         };

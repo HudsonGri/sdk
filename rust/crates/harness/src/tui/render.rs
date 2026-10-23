@@ -172,8 +172,10 @@ impl ClientRenderer {
         ]);
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
-        self.notices
-            .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
+        if self.busy {
+            self.notices
+                .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
+        }
         self.compose_notices();
     }
 

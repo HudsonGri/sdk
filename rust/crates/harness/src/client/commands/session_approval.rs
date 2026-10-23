@@ -10,6 +10,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let Some(task) = self.active_task().or(self.selected_task()?) else {
             return Ok(None);
         };
+        let cancellation = files::cancellation_key(task)?;
+        if self
+            .read_file(&cancellation)
+            .await?
+            .is_some_and(|file| files::is_cancellation(task, &file.key, &file.bytes))
+        {
+            return Ok(None);
+        }
         let snapshot = self
             .volume
             .snapshot(
