@@ -179,7 +179,7 @@ async fn multiple_near_limit_commands_share_one_bounded_group()
     for path in ["a", "b"] {
         let request = AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![Bytes::from(vec![7; crate::MAX_RECORD_BYTES]); 16],
+            records: vec![Bytes::from(vec![7; crate::MAX_RECORD_BYTES]).into(); 16],
             if_tail: Some(0),
             idempotency_key: None,
         };
@@ -450,8 +450,8 @@ async fn failed_seal_poisons_before_any_later_group_can_seal()
     let before = std::fs::read(&path)?;
     {
         let mut journal = stream.inner.journal.lock().unwrap();
-        journal.file = File::open(&path)?; // deterministic physical write failure
-        journal.file.seek(SeekFrom::End(0))?;
+        journal.file = Arc::new(File::open(&path)?); // deterministic physical write failure
+        (&*journal.file).seek(SeekFrom::End(0))?;
     }
     assert_eq!(stream.flush(), Err(StreamError::Unavailable));
     assert_eq!(stream.flush(), Err(StreamError::Unavailable));

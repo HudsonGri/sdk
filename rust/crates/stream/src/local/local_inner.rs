@@ -102,7 +102,7 @@ impl LocalInner {
                 journal.appended,
                 journal.synced,
                 journal.bytes,
-                Arc::clone(&journal.sync),
+                Arc::clone(&journal.file),
                 journal.limits.durability,
             )
         };
