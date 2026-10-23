@@ -272,6 +272,7 @@ impl ClientRenderer {
         if let Some(marker) = self.header.spans.first_mut() {
             marker.content = std::borrow::Cow::Borrowed(if self.busy { "● " } else { "○ " });
         }
+        self.compose_notices();
         Ok(())
     }
 
@@ -356,8 +357,10 @@ impl ClientRenderer {
     fn compose_notices(&mut self) {
         self.composed_notices.clone_from(&self.notices);
         self.composed_notices.extend_from_slice(&self.file_notices);
-        self.composed_notices
-            .extend(self.outcome_notice.iter().cloned());
+        if !self.busy {
+            self.composed_notices
+                .extend(self.outcome_notice.iter().cloned());
+        }
     }
 
     /// Current followed lifecycle, used by the shared prompt's queue indicator.
