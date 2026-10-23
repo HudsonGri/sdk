@@ -110,6 +110,7 @@ fn retain(
         replay_left: None,
         replay_right: None,
         replay_height: 1,
+        commit_branch: None,
         digest,
         result,
         envelope,
@@ -117,8 +118,12 @@ fn retain(
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
         let keyed = entry.replay.is_some();
+        let committed = entry.envelope().is_some();
         let index = state.retained.len();
         state.retained.push(entry);
+        if committed {
+            state.insert_commit(index, probe);
+        }
         if keyed {
             state.replay_root = Some(state.insert_replay(state.replay_root, index, probe));
             state.replay_count += 1;

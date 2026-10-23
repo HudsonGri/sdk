@@ -41,6 +41,24 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Distinct provider sessions are distinct owners; backend leases remain
     /// responsible for exclusion across independently opened sessions.
     fn operation_claims(&self) -> &crate::OperationClaims;
+    /// Whether writes accepted in `deferring_durability` can be sealed by
+    /// `durability_barrier`. Unsupported sessions retain per-write durability.
+    fn supports_deferred_durability(&self) -> bool {
+        false
+    }
+    /// Makes every write accepted by this session before the call durable.
+    /// Visibility and live delivery do not wait for this barrier.
+    async fn durability_barrier(&self) -> Result<(), StreamError> {
+        Err(StreamError::Unsupported)
+    }
+    /// The same barrier, with admission and physical I/O on the original ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_durability_barrier(
+        &self,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, ()> {
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,

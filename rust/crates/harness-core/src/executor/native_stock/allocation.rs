@@ -62,6 +62,54 @@ pub(crate) fn stock_vec_push<T>(
     Ok(())
 }
 
+/// Reserves retained index storage, including a relocating allocation's peak.
+pub(crate) fn stock_vec_reserve<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    if capacity <= values.capacity() {
+        return Ok(());
+    }
+    let overflow = || {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "index storage overflows",
+        )
+    };
+    let copied = values
+        .len()
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(overflow)? as u64;
+    #[cfg(feature = "filesystem")]
+    let _peak = io
+        .map(|io| {
+            let bytes = values
+                .capacity()
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or_else(overflow)? as u64;
+            io.reserve_decode(bytes)
+        })
+        .transpose()?;
+    with_history_io(io, |work| {
+        if let Some(work) = work.as_deref_mut() {
+            work.admit_copy(copied)?;
+            work.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: values.len() as u64,
+            })?;
+            crate::store::history::reserve(values, capacity, work)?;
+            work.copy_bytes(copied)?;
+        } else {
+            values
+                .try_reserve_exact(capacity - values.len())
+                .map_err(Error::Allocation)?;
+        }
+        Ok(())
+    })
+}
+
 pub(crate) fn stock_string_push(
     text: &mut String,
     suffix: &str,

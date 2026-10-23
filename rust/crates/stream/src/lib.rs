@@ -115,6 +115,7 @@ pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
+    requiring_durability,
 };
 pub use memory::{MemoryLimits, MemoryStream};
 
@@ -159,8 +160,8 @@ pub use path::StreamPath;
 
 include!("lib/domain.rs");
 
-mod record_headers;
 mod changes;
+mod record_headers;
 pub use changes::ChangeEntryRef;
 pub use record_headers::{
     MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders,

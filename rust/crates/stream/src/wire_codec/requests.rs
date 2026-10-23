@@ -4,18 +4,17 @@ use crate::{
 };
 
 pub(crate) fn block_len(bytes: usize) -> usize {
-    1 + prost::length_delimiter_len(bytes) + bytes
+    bytes.saturating_add(1 + prost::length_delimiter_len(bytes))
 }
 fn uint_len(value: Option<u64>) -> usize {
     value.map_or(0, |value| 1 + prost::encoding::encoded_len_varint(value))
 }
 fn attribute_len(attribute: &Attribute) -> usize {
-    block_len(attribute.name.len())
-        + if attribute.value.is_empty() {
-            0
-        } else {
-            block_len(attribute.value.len())
-        }
+    block_len(attribute.name.len()).saturating_add(if attribute.value.is_empty() {
+        0
+    } else {
+        block_len(attribute.value.len())
+    })
 }
 fn append_record_len(record: &AppendRecord) -> usize {
     let value = if record.value.is_empty() {
@@ -23,25 +22,25 @@ fn append_record_len(record: &AppendRecord) -> usize {
     } else {
         block_len(record.value.len())
     };
-    value
-        + record
-            .headers
-            .keys()
-            .iter()
-            .map(|key| block_len(key.len()))
-            .sum::<usize>()
-        + record
-            .headers
-            .attributes()
-            .iter()
-            .map(|attribute| block_len(attribute_len(attribute)))
-            .sum::<usize>()
+    record
+        .headers
+        .keys()
+        .iter()
+        .map(|key| block_len(key.len()))
+        .chain(
+            record
+                .headers
+                .attributes()
+                .iter()
+                .map(|attribute| block_len(attribute_len(attribute))),
+        )
+        .fold(value, usize::saturating_add)
 }
 fn records_len(records: &[AppendRecord]) -> usize {
     records
         .iter()
         .map(|record| block_len(append_record_len(record)))
-        .sum()
+        .fold(0_usize, usize::saturating_add)
 }
 
 pub(crate) fn append_len(request: &AppendRequest) -> usize {
@@ -65,7 +64,9 @@ pub(crate) fn fork_len(request: &ForkRequest) -> usize {
 fn condition_len(condition: &CommitCondition) -> usize {
     block_len(match condition {
         CommitCondition::Head { path, expected, .. } => {
-            block_len(path.as_str().len()) + uint_len(Some(*expected)) + block_len(32)
+            block_len(path.as_str().len())
+                + uint_len((*expected != 0).then_some(*expected))
+                + block_len(32)
         }
         CommitCondition::Tail { path, expected } => {
             block_len(path.as_str().len()) + uint_len((*expected != 0).then_some(*expected))
@@ -76,19 +77,17 @@ fn condition_len(condition: &CommitCondition) -> usize {
 fn mutation_len(mutation: &CommitMutation) -> usize {
     block_len(match mutation {
         CommitMutation::Append { path, records } => {
-            block_len(path.as_str().len()) + records_len(records)
+            block_len(path.as_str().len()).saturating_add(records_len(records))
         }
         CommitMutation::Fork {
             source,
             destination,
             at_tail,
             records,
-        } => {
-            block_len(source.as_str().len())
-                + block_len(destination.as_str().len())
-                + uint_len((*at_tail != 0).then_some(*at_tail))
-                + records_len(records)
-        }
+        } => block_len(source.as_str().len())
+            .saturating_add(block_len(destination.as_str().len()))
+            .saturating_add(uint_len((*at_tail != 0).then_some(*at_tail)))
+            .saturating_add(records_len(records)),
     })
 }
 pub(crate) fn commit_len(request: &CommitRequest) -> usize {
@@ -96,13 +95,15 @@ pub(crate) fn commit_len(request: &CommitRequest) -> usize {
         .conditions
         .iter()
         .map(|condition| block_len(condition_len(condition)))
-        .sum::<usize>()
-        + request
-            .mutations
-            .iter()
-            .map(|mutation| block_len(mutation_len(mutation)))
-            .sum::<usize>()
-        + block_len(request.idempotency_key.as_bytes().len())
+        .fold(0_usize, usize::saturating_add)
+        .saturating_add(
+            request
+                .mutations
+                .iter()
+                .map(|mutation| block_len(mutation_len(mutation)))
+                .fold(0_usize, usize::saturating_add),
+        )
+        .saturating_add(block_len(request.idempotency_key.as_bytes().len()))
 }
 
 #[cfg(any(
@@ -193,10 +194,12 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
                 header(
                     out,
                     3,
-                    block_len(path.as_str().len()) + uint_len(Some(*expected)) + block_len(32),
+                    block_len(path.as_str().len())
+                        + uint_len((*expected != 0).then_some(*expected))
+                        + block_len(32),
                 );
                 bytes(out, 1, path.as_str().as_bytes());
-                uint(out, 2, Some(*expected));
+                uint(out, 2, (*expected != 0).then_some(*expected));
                 bytes(out, 3, commit_id.as_bytes());
             }
             CommitCondition::Tail { path, expected } => {
@@ -256,6 +259,56 @@ mod tests {
     use super::*;
     use crate::OwnedBytes;
     use prost::Message;
+
+    #[test]
+    #[cfg(feature = "local")]
+    fn commit_size_matches_generated_protobuf_at_wire_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = crate::StreamPath::new("request/events")?;
+        let destination = crate::StreamPath::new("request/fork")?;
+        for tail in [0, 127, 128, 16_383, 16_384, u64::MAX] {
+            for length in [0, 127, 128, 16_383, 16_384, crate::MAX_RECORD_BYTES] {
+                let records: Vec<AppendRecord> = vec![OwnedBytes::from(vec![7; length]).into()];
+                let request = CommitRequest {
+                    conditions: vec![
+                        CommitCondition::Absent {
+                            path: destination.clone(),
+                        },
+                        CommitCondition::Tail {
+                            path: path.clone(),
+                            expected: tail,
+                        },
+                        CommitCondition::Head {
+                            path: path.clone(),
+                            expected: tail,
+                            commit_id: crate::CommitId::from_bytes([3; 32]),
+                        },
+                    ],
+                    mutations: vec![
+                        CommitMutation::Append {
+                            path: path.clone(),
+                            records: records.clone(),
+                        },
+                        CommitMutation::Fork {
+                            source: path.clone(),
+                            destination: destination.clone(),
+                            at_tail: tail,
+                            records,
+                        },
+                    ],
+                    idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(
+                        b"size",
+                    ))?,
+                };
+                let expected = crate::wire_codec::commit_to_wire(&request).encode_to_vec();
+                let mut actual = Vec::new();
+                commit(&mut actual, &request);
+                assert_eq!(actual, expected);
+                assert_eq!(request.wire_encoded_len(), expected.len());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn request_path_append_encoding_matches_generated_protobuf()
