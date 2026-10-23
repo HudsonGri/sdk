@@ -56,36 +56,60 @@ impl PiNativeHostRuntime {
     }
 
     /// Whether two keys name one Windows variable: they differ only in ASCII case.
-    /// Sorting by the folded key leaves such keys adjacent, so the check costs
-    /// O(n log n) key comparisons, each charged by the bytes it examined.
+    /// One pass hashes each folded key once, so the check examines exactly the key
+    /// bytes plus one item per key. That cost and the table are admitted before any
+    /// key is folded: a budget that cannot pay refuses the check without doing it.
     pub(super) fn case_folded_duplicate(&self, work: &NativeMaterializationWork) -> Result<bool> {
-        let keys = self.environment.len();
-        let _keys_custody = work.claim(
-            (keys * std::mem::size_of::<&str>()) as u64,
-            1,
-            WorkCounters::UNCHARGED,
-        )?;
-        let mut folded: Vec<&str> = self.environment.keys().map(String::as_str).collect();
-        let examined = std::cell::Cell::new(0_u64);
-        fn fold(key: &str) -> impl Iterator<Item = u8> + '_ {
-            key.bytes().map(|byte| byte.to_ascii_lowercase())
+        use std::hash::{BuildHasher, Hash, Hasher};
+        /// A key compared and hashed by its ASCII-folded bytes, carrying its full hash
+        /// so a key's bytes are compared again only when the full hashes are equal.
+        struct Folded<'a>(u64, &'a str);
+        impl PartialEq for Folded<'_> {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0 && self.1.eq_ignore_ascii_case(other.1)
+            }
         }
-        folded.sort_unstable_by(|left, right| {
-            examined.set(examined.get() + left.len().min(right.len()) as u64 + 1);
-            fold(left).cmp(fold(right))
-        });
-        let duplicate = folded
-            .iter()
-            .zip(folded.iter().skip(1))
-            .any(|(left, right)| {
-                examined.set(examined.get() + left.len().min(right.len()) as u64 + 1);
-                left.eq_ignore_ascii_case(right)
-            });
+        impl Eq for Folded<'_> {}
+        impl Hash for Folded<'_> {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                state.write_u64(self.0);
+            }
+        }
+        let keys = self.environment.len();
+        let examined = self
+            .environment
+            .keys()
+            .try_fold(0_u64, |sum, key| sum.checked_add(key.len() as u64 + 1))
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi host environment size overflow",
+            })?;
+        // Hashing reads every key once; a key whose full hash matches another is
+        // compared once more before it is reported as a duplicate.
         work.charge(WorkCounters {
-            items_examined: examined.get(),
+            items_examined: examined,
             ..WorkCounters::default()
         })?;
-        Ok(duplicate)
+        let table = keys
+            .checked_mul(2 * (std::mem::size_of::<Folded<'_>>() + 1))
+            .ok_or(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi host environment size overflow",
+            })?;
+        let _table_custody = work.claim(table as u64, 1, WorkCounters::UNCHARGED)?;
+        let hasher = std::collections::hash_map::RandomState::new();
+        let mut seen = std::collections::HashSet::with_capacity_and_hasher(keys, hasher.clone());
+        for key in self.environment.keys() {
+            let mut state = hasher.build_hasher();
+            for byte in key.bytes() {
+                state.write_u8(byte.to_ascii_lowercase());
+            }
+            if !seen.insert(Folded(state.finish(), key)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn validate(&self, work: &NativeMaterializationWork) -> Result<()> {
