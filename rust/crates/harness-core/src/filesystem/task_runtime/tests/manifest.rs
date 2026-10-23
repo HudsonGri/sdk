@@ -453,7 +453,10 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
             65_536,
         )
         .await?;
-        let runtime = fixture.runtime(None).await?.with_task_files(Arc::new(files))?;
+        let runtime = fixture
+            .runtime(None)
+            .await?
+            .with_task_files(Arc::new(files))?;
         let (reference, _) = manifest(&fixture, true, "retained hook").await?;
         let (task, fence, command, payload) =
             retained_command(&fixture, &runtime, reference).await?;

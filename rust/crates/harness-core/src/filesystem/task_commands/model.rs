@@ -227,7 +227,13 @@ where
                     pipeline,
                     &tools,
                     Arc::clone(&context),
-                    (fence, operation, reconciliation_only, manifest_digest, phase),
+                    (
+                        fence,
+                        operation,
+                        reconciliation_only,
+                        manifest_digest,
+                        phase,
+                    ),
                     &command.input,
                     io,
                 )
