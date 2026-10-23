@@ -61,7 +61,7 @@ fn approval_history_cannot_fill_the_session_snapshot() {
         &mut index,
         &task,
         TaskFile::ApprovalReview {
-            request: pending.clone(),
+            request: pending,
             principal: component("human"),
         },
         b"waiting",
