@@ -198,6 +198,8 @@ impl CreationFixture {
                     .await?,
             )
         };
+        let (reserved, peak) = crate::executor::json::assert_layout_covers_decode(&fork);
+        eprintln!("ForkRequest layout reserved {reserved} B, decode peak {peak} B");
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(),
             reducer,

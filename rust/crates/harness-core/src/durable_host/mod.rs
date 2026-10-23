@@ -31,7 +31,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct MailEvent {
     sender: TaskId,
@@ -45,7 +45,7 @@ struct MailEvent {
 const MAIL_SCHEMA_REVISION: u32 = 1;
 const MAIL_ROUTE_REVISION: u32 = 1;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct MailLocation {
     sender: TaskId,
@@ -79,7 +79,7 @@ fn sdk_and_native_timer_bytes_match() -> Result<()> {
     Ok(())
 }
 
-#[derive(Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct BatchCancellation {
     batch_id: BatchId,
