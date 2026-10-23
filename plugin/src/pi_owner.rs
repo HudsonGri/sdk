@@ -115,6 +115,24 @@ impl PiOwnerConfig {
         &self.policy
     }
 
+    /// The record of one successful fork plan validation: a MAC under this
+    /// owner's key over the published plan bytes' digest, the caller and the
+    /// policy the validation read. Records never cross owners, callers or
+    /// policies, and the key itself never leaves the owner.
+    pub(crate) fn validated_plan_key(
+        &self,
+        published: &blake3::Hash,
+        caller: TaskId,
+    ) -> super::pi_fork::ValidatedPlanKey {
+        let mut mac = blake3::Hasher::new_keyed(&self.key);
+        mac.update(b"acyclic.pi-fork-plan.validated.v1");
+        mac.update(published.as_bytes());
+        mac.update(&caller.into_bytes());
+        mac.update(&self.policy.root_task.into_bytes());
+        mac.update(&self.policy.maximum_payload_bytes.to_le_bytes());
+        super::pi_fork::ValidatedPlanKey(*mac.finalize().as_bytes())
+    }
+
     /// Initial owner creation borrows admitted configuration sources and copies only through their genuine original-ledger producers.
     pub(crate) fn new(
         policy: &PiOwnerPolicy,

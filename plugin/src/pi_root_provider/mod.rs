@@ -191,6 +191,7 @@ pub(crate) fn service_resources_with_native_work(
             binary_identity: binary.0,
             instance_id: instance.0,
             private_state_root: resources.private_state_root.clone(),
+            validated_fork_plans: Arc::clone(&resources.validated_fork_plans),
         },
         data.1,
     );
