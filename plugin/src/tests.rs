@@ -34,7 +34,15 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<(
                 "../shared",
             ],
         ),
-        ("pi", vec!["--session-dir", "../shared"]),
+        (
+            "pi",
+            vec![
+                "--session-dir",
+                "../shared",
+                "--extension",
+                "../shared/policy.json",
+            ],
+        ),
     ] {
         let supplied = supplied.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let flags = codex::parent_flags(host, &supplied, &workspace)?;
@@ -48,6 +56,7 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<(
             ("--plugin-dir", shared.clone()),
             ("--settings", shared.join("policy.json")),
             ("--session-dir", shared.clone()),
+            ("--extension", shared.join("policy.json")),
         ] {
             if supplied.iter().any(|arg| arg == option) {
                 let actual = arguments
@@ -77,6 +86,14 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<(
         flags.first_chunk::<4>().ok_or("inline settings absent")?,
         &inline
     );
+    for source in [
+        "npm:fixture-extension",
+        "builtin:fixture",
+        "git:example.com/fixture/extension",
+    ] {
+        let supplied = ["--extension".into(), source.into()];
+        assert_eq!(codex::parent_flags("pi", &supplied, &workspace)?, supplied);
+    }
     Ok(())
 }
 

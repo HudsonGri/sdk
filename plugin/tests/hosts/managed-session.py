@@ -23,7 +23,11 @@ with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Pa
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
  fake=bin_dir/'codex'
  fake.write_text('''#!/usr/bin/env python3
-import json,os,pathlib,subprocess,sys,time
+import json,os,pathlib,subprocess,sys,time,traceback
+def failed(kind,error,stack):
+ pathlib.Path('.volumes/scratch/native-error.txt').write_text(''.join(traceback.format_exception(kind,error,stack)))
+ sys.__excepthook__(kind,error,stack)
+sys.excepthook=failed
 args=sys.argv[1:]
 if 'exec' not in args:
  assert args==['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',os.environ['FIXTURE_WORKSPACE']],args
@@ -63,7 +67,8 @@ if prompt=='recursive':
   response=json.loads(nested.stdout.readline());result=response['result'];assert not result.get('isError'),result
   return json.loads(result['content'][0]['text'])
  try:
-  grandchild=call(1,'spawn');call(2,'wait')
+  grandchild=call(1,'spawn');finished=call(2,'wait')
+  assert finished['results'][0]['outcome'].get('Succeeded') is not None,finished
   subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],check=True,stdout=subprocess.DEVNULL)
   assert (cwd/'first.txt').read_text()=='native'
   assert not (cwd/'.acyclic-sdk').exists(),'nested custody was authored into the child project'
@@ -161,8 +166,10 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
    stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['status']['state']=='Interrupted',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
-   recursive=tool('spawn','recursive','recursive');tool('wait','recursive')
+   recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
    assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
+   error=pathlib.Path(recursive['cwd'])/'.volumes/scratch/native-error.txt'
+   assert finished['results'][0]['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
    assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)
