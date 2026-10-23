@@ -563,18 +563,15 @@ mod tests {
         let path = directory.path().join("counted");
         std::fs::write(&path, b"counted")?;
         assert_eq!(descriptors_naming(&path)?, 0);
-        let before = sample_process_resources()?;
         let files = (0..64)
             .map(|_| std::fs::File::open(&path))
             .collect::<io::Result<Vec<_>>>()?;
         let open = sample_process_resources()?;
         assert_eq!(descriptors_naming(&path)?, files.len());
-        // Other tests open and close descriptors meanwhile, but not 64 more
-        // than they close.
-        assert!(
-            open.descriptors >= before.descriptors + 32,
-            "{before:?} -> {open:?}"
-        );
+        // Other tests open and close descriptors concurrently, so no
+        // difference between two samples is certain; the 64 held here are
+        // open throughout the sample, so its total counts at least them.
+        assert!(open.descriptors >= files.len() as u64, "{open:?}");
         drop(files);
         assert_eq!(descriptors_naming(&path)?, 0);
         assert!(open.memory_bytes > 0 && open.threads > 0, "{open:?}");
