@@ -192,46 +192,72 @@ fn copy_admission(
 }
 
 /// The validated admissions that live journal owners hold, shared rather than copied.
-/// The memo holds only weak handles: every record stays charged to the owner that
-/// decoded it and is freed with that owner, so the memo retains no record of its own.
-/// A handle whose owner is gone is dropped at the next access.
+/// The memo holds only weak handles in inline slots, so it allocates nothing: every
+/// record stays charged to the owner that decoded it, and the owner removes its handle
+/// when it is dropped, before its record is freed, so no handle keeps a released
+/// record's allocation alive.
 #[derive(Default)]
-pub(super) struct AdmissionMemo(
-    std::sync::Mutex<
-        std::collections::VecDeque<(OperationId, std::sync::Weak<TaskAdmissionRecord>)>,
-    >,
-);
+pub(super) struct AdmissionMemo(std::sync::Mutex<MemoSlots>);
+
+type MemoSlot = Option<(OperationId, std::sync::Weak<TaskAdmissionRecord>)>;
+
+/// Inline handle slots and the slot the next full memo replaces.
+#[derive(Default)]
+struct MemoSlots {
+    slots: [MemoSlot; AdmissionMemo::ENTRIES],
+    next: usize,
+}
 
 impl AdmissionMemo {
     const ENTRIES: usize = 16;
-    fn live(
-        &self,
-    ) -> std::sync::MutexGuard<
-        '_,
-        std::collections::VecDeque<(OperationId, std::sync::Weak<TaskAdmissionRecord>)>,
-    > {
-        let mut entries = self
-            .0
+    fn slots(&self) -> std::sync::MutexGuard<'_, MemoSlots> {
+        self.0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.retain(|(_, record)| record.strong_count() != 0);
-        entries
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     fn get(&self, operation: OperationId) -> Option<Arc<TaskAdmissionRecord>> {
-        self.live()
+        self.slots()
+            .slots
             .iter()
+            .flatten()
             .find(|(held, _)| *held == operation)
             .and_then(|(_, record)| record.upgrade())
     }
     /// Shares a live owner's validated admission with later readers on this host.
     pub(super) fn remember(&self, record: &Arc<TaskAdmissionRecord>) {
-        let mut entries = self.live();
-        if entries.iter().any(|(held, _)| *held == record.operation_id) {
+        let mut memo = self.slots();
+        let held = |slot: &MemoSlot| {
+            slot.as_ref()
+                .is_some_and(|(operation, _)| *operation == record.operation_id)
+        };
+        if memo.slots.iter().any(held) {
             return;
         }
-        if entries.len() == Self::ENTRIES {
-            entries.pop_front();
+        let entry = Some((record.operation_id, Arc::downgrade(record)));
+        if let Some(free) = memo.slots.iter_mut().find(|slot| slot.is_none()) {
+            *free = entry;
+            return;
         }
-        entries.push_back((record.operation_id, Arc::downgrade(record)));
+        let next = memo.next;
+        if let Some(slot) = memo.slots.get_mut(next) {
+            *slot = entry;
+        }
+        memo.next = (next + 1) % Self::ENTRIES;
+    }
+    /// Removes `record`'s handle, if this memo holds it.
+    pub(super) fn forget(&self, record: &Arc<TaskAdmissionRecord>) {
+        for slot in &mut self.slots().slots {
+            if slot
+                .as_ref()
+                .is_some_and(|(_, held)| std::ptr::eq(held.as_ptr(), Arc::as_ptr(record)))
+            {
+                *slot = None;
+            }
+        }
+    }
+    /// Weak handles the memo holds.
+    #[cfg(test)]
+    pub(super) fn handles(&self) -> usize {
+        self.slots().slots.iter().flatten().count()
     }
 }
