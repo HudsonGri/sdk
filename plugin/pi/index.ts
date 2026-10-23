@@ -66,6 +66,33 @@ function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
     for (const child of children.values()) child.native.dispose();
   });
 
+  async function start(location: Location, manager: SessionManager, prompt: string, ctx: ExtensionContext, restore = false) {
+    const loader = new DefaultResourceLoader({
+      cwd: location.cwd, agentDir: getAgentDir(),
+      extensionFactories: [api => install(api, location, rootSession)],
+      extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(extension => resolve(extension.resolvedPath) !== resolve(thisExtension)) }),
+    });
+    await loader.reload();
+    const { session } = await createAgentSession({ cwd: location.cwd, model: restore ? undefined : ctx.model,
+      scopedModels: [...ctx.scopedModels], thinkingLevel: restore ? undefined : pi.getThinkingLevel(),
+      tools: pi.getActiveTools(), sessionManager: manager, resourceLoader: loader });
+    try {
+      await session.bindExtensions({ uiContext: ctx.ui, mode: ctx.mode });
+      await nativeHook(ctx, "NativeSession", {task: location.task,
+        native_session: {id: session.sessionId, file: session.sessionFile ?? null}});
+    } catch (error) {
+      try { await drainNativeSession(session, Promise.resolve()); } finally { session.dispose(); }
+      throw error;
+    }
+    const finished = session.prompt(prompt).finally(async () => {
+      await workspace(location.cwd, { kind: "capture", task: location.task });
+    });
+    finished.catch(() => {}); // The wait tool reports the native SDK outcome.
+    const child = {native: session, finished, location};
+    children.set(location.task, child);
+    return child;
+  }
+
   pi.registerTool({
     name: "spawn_agent", label: "Native subagent", description: "Fork this task's workspace and start a native Pi SDK session. Merge with acyclic fs merge agents/<task>.",
     parameters: Type.Object({ prompt: Type.String(), fresh: Type.Optional(Type.Boolean()) }),
@@ -78,27 +105,13 @@ function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
       if (!params.fresh && !boundary) throw new Error("Spawn invocation is absent from Pi's current native branch");
       const location = await workspace<Location>(ctx.cwd, { kind: "fork", parent: parent.task, reference: call });
       const source = ctx.sessionManager.getSessionFile();
-      const manager = params.fresh ? SessionManager.create(location.cwd) : source
+      const manager = params.fresh ? (source ? SessionManager.create(location.cwd) : SessionManager.inMemory(location.cwd)) : source
         ? SessionManager.forkFrom(source, location.cwd)
         : SessionManager.inMemory(location.cwd, undefined, entries.slice(0, entries.indexOf(boundary!)));
       if (!params.fresh && source) {
         if (boundary!.parentId) manager.branch(boundary!.parentId); else manager.resetLeaf();
       }
-      const loader = new DefaultResourceLoader({
-        cwd: location.cwd, agentDir: getAgentDir(),
-        extensionFactories: [api => install(api, location, rootSession)],
-        extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(extension => resolve(extension.resolvedPath) !== resolve(thisExtension)) }),
-      });
-      await loader.reload();
-      const { session } = await createAgentSession({ cwd: location.cwd, model: ctx.model,
-        scopedModels: [...ctx.scopedModels], thinkingLevel: pi.getThinkingLevel(),
-        tools: pi.getActiveTools(), sessionManager: manager, resourceLoader: loader });
-      await session.bindExtensions({ uiContext: ctx.ui, mode: ctx.mode });
-      const finished = session.prompt(params.prompt).finally(async () => {
-        await workspace(location.cwd, { kind: "capture", task: location.task });
-      });
-      finished.catch(() => {}); // The wait tool reports the native SDK outcome.
-      children.set(location.task, { native: session, finished, location });
+      await start(location, manager, params.prompt, ctx);
       return result(location);
     },
   });
@@ -129,7 +142,13 @@ function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
     parameters: Type.Object({ task: Type.String(), prompt: Type.String() }),
     async execute(_call, params, _signal, _update, ctx) {
       const child = children.get(params.task);
-      if (!child) throw new Error("Native session handle is absent; reopen it with Pi's session manager first");
+      if (!child) {
+        const location = await workspace<Location>(ctx.cwd, { kind: "reopen", task: params.task });
+        const saved = await nativeHook(ctx, "NativeSession", {task: params.task}) as {id: string; file: string | null};
+        if (!saved.file) throw new Error("Pi's in-memory session has no persisted transcript to reopen");
+        await start(location, SessionManager.forkFrom(saved.file, location.cwd), params.prompt, ctx, true);
+        return result(location);
+      }
       await child.finished;
       await workspace(ctx.cwd, { kind: "reopen", task: params.task });
       child.finished = child.native.prompt(params.prompt).finally(async () => {

@@ -180,19 +180,25 @@ pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
             {
                 continue;
             }
-            let bytes = match regular_bytes(&entry.path()) {
-                Ok(bytes) => bytes,
-                Err(Error::NotFound(_)) => continue,
-                Err(error) => return Err(error),
+            // Request projections are writable by native tools. Invalid input
+            // must not terminate the trusted owner or dispatch another action.
+            let request = regular_bytes(&entry.path()).and_then(|bytes| {
+                let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
+                if request.session != session
+                    || entry.file_name() != format!("{}.json", request.operation).as_str()
+                {
+                    return Err(Error::Unauthorized(
+                        "native request identity changed".into(),
+                    ));
+                }
+                Ok(request)
+            });
+            let Ok(request) = request else {
+                // Held-root removal unlinks the projection itself, never a
+                // symlink target. Clients keep their durable command records.
+                let _ = remove_projection(&entry.path());
+                continue;
             };
-            let request: Request = serde_json::from_slice(&bytes).map_err(storage)?;
-            if request.session != session
-                || entry.file_name() != format!("{}.json", request.operation).as_str()
-            {
-                return Err(Error::Unauthorized(
-                    "native request endpoint or identity changed".into(),
-                ));
-            }
             process_request(
                 &local,
                 &mut owner,

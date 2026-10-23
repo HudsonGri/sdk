@@ -26,6 +26,13 @@ struct NativeEvent<'a> {
     records: &'a [Value],
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeSessionRef {
+    id: String,
+    file: Option<PathBuf>,
+}
+
 impl HostWorkspaceOwner {
     pub(super) async fn hook(
         &mut self,
@@ -95,6 +102,7 @@ impl HostWorkspaceOwner {
             }
             "PreToolUse" => self.pre_tool(frame).await,
             "PostToolUse" | "PostToolUseFailure" => self.post_tool(frame).await,
+            "NativeSession" if host == "pi" => self.native_session(task, &input).await,
             "SubagentStop" | "SessionEnd" => {
                 self.quiescent(task).await?;
                 let attached = self.attached(task)?;
@@ -109,6 +117,31 @@ impl HostWorkspaceOwner {
             _ => Err(Error::Unsupported(format!(
                 "native lifecycle event {event}"
             ))),
+        }
+    }
+
+    async fn native_session(&self, task: TaskId, input: &Value) -> Result<Value> {
+        if let Some(session) = input.get("native_session") {
+            // This is an opaque native host reference in ordinary task files.
+            // The harness never opens or copies the native transcript.
+            let session: NativeSessionRef =
+                serde_json::from_value(session.clone()).map_err(storage)?;
+            if session.id.is_empty()
+                || session.id.len() > 256
+                || session
+                    .file
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute())
+            {
+                return Err(Error::Invalid("native session reference is invalid".into()));
+            }
+            let value = serde_json::to_value(session).map_err(storage)?;
+            self.put_record(task, "session", value.clone()).await?;
+            Ok(value)
+        } else {
+            self.record(task, "session")
+                .await?
+                .ok_or_else(|| Error::NotFound("native session reference is absent".into()))
         }
     }
 
@@ -615,8 +648,8 @@ impl HostWorkspaceOwner {
 
     pub(super) async fn records(&self, task: TaskId) -> Result<Vec<Value>> {
         let snapshot = self
-            .local
-            .task_files
+            .files(task)
+            .await?
             .snapshot(
                 &Query::Task(Component::new(task.to_string()).map_err(storage)?),
                 4096,
@@ -629,8 +662,8 @@ impl HostWorkspaceOwner {
 
     async fn record(&self, task: TaskId, name: &str) -> Result<Option<Value>> {
         let snapshot = self
-            .local
-            .task_files
+            .files(task)
+            .await?
             .snapshot(&Query::File(context_key(task, name)?), 1)
             .await
             .map_err(storage)?;

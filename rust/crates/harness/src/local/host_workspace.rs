@@ -22,6 +22,7 @@ pub struct HostWorkspace {
     mount_root: Arc<HeldRoot>,
     project: VolumeRef,
     _native_volumes: Vec<workspace::projection::Entered>,
+    _allocation: Option<Arc<workspace::Mounts>>,
 }
 
 impl HostWorkspace {
@@ -60,6 +61,7 @@ impl HostWorkspace {
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
+            _allocation: None,
         };
         result.verify(context).await?;
         result.activate_volumes(context).await?;
@@ -314,14 +316,21 @@ impl HostWorkspace {
         .await?;
         let view = self.workspace.project_view(project).await?;
         let key = project.storage_name(&mut None)?;
-        let mounts = if let Some(mounts) = state.allocated_mounts.get(&key) {
-            Arc::clone(mounts)
+        let mounts = if let Some(mounts) = state
+            .allocated_mounts
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            mounts
         } else {
+            state
+                .allocated_mounts
+                .retain(|_, mounts| mounts.strong_count() != 0);
             let mounts = self
                 .workspace
                 .created_mounts(project, child, child.scope())
                 .await?;
-            state.allocated_mounts.insert(key, Arc::clone(&mounts));
+            state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
             mounts
         };
         parent_owner.verify_owner(None)?.await?;
@@ -334,7 +343,12 @@ impl HostWorkspace {
         .map_err(storage)?;
         let workspace = self
             .workspace
-            .mount_task_view(view, child_owner, Some(mounts), self.mount_root.path())
+            .mount_task_view(
+                view,
+                child_owner,
+                Some(Arc::clone(&mounts)),
+                self.mount_root.path(),
+            )
             .await?;
         parent_owner.verify_owner(None)?.await?;
         child_owner.verify_owner(None)?.await?;
@@ -345,6 +359,7 @@ impl HostWorkspace {
             mount_root: Arc::clone(&self.mount_root),
             project: project.clone(),
             _native_volumes: Vec::new(),
+            _allocation: Some(mounts),
         };
         result.verify(child).await?;
         result.activate_volumes(child).await?;

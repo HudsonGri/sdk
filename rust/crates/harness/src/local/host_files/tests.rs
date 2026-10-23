@@ -28,6 +28,35 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         serve(Arc::clone(&local)).await.is_err(),
         "a second workspace owner must not dispatch the same requests"
     );
+    let requests = checkout.path().join(DIRECTORY).join("requests");
+    std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
+    std::fs::write(
+        requests.join("oversized.json"),
+        vec![b'x'; MAXIMUM_BYTES as usize + 1],
+    )
+    .map_err(storage)?;
+    let foreign = OperationId::new();
+    std::fs::write(
+        requests.join(format!("{foreign}.json")),
+        serde_json::to_vec(&Request {
+            session: uuid::Uuid::new_v4(),
+            operation: foreign,
+            action: HostAction::Open {
+                host: "codex".into(),
+                session: "must-not-dispatch".into(),
+            },
+        })
+        .map_err(storage)?,
+    )
+    .map_err(storage)?;
+    #[cfg(unix)]
+    let outside = {
+        let outside = tempfile::NamedTempFile::new().map_err(storage)?;
+        std::fs::write(outside.path(), b"outside remains untouched").map_err(storage)?;
+        std::os::unix::fs::symlink(outside.path(), requests.join("symlink.json"))
+            .map_err(storage)?;
+        outside
+    };
     let cwd = checkout.path().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         request(
@@ -45,6 +74,28 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         checkout.path().to_string_lossy().as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while std::fs::read_dir(&requests)
+            .map_err(storage)?
+            .next()
+            .is_some()
+        {
+            assert!(!owner.is_finished(), "invalid request stopped the owner");
+            tokio::task::yield_now().await;
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(storage)??;
+    assert!(
+        !owner.is_finished(),
+        "invalid writable projections must not stop the owner"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read(outside.path()).map_err(storage)?,
+        b"outside remains untouched"
+    );
     assert_eq!(
         std::fs::read_dir(checkout.path().join(DIRECTORY).join("requests"))
             .map_err(storage)?

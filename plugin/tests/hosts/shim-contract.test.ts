@@ -65,6 +65,32 @@ test("Pi registration delegates execution and exposes only native coordination",
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("Pi restores persisted native context into the retained task view", () => {
+  const directory = mkdtempSync(join(import.meta.dir, ".shim-reopen-"));
+  try {
+    const cwd = join(directory, "workspace");
+    const retained = join(cwd, ".volumes", "agents", "retained-child");
+    mkdirSync(retained, {recursive: true});
+    const sessions = join(directory, "fixture-sessions");
+    const original = SessionManager.create(cwd, sessions);
+    original.appendModelChange("fixture-provider", "fixture-model");
+    original.appendThinkingLevelChange("high");
+    original.appendMessage({role: "user", content: "native retained context", timestamp: Date.now()});
+    const file = original.getSessionFile()!;
+    const before = readFileSync(file, "utf8");
+    assert.equal(SessionManager.inMemory(retained).getSessionFile(), undefined,
+      "negative control: an in-memory session has no transcript to recover");
+    assert.equal(SessionManager.inMemory(retained).buildSessionContext().messages.length, 0);
+    const reopened = SessionManager.forkFrom(file, retained, sessions);
+    assert.equal(reopened.getCwd(), retained);
+    assert.notEqual(reopened.getSessionId(), original.getSessionId());
+    assert.deepEqual(reopened.buildSessionContext(), original.buildSessionContext());
+    reopened.appendMessage({role: "user", content: "reopened work", timestamp: Date.now()});
+    assert.equal(readFileSync(file, "utf8"), before, "reopen must not mutate the source transcript");
+    assert.equal(reopened.buildSessionContext().messages.length, 2);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
+});
+
 test("host manifests and shims fit the native hook budget", () => {
   const source = (relative: string) => readFileSync(new URL(relative, import.meta.url), "utf8");
   const lines = (text: string) => text.trimEnd().split(/\r?\n/).length;

@@ -1,5 +1,124 @@
 use super::*;
 
+#[tokio::test]
+async fn pi_session_references_survive_owner_recreation_without_reading_transcripts() -> Result<()>
+{
+    let mut fixture = Fixture::open().await?;
+    let root = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Open {
+                host: "pi".into(),
+                session: "native-root".into(),
+            },
+        )
+        .await?;
+    let parent: TaskId = serde_json::from_value(root["task"].clone()).map_err(storage)?;
+    let child = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Fork {
+                parent,
+                reference: "pi-child".into(),
+            },
+        )
+        .await?;
+    let task: TaskId = serde_json::from_value(child["task"].clone()).map_err(storage)?;
+    assert!(matches!(
+        fixture
+            .event_for("pi", "NativeSession", json!({"task":task}))
+            .await,
+        Err(Error::NotFound(_))
+    ));
+    let absent = fixture
+        .checkout
+        .path()
+        .join("never-opened-native-transcript.jsonl");
+    assert!(!absent.exists());
+    let saved = json!({"id":"native-child-session","file":absent});
+    assert_eq!(
+        fixture
+            .event_for(
+                "pi",
+                "NativeSession",
+                json!({"task":task,"native_session":saved})
+            )
+            .await?,
+        saved
+    );
+    assert_eq!(
+        fixture
+            .event_for("pi", "NativeSession", json!({"task":task}))
+            .await?,
+        saved
+    );
+    assert!(fixture.owner.records(task).await?.contains(&saved));
+    assert!(!fixture.owner.records(parent).await?.contains(&saved));
+    for invalid in [
+        json!({"id":"","file":null}),
+        json!({"id":"child","file":"relative.jsonl"}),
+        json!({"id":"child","file":null,"transcript":"forbidden"}),
+    ] {
+        assert!(
+            fixture
+                .event_for(
+                    "pi",
+                    "NativeSession",
+                    json!({"task":task,"native_session":invalid})
+                )
+                .await
+                .is_err()
+        );
+    }
+    assert!(matches!(
+        fixture
+            .event_for(
+                "pi",
+                "NativeSession",
+                json!({"session_id":"another-root","task":task})
+            )
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let local = Arc::clone(&fixture.owner.local);
+    drop(fixture.owner);
+    fixture.owner = HostWorkspaceOwner::new(local)?;
+    fixture
+        .owner
+        .dispatch(OperationId::new(), HostAction::Reopen { task })
+        .await?;
+    assert_eq!(
+        fixture
+            .event_for("pi", "NativeSession", json!({"task":task}))
+            .await?,
+        saved
+    );
+    assert!(!absent.exists());
+    fixture
+        .owner
+        .dispatch(OperationId::new(), HostAction::Cancel { task })
+        .await?;
+    assert!(
+        fixture
+            .event_for("pi", "NativeSession", json!({"task":task}))
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .event_for(
+                "pi",
+                "NativeSession",
+                json!({"task":task,"native_session":saved})
+            )
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
 struct Fixture {
     checkout: tempfile::TempDir,
     _state: tempfile::TempDir,

@@ -15,8 +15,12 @@ SDK handles; `acyclic fs merge agents/<ref>` performs the shared merge.
 The shim stores no separate durable task index, execution journal, provider
 or filesystem tool implementation. The shared harness owns resource
 allocation, task files, capture and history. Cancellation first aborts the
-native Pi session, waits for it, then requests shared task cancellation.
+native Pi session, drains its descendant extensions, waits for it, then requests
+shared task cancellation.
 
-Reopen currently requires a retained native SDK session handle. Recovering
-that handle after a process restart and the full recursive host acceptance
-matrix remain qualification work. Installation alone is not proof of parity.
+Reopen uses a retained native SDK handle when available. After a process
+restart, Pi's native `SessionManager.forkFrom` restores its persisted session
+into the retained task view. Ordinary task files hold only the native session
+ID and file reference; the harness never opens the transcript. In-memory
+sessions have no transcript and cannot be recovered after process exit.
+The full recursive host acceptance matrix remains qualification work.

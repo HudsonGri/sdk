@@ -55,7 +55,7 @@ pub(in crate::local) struct State {
     pub(in crate::local) workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
     pub(in crate::local) children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
     pub(in crate::local) allocated_mounts:
-        std::collections::BTreeMap<String, Arc<workspace::Mounts>>,
+        std::collections::BTreeMap<String, std::sync::Weak<workspace::Mounts>>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,

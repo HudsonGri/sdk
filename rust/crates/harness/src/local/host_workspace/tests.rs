@@ -321,17 +321,24 @@ async fn native_private_volume_writes_are_published_and_retained() -> Result<()>
         .as_ref(),
         b"native private"
     );
+    let task = fork.task();
+    let allocation = Arc::downgrade(
+        fork._allocation
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("fixture child allocation".into()))?,
+    );
+    drop(fork);
+    assert!(
+        allocation.upgrade().is_none(),
+        "the parent cache must not retain a closed native projection"
+    );
     let reopened = workspace.reopen(&parent, &child).await?;
     assert_eq!(
         std::fs::read(reopened.path().join(relative)).map_err(storage)?,
         b"native private"
     );
     workspace
-        .fs(
-            &parent,
-            OperationId::new(),
-            &format!("merge agents/{}", fork.task()),
-        )
+        .fs(&parent, OperationId::new(), &format!("merge agents/{task}"))
         .await?;
     assert!(!workspace.path().join(relative).exists());
     Ok(())
