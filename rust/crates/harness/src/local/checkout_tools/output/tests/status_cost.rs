@@ -2,6 +2,9 @@
 use super::*;
 use acyclic_fs::OperationWindowStore as _;
 
+#[cfg(windows)]
+mod windows_snapshot;
+
 #[tokio::test]
 async fn clean_status_does_not_append_core_state_frames() -> Result<()> {
     status_cost(true).await
@@ -295,7 +298,7 @@ fn durable_files(
                 let bytes = if entry.metadata().map_err(storage)?.len() == 0 {
                     Vec::new()
                 } else {
-                    std::fs::read(entry.path()).map_err(|cause| {
+                    snapshot_bytes(&entry.path()).map_err(|cause| {
                         Error::Storage(format!("snapshot read {:?}: {cause}", entry.path()))
                     })?
                 };
@@ -304,6 +307,19 @@ fn durable_files(
         }
     }
     Ok(files)
+}
+
+#[cfg(windows)]
+fn snapshot_bytes(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    match std::fs::read(path) {
+        Err(error) if error.raw_os_error() == Some(33) => windows_snapshot::read(path),
+        result => result,
+    }
+}
+
+#[cfg(not(windows))]
+fn snapshot_bytes(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(path)
 }
 
 async fn child_task(
