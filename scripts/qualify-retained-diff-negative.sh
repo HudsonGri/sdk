@@ -17,7 +17,7 @@ python3 - <<'PY'
 import os
 from pathlib import Path
 root=Path(os.environ['RETAINED_DIFF_NEGATIVE_PROOF'])
-names=['rust/crates/filesystem/src/workspace/read_core.rs','rust/crates/filesystem/src/workspace/diff.rs']
+names=['rust/crates/filesystem/src/workspace/read_core.rs','rust/crates/filesystem/src/workspace/diff/paths.rs']
 (root/'paths').write_text('\n'.join(names))
 for name in names:
  saved=root/name;saved.parent.mkdir(parents=True,exist_ok=True);saved.write_bytes(Path(name).read_bytes())
@@ -25,9 +25,10 @@ p=Path(names[0]);s=p.read_text();start=s.index('pub(super) async fn matches_cont
 part=s[start:end];old='finish(workspace, &work, result, &mut accounting, cancellation).await'
 assert part.count(old)==1
 p.write_text(s[:start]+part.replace(old,'work.finish(result, &accounting)')+s[end:])
-p=Path(names[1]);s=p.read_text();assert s.count('paths::append(')==1
-s=s.replace('paths::append(', 'merge_changed_record(')
-s=s.replace('    paths::sort_and_coalesce(&mut paths, accounting)?;\n','')
+p=Path(names[1]);s=p.read_text();start=s.index('    reverse_grow(');end=s.index('\npub(super) fn sort_and_coalesce(',start)
+s=s[:start]+'''    super::merge_changed_record(paths, path, record, before, accounting, cancellation)
+}
+'''+s[end:]
 p.write_text(s)
 PY
 cargo test --locked -p acyclic-fs --all-features --lib --no-run --message-format=json-render-diagnostics > "$proof/tests.jsonl"
@@ -41,7 +42,7 @@ assert len(paths)==1,paths
 listed=subprocess.check_output([paths[0],'--list'],text=True)
 for suffix,oracle in [
  ('retained_content_comparisons_recheck_current_read_authority','assertion failed'),
- ('small_directory_move_with_unrelated_paths_preserves_boundary_budget','bytes_copied')]:
+ ('large_path_merge_preserves_boundary_copy_budget','bytes_copied')]:
  tests=[line.removesuffix(': test') for line in listed.splitlines() if line.endswith(suffix+': test')]
  assert len(tests)==1,tests
  start=time.monotonic()

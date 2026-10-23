@@ -121,3 +121,38 @@ fn sift_down(
         root = greater;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_path_merge_preserves_boundary_copy_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let budget = crate::performance::BOUNDARY_BUDGET;
+        let cancel = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(budget, &cancel);
+        let limits = crate::model::VolumeLimits::default();
+        let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
+        // File identity order may oppose path order. Both retained endpoints
+        // must merge without copying every previously collected path again.
+        for before in [true, false] {
+            for index in (0..2048).rev() {
+                let path = NamespacePath::from_portable(
+                    &crate::PortablePath::parse(&format!("/file-{index:04}"), limits)?,
+                    limits,
+                )?;
+                append(&mut paths, &path, None, before, &mut accounting, &cancel)?;
+            }
+        }
+        sort_and_coalesce(&mut paths, &mut accounting)?;
+        assert_eq!(paths.0.len(), 2048);
+        assert!(paths.0.iter().zip(paths.0.iter().skip(1)).all(|(left, right)| {
+            left.path.components().cmp(right.path.components()).is_lt()
+        }));
+        let work = accounting.spent();
+        assert!(work.bytes_copied < budget.bytes_copied);
+        println!("PATH_MERGE_WORK {work:?}");
+        Ok(())
+    }
+}

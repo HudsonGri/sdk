@@ -1,46 +1,5 @@
 use super::*;
 
-#[tokio::test]
-async fn small_directory_move_with_unrelated_paths_preserves_boundary_budget()
--> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("small-move-large-namespace"))?;
-    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(seed, create_dir_all("/src"))?;
-    seed.write_text("/src/file", "retained").await?;
-    unbounded!(seed, create_dir_all("/unrelated"))?;
-    for index in 0..2048 {
-        seed.write_text(&format!("/unrelated/file-{index:04}"), "unrelated")
-            .await?;
-    }
-    let TransactionCommit::Committed(base) = commit(&mut seed).await? else {
-        return Err("seed did not commit".into());
-    };
-    let mut moved = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(moved, rename("/src", "/dst", false))?;
-    let TransactionCommit::Committed(current) = commit(&mut moved).await? else {
-        return Err("move did not commit".into());
-    };
-    let (changes, _) = unbounded!(base, diff_to(&current, 16))?;
-    let receipt = changes
-        .changed_paths(
-            4,
-            crate::performance::BOUNDARY_BUDGET,
-            &CancellationToken::new(),
-        )
-        .await?;
-    let names = receipt
-        .value
-        .0
-        .iter()
-        .map(|entry| namespace_path_text(&entry.path))
-        .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(names, ["/dst", "/dst/file", "/src", "/src/file"]);
-    assert!(receipt.work.bytes_copied < crate::performance::BOUNDARY_BUDGET.bytes_copied);
-    println!("SMALL_MOVE_WORK {:?}", receipt.work);
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     changes: &ChangeSet<A, O>,
