@@ -15,6 +15,8 @@ paths = [row['executable'] for row in rows if row.get('reason') == 'compiler-art
          and row.get('target', {}).get('name') == 'acyclic_harness']
 assert len(paths) == 1, paths
 name = 'local::context::environment::tests::'
+if mode == 'binding':
+    name = 'local::tests::environment::'
 args = [paths[0], name, '--test-threads=4', '--nocapture']
 if mode == 'negative':
     name += 'git_environment_outside_worktree_never_starts_a_command'
@@ -34,6 +36,7 @@ print('ENVIRONMENT_CONTROL_PASS', mode, 'seconds', elapsed, flush=True)
 PY
 cargo test --locked -p acyclic-harness --all-features --lib --no-run --message-format=json-render-diagnostics > "$proof/tests.jsonl"
 python3 "$proof/run.py" "$proof" positive
+python3 "$proof/run.py" "$proof" binding
 python3 - "$source" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
