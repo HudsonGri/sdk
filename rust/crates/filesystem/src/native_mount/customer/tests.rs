@@ -909,9 +909,12 @@ async fn published_lazy_unmount_reuses_the_same_windows_destination()
         let mount = lazy
             .mount(
                 destination.path(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .native_context(&work, None, None),
+                fixture_options(
+                    lazy.workspace(),
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await?
+                .native_context(&work, None, None),
             )
             .await
             .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
@@ -950,9 +953,12 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
         let mount = lazy
             .mount(
                 destination.path(),
-                MountOptions::read_write()
-                    .publication(MountPublication::Manual)
-                    .native_context(&work, None, None),
+                fixture_options(
+                    lazy.workspace(),
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await?
+                .native_context(&work, None, None),
             )
             .await
             .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
