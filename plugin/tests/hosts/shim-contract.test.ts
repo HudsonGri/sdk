@@ -136,3 +136,19 @@ test("release packaging validates without state access or install authentication
     assert.match(rejected.stderr, /MCP declaration/);
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });
+
+test("Codex root-capable MCP hooks require no optional subagent fields", () => {
+  const hooks = JSON.parse(readFileSync(new URL("../../hooks/hooks.json", import.meta.url), "utf8")).hooks;
+  // Codex 0.164 omits agent_id/agent_type from root events. MCP templates
+  // reject missing fields; the bridge obtains the caller through _meta.threadId.
+  const root: Record<string, unknown> = {session_id: "root", turn_id: "turn", cwd: "/workspace",
+    tool_name: "exec_command", tool_input: {command: "true"}, tool_use_id: "call", tool_response: {exit_code: 0}};
+  const select = (field: string) => field.split(".").reduce<unknown>((value, key) =>
+    value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined, root);
+  assert.equal(select("agent_id"), undefined, "negative control: root inputs omit subagent identity");
+  for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse"]) {
+    for (const match of JSON.stringify(hooks[event]).matchAll(/\$\{([^}]+)\}/g)) {
+      assert.notEqual(select(match[1]), undefined, `${event} requires absent root field ${match[1]}`);
+    }
+  }
+});

@@ -26,8 +26,7 @@
               "hook": {
                 "session_id": "${session_id}",
                 "turn_id": "${turn_id}",
-                "cwd": "${cwd}",
-                "agent_id": "${agent_id}"
+                "cwd": "${cwd}"
               }
             },
             "timeout": 30
@@ -50,8 +49,7 @@
                 "cwd": "${cwd}",
                 "tool_name": "${tool_name}",
                 "tool_input": "${tool_input}",
-                "tool_use_id": "${tool_use_id}",
-                "agent_id": "${agent_id}"
+                "tool_use_id": "${tool_use_id}"
               }
             },
             "timeout": 120
@@ -75,7 +73,6 @@
                 "tool_name": "${tool_name}",
                 "tool_input": "${tool_input}",
                 "tool_use_id": "${tool_use_id}",
-                "agent_id": "${agent_id}",
                 "tool_response": "${tool_response}"
               }
             },
