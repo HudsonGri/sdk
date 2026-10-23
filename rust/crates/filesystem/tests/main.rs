@@ -25,8 +25,6 @@ mod projfs_profile;
 #[path = "cases/projfs_metadata/mod.rs"]
 mod projfs_metadata;
 
-
-
 #[cfg(feature = "fuzzing")]
 #[path = "cases/workspace_names.rs"]
 mod workspace_names;
@@ -38,7 +36,6 @@ mod cloud_contract;
 #[cfg(feature = "native-watch")]
 #[path = "cases/native_owner_registry.rs"]
 mod native_owner_registry;
-
 
 #[cfg(feature = "memory")]
 #[path = "cases/accounting_reconciliation.rs"]
