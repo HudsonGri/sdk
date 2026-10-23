@@ -1,10 +1,10 @@
-//! The direct child of a custodied tree. It is forked by `Command::spawn` and
-//! runs here before exec: it records and locks the tree in the owner's
+//! The direct child of a custodied tree. A fresh executable records and locks
+//! the tree in the owner's
 //! custody directory, watches the owner, and forks the real program, which
 //! returns from [`enter`] and execs. The warden itself never returns.
 //!
-//! Everything here runs between `fork` and `_exit` in a copy of a
-//! multithreaded host, so it makes only async-signal-safe system calls: no
+//! Everything here runs in the single-threaded warden, including between
+//! `fork` and `_exit`, so it makes only async-signal-safe system calls: no
 //! allocation, no locks and no unwinding.
 
 use libc::{c_int, pid_t};

@@ -9,12 +9,16 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+mod command;
+pub use command::ProcessTreeCommand;
 #[cfg(windows)]
 mod custodian;
 mod custody;
 pub use custody::ProcessCustody;
 #[cfg(unix)]
 mod warden;
+#[cfg(unix)]
+mod warden_spawn;
 
 /// The clock the capture deadline reads. Tests freeze it so that expiry is
 /// ordered by the capture loop's own checks instead of scheduler latency.
@@ -100,22 +104,24 @@ impl ProcessTree {
     /// recorded in `custody` until this owner observes it gone. If the host
     /// dies first, the tree is killed, and a reopened owner's
     /// [`ProcessCustody::fence_stale`] returns only after it is dead.
-    /// `command` must not be reused for another spawn.
-    pub fn spawn_in_custody(command: &mut Command, custody: &ProcessCustody) -> io::Result<Self> {
+    /// On Unix the executable is a fresh warden, started without a
+    /// `pre_exec` hook: the multithreaded host must never fork for custody.
+    pub fn spawn_in_custody(
+        mut command: ProcessTreeCommand,
+        custody: &ProcessCustody,
+    ) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            let directory = custody.arm(command)?;
-            let mut tree = Self::spawn(command)?;
-            let pid = libc::pid_t::try_from(tree.owned_child_id()?)
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            tree.custody = Some(custody::Record::new(directory, pid));
-            Ok(tree)
+            warden_spawn::spawn(&mut command, custody)
         }
         #[cfg(windows)]
         {
+            command.prepare_streams();
             let (mut record, name) = custody.record()?;
             let mut tree = None;
-            if let Err(admission) = platform::spawn_named(command, &mut tree, &name, &mut record) {
+            if let Err(admission) =
+                platform::spawn_named(command.command_mut(), &mut tree, &name, &mut record)
+            {
                 if let Some(tree) = tree.as_mut() {
                     tree.terminate(None)?;
                 }

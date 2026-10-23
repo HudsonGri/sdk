@@ -1,8 +1,6 @@
 use super::*;
-use std::{
-    process::{Command, Stdio},
-    time::Duration,
-};
+use acyclic_native_runtime::ProcessTreeCommand as Command;
+use std::{process::Stdio, time::Duration};
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =
@@ -183,7 +181,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
                 #[cfg(feature = "test-support")]
                 if let Some(output) = acyclic_native_runtime::testing::capture_process(
                     acyclic_native_runtime::testing::ProcessCapture {
-                        command: &command,
+                        command: command.as_command(),
                         timeout,
                         maximum: maximum_output,
                         input,
@@ -194,11 +192,10 @@ pub async fn capture_with_custody<T: Send + 'static>(
                     return Ok(output);
                 }
                 let mut process = match &invocation.process_custody {
-                    Some(custody) => acyclic_native_runtime::ProcessTree::spawn_in_custody(
-                        &mut command,
-                        custody,
-                    )?,
-                    None => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
+                    Some(custody) => {
+                        acyclic_native_runtime::ProcessTree::spawn_in_custody(command, custody)?
+                    }
+                    None => command.spawn_tree()?,
                 };
                 let output = process.wait_with_output(
                     timeout,

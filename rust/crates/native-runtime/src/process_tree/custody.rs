@@ -6,7 +6,7 @@
 //! returns only once every tree a dead owner left is dead, so nothing such a
 //! tree started can act after the new owner records its interruption.
 //!
-//! - Unix: the direct child is a warden forked before exec. It creates and
+//! - Unix: the direct child is a fresh warden executable. It creates and
 //!   locks its record, watches the owner (Linux: pidfd; macOS: kqueue
 //!   `NOTE_EXIT`) and forks the program. When the owner or the program exits
 //!   it kills every remaining descendant (Linux: as child subreaper; macOS:
@@ -153,22 +153,11 @@ mod unix {
     use std::io::Read as _;
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::MetadataExt as _;
-    use std::os::unix::process::CommandExt as _;
-    use std::process::Command;
 
     impl ProcessCustody {
-        /// Makes `command`'s direct child the warden of its tree.
-        pub(in crate::process_tree) fn arm(&self, command: &mut Command) -> io::Result<File> {
-            let directory = self.directory.try_clone()?;
-            let descriptor = self.directory.as_raw_fd();
-            let owner = libc::pid_t::try_from(std::process::id())
-                .map_err(|_| io::ErrorKind::InvalidInput)?;
-            // SAFETY: the warden makes only async-signal-safe calls, and the
-            // custody directory stays open while the borrowing spawn runs.
-            unsafe {
-                command.pre_exec(move || super::super::warden::enter(descriptor, owner));
-            }
-            Ok(directory)
+        /// Retains the directory's identity through handoff and record removal.
+        pub(in crate::process_tree) fn directory(&self) -> io::Result<File> {
+            self.directory.try_clone()
         }
     }
 

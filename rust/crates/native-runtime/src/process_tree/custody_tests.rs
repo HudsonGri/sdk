@@ -3,7 +3,7 @@
 //! without custody demonstrably survives the same kill.
 #![cfg(any(target_os = "linux", windows))]
 
-use super::{ProcessCustody, ProcessTree};
+use super::{ProcessCustody, ProcessTree, ProcessTreeCommand};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -12,6 +12,109 @@ use std::time::Duration;
 
 const MODE: &str = "ACYCLIC_CUSTODY_TEST_MODE";
 const ROOT: &str = "ACYCLIC_CUSTODY_TEST_ROOT";
+
+/// These custody fixtures always discard all three streams. Preserve their
+/// arguments and environment while configuring the fresh warden's streams.
+fn spawn_custodied(command: &Command, custody: &ProcessCustody) -> std::io::Result<ProcessTree> {
+    let mut child = ProcessTreeCommand::new(command.get_program());
+    child.args(command.get_args());
+    for (name, value) in command.get_envs() {
+        match value {
+            Some(value) => {
+                child.env(name, value);
+            }
+            None => {
+                child.env_remove(name);
+            }
+        }
+    }
+    if let Some(directory) = command.get_current_dir() {
+        child.current_dir(directory);
+    }
+    child
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    ProcessTree::spawn_in_custody(child, custody)
+}
+
+#[cfg(unix)]
+#[test]
+fn fresh_warden_preserves_exec_configuration_and_reports_admission_errors() -> std::io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let custody = ProcessCustody::open(&root.path().join("processes"))?;
+    let mut command = ProcessTreeCommand::new("sh");
+    command.env_clear().env("PATH", "/bin:/usr/bin").env("VALUE", "configured")
+            .current_dir(root.path())
+            .args(["-c", "read input; printf '%s:%s:%s' \"$VALUE\" \"$input\" \"$PWD\"; printf diagnostic >&2; exit 7"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn_in_custody(command, &custody)?;
+    let output = tree
+        .wait_with_output(
+            Duration::from_secs(5),
+            4096,
+            Some(crate::CaptureInput::Literal(b"input\n")),
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            None,
+            None,
+        )
+        .map_err(std::io::Error::other)?;
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(
+        output.stdout,
+        format!("configured:input:{}", root.path().display()).as_bytes()
+    );
+    assert_eq!(output.stderr, b"diagnostic");
+    let error = ProcessTree::spawn_in_custody(
+        ProcessTreeCommand::new(root.path().join("missing")),
+        &custody,
+    )
+    .err()
+    .ok_or_else(|| std::io::Error::other("missing executable was admitted"))?;
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    let mut command = ProcessTreeCommand::new("sh");
+    command.current_dir(root.path().join("missing"));
+    let error = ProcessTree::spawn_in_custody(command, &custody)
+        .err()
+        .ok_or_else(|| std::io::Error::other("missing working directory was admitted"))?;
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(fs::read_dir(root.path().join("processes"))?.count(), 0);
+    Ok(())
+}
+
+/// Loader variables belong to the program, after custody is armed. Giving
+/// them to the helper would make it exit before its initializer can hand off.
+#[cfg(target_os = "linux")]
+#[test]
+fn target_loader_environment_never_controls_the_warden() -> std::io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let custody = ProcessCustody::open(&root.path().join("processes"))?;
+    let mut command = ProcessTreeCommand::new("/bin/true");
+    command
+        .env_clear()
+        .env("LD_TRACE_LOADED_OBJECTS", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn_in_custody(command, &custody)?;
+    let output = tree
+        .wait_with_output(
+            Duration::from_secs(5),
+            4096,
+            None,
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            None,
+            None,
+        )
+        .map_err(std::io::Error::other)?;
+    assert!(output.status.success());
+    assert!(!output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read_dir(root.path().join("processes"))?.count(), 0);
+    Ok(())
+}
 
 /// A shell program that publishes its descendant's PID at the path given as
 /// its first argument, then waits; paths are arguments, never script text.
@@ -60,7 +163,7 @@ fn custody_owner_helper() {
     let mut command = program(&root);
     let tree = if mode == "custodied" {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
-        Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
+        Some(spawn_custodied(&command, &custody).expect("custodied spawn"))
     } else {
         let child = command.spawn().expect("uncontained spawn");
         #[cfg(windows)]
@@ -340,7 +443,7 @@ fn a_custodians_handles_track_live_members_not_every_member() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    let mut tree = spawn_custodied(&command, &custody).expect("spawn");
     let custodian = custodian_of(&processes);
     let before = handle_count(custodian);
     while !churned.exists() {
@@ -406,7 +509,7 @@ fn trees_of_two_custody_directories_in_one_process_never_share_a_job() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+        let tree = spawn_custodied(&command, &custody).expect("spawn");
         (custody, tree)
     };
     let (_first_custody, mut first) = spawn("first");
@@ -448,7 +551,7 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+        let mut tree = spawn_custodied(&command, &custody).expect("spawn");
         let status = tree.wait(Duration::from_secs(30)).expect("wait");
         let descendant = Watch::new(
             fs::read_to_string(&pid)
@@ -508,7 +611,7 @@ fn a_second_owner_in_one_process_shares_the_live_custody() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, &first).expect("spawn");
+    let mut tree = spawn_custodied(&command, &first).expect("spawn");
     let watch = Watch::new(tree_pid(&tree)).expect("running tree");
     let second = ProcessCustody::acquire(&processes).expect("second owner");
     // A fence would have returned only once the tree was dead.
@@ -534,7 +637,7 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
+    let mut tree = spawn_custodied(&command, &custody).expect("spawn");
     while !pid.exists() {
         thread::sleep(Duration::from_millis(5));
     }
@@ -611,7 +714,7 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
     let pid = root.path().join("pid");
-    let tree = ProcessTree::spawn_in_custody(&mut escaping_program(&pid), &custody).expect("spawn");
+    let tree = spawn_custodied(&escaping_program(&pid), &custody).expect("spawn");
     let escaped = cancel_after_escape(tree, &pid);
     let survived = !escaped.exited();
     escaped.kill();

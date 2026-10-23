@@ -28,6 +28,7 @@ libc = "0.2.175"
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libc = "0.2.175"
 rustix.workspace = true
+tempfile = "3.27.0"
 
 [target.'cfg(windows)'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
