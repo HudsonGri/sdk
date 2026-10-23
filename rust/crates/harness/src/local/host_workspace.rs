@@ -10,7 +10,7 @@ use acyclic_fs::{HeldRoot, LazyWorkspaceStore as _};
 mod volume_guard;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
-mod tests;
+pub(super) mod tests;
 
 /// Reserved mount namespace within an already writable checkout.
 pub const HOST_VIEW_ROOT: &str = ".volumes/agents";

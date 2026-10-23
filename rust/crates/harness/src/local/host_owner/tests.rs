@@ -1,3 +1,4 @@
+use super::super::host_workspace::tests::native_write;
 use super::*;
 use crate::task_volume::{ChildFile, ChildState, ChildStatus, Component, FileKey, FileValue};
 
@@ -87,11 +88,10 @@ async fn failed_and_cancelled_native_tools_leave_capturable_mergeable_views() ->
             )
             .await?;
         fixture.owner.dispatch(OperationId::new(),HostAction::Hook {host:"pi".into(),event:"PreToolUse".into(),input:json!({"task":child,"session_id":"native-root","cwd":cwd,"tool_name":"bash","tool_use_id":reference,"tool_input":{"command":"write then fail or cancel"}})}).await?;
-        std::fs::write(
-            cwd.join(format!("{reference}.txt")),
+        native_write(
+            &cwd.join(format!("{reference}.txt")),
             b"partial native write",
-        )
-        .map_err(storage)?;
+        )?;
         // The native host has stopped the failed/cancelled tool. No post hook.
         fixture
             .owner
@@ -182,7 +182,7 @@ async fn native_sessions_use_shared_ordered_mailboxes_and_resume_after_recreatio
             },
         )
         .await?;
-    std::fs::write(cwd.join("child.txt"), b"native").map_err(storage)?;
+    native_write(&cwd.join("child.txt"), b"native")?;
     fixture
         .session(
             "child",

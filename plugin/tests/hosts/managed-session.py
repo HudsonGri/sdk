@@ -52,12 +52,13 @@ assert prompt in ('failed','cancelled','recursive','first','resumed')
 (cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
 print(json.dumps({'type':'thread.started','thread_id':'fixture-native-id'}),flush=True)
 base=[os.environ['FIXTURE_CODEX'],'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c','sandbox_workspace_write.writable_roots='+json.dumps([args[args.index('--add-dir')+1]]),'--']
-subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'agents'],check=True,stdout=subprocess.DEVNULL)
 if prompt=='resumed': assert (cwd/'.volumes/scratch/native-private.txt').read_text()=='first'
-subprocess.run(base+['sh','-c','printf "%s" "$1" > .volumes/scratch/native-private.txt','fixture',prompt],check=True)
-denied=subprocess.run(base+['sh','-c','printf denied > "$1"','fixture',os.environ['FIXTURE_OUTSIDE']],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-assert denied.returncode!=0 and not pathlib.Path(os.environ['FIXTURE_OUTSIDE']).exists()
-subprocess.run(base+['sh','-c','printf native > "$1"','fixture',prompt+'.txt'],check=True)
+checked=subprocess.run(base+['sh','-c',
+ 'set -eu; "$1" agents >/dev/null; printf "%s" "$4" > .volumes/scratch/native-private.txt; '
+ 'if (printf denied > "$2") 2>/dev/null; then exit 41; fi; test ! -e "$2"; printf native > "$3"; '
+ 'if test "$4" = failed; then exit 17; fi',
+ 'fixture',os.environ['FIXTURE_ACYCLIC'],os.environ['FIXTURE_OUTSIDE'],prompt+'.txt',prompt],capture_output=True,text=True)
+assert checked.returncode==(17 if prompt=='failed' else 0),checked.stderr
 if prompt=='recursive':
  nested=subprocess.Popen([os.environ['FIXTURE_ACYCLIC'],'__mcp','codex'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
  def call(identifier,name):
@@ -69,7 +70,8 @@ if prompt=='recursive':
  try:
   grandchild=call(1,'spawn');finished=call(2,'wait')
   assert finished['results'][0]['outcome'].get('Succeeded') is not None,finished
-  subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],check=True,stdout=subprocess.DEVNULL)
+  merged=subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],capture_output=True,text=True)
+  assert merged.returncode==0,merged.stderr
   assert (cwd/'first.txt').read_text()=='native'
   assert not (cwd/'.acyclic-sdk').exists(),'nested custody was authored into the child project'
  finally:
@@ -189,6 +191,9 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
   for name in ('owner.log','bridge.log'):
    path=root/name
    if path.exists():print('FIXTURE_'+name,path.read_text()[-4000:],flush=True)
+  for view in (workspace/'.volumes/agents').glob('*'):
+   error=view/'.volumes/scratch/native-error.txt'
+   if error.is_file():print('FIXTURE_NATIVE_ERROR',view.name,error.read_text()[-4000:],flush=True)
   raise
  finally:
   if bridge and bridge.poll() is None:

@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime::{RuntimeTask, TaskStateProvider};
 
-fn native_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(in crate::local) fn native_write(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(not(windows))]
     {
         std::fs::write(path, bytes).map_err(storage)
