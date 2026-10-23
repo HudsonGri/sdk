@@ -113,7 +113,7 @@ fn pi_package_sources_are_not_shadowed_by_local_filenames() -> Result<()> {
         }
         let supplied = ["--extension".into(), source.into()];
         assert_eq!(
-            codex::parent_flags("pi", &supplied, &workspace)?,
+            codex::parent_flags("pi", &supplied, workspace)?,
             supplied,
             "native package source must not become a local extension"
         );

@@ -60,11 +60,18 @@ test("release packaging validates without state access or authentication", () =>
     assert.equal(marketplace.plugins[0].policy.authentication, undefined);
     assert.equal(run("validate-package.mjs", [output]).status, 0);
     const path = join(output, "plugin", ".mcp.json");
-    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    const original = readFileSync(path, "utf8");
+    const manifest = JSON.parse(original);
     manifest.mcpServers["acyclic-sessions"].env_vars = ["XDG_STATE_HOME"];
     writeFileSync(path, JSON.stringify(manifest));
     const rejected = run("validate-package.mjs", [output]);
     assert.notEqual(rejected.status, 0, "negative control: state-dependent declarations must be rejected");
     assert.match(rejected.stderr, /MCP declaration/);
+    const legacy = JSON.parse(original);
+    legacy.mcpServers = {"acyclic-hooks": legacy.mcpServers["acyclic-sessions"]};
+    writeFileSync(path, JSON.stringify(legacy));
+    const oldServer = run("validate-package.mjs", [output]);
+    assert.notEqual(oldServer.status, 0, "negative control: the deleted hook MCP server must be rejected");
+    assert.match(oldServer.stderr, /MCP declaration/);
   } finally {rmSync(directory, {recursive: true, force: true});}
 });

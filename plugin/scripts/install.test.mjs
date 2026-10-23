@@ -362,7 +362,7 @@ test("same version cannot be replaced with different bytes", () => {
   }
 });
 
-test("the published package declares the Codex hook MCP server on the installed command", () => {
+test("the published package declares the native session MCP server on the installed command", () => {
   // npm 12 keys the report by package name; earlier npm returns an array.
   const [packed] = Object.values(JSON.parse(run("npm pack --dry-run --json --ignore-scripts", plugin)));
   const files = packed.files.map(file => file.path.replaceAll("\\", "/"));
@@ -371,15 +371,16 @@ test("the published package declares the Codex hook MCP server on the installed 
   }
   assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./.mcp.json");
   const servers = JSON.parse(readFileSync(join(plugin, ".mcp.json"), "utf8")).mcpServers;
-  assert.deepEqual(Object.keys(servers), ["acyclic-hooks"]);
+  assert.deepEqual(Object.keys(servers), ["acyclic-sessions"]);
   // Codex starts the server from the plugin root. `bin/acyclic` is the
   // native executable on Unix; on Windows the installer removes it, so Codex
   // resolves the command through PATHEXT to `bin/acyclic.exe` (checked for
   // every package manager below).
-  assert.equal(servers["acyclic-hooks"].cwd, ".");
-  assert.equal(servers["acyclic-hooks"].command, "./bin/acyclic");
-  assert.deepEqual(servers["acyclic-hooks"].args, ["__mcp"]);
-  assert.equal(servers["acyclic-hooks"].required, true);
+  assert.equal(servers["acyclic-sessions"].cwd, ".");
+  assert.equal(servers["acyclic-sessions"].command, "./bin/acyclic");
+  assert.deepEqual(servers["acyclic-sessions"].args, ["__mcp", "codex"]);
+  assert.deepEqual(servers["acyclic-sessions"].env_vars, ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
+  assert.equal(servers["acyclic-sessions"].required, true);
 });
 
 // Installs a package whose "native executable" is this Node binary with each
