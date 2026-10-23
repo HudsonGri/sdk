@@ -407,7 +407,8 @@ async fn approval_writer_admits_storage_before_taking_custody() -> Result<()> {
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(65_536, 64 << 20);
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -423,6 +424,73 @@ async fn approval_writer_admits_storage_before_taking_custody() -> Result<()> {
             .await?;
         drop(transaction);
         assert_eq!(io.owned_bytes()?, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn approval_open_reuses_one_verified_cut_for_new_and_existing_requests() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    for native in [false, true] {
+        let initialized = runtime.block_on(initialized("open transaction", None))?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 64 << 20),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = native
+            .then(|| PreparationIo::from_native_work(&work))
+            .transpose()?;
+        let id = InteractionId::from_bytes([90; 16]);
+        let request = Interaction::approval(
+            "Open once".into(),
+            initialized.operation,
+            [5; 32],
+            crate::interaction::ApprovalSubject::Opaque {},
+        )?;
+        for duplicate in [false, true] {
+            let (result, trace) = differential::observe::<_, _, differential::Operation>(
+                || (),
+                |()| {
+                    runtime.block_on(async {
+                        if duplicate {
+                            // Restore the removed discarded read before the exact retry.
+                            let before = io
+                                .as_ref()
+                                .map(PreparationIo::owned_bytes)
+                                .transpose()?
+                                .unwrap_or(0);
+                            let original = initialized
+                                .journal
+                                .interactions()?
+                                .read_request(id, io.as_ref())
+                                .await?;
+                            let hold = io
+                                .as_ref()
+                                .map(|io| io.guard_owned(io.owned_since(before)?))
+                                .transpose()?;
+                            assert_eq!(original.as_ref(), Some(&request));
+                            drop((original, hold));
+                        }
+                        initialized
+                            .journal
+                            .open_interaction_with_io(id, &request, io.as_ref())
+                            .await
+                    })
+                },
+            );
+            result?;
+            let count: u64 = trace
+                .iter()
+                .filter(|(kind, _)| *kind == "interaction-reconstruction")
+                .map(|(_, count)| count)
+                .sum();
+            assert_eq!(count, 1 + u64::from(duplicate), "native={native}");
+        }
     }
     Ok(())
 }

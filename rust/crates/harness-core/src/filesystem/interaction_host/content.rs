@@ -204,8 +204,16 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<Option<Interaction>> {
         let aggregate = self.aggregate(io).await?;
+        self.read_request_at(&aggregate.0, id, io).await
+    }
+
+    pub(in crate::filesystem) async fn read_request_at(
+        &self,
+        aggregate: &StreamAggregate<P>,
+        id: InteractionId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Interaction>> {
         let Some((ticket, _)) = aggregate
-            .0
             .reducer()
             .interaction(&Uuid::from_bytes(id.into_bytes()))
         else {

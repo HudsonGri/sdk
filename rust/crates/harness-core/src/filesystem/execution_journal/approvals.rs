@@ -15,22 +15,6 @@ use crate::{
     task_volume::{Component, DurableFile, FileKey, FileValue, TaskFile},
 };
 
-/// Awaits one host read, keeping its retained bytes guarded for the rest of
-/// the enclosing scope.
-macro_rules! guarded_read {
-    ($read:expr, $io:expr, $guard:ident) => {{
-        let before = $io
-            .map(PreparationIo::owned_bytes)
-            .transpose()?
-            .unwrap_or(0);
-        let read = $read.await?;
-        $guard = $io
-            .map(|io| io.guard_owned(io.owned_since(before)?))
-            .transpose()?;
-        read
-    }};
-}
-
 fn admitted<T>(read: Option<T>, io: Option<&PreparationIo>) -> Result<T> {
     read.ok_or_else(|| {
         canonical_boundary(
@@ -152,14 +136,18 @@ where
     pub(super) async fn publish_approval_request(
         &self,
         id: InteractionId,
+        aggregate: &StreamAggregate<P>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let Some((owner, _)) = &self.owner else {
             return Ok(());
         };
         let host = self.interactions()?;
-        let _read;
-        let (ticket, _) = admitted(guarded_read!(host.read(id, io), io, _read), io)?;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let (ticket, _) = admitted(host.read_at(aggregate, id, io)?, io)?;
+        let _read = io
+            .map(|io| io.guard_owned(io.owned_since(before)?))
+            .transpose()?;
         if ticket.kind != InteractionKind::Approval {
             return Ok(());
         }

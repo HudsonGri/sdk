@@ -18,6 +18,19 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<ApplyResult> {
         let mut transaction = self.transaction(io).await?;
+        self.open_at(operation_id, scope, ticket, owner, io, &mut transaction)
+            .await
+    }
+
+    pub(in crate::filesystem) async fn open_at(
+        &self,
+        operation_id: OperationId,
+        scope: Option<&Scope>,
+        ticket: &InteractionTicket,
+        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
+        io: Option<&PreparationIo>,
+        transaction: &mut InteractionTransaction<'_, P>,
+    ) -> Result<ApplyResult> {
         let (copied, retained) = with_history_io(io, |work| {
             CodecQuota::produce(work, |quota| {
                 crate::core::copy(
@@ -40,7 +53,7 @@ where
                 },
                 owner,
                 io,
-                &mut transaction,
+                transaction,
             )
             .await;
         drop(hold);

@@ -58,10 +58,13 @@ where
                 "task execution has no conversation interaction owner",
             )
         })?;
+        let mut transaction = host.transaction(io).await?;
         {
             let (request_hold, original) = {
                 let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let original = host.read_request(id, io).await?;
+                let original = host
+                    .read_request_at(&transaction.aggregate.0, id, io)
+                    .await?;
                 let request_hold = io
                     .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
@@ -72,7 +75,8 @@ where
                     owner.verify(false, &mut work).await?;
                 }
                 return if original == interaction {
-                    self.publish_approval_request(id, io).await
+                    self.publish_approval_request(id, &transaction.aggregate.0, io)
+                        .await
                 } else {
                     Err(reject(
                         crate::wire::ErrorCode::Conflict,
@@ -93,12 +97,13 @@ where
             (ticket_hold, ticket)
         };
         let publication = host
-            .open(
+            .open_at(
                 operation,
                 None,
                 &ticket,
                 self.owner.as_ref().map(|(owner, _)| owner),
                 io,
+                &mut transaction,
             )
             .await;
         drop(ticket);
@@ -107,16 +112,24 @@ where
             owner.verify(false, &mut work).await?;
         }
         let result = match publication {
-            Ok(_) => self.publish_approval_request(id, io).await,
+            Ok(_) => {
+                self.publish_approval_request(id, &transaction.aggregate.0, io)
+                    .await
+            }
             Err(error)
                 if matches!(
                     error.code(),
                     crate::wire::ErrorCode::Conflict | crate::wire::ErrorCode::Indeterminate
                 ) =>
             {
+                // A cross-owner conflict or lost acknowledgement needs one fresh
+                // read to confirm the exact committed request, never a resubmit.
+                transaction.aggregate = host.aggregate(io).await?;
                 let (request_hold, original) = {
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let original = host.read_request(id, io).await?;
+                    let original = host
+                        .read_request_at(&transaction.aggregate.0, id, io)
+                        .await?;
                     let request_hold = io
                         .map(|io| io.guard_owned(io.owned_since(before)?))
                         .transpose()?;
@@ -124,7 +137,8 @@ where
                 };
                 let result = match &original {
                     Some(original) if original == interaction => {
-                        self.publish_approval_request(id, io).await
+                        self.publish_approval_request(id, &transaction.aggregate.0, io)
+                            .await
                     }
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
