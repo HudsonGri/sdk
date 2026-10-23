@@ -18,6 +18,10 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [[example]]
+name = "local-group-bench"
+required-features = ["local"]
+
+[[example]]
 name = "http-conformance"
 required-features = ["http"]
 

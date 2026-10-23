@@ -79,6 +79,11 @@ pub mod wire_codec;
 pub mod verification;
 #[cfg(all(acyclic_loom, feature = "local"))]
 #[doc(hidden)]
+pub use local::group_model::{
+    group_seals_follow_successful_predecessor_flushes, negative_control_group_seal_overtakes_flush,
+};
+#[cfg(all(acyclic_loom, feature = "local"))]
+#[doc(hidden)]
 pub use local::replay_model::{
     negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
 };
