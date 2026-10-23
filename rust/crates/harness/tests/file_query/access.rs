@@ -45,14 +45,11 @@ async fn retained_diff_snapshots_and_follow_recheck_disclosure_policy()
                 ))
             ));
         } else {
-            snapshot?;
-            let publication = publication?;
-            assert!(
-                publication
-                    .paths
-                    .iter()
-                    .any(|path| path.path == "plans/a.md")
-            );
+            let mut snapshot = snapshot?;
+            let retained = snapshot.next().await.ok_or("missing retained diff")??;
+            for diff in [retained, publication?] {
+                assert!(diff.paths.iter().any(|path| path.path == "plans/a.md"));
+            }
         }
     }
     Ok(())
