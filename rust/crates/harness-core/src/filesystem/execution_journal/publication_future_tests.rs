@@ -1079,26 +1079,25 @@ fn records_poll_parent(mode: u8, early: bool) -> Result<bool> {
     crate::obs::capture::sync(|seen| {
         let construction = obs_span!(INFO, "acyclic.harness.test.construct");
         let polling = obs_span!(INFO, "acyclic.harness.test.poll");
-        let future: Result<BoxFuture<'_, Result<Value>>> =
-            construction.in_scope(|| {
-                let future = run(
-                    &journal,
-                    mode,
-                    0,
-                    (operation, "start", &event),
-                    &file,
-                    b"payload",
-                )?;
-                if early {
-                    Ok(crate::obs::traced_future(
-                        || obs_span!(INFO, "acyclic.harness.test.early"),
-                        || future,
-                    )
-                    .boxed())
-                } else {
-                    Ok(future)
-                }
-            });
+        let future: Result<BoxFuture<'_, Result<Value>>> = construction.in_scope(|| {
+            let future = run(
+                &journal,
+                mode,
+                0,
+                (operation, "start", &event),
+                &file,
+                b"payload",
+            )?;
+            if early {
+                Ok(crate::obs::traced_future(
+                    || obs_span!(INFO, "acyclic.harness.test.early"),
+                    || future,
+                )
+                .boxed())
+            } else {
+                Ok(future)
+            }
+        });
         polling.in_scope(|| runtime.block_on(future?))?;
         let name = ["append", "append_if_tail", "replay", "load", "stage"][mode as usize];
         let name = format!("acyclic.harness.journal.{name}");

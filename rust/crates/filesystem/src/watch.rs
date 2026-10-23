@@ -3290,11 +3290,16 @@ impl NativeWatch {
         let deadline = Deadline::after(timeout);
         loop {
             let generation = self.fenced.listen();
-            let state = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            let state = self
+                .shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
             if state.fence.is_none() || state.invalidation.is_some() {
                 return Ok(state.invalidation.is_none());
             }
-            if deadline.expired() { return Ok(false); }
+            if deadline.expired() {
+                return Ok(false);
+            }
             drop(state);
             self.fenced.wait_after(generation, Some(deadline));
         }

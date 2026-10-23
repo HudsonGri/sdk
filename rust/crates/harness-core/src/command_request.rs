@@ -204,7 +204,9 @@ impl CommandResolution {
 }
 
 /// Explicit bindings to the caller's authorized file-query roots.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandFileRoot {
     /// User config volume for shared presentation preferences.

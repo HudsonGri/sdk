@@ -35,7 +35,7 @@ pub mod workspace_media;
 /// Synthetic numeric client adapter and evidence fixtures.
 pub mod client_numbers;
 
-/// Shared goal scenario contract.
-pub mod goals;
 /// Goal scenario mutation oracle.
 pub mod goal_scenario_input;
+/// Shared goal scenario contract.
+pub mod goals;

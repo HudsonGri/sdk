@@ -134,7 +134,9 @@ fn operation_id(
     Ok(OperationId::from_bytes(id))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout,
+)]
 #[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiForkOperations {

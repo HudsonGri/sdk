@@ -59,7 +59,9 @@ async fn original_worker_pool_expires_virtual_waits_before_running_queued_jobs()
 -> std::io::Result<()> {
     if crate::tests::passed_in_exclusive_process(
         "deadline::simulation::tests::original_worker_pool_expires_virtual_waits_before_running_queued_jobs",
-    )? { return Ok(()); }
+    )? {
+        return Ok(());
+    }
     let capacity = crate::workers(&crate::BLOCKING_WORKERS, false)?.exclusive_threads();
     let clock = Clock::new();
     clock

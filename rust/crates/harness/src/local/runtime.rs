@@ -165,13 +165,13 @@ pub(super) async fn open(
         Some(workspace) => {
             let tools = Arc::new(
                 acyclic_fs::in_heap(|| {
-                checkout_tools::CheckoutTools::new(
-                    workspace,
-                    config.project,
-                    config.clock,
-                    &signed,
-                    Arc::clone(&projection_files),
-                )
+                    checkout_tools::CheckoutTools::new(
+                        workspace,
+                        config.project,
+                        config.clock,
+                        &signed,
+                        Arc::clone(&projection_files),
+                    )
                 })
                 .await?,
             );

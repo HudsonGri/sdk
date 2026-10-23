@@ -159,7 +159,11 @@ impl CheckoutTools {
         };
         let progress =
             output::SearchOutput::new(output::Output::open(context, files, request).await?);
-        let reserved = if parsed.volume.is_none() { self.workspace.volume_owned_paths()? } else { Vec::new() };
+        let reserved = if parsed.volume.is_none() {
+            self.workspace.volume_owned_paths()?
+        } else {
+            Vec::new()
+        };
         let output = crate::tools::git::run_with_guard(
             crate::tools::git::Workspace {
                 filesystem: &self.workspace.filesystem,

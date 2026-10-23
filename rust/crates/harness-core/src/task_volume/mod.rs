@@ -281,7 +281,7 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
-#[doc(hidden)]
+    #[doc(hidden)]
     pub async fn reopen(&self) -> Result<Self> {
         Ok(Self {
             provider: self.provider.clone(),

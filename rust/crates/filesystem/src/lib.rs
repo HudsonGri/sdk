@@ -25,10 +25,11 @@ pub use wire_service::{
     HostedSourceState,
 };
 
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
-    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex().to_string()
+    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET)
+        .to_hex()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -418,8 +419,8 @@ pub mod browser;
 #[cfg(windows)]
 pub use native_host::private_file::{create_owner_only_file, has_owner_only_permissions};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod test_capture;
 /// Shared mutation-fuzz and property exercises.
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_capture;

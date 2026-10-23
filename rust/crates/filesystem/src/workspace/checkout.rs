@@ -146,7 +146,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             })?
             .await
             .map_err(WorkspaceError::from)?;
-            self.check_access(&mut checkout, accounting, cancellation).await?;
+            self.check_access(&mut checkout, accounting, cancellation)
+                .await?;
             return Ok(checkout);
         }
         // The frame stays reserved while its receipt joins the ledger.
@@ -166,7 +167,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })();
         crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
         let mut checkout = checkout?;
-        self.check_access(&mut checkout, accounting, cancellation).await?;
+        self.check_access(&mut checkout, accounting, cancellation)
+            .await?;
         Ok(checkout)
     }
 

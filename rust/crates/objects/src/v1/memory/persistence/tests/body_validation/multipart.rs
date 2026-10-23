@@ -93,7 +93,13 @@ fn prefix_work(prefix: u32, native: bool, rewalk: bool) -> Vec<usize> {
     drop(next);
     drop(core);
     let reopened = core_reopen(root.path());
-    assert_eq!({ let state = reopened.lock_state().unwrap(); state.object_bytes + state.upload_bytes }, bytes);
+    assert_eq!(
+        {
+            let state = reopened.lock_state().unwrap();
+            state.object_bytes + state.upload_bytes
+        },
+        bytes
+    );
     assert_eq!(
         futures::executor::block_on(reopened.list_parts(wire::ListPartsRequest {
             bucket: bucket(),
@@ -229,7 +235,8 @@ fn dropping_part_accounting_is_rejected_by_the_same_total_oracle() {
     next.uploads.clear();
     assert_eq!(stored_bytes(&before, &mut next), Some(0));
     assert_ne!(
-        (before.object_bytes + before.upload_bytes), (next.object_bytes + next.upload_bytes),
+        (before.object_bytes + before.upload_bytes),
+        (next.object_bytes + next.upload_bytes),
         "omitting the removed upload delta preserves the wrong total"
     );
 }
@@ -270,7 +277,13 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ),
             vec![Err(QuotaExceeded)]
         );
-        assert_eq!({ let state = core.lock_state()?; state.object_bytes + state.upload_bytes }, 8);
+        assert_eq!(
+            {
+                let state = core.lock_state()?;
+                state.object_bytes + state.upload_bytes
+            },
+            8
+        );
         assert_eq!(fs::read(root.path().join("mutations.log"))?, before);
         core.upload_part(query, OwnedBytes::from_static(b"part"))
             .await?;
@@ -282,7 +295,13 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ),
             vec![Ok(8)]
         );
-        assert_eq!({ let state = core.lock_state()?; state.object_bytes + state.upload_bytes }, 12);
+        assert_eq!(
+            {
+                let state = core.lock_state()?;
+                state.object_bytes + state.upload_bytes
+            },
+            12
+        );
         core.abort_multipart(wire::AbortMultipartRequest {
             bucket: bucket(),
             object_key: "upload".into(),
@@ -290,7 +309,13 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ..Default::default()
         })
         .await?;
-        assert_eq!({ let state = core.lock_state()?; state.object_bytes + state.upload_bytes }, 8);
+        assert_eq!(
+            {
+                let state = core.lock_state()?;
+                state.object_bytes + state.upload_bytes
+            },
+            8
+        );
         let upload = create_upload(&core);
         let receipt = part(&core, &upload.upload_id, 1);
         core.complete_multipart(wire::CompleteMultipartRequest {
@@ -301,10 +326,22 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
             ..Default::default()
         })
         .await?;
-        assert_eq!({ let state = core.lock_state()?; state.object_bytes + state.upload_bytes }, 12);
+        assert_eq!(
+            {
+                let state = core.lock_state()?;
+                state.object_bytes + state.upload_bytes
+            },
+            12
+        );
         drop(core);
         let reopened = open(root.path().to_path_buf(), limits, None)?;
-        assert_eq!({ let state = reopened.lock_state()?; state.object_bytes + state.upload_bytes }, 12);
+        assert_eq!(
+            {
+                let state = reopened.lock_state()?;
+                state.object_bytes + state.upload_bytes
+            },
+            12
+        );
         assert_eq!(
             reopened
                 .get(get(bucket(), "object"), 8)

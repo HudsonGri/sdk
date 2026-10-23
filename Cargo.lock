@@ -350,7 +350,9 @@ dependencies = [
  "acyclic-actors",
  "acyclic-fs",
  "acyclic-grpc-observability",
+ "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-harness-providers",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-machines",
@@ -769,6 +771,7 @@ dependencies = [
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
+ "acyclic-markdown",
  "acyclic-markdown-work",
  "proptest",
  "pulldown-cmark",

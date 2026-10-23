@@ -38,9 +38,9 @@ pub(crate) mod context;
 mod files;
 mod inheritance;
 mod input;
-mod open;
 #[cfg(all(feature = "tui", feature = "native-execution"))]
 mod name_search;
+mod open;
 mod orphans;
 mod owner;
 mod owner_record;

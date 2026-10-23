@@ -188,8 +188,7 @@ impl LocalFileClient {
                 mentions,
             }) if mentions.is_empty() => {
                 let resolution =
-                    acyclic_fs::in_heap(|| self.local.resolve_input(self.operation, &text))
-                        .await?;
+                    acyclic_fs::in_heap(|| self.local.resolve_input(self.operation, &text)).await?;
                 let mut captured = file.clone();
                 captured.bytes = serde_json::to_vec(&resolution)
                     .map_err(|error| Error::Invalid(error.to_string()))?

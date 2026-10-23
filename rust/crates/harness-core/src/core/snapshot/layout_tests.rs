@@ -1,6 +1,6 @@
 use super::*;
-use crate::conversation::ConversationStateWire;
 use crate::HeapLayout;
+use crate::conversation::ConversationStateWire;
 use crate::executor::json::{JsonBounds, JsonValueSchema, admit_json_layout};
 use serde_json::json;
 use std::collections::BTreeSet;

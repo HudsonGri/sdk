@@ -110,7 +110,7 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
             repository: workspace.view().workspace().id(),
             lease: None,
             checkout: None,
-                reserved: &[],
+            reserved: &[],
             author: "test",
             authored_at_seconds: 1,
             read_allowed: &|_| true,

@@ -10,8 +10,12 @@ pub enum Fault {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retry_after: Option<u32>,
     },
-    Reset { prefix: Vec<String> },
-    Malformed { body: String },
+    Reset {
+        prefix: Vec<String>,
+    },
+    Malformed {
+        body: String,
+    },
 }
 
 impl Fault {

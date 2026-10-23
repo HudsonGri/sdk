@@ -9,9 +9,9 @@ use acyclic_fs::{
     LocalFs, LocalObjectBackend, MemoryMergeResolutionCache, MergeDriverRegistry, OperationId,
     OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
     WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
-    apply_git_patch, blame_git_generations, capture_git_compatible_generation,
+    WorkspaceRestore, apply_git_patch, blame_git_generations, capture_git_compatible_generation,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts,
-    git_paths_preserving_reserved, git_restore_paths, WorkspaceRestore, walk_git_tree,
+    git_paths_preserving_reserved, git_restore_paths, walk_git_tree,
 };
 use serde_json::json;
 use std::{

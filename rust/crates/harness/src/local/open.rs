@@ -151,7 +151,8 @@ impl Opening {
             #[cfg(not(all(test, target_os = "macos")))]
             let initialize = true;
             if initialize {
-                acyclic_fs::demand::native::NativeDemandSource::initialize_services().map_err(storage)?;
+                acyclic_fs::demand::native::NativeDemandSource::initialize_services()
+                    .map_err(storage)?;
             }
         }
         #[cfg(feature = "native-execution")]
@@ -277,11 +278,16 @@ impl Opening {
                 let root = checkout
                     .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
                     .root;
-                Some(acyclic_fs::in_heap(|| workspace::open(filesystem, &attach, root, false, state)).await?)
+                Some(
+                    acyclic_fs::in_heap(|| {
+                        workspace::open(filesystem, &attach, root, false, state)
+                    })
+                    .await?,
+                )
             }
-            LocalProject::Volume { .. } => {
-                Some(acyclic_fs::in_heap(|| workspace::open_volume(filesystem, &attach, state)).await?)
-            }
+            LocalProject::Volume { .. } => Some(
+                acyclic_fs::in_heap(|| workspace::open_volume(filesystem, &attach, state)).await?,
+            ),
         };
         Ok(workspace.map(Arc::new))
     }

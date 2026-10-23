@@ -32,8 +32,7 @@ struct CommandResult {
     operation_id: OperationId,
     value: Outcome<ForkReport>,
 }
-impl PreparationRecord for State {
-}
+impl PreparationRecord for State {}
 impl PreparationRecord for CommandResults {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ForkPreparationCommandResults

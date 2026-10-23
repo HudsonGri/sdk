@@ -1,6 +1,9 @@
 use acyclic_fs::MaterializationJournal;
 
-pub(crate) fn verify_decode_with(input: &[u8], measure: impl FnOnce(&mut dyn FnMut()) -> u64) -> bool {
+pub(crate) fn verify_decode_with(
+    input: &[u8],
+    measure: impl FnOnce(&mut dyn FnMut()) -> u64,
+) -> bool {
     let bound = crate::executor::json::layout_reservation::<MaterializationJournal>(input);
     let mut decoded = None;
     let measured = measure(&mut || {

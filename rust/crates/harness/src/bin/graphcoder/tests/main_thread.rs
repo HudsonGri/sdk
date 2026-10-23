@@ -64,14 +64,17 @@ fn catalog(
     address: std::net::SocketAddr,
 ) -> std::io::Result<std::path::PathBuf> {
     let catalog = directory.join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"main-thread": {
-        "adapter": "responses", "authentication": "optional", "base_url": format!("http://{address}"),
-        "models": {"tiny": {"capacity": {"context_tokens": 8192, "output_tokens": 1024},
-            "features": {"tools": true, "images": false}}},
-        "max_event_bytes": 65536,
-        "token_counter": {"path": "count", "adapter": "responses",
-            "response_field": "input_tokens", "framing_tokens": 0}
-    }}))?)?;
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec(&json!({"main-thread": {
+            "adapter": "responses", "authentication": "optional", "base_url": format!("http://{address}"),
+            "models": {"tiny": {"capacity": {"context_tokens": 8192, "output_tokens": 1024},
+                "features": {"tools": true, "images": false}}},
+            "max_event_bytes": 65536,
+            "token_counter": {"path": "count", "adapter": "responses",
+                "response_field": "input_tokens", "framing_tokens": 0}
+        }}))?,
+    )?;
     Ok(catalog)
 }
 

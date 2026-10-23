@@ -219,11 +219,7 @@ fn preparation_status_preserves_bytes_and_errors_without_loading_its_report() {
     assert!(bytes > 4096, "fixture omitted the large fork report");
     assert_eq!(
         pair[0].1,
-        vec![
-            ("read", bytes),
-            ("verify", bytes),
-            ("verify", bytes)
-        ]
+        vec![("read", bytes), ("verify", bytes), ("verify", bytes)]
     );
     no_result_body(&pair[1].1, true);
     std::panic::catch_unwind(|| no_result_body(&pair[0].1, true))

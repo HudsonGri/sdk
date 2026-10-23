@@ -783,11 +783,14 @@ fn inherited_slots_are_pinned_before_pipe_creation() {
     let closed = super::open_null(false).expect("output to close");
     let stale = closed.as_raw_handle();
     drop(closed);
-    let [input, output, error] = super::start::pin_inherited([
-        live.as_raw_handle(), stale, std::ptr::null_mut(),
-    ]).expect("pin inherited slots");
+    let [input, output, error] =
+        super::start::pin_inherited([live.as_raw_handle(), stale, std::ptr::null_mut()])
+            .expect("pin inherited slots");
     let _pipe = super::pipe(true).expect("allocate child pipe after pinning");
     assert!(input.is_some());
-    assert!(output.is_none(), "a closed inherited output acquired a recycled handle");
+    assert!(
+        output.is_none(),
+        "a closed inherited output acquired a recycled handle"
+    );
     assert!(error.is_none());
 }

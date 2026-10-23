@@ -171,32 +171,34 @@ impl CheckoutTools {
                 )
                 .await?;
             }
-            acyclic_fs::in_heap(|| {crate::tools::git::run_with_guard(
-                crate::tools::git::Workspace {
-                    filesystem: &workspace.filesystem,
-                    store: &workspace.store,
-                    view,
-                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
-                        source.destination.as_path()
-                    }),
-                    repository: if source.is_some() {
-                        volume.id()
-                    } else {
-                        workspace.view().workspace().id()
+            acyclic_fs::in_heap(|| {
+                crate::tools::git::run_with_guard(
+                    crate::tools::git::Workspace {
+                        filesystem: &workspace.filesystem,
+                        store: &workspace.store,
+                        view,
+                        root: source.as_ref().map_or(workspace.path.as_path(), |source| {
+                            source.destination.as_path()
+                        }),
+                        repository: if source.is_some() {
+                            volume.id()
+                        } else {
+                            workspace.view().workspace().id()
+                        },
+                        lease: Some(lease.clone()),
+                        checkout: (source.is_none() && workspace.mounted.is_none())
+                            .then_some(workspace.identity),
+                        reserved: &reserved,
+                        author: "LocalHarness",
+                        authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                            .unwrap_or(i64::MAX),
+                        read_allowed: &read_allowed,
+                        search_progress: None,
                     },
-                    lease: Some(lease.clone()),
-                    checkout: (source.is_none() && workspace.mounted.is_none())
-                        .then_some(workspace.identity),
-                    reserved: &reserved,
-                    author: "LocalHarness",
-                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                        .unwrap_or(i64::MAX),
-                    read_allowed: &read_allowed,
-                    search_progress: None,
-                },
-                &parsed.arguments,
-                || async { owner.verify_owner(None)?.await },
-            )})
+                    &parsed.arguments,
+                    || async { owner.verify_owner(None)?.await },
+                )
+            })
             .await
         }
         .await;

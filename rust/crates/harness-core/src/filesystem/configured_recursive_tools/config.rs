@@ -52,8 +52,7 @@ struct Binding {
     scope: Scope,
 }
 impl crate::HeapLayout for ConfiguredRecursiveAuthorityBinding {
-    const LAYOUT: &'static crate::heap_layout::JsonLayout =
-        <Binding as crate::HeapLayout>::LAYOUT;
+    const LAYOUT: &'static crate::heap_layout::JsonLayout = <Binding as crate::HeapLayout>::LAYOUT;
 }
 impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
     fn deserialize<D: serde::Deserializer<'de>>(
@@ -103,7 +102,8 @@ pub struct ConfiguredRecursiveFork {
     #[serde(default)]
     pub result_volume: Option<VolumeRef>,
     /// Canonical child admission.
-    #[serde(deserialize_with = "canonical_admission")] #[heap_layout(as = crate::heap_layout::markers::Canonical<TaskAdmissionRecord>)]
+    #[serde(deserialize_with = "canonical_admission")]
+    #[heap_layout(as = crate::heap_layout::markers::Canonical<TaskAdmissionRecord>)]
     pub admission: TaskAdmissionRecord,
     /// JSON pointer for the child message.
     pub child_message_pointer: String,

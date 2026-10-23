@@ -325,7 +325,10 @@ impl NativeMountAllocationCustody {
         work: &mut DemandWork,
         capture: Option<&super::CaptureTransientCustody>,
     ) -> Result<(), DemandError> {
-        let gauge = self.bytes.as_ref().ok_or(DemandError::NativeMountAdmissionMissing)?;
+        let gauge = self
+            .bytes
+            .as_ref()
+            .ok_or(DemandError::NativeMountAdmissionMissing)?;
         let entry = work
             .roots
             .native_mount_admissions

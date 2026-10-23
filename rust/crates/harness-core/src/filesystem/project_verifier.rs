@@ -51,8 +51,7 @@ impl UploadRecord for JoinCommitWitness {
     }
 }
 
-impl fork_preparer_io::PreparationRecord for JoinCommitWitness {
-}
+impl fork_preparer_io::PreparationRecord for JoinCommitWitness {}
 
 impl<A, O> ProjectMergeVerifier for FilesystemProjectMergeVerifier<A, O>
 where

@@ -81,7 +81,8 @@ mod native {
         T: Send + 'static,
     {
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        let task = tokio::task::spawn_blocking(move || tracing::dispatcher::with_default(&dispatch, work));
+        let task =
+            tokio::task::spawn_blocking(move || tracing::dispatcher::with_default(&dispatch, work));
         async move { task.await.map_err(super::join_error) }
     }
 }

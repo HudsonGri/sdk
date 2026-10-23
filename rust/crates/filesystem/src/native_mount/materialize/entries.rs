@@ -246,7 +246,9 @@ where
                             Some(meter),
                         )
                         .map_err(|error| receipt.runtime_error(error))?;
-                    control.await.map_err(|error| receipt.runtime_error(error))?;
+                    control
+                        .await
+                        .map_err(|error| receipt.runtime_error(error))?;
                     generation_action(
                         receipt.custody.work(),
                         before_effect,

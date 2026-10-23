@@ -238,10 +238,7 @@ where
         plan: LocalJoinPlan,
         source: &LocalWorkspace,
         options: ApplyOptions,
-    ) -> crate::Result<(
-        LocalJoinPlan,
-        LocalJoinOutcome,
-    )> {
+    ) -> crate::Result<(LocalJoinPlan, LocalJoinOutcome)> {
         let initial =
             acyclic_fs::in_heap(|| plan.apply(options, BTreeMap::new(), self.permit)).await?;
         Ok(match initial {
@@ -298,8 +295,8 @@ where
             )
         })
         .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| Error::from(failure.error))?;
+        .map(|receipt| receipt.value)
+        .map_err(|failure| Error::from(failure.error))?;
         // The joined source's authored files enter history like any capture:
         // newly published eligible paths become tracked, not only the union of
         // the two branches' previously committed paths.
@@ -431,22 +428,19 @@ where
         generation: acyclic_fs::GenerationId,
     ) -> crate::Result<LocalGeneration> {
         let cancellation = CancellationToken::new();
-        acyclic_fs::in_heap(|| workspace.generation(generation, WorkBudget::UNBOUNDED, &cancellation))
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| Error::from(failure.error))
+        acyclic_fs::in_heap(|| {
+            workspace.generation(generation, WorkBudget::UNBOUNDED, &cancellation)
+        })
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| Error::from(failure.error))
     }
 
     /// Reserved host paths present in either side of a planned join.
-    async fn reserved_in(
-        &self,
-        plan: &LocalJoinPlan,
-    ) -> crate::Result<Vec<String>> {
+    async fn reserved_in(&self, plan: &LocalJoinPlan) -> crate::Result<Vec<String>> {
         let sides = [
-            acyclic_fs::in_heap(|| self.join_generation(plan.source(), plan.source_head()))
-                .await?,
-            acyclic_fs::in_heap(|| self.join_generation(&self.current, plan.target_head()))
-                .await?,
+            acyclic_fs::in_heap(|| self.join_generation(plan.source(), plan.source_head())).await?,
+            acyclic_fs::in_heap(|| self.join_generation(&self.current, plan.target_head())).await?,
         ];
         let cancellation = CancellationToken::new();
         let mut present = Vec::new();

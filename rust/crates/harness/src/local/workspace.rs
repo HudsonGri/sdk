@@ -545,35 +545,45 @@ async fn lazy_view(
         || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
         |workspace| workspace.volume_config(),
     );
-    let source = acyclic_fs::in_heap(|| {held_source(
-        root,
-        config,
-        original.as_ref().map(|state| state.source),
-        native_mounts,
-        &work,
-        &cancellation,
-    )})
+    let source = acyclic_fs::in_heap(|| {
+        held_source(
+            root,
+            config,
+            original.as_ref().map(|state| state.source),
+            native_mounts,
+            &work,
+            &cancellation,
+        )
+    })
     .await?;
     let fresh = original.is_none();
     let view = match selected {
         Some(workspace) if !fresh => {
-            acyclic_fs::in_heap(|| {LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)}).await
+            acyclic_fs::in_heap(|| {
+                LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
+            })
+            .await
         }
         Some(workspace) => {
-            acyclic_fs::in_heap(|| {LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)}).await
+            acyclic_fs::in_heap(|| {
+                LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
+            })
+            .await
         }
-        None => acyclic_fs::in_heap(|| {LazyWorkspace::attach(
-            filesystem,
-            &name,
-            source,
-            store.clone(),
-            acyclic_fs::VolumeInitialization {
-                config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
-            },
-            operation,
-            &mut accounting,
-        )})
+        None => acyclic_fs::in_heap(|| {
+            LazyWorkspace::attach(
+                filesystem,
+                &name,
+                source,
+                store.clone(),
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                    access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+                },
+                operation,
+                &mut accounting,
+            )
+        })
         .await
         .map(|(view, ..)| view),
     }

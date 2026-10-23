@@ -21,10 +21,10 @@ use sync::Mutex as CompletionMutex;
 #[cfg(target_vendor = "apple")]
 mod apple;
 pub mod command;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;

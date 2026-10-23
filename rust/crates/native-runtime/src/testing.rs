@@ -341,7 +341,9 @@ where
     use tracing::instrument::WithSubscriber as _;
     let future = future.with_current_subscriber();
     let Some(context) = Context::current() else {
-        return TaskHandle::native(tokio::spawn(crate::deadline::simulation::inherit_future(future)));
+        return TaskHandle::native(tokio::spawn(crate::deadline::simulation::inherit_future(
+            future,
+        )));
     };
     let active = context.accept("task");
     let owned = active.0.clone();
@@ -397,9 +399,9 @@ where
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        BlockingOwner::Shared(tokio::spawn(crate::deadline::simulation::inherit_future(async move {
-            host_work(crate::run_blocking_io(work, None), None).await
-        })))
+        BlockingOwner::Shared(tokio::spawn(crate::deadline::simulation::inherit_future(
+            async move { host_work(crate::run_blocking_io(work, None), None).await },
+        )))
     } else {
         // Without a simulation this is the production path: Tokio's blocking
         // pool, which a paused Tokio clock observes as outstanding work, so

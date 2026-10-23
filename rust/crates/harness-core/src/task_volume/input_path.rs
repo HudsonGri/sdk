@@ -2,7 +2,9 @@ use super::super::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Canonical command, skill, config or workspace input source path.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InputPath(pub(super) String);

@@ -277,11 +277,15 @@ async fn unsupported_journal_version_is_rejected_without_mutation()
     let limits = LocalStreamLimits::default();
     let path = directory.path().join(JOURNAL_FILE);
     let mut image = encode_header(limits, 0)?;
-    image.first_chunk_mut::<24>().ok_or("fixture header")?
+    image
+        .first_chunk_mut::<24>()
+        .ok_or("fixture header")?
         .copy_from_slice(b"ACYCLIC-STREAM-LOCAL-V1\0");
     std::fs::write(&path, &image)?;
-    assert!(matches!(LocalStream::open(directory.path(), limits).await,
-        Err(LocalStreamError::Corrupt)));
+    assert!(matches!(
+        LocalStream::open(directory.path(), limits).await,
+        Err(LocalStreamError::Corrupt)
+    ));
     assert_eq!(std::fs::read(&path)?, image);
     assert!(!directory.path().join(SNAPSHOT_FILE).exists());
     Ok(())

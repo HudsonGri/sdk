@@ -224,8 +224,12 @@ async fn run_suite(families: &[&str]) -> TestResult {
     let filter = std::env::var("E2E_FILTER").unwrap_or_default();
     for family in families {
         let root = if family.starts_with("scenarios/providers") {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../harness-providers/tests").join(family)
-        } else { root().join(family) };
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../../harness-providers/tests")
+                .join(family)
+        } else {
+            root().join(family)
+        };
         let mut paths = Vec::new();
         scenario_data::discover(&root, &mut paths)?;
         paths.sort();

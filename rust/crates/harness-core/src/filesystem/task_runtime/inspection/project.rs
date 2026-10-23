@@ -181,7 +181,14 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
-        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io, &self.owner_work).await?;
+        Self::finish_verification(
+            &self.workspace,
+            &self.owner,
+            &view.0,
+            &self.io,
+            &self.owner_work,
+        )
+        .await?;
         original.remaining()?;
         self.io
             .cancellation()
@@ -249,7 +256,14 @@ where
             &self.io,
         )
         .await?;
-        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io, &self.owner_work).await
+        Self::finish_verification(
+            &self.workspace,
+            &self.owner,
+            &view.0,
+            &self.io,
+            &self.owner_work,
+        )
+        .await
     }
 
     async fn verify_owner(

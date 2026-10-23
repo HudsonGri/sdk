@@ -43,7 +43,8 @@ async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result
 }
 
 #[tokio::test]
-async fn cold_history_reader_bounds_pages_across_checkpoints_without_reducer_restore() -> Result<()> {
+async fn cold_history_reader_bounds_pages_across_checkpoints_without_reducer_restore() -> Result<()>
+{
     const EVENTS: u64 = 2 * DEFAULT_PROJECTION_EVENTS as u64 + 2;
     let client = projection_fixture(EVENTS).await?;
     let mut writer = with_content(&client).await?;

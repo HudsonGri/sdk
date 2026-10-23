@@ -248,87 +248,78 @@ fn serve_on_with_resources<P: StreamProvider + ?Sized>(
 
 impl<P: StreamProvider + ?Sized> Session<P> {
     async fn next_frame(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
-            loop {
-                self.fence_changed()?;
-                if let Some(frame) = self.controls.pop_front() {
-                    return Ok(Some(frame));
-                }
-                if let Some(frame) = self.ready()? {
-                    return Ok(Some(frame));
-                }
-                if self.sources.is_empty() && self.terminals.is_empty() {
-                    let changed = self
-                        .authority
-                        .changed(self.trust_revision, self.deadline);
-                    let input =
-                        match future::select(self.incoming.next(), Box::pin(changed)).await {
-                            future::Either::Left((input, _)) => Some(input),
-                            future::Either::Right(((), pending)) => {
-                                drop(pending);
-                                None
-                            }
-                        };
-                    match input {
-                        Some(Some(frame)) => self.receive(frame?)?,
-                        Some(None) => return Ok(None),
-                        None => self.revalidate(None)?,
-                    }
-                    continue;
-                }
-                // Alternate deterministic priority. This bounds ready-side work
-                // and lets the model explore the actual wakeup path without RNG.
-                let input = self.incoming.next();
-                let room = policy::room(
-                    self.limits.pending_frames,
-                    self.limits.pending_bytes,
-                    self.pending_frames,
-                    self.pending_bytes,
-                    DATA_FRAME_BYTES,
-                    self.credit.frames > 0 && self.credit.bytes > 0,
-                );
-                let source = self
-                    .sources
-                    .next_with_control(&mut self.terminals, room);
-                let changed = Box::pin(
-                    self
-                        .authority
-                        .changed(self.trust_revision, self.deadline),
-                );
-                let event = async {
-                    if self.prefer_control {
-                        match future::select(input, source).await {
-                            future::Either::Left((input, _)) => future::Either::Left(input),
-                            future::Either::Right((source, _)) => future::Either::Right(source),
-                        }
-                    } else {
-                        match future::select(source, input).await {
-                            future::Either::Left((source, _)) => future::Either::Right(source),
-                            future::Either::Right((input, _)) => future::Either::Left(input),
-                        }
-                    }
-                };
-                let event = match future::select(Box::pin(event), changed).await {
-                    future::Either::Left((event, _)) => Some(event),
+        loop {
+            self.fence_changed()?;
+            if let Some(frame) = self.controls.pop_front() {
+                return Ok(Some(frame));
+            }
+            if let Some(frame) = self.ready()? {
+                return Ok(Some(frame));
+            }
+            if self.sources.is_empty() && self.terminals.is_empty() {
+                let changed = self.authority.changed(self.trust_revision, self.deadline);
+                let input = match future::select(self.incoming.next(), Box::pin(changed)).await {
+                    future::Either::Left((input, _)) => Some(input),
                     future::Either::Right(((), pending)) => {
                         drop(pending);
                         None
                     }
                 };
-                let Some(event) = event else {
-                    self.revalidate(None)?;
-                    continue;
-                };
-                self.prefer_control = !self.prefer_control;
-                match event {
-                    future::Either::Left(Some(frame)) => self.receive(frame?)?,
-                    future::Either::Left(None) => return Ok(None),
-                    future::Either::Right(source) => {
-                        if let Some((channel, event)) = source? {
-                            self.record(channel, event)?;
-                        }
+                match input {
+                    Some(Some(frame)) => self.receive(frame?)?,
+                    Some(None) => return Ok(None),
+                    None => self.revalidate(None)?,
+                }
+                continue;
+            }
+            // Alternate deterministic priority. This bounds ready-side work
+            // and lets the model explore the actual wakeup path without RNG.
+            let input = self.incoming.next();
+            let room = policy::room(
+                self.limits.pending_frames,
+                self.limits.pending_bytes,
+                self.pending_frames,
+                self.pending_bytes,
+                DATA_FRAME_BYTES,
+                self.credit.frames > 0 && self.credit.bytes > 0,
+            );
+            let source = self.sources.next_with_control(&mut self.terminals, room);
+            let changed = Box::pin(self.authority.changed(self.trust_revision, self.deadline));
+            let event = async {
+                if self.prefer_control {
+                    match future::select(input, source).await {
+                        future::Either::Left((input, _)) => future::Either::Left(input),
+                        future::Either::Right((source, _)) => future::Either::Right(source),
+                    }
+                } else {
+                    match future::select(source, input).await {
+                        future::Either::Left((source, _)) => future::Either::Right(source),
+                        future::Either::Right((input, _)) => future::Either::Left(input),
+                    }
+                }
+            };
+            let event = match future::select(Box::pin(event), changed).await {
+                future::Either::Left((event, _)) => Some(event),
+                future::Either::Right(((), pending)) => {
+                    drop(pending);
+                    None
+                }
+            };
+            let Some(event) = event else {
+                self.revalidate(None)?;
+                continue;
+            };
+            self.prefer_control = !self.prefer_control;
+            match event {
+                future::Either::Left(Some(frame)) => self.receive(frame?)?,
+                future::Either::Left(None) => return Ok(None),
+                future::Either::Right(source) => {
+                    if let Some((channel, event)) = source? {
+                        self.record(channel, event)?;
                     }
                 }
             }
+        }
     }
 }
 

@@ -225,7 +225,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 let bytes = Bytes::copy_from_slice(text.as_bytes());
                 // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
                 crate::heap_future::in_heap_unmetered(|| {
-                    volume.fs.stage_merge_regular_record(volume, template, bytes)
+                    volume
+                        .fs
+                        .stage_merge_regular_record(volume, template, bytes)
                 })
                 .await?
             }
@@ -233,7 +235,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 let bytes = Bytes::copy_from_slice(bytes);
                 // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
                 crate::heap_future::in_heap_unmetered(|| {
-                    volume.fs.stage_merge_regular_record(volume, template, bytes)
+                    volume
+                        .fs
+                        .stage_merge_regular_record(volume, template, bytes)
                 })
                 .await?
             }

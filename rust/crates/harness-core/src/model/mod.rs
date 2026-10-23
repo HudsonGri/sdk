@@ -89,7 +89,8 @@ pub struct Model {
     pub revision: String,
     /// Provider-specific options.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-    #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub options: Value,
 }
 impl Model {

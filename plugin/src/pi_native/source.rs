@@ -1,6 +1,8 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout,
+)]
 #[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiNativeSourceMode {

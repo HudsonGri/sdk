@@ -25,7 +25,9 @@ pub struct SendInput {
 }
 
 /// Which requested children must settle before wait returns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, crate::HeapLayout,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum WaitMode {
     /// Return when any requested child settles.

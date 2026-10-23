@@ -83,7 +83,9 @@ pub(super) fn pin_inherited(mut slots: [HANDLE; 3]) -> io::Result<[Option<OwnedH
         }
         let mut flags = 0;
         // SAFETY: queries a raw value without taking ownership or allocating.
-        if unsafe { windows_sys::Win32::Foundation::GetHandleInformation(*slot, &raw mut flags) } == 0 {
+        if unsafe { windows_sys::Win32::Foundation::GetHandleInformation(*slot, &raw mut flags) }
+            == 0
+        {
             let error = io::Error::last_os_error();
             if error.raw_os_error() != Some(ERROR_INVALID_HANDLE.cast_signed()) {
                 return Err(error);
@@ -92,7 +94,11 @@ pub(super) fn pin_inherited(mut slots: [HANDLE; 3]) -> io::Result<[Option<OwnedH
         }
     }
     let [input, output, error] = slots;
-    Ok([inheritable(input)?, inheritable(output)?, inheritable(error)?])
+    Ok([
+        inheritable(input)?,
+        inheritable(output)?,
+        inheritable(error)?,
+    ])
 }
 
 /// An initialized attribute list holding one handle list.

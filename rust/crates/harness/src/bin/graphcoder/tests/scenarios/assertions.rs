@@ -23,8 +23,10 @@ pub fn output(
 ) -> TestResult<Vec<Value>> {
     let indeterminate =
         case["expect"]["outcome"] == "indeterminate" || case["expect"]["indeterminate"] == true;
-    let expected_code = case["expect"]["exit"].as_i64()
-        .unwrap_or(if indeterminate { 4 } else { 0 });
+    let expected_code =
+        case["expect"]["exit"]
+            .as_i64()
+            .unwrap_or(if indeterminate { 4 } else { 0 });
     if output.status.code().map(i64::from) != Some(expected_code) {
         return Err(format!(
             "exit {:?}, expected {expected_code}\nstdout: {}\nstderr: {}",

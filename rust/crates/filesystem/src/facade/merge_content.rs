@@ -137,45 +137,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         // their own, so this frame holds neither.
         // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
         let cancellation = CancellationToken::new();
-        let blob = crate::heap_future::in_heap_unmetered(|| build_blob(
-            &self.inner.objects,
-            &mut source,
-            BlobBuildOptions {
-                chunk_bytes: u32::try_from(
-                    workspace
-                        .config
-                        .limits
-                        .maximum_object_bytes
-                        .min(1024 * 1024),
-                )
-                .unwrap_or(u32::MAX)
-                .max(1),
-                page_items: workspace.config.limits.maximum_directory_page_entries,
-                page_bytes: u32::try_from(workspace.config.limits.maximum_object_bytes)
+        let blob = crate::heap_future::in_heap_unmetered(|| {
+            build_blob(
+                &self.inner.objects,
+                &mut source,
+                BlobBuildOptions {
+                    chunk_bytes: u32::try_from(
+                        workspace
+                            .config
+                            .limits
+                            .maximum_object_bytes
+                            .min(1024 * 1024),
+                    )
                     .unwrap_or(u32::MAX)
                     .max(1),
-                maximum_blob_bytes,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+                    page_items: workspace.config.limits.maximum_directory_page_entries,
+                    page_bytes: u32::try_from(workspace.config.limits.maximum_object_bytes)
+                        .unwrap_or(u32::MAX)
+                        .max(1),
+                    maximum_blob_bytes,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+        })
         .await
         .map_err(WorkspaceError::engine)?;
-        let empty = FilePayload::InlineRegular(InlineFileData::new(&[]).map_err(WorkspaceError::engine)?);
+        let empty =
+            FilePayload::InlineRegular(InlineFileData::new(&[]).map_err(WorkspaceError::engine)?);
         // Unmetered: conflict staging runs on unbounded budgets and holds no work ledger.
-        let payload = crate::heap_future::in_heap_unmetered(|| apply_regular_mutation_async(
-            &self.inner.objects,
-            empty,
-            RegularMutation::Write {
-                offset: 0,
-                length: blob.logical_bytes,
-                content: blob.root,
-                content_offset: 0,
-            },
-            workspace.config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        let payload = crate::heap_future::in_heap_unmetered(|| {
+            apply_regular_mutation_async(
+                &self.inner.objects,
+                empty,
+                RegularMutation::Write {
+                    offset: 0,
+                    length: blob.logical_bytes,
+                    content: blob.root,
+                    content_offset: 0,
+                },
+                workspace.config,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+        })
         .await
         .map_err(WorkspaceError::engine)?;
         record.payload = payload.payload;

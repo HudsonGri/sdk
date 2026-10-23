@@ -164,7 +164,16 @@ macro_rules! uuid_id {
     ($name:ident, $description:literal) => {
         #[doc = $description]
         #[derive(
-            Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+            Clone,
+            Copy,
+            Debug,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
+            Deserialize,
             crate::HeapLayout,
         )]
         #[serde(transparent)]
@@ -233,7 +242,9 @@ uuid_id!(
 uuid_id!(InteractionId, "Identity of one typed open interaction.");
 
 /// Caller-selected identity used to reconcile uncertain admission.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(transparent)]
 pub struct IdempotencyKey(pub String);
 crate::core::ownership::owned_tuple!(IdempotencyKey, (value));
@@ -477,7 +488,9 @@ pub struct AuthorityPolicy {
 }
 
 /// Ordered authority-resolution level from the runtime root to one invocation.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(all(feature = "wasm", target_arch = "wasm32"), derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityLevel {

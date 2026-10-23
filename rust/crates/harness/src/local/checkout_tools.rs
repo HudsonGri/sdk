@@ -20,8 +20,8 @@ mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
-pub(super) mod shell;
 mod search;
+pub(super) mod shell;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -431,16 +431,18 @@ impl ToolExecutor for CheckoutTools {
             };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            acyclic_fs::in_heap(|| {self.run_checkout_command(
-                PreparedCommand {
-                    invocation,
-                    shell,
-                    fs,
-                    request,
-                    maximum,
-                },
-                context,
-            )})
+            acyclic_fs::in_heap(|| {
+                self.run_checkout_command(
+                    PreparedCommand {
+                        invocation,
+                        shell,
+                        fs,
+                        request,
+                        maximum,
+                    },
+                    context,
+                )
+            })
             .await
         })
     }
