@@ -11,7 +11,7 @@ impl StockExecution<'_> {
     ) -> Result<(
         ResponseProjection,
         Option<ContextAccounting>,
-        Option<crate::model::PreparedModelRequest>,
+        crate::model::PreparedModelRequest,
     )> {
         let base = self
             .canonical_base(journal, input, step, prior_messages)
@@ -31,29 +31,21 @@ impl StockExecution<'_> {
             None
         };
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let (projection, accounting, prepared) = if let Some(capacity) = self.model_capacity()? {
-            let (mut projection, prepared) = self
-                .prepare_transformed_request(&context_input, base)
-                .await?;
+        let (mut projection, prepared) = self
+            .prepare_transformed_request(&context_input, base)
+            .await?;
+        let accounting = if let Some(capacity) = self.model_capacity()? {
             let count =
                 stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
-            if self.io.is_none() {
-                projection.messages =
-                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
-            }
-            (
-                projection,
-                Some(ContextAccounting { capacity, count }),
-                Some(prepared),
-            )
+            Some(ContextAccounting { capacity, count })
         } else {
-            (
-                self.transform_projection(&context_input, base).await?,
-                None,
-                None,
-            )
+            None
         };
+        if self.io.is_none() {
+            projection.messages =
+                crate::model::clone_messages(&prepared.request().messages, self.io)?;
+        }
         let projection = ResponseProjection {
             context: projection,
             canonical,
@@ -62,11 +54,18 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
-        let reference = stage_json(
+        let request_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("model:{step}:request"), work)
+        })?;
+        let request = self
+            .stage_response_request(journal, input, step, &request_key, &prepared)
+            .await?;
+        let reference = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             &projection,
+            &request,
             self.io,
         )
         .await?;
@@ -136,7 +135,7 @@ impl StockExecution<'_> {
                 "response projection was prepared more than once",
             ));
         }
-        let (mut projection, accounting, prepared) = match first {
+        let (projection, accounting, prepared) = match first {
             None => {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
@@ -144,28 +143,26 @@ impl StockExecution<'_> {
                 self.capture_response(journal, input, step, prior_messages, tail)
                     .await?
             }
-            Some((reference, accounting)) => (
-                retain_preparation(
-                    load_json::<ResponseProjection>(journal, reference, self.io).await?,
-                )?,
-                match accounting {
+            Some((reference, accounting)) => {
+                let (projection, prepared) = retain_preparation(
+                    transcript::load_prepared_projection(
+                        journal,
+                        reference,
+                        self.stock.limits,
+                        self.io,
+                    )
+                    .await?,
+                )?;
+                self.validate_response_request(&prepared)?;
+                let accounting = match accounting {
                     Some(reference) => Some(retain_preparation(
                         load_json::<ContextAccounting>(journal, reference, self.io).await?,
                     )?),
                     None => None,
-                },
-                None,
-            ),
+                };
+                (projection, accounting, prepared)
+            }
         };
-        // Fresh projections were validated before their exact request was
-        // encoded. Retained projections still cross the storage boundary.
-        if prepared.is_none() {
-            crate::context::validate_projected_context(
-                &projection.context,
-                self.stock.limits,
-                self.io,
-            )?;
-        }
         if projection.checkpoint.is_some() {
             return Err(stock_boundary(
                 self.io,
@@ -180,20 +177,6 @@ impl StockExecution<'_> {
                 "prepared response projection differs from its request",
             ));
         }
-        let prepared = match prepared {
-            Some(prepared) => prepared,
-            None => {
-                let request = if matches!(
-                    self.compaction_policy()?,
-                    crate::context::CompactionPolicy::Disabled
-                ) {
-                    self.request_taking_context(&mut projection.context)?
-                } else {
-                    self.request_from_context(&projection.context)?
-                };
-                crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?
-            }
-        };
         self.resolve_response_accounting(
             journal,
             (input, step),
@@ -231,9 +214,11 @@ impl StockExecution<'_> {
             ));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let mut retained = retain_preparation(
-                load_json::<ResponseProjection>(journal, retained, self.io).await?,
+            let (retained, request) = retain_preparation(
+                transcript::load_prepared_projection(journal, retained, self.stock.limits, self.io)
+                    .await?,
             )?;
+            self.validate_response_request(&request)?;
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
             )?;
@@ -274,11 +259,6 @@ impl StockExecution<'_> {
                     "compacted context differs from its admission",
                 ));
             }
-            let request = crate::model::PreparedModelRequest::prepare(
-                self.request_taking_context(&mut retained.context)?,
-                self.stock.limits,
-                self.io,
-            )?;
             if policy.needs_compaction(
                 final_accounting.capacity,
                 with_history_io(self.io, |work| {

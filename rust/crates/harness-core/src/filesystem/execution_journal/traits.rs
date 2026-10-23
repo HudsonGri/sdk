@@ -280,6 +280,35 @@ where
         })
     }
 
+    fn stage_prepared_model_request<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        prepared: &'a crate::model::PreparedModelRequest,
+        previous: Option<&'a FileRef>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, FileRef>>> {
+        let limits = self
+            .owner
+            .as_ref()
+            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+        if !crate::executor::transcript::limits_admit(prepared.admitted_limits(), limits) {
+            return Ok(None);
+        }
+        crate::conversation::BoundedContentFuture::new(io, || {
+            crate::executor::transcript::stage_attested_request(
+                self,
+                operation,
+                key,
+                prepared,
+                previous,
+                &self.verifier,
+                io,
+            )
+        })
+        .map(Some)
+    }
+
     fn stage<'a>(
         &'a self,
         operation: OperationId,

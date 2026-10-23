@@ -52,6 +52,8 @@ mod replay;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod replay_capacity_tests;
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod request_segments_tests;
 mod router;
 mod selected;
 mod step_index;

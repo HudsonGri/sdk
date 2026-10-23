@@ -125,6 +125,19 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>;
 
+    /// Stages an admitted request with an authenticated incremental prefix.
+    /// Providers without this capability return `None` before allocating.
+    fn stage_prepared_model_request<'a>(
+        &'a self,
+        _operation: OperationId,
+        _key: &'a str,
+        _prepared: &'a crate::model::PreparedModelRequest,
+        _previous: Option<&'a FileRef>,
+        _io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, FileRef>>> {
+        Ok(None)
+    }
+
     /// Observes an already staged immutable payload by its original operation and retry key.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn staged_ref_with_native_work<'a>(

@@ -56,6 +56,7 @@ pub(crate) use fork_preparer::bounded_io::native_decoded;
 pub(crate) use fork_preparer::bounded_io::{
     DecodeReservation, preparation_slot_bytes, retain_decoded,
 };
+pub(crate) use fork_preparer_io::PreparationScope;
 use fork_preparer_io::decode_record;
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};

@@ -490,7 +490,25 @@ impl AuthorityVerifier {
         digest: [u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let domain = b"harness/v1/execution-index-checkpoint\0";
+        self.checkpoint_proof(b"harness/v1/execution-index-checkpoint\0", digest, work)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn model_request_proof(
+        &self,
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        self.checkpoint_proof(b"harness/v1/model-request-checkpoint\0", digest, work)
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn checkpoint_proof(
+        &self,
+        domain: &[u8],
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 32]> {
         if let Some(work) = work.as_deref_mut() {
             work.hashed_bytes(crate::core::owned_sum([
                 domain.len() as u64,

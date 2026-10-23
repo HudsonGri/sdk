@@ -269,15 +269,31 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let reference = stage_bytes(
-            journal,
-            input.operation_id,
-            &request_key,
-            request.bytes(),
-            true,
-            io,
-        )
-        .await?;
+        let projection = if purpose == ModelPurpose::Response {
+            current.iter().rev().find_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared { projection, .. }
+                | ExecutionEvent::ContextCompacted { projection, .. } => Some(projection),
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let reference = match projection {
+            Some(projection) => {
+                transcript::projection_request(journal, projection, request_digest, io).await?
+            }
+            None => {
+                transcript::stage_request(
+                    journal,
+                    input.operation_id,
+                    &request_key,
+                    request,
+                    None,
+                    io,
+                )
+                .await?
+            }
+        };
         self.claim_task_model(dispatch).await?;
         match journal
             .append_if_tail(

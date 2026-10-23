@@ -55,6 +55,8 @@ mod record_index;
 mod records;
 mod request;
 mod response;
+pub(crate) mod transcript;
+pub(crate) use transcript::load_projection as load_response_projection;
 mod summary;
 mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]

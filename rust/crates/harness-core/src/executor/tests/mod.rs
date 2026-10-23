@@ -369,6 +369,7 @@ struct Journal(
     AtomicUsize,
     ExecutionClaims,
     AtomicUsize,
+    Option<crate::core::AuthorityVerifier>,
 );
 
 impl Journal {
@@ -430,6 +431,26 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn stage_prepared_model_request<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        prepared: &'a crate::model::PreparedModelRequest,
+        previous: Option<&'a FileRef>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, FileRef>>> {
+        self.8
+            .as_ref()
+            .map(|verifier| {
+                crate::conversation::BoundedContentFuture::new(io, || {
+                    crate::executor::transcript::stage_attested_request(
+                        self, operation, key, prepared, previous, verifier, io,
+                    )
+                })
+            })
+            .transpose()
+    }
+
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,
@@ -747,6 +768,7 @@ mod tool_hooks;
 mod tool_metadata;
 mod tools_1;
 mod tools_2;
+mod transcript_delta;
 mod turn_cost;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,

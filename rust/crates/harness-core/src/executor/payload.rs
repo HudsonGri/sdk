@@ -49,6 +49,9 @@ pub(crate) async fn load_model_request(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
+    if reference.descriptor().media_type() == super::transcript::REQUEST_MEDIA {
+        return super::transcript::load_request(journal, reference, limits, io).await;
+    }
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;

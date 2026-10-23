@@ -245,8 +245,32 @@ where
                         .as_ref()
                         .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
                     let before = io.map(PreparationIo::owned_bytes).transpose()?;
+                    if reference.descriptor().media_type()
+                        == crate::executor::transcript::REQUEST_MEDIA
+                    {
+                        let scope = crate::filesystem::PreparationScope::new(io)?;
+                        let manifest = crate::executor::retain_preparation(decode_json::<
+                            crate::executor::transcript::RequestManifest,
+                        >(
+                            bytes, scope.io()
+                        )?)?;
+                        if manifest.authenticates(
+                            &self.verifier,
+                            limits,
+                            *request_digest,
+                            scope.io(),
+                        )? {
+                            continue;
+                        }
+                    }
                     let _prepared_hold;
-                    let prepared = crate::model::PreparedModelRequest::decode(bytes, limits, io)?;
+                    let prepared = if reference.descriptor().media_type()
+                        == crate::executor::transcript::REQUEST_MEDIA
+                    {
+                        crate::executor::load_model_request(self, reference, limits, io).await?
+                    } else {
+                        crate::model::PreparedModelRequest::decode(bytes, limits, io)?
+                    };
                     _prepared_hold = match (io, before) {
                         (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                         _ => None,

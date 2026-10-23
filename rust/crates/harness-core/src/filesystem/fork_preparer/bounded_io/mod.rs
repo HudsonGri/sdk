@@ -15,7 +15,9 @@ mod codec_properties;
 mod history;
 mod quota;
 mod records;
+mod scope;
 mod sdk;
+pub(crate) use scope::PreparationScope;
 #[cfg(test)]
 mod tests;
 pub(in crate::filesystem) use codec::decode_record;

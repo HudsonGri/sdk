@@ -27,8 +27,7 @@ where
         };
         crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
         let projection =
-            crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection, io)
-                .await?;
+            crate::executor::load_response_projection(self, projection, limits, io).await?;
         crate::context::validate_projected_context(&projection.0.context, limits, io)?;
         let Some(reference) = &projection.0.checkpoint else {
             if projection.0.canonical.is_some() {
@@ -328,10 +327,8 @@ where
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
                         prepared = Some(
-                            crate::executor::load_json::<crate::executor::ResponseProjection>(
-                                self, projection, io,
-                            )
-                            .await?,
+                            crate::executor::load_response_projection(self, projection, limits, io)
+                                .await?,
                         );
                     }
                     ExecutionEvent::ModelStarted {

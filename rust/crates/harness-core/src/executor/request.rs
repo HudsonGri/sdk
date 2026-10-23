@@ -133,6 +133,7 @@ impl StockExecution<'_> {
         ContextPipeline::continue_base(retained, delta, self.stock.limits, self.io)
     }
 
+    #[cfg(test)]
     pub(super) async fn transform_projection(
         &self,
         input: &ContextInput,
@@ -220,6 +221,7 @@ impl StockExecution<'_> {
         self.request_from_messages(crate::model::clone_messages(&context.messages, self.io)?)
     }
 
+    #[cfg(test)]
     pub(super) fn request_taking_context(
         &self,
         context: &mut crate::context::Context,
@@ -234,9 +236,23 @@ impl StockExecution<'_> {
         &self,
         messages: Vec<ModelMessage>,
     ) -> Result<ModelRequest> {
+        let tools_required = self.request_tools_required(&messages)?;
+        Ok(ModelRequest {
+            model: crate::model::clone_model(&self.stock.model, self.io)?,
+            messages,
+            tools: if tools_required {
+                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
+            } else {
+                Vec::new()
+            },
+            max_output_tokens: self.output_budget()?,
+        })
+    }
+
+    fn request_tools_required(&self, messages: &[ModelMessage]) -> Result<bool> {
         let mut tools_required = self.summary.is_none();
         if !tools_required {
-            for message in &messages {
+            for message in messages {
                 crate::model::charge_items(self.io, 1)?;
                 for part in message.content.parts() {
                     crate::model::charge_items(self.io, 1)?;
@@ -250,16 +266,36 @@ impl StockExecution<'_> {
                 }
             }
         }
-        Ok(ModelRequest {
-            model: crate::model::clone_model(&self.stock.model, self.io)?,
-            messages,
-            tools: if tools_required {
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
-            } else {
-                Vec::new()
-            },
-            max_output_tokens: self.output_budget()?,
-        })
+        Ok(tools_required)
+    }
+
+    pub(super) fn validate_response_request(
+        &self,
+        prepared: &crate::model::PreparedModelRequest,
+    ) -> Result<()> {
+        let request = prepared.request();
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::new(self.io)?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
+        let tools = if self.request_tools_required(&request.messages)? {
+            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?
+        } else {
+            Vec::new()
+        };
+        if request.model != self.stock.model
+            || request.tools != tools
+            || request.max_output_tokens != self.output_budget()?
+        {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Storage,
+                "retained response request differs from selected model or tools",
+            ));
+        }
+        Ok(())
     }
 }
 

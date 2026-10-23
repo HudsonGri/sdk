@@ -67,7 +67,7 @@ pub async fn canonical_checkpoint_for_operation(
         ));
     };
     validate_checkpoint_json_reference(projection, limits, io)?;
-    let projection = load_json::<ResponseProjection>(journal, projection, io).await?;
+    let projection = load_response_projection(journal, projection, limits, io).await?;
     crate::context::validate_projected_context(&projection.0.context, limits, io)?;
     let Some(reference) = projection.0.checkpoint.as_ref() else {
         if projection.0.canonical.is_some() {

@@ -216,18 +216,26 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        compacted: &ResponseProjection,
+        compacted: (&ResponseProjection, &crate::model::PreparedModelRequest),
         compaction: FileRef,
         accounting: &ContextAccounting,
     ) -> Result<()> {
+        let (compacted, request) = compacted;
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compacted"), work)
         })?;
-        let projection = stage_json(
+        let request_key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("model:{step}:compacted-request"), work)
+        })?;
+        let request = self
+            .stage_response_request(journal, input, step, &request_key, request)
+            .await?;
+        let projection = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             compacted,
+            &request,
             self.io,
         )
         .await?;
@@ -299,7 +307,7 @@ impl StockExecution<'_> {
             journal,
             input,
             step,
-            &compacted,
+            (&compacted, &request),
             compaction,
             &ContextAccounting { capacity, count },
         )
