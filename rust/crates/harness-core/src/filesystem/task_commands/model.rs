@@ -23,10 +23,17 @@ where
         let io = invocation.io;
         let reconciliation_only = invocation.reconciliation_only;
         let mut phase = crate::executor::DispatchPhase::new();
-        match self
-            .run_model_command(invocation, payload, &mut phase)
-            .await
-        {
+        // Keep execution out of the failure-settlement frame. Preparation and
+        // recovery carry large storage futures, while settlement needs only the
+        // dispatch capability. The bounded allocation also retains native IO
+        // custody rather than adding an unaccounted executor allocation.
+        let result = match BoundedContentFuture::new(io, || {
+            self.run_model_command(invocation, payload, &mut phase)
+        }) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        match result {
             Err(error) if !reconciliation_only && phase.can_fail(&error) => {
                 let (journal, operation) =
                     self.command_journal(task, fence, turn, context, io).await?;
