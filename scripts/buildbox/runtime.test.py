@@ -32,6 +32,7 @@ class RuntimeTests(unittest.TestCase):
         self.temp.cleanup();job.remove_home(self.real_home)
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
+        shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
@@ -212,6 +213,43 @@ sys.stdout.buffer.write(bytes(range(256)))
             with tarfile.open(manifest[0]['archive']) as tar:self.assertEqual(tar.extractfile('test.exe').read(),b'executable')
         finally:
             Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+    def test_cached_target_outputs_export_without_reexporting_old_source_files(self):
+        prefix=Path('/mnt/bb/jobs')/('r21-cached-export-'+str(os.getpid()))
+        Path(str(prefix)+'.t0').touch()
+        target=self.d/'cached-target';target.mkdir()
+        (target/'test.exe').write_bytes(b'cached executable')
+        (self.d/'source.txt').write_text('old source')
+        for path in [target/'test.exe',self.d/'source.txt']:os.utime(path,(1,1))
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/test.exe','source.txt'],'build':False}
+        try:
+            exports.prepare(spec,str(target))
+            self.assertEqual(json.loads(Path(str(prefix)+'.exports/manifest.json').read_text()),[])
+            exports.prepare(spec,str(target),cache_reused=True)
+            manifest=json.loads(Path(str(prefix)+'.exports/manifest.json').read_text())
+            self.assertEqual(len(manifest),1);self.assertTrue(manifest[0]['target'])
+            import tarfile
+            with tarfile.open(manifest[0]['archive']) as tar:
+                self.assertEqual(tar.getnames(),['test.exe'])
+                self.assertEqual(tar.extractfile('test.exe').read(),b'cached executable')
+        finally:
+            Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+
+    def test_export_rejects_an_escaping_symlink_ancestor_and_negative_control(self):
+        prefix=Path('/mnt/bb/jobs')/('r21-export-escape-'+str(os.getpid()))
+        Path(str(prefix)+'.t0').touch()
+        target=self.d/'export-target';target.mkdir()
+        outside=self.d/'outside';outside.mkdir();(outside/'fixture').write_text('outside fixture')
+        (target/'alias').symlink_to(outside,target_is_directory=True)
+        spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/alias/fixture'],'build':True}
+        try:
+            with self.assertRaisesRegex(ValueError,'escapes its base'):exports.prepare(spec,str(target))
+            old=(HERE/'job_exports.py').read_text().replace('if not absolute.resolve().is_relative_to(base.resolve()):raise ValueError("declared output escapes its base")','')
+            namespace={};exec(compile(old,'unguarded-export','exec'),namespace)
+            namespace['prepare'](spec,str(target))
+            self.assertTrue(json.loads(Path(str(prefix)+'.exports/manifest.json').read_text()))
+        finally:
+            Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
+
     def test_failed_export_is_infra_and_does_not_contaminate_stdout(self):
         result,runtime=self.run_job([sys.executable,'-c','print("child output",end="")'],extra={'BB_JOB_EXPORT_SPEC':json.dumps({'prefix':'/invalid','paths':[]})})
         self.assertEqual(result.returncode,224,result.stderr.decode())

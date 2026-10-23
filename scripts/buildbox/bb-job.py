@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+import bb_target_store
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -240,6 +241,7 @@ def run(argv):
             os.environ['RUSTC']='/home/var/bin/bigstack/rustc'
             if os.environ.get('BB_CACHE_DISABLED')=='1':os.environ['RUSTC_WRAPPER']=''
             else:os.environ.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
+        if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
@@ -274,11 +276,20 @@ def run(argv):
                    CARGO_TARGET_DIR=str(job/'target'),GATE_MAIN_TARGET_DIR=str(job/'gate-main'),
                    GATE_FEATURE_TARGET_DIR=str(job/'gate-features'),
                    GATE_WINDOWS_RUNTIME_TARGET_DIR=str(job/'gate-windows'))
+        metadata=json.loads(Path(meta).read_text())
+        # The launcher's existing bind is private and owned by this receipt.
+        # Stable paths keep build-script OUT_DIR and linked artifacts valid.
+        if metadata.get('repo')=='sdk' and bb_target_store.private_target(metadata):
+            env.update(CARGO_TARGET_DIR='/work/target', BB_JOB_TARGET='/work/target',
+                       GATE_MAIN_TARGET_DIR='/work/target/.gate-main',
+                       GATE_FEATURE_TARGET_DIR='/work/target/.gate-features',
+                       GATE_WINDOWS_RUNTIME_TARGET_DIR='/work/target/.gate-windows')
+            runtime['target_root']='/work/target'
         for key in ['HOME','XDG_DATA_HOME','XDG_STATE_HOME','XDG_CACHE_HOME','XDG_CONFIG_HOME','XDG_RUNTIME_DIR','TMPDIR']: Path(env[key]).mkdir(mode=0o700)
         # Targets are job-owned scratch; only the content-addressed compiler
         # cache and installed toolchains persist. Export requested artifacts
         # before deleting the job tree.
-        Path(env['CARGO_TARGET_DIR']).mkdir(mode=0o700)
+        Path(env['CARGO_TARGET_DIR']).mkdir(mode=0o700,exist_ok=True)
         target=Path(env['CARGO_TARGET_DIR'])
         try:
             parts=target.relative_to('/mnt/bb/targets').parts
@@ -312,14 +323,19 @@ def run(argv):
         # Stay in the admission lease's process group. A killed client causes
         # the daemon/receipt watcher to terminate the entire leased group.
         started_cpu=child_cpu(); started_cache_cpu=cache_cpu(server); started_wall=time.monotonic()
+        if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         child=subprocess.Popen(argv,env=env)
         rc=child.wait(); rc=128-rc if rc<0 else rc
+        cache_records=Path(meta+'.target-store.jsonl')
+        if cache_records.exists():
+            runtime['target_store']=[json.loads(line) for line in cache_records.read_text().splitlines() if line]
         runtime['compute']=cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall)
         atomic(runtimefile,runtime)
         if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
             try:
                 from job_exports import prepare
-                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'])
+                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'],
+                        cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224
