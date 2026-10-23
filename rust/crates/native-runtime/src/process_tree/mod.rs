@@ -535,58 +535,47 @@ impl ProcessTree {
     /// means a turn could not be submitted, and the dropped tree cleans
     /// itself up.
     pub async fn capture<H: CaptureHandler>(
-        mut self,
+        self,
         schedule: CaptureSchedule,
         max_bytes: usize,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
-        let start = (|| {
-            if self.output_taken {
-                return Err(ProcessCaptureFailure::before_capture(io::Error::other(
-                    "process output was already collected",
-                )));
-            }
-            let input = input
-                .map(PendingStdin::owned)
-                .transpose()
-                .map_err(ProcessCaptureFailure::before_capture)?;
-            pump::Pump::new(
-                &mut self,
-                schedule,
-                max_bytes,
-                input,
-                None,
-                [Vec::new(), Vec::new()],
-            )
-        })();
-        let mut pump = match start {
-            Ok(pump) => pump,
-            Err(failure) => {
-                // Cleanup of an unstarted capture may block; it runs on the
-                // pool like every other turn.
-                crate::run_blocking_io(move || drop(self), None)?.await?;
-                return Ok(CaptureOutcome {
-                    handler,
-                    result: Err(failure),
-                });
-            }
+        // How many turns a capture takes is OS readiness timing. A simulation
+        // scope sees all of them as one physical submission, so a seeded
+        // replay schedules the same work however the child's output arrives.
+        #[cfg(feature = "test-support")]
+        if crate::testing::Context::current().is_some() {
+            return self
+                .capture_physical(schedule, max_bytes, input, handler)
+                .await;
+        }
+        self.capture_scheduled(schedule, max_bytes, input, handler)
+            .await
+    }
+
+    /// Captures with each turn as one pool job, awaiting readiness between
+    /// them without holding a thread.
+    async fn capture_scheduled<H: CaptureHandler>(
+        self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<CaptureOutcome<H>> {
+        let (mut tree, mut pump, mut handler) = match self
+            .start_capture(schedule, max_bytes, input, handler)
+            .await?
+        {
+            Ok(started) => started,
+            Err(outcome) => return Ok(outcome),
         };
-        let mut tree = self;
-        let mut handler = handler;
         let result = loop {
             let (turned, (returned_tree, returned_pump, returned_handler)) =
                 crate::run_blocking_io(
                     move || {
-                        // A turn calls one callback at a time.
-                        let shared = std::cell::RefCell::new(handler);
-                        let turn = pump.turn(
-                            &mut tree,
-                            &mut || shared.borrow_mut().check(),
-                            &mut |chunk| shared.borrow_mut().observe(chunk),
-                            None,
-                        );
-                        (turn, (tree, pump, shared.into_inner()))
+                        let turn = pump::handled_turn(&mut pump, &mut tree, &mut handler);
+                        (turn, (tree, pump, handler))
                     },
                     None,
                 )?
@@ -612,6 +601,83 @@ impl ProcessTree {
         )?
         .await?;
         Ok(CaptureOutcome { handler, result })
+    }
+
+    /// Captures in one pool job that blocks on readiness between turns.
+    #[cfg(feature = "test-support")]
+    async fn capture_physical<H: CaptureHandler>(
+        self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<CaptureOutcome<H>> {
+        let (mut tree, mut pump, mut handler) = match self
+            .start_capture(schedule, max_bytes, input, handler)
+            .await?
+        {
+            Ok(started) => started,
+            Err(outcome) => return Ok(outcome),
+        };
+        crate::run_blocking_io(
+            move || {
+                let result = loop {
+                    match pump::handled_turn(&mut pump, &mut tree, &mut handler) {
+                        pump::Turn::Done(result) => break result,
+                        pump::Turn::Wait => match pump.arm(&mut tree) {
+                            Ok(wait) => wait.block(),
+                            Err(error) => break Err(error),
+                        },
+                    }
+                };
+                let result = pump.finish(&mut tree, result, None);
+                drop(tree);
+                CaptureOutcome { handler, result }
+            },
+            None,
+        )?
+        .await
+    }
+
+    /// Starts a capture's pump, or cleans up a tree whose capture cannot start.
+    async fn start_capture<H: CaptureHandler>(
+        mut self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<Result<StartedCapture<H>, CaptureOutcome<H>>> {
+        let start = (|| {
+            if self.output_taken {
+                return Err(ProcessCaptureFailure::before_capture(io::Error::other(
+                    "process output was already collected",
+                )));
+            }
+            let input = input
+                .map(PendingStdin::owned)
+                .transpose()
+                .map_err(ProcessCaptureFailure::before_capture)?;
+            pump::Pump::new(
+                &mut self,
+                schedule,
+                max_bytes,
+                input,
+                None,
+                [Vec::new(), Vec::new()],
+            )
+        })();
+        match start {
+            Ok(pump) => Ok(Ok((self, pump, handler))),
+            Err(failure) => {
+                // Cleanup of an unstarted capture may block; it runs on the
+                // pool like every other turn.
+                crate::run_blocking_io(move || drop(self), None)?.await?;
+                Ok(Err(CaptureOutcome {
+                    handler,
+                    result: Err(failure),
+                }))
+            }
+        }
     }
 
     /// Opens this tree's exit source once, before a wait borrows it.
@@ -872,6 +938,9 @@ impl ProcessTree {
         }
     }
 }
+
+/// A tree whose capture started, with its pump and handler.
+type StartedCapture<H> = (ProcessTree, pump::Pump<'static>, H);
 
 /// Reads one chunk; returns whether the pipe produced data or reached EOF, so the caller sleeps only when both pipes are idle.
 impl Drop for ProcessTree {
