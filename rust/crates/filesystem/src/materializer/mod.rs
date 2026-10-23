@@ -57,6 +57,12 @@ mod directories;
 use directories::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod checkout_work;
+#[cfg(all(
+    feature = "local",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
+pub(crate) mod postimage;
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]

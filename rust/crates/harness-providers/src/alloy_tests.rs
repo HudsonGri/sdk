@@ -147,43 +147,55 @@ async fn alloy_preflight_counts_every_member_and_binds_the_maximum_to_the_policy
 }
 
 #[test]
-fn named_alloy_catalog_is_admitted_atomically_with_its_default() {
+fn named_alloy_catalog_is_admitted_atomically_with_its_default() -> Result<()> {
     let (mut registry, _) = registry(&[8192, 4096, 16384, 32768]);
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir().map_err(|error| invalid(error.to_string()))?;
     let path = fixture.path().join("catalog.json");
-    let write = |document: serde_json::Value| {
-        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let write = |document: serde_json::Value| -> Result<()> {
+        let bytes = serde_json::to_vec(&document).map_err(|error| invalid(error.to_string()))?;
+        std::fs::write(&path, bytes).map_err(|error| invalid(error.to_string()))
     };
     write(serde_json::json!({
         "alloys": {"mixed": spec(AlloySelection::RoundRobin)},
         "default_model": "mixed"
-    }));
-    registry.load_catalog(&path).unwrap();
+    }))?;
+    registry.load_catalog(&path)?;
     assert_eq!(registry.default_model(), "mixed");
     write(serde_json::json!({
         "alloys": {"mixed": {"models": ["absent/model"], "select": "first"}},
         "default_model": "mixed"
-    }));
+    }))?;
     assert!(registry.load_catalog(&path).is_err());
     assert_eq!(registry.default_model(), "mixed");
-    assert_eq!(registry.alloys()["mixed"], spec(AlloySelection::RoundRobin));
-    let mut provider = registry.catalog()["anthropic"].as_ref().clone();
+    assert_eq!(
+        registry.alloys().get("mixed"),
+        Some(&spec(AlloySelection::RoundRobin))
+    );
+    let mut provider = registry
+        .catalog()
+        .get("anthropic")
+        .ok_or_else(|| invalid("fixture provider absent"))?
+        .as_ref()
+        .clone();
     provider.models.clear();
     assert!(registry.register("anthropic".into(), provider).is_err());
     assert!(
-        registry.catalog()["anthropic"]
-            .models
-            .contains_key("fixture")
+        registry
+            .catalog()
+            .get("anthropic")
+            .is_some_and(|provider| provider.models.contains_key("fixture"))
     );
-    std::fs::write(&path, br#"{"alloys":{"mixed":{"models":["anthropic/fixture"],"select":"first"},"mixed":{"models":["responses/fixture"],"select":"first"}}}"#).unwrap();
+    std::fs::write(&path, br#"{"alloys":{"mixed":{"models":["anthropic/fixture"],"select":"first"},"mixed":{"models":["responses/fixture"],"select":"first"}}}"#).map_err(|error| invalid(error.to_string()))?;
     assert!(
         registry
             .load_catalog(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate alloy name")
+            .is_err_and(|error| error.to_string().contains("duplicate alloy name"))
     );
-    assert_eq!(registry.alloys()["mixed"], spec(AlloySelection::RoundRobin));
+    assert_eq!(
+        registry.alloys().get("mixed"),
+        Some(&spec(AlloySelection::RoundRobin))
+    );
+    Ok(())
 }
 
 #[test]
@@ -391,7 +403,10 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             selected
         );
         let provider = alloy.select(key);
-        assert_eq!(provider.model().provider, MEMBERS[(ordinal % 4) as usize].0);
+        assert_eq!(
+            Some(provider.model().provider.as_str()),
+            MEMBERS.get((ordinal % 4) as usize).map(|member| member.0)
+        );
         let request = ModelRequest {
             model: provider.model().clone(),
             messages: history.clone(),
@@ -481,8 +496,13 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
                 }
                 ModelEvent::Completed { metadata } => {
                     let member = format!("{}/{}", selected.provider, selected.name);
-                    assert_eq!(metadata["member"], member);
-                    assert!(metadata["members"].get(&member).is_some());
+                    assert_eq!(metadata.get("member"), Some(&json!(member)));
+                    assert!(
+                        metadata
+                            .get("members")
+                            .and_then(|members| members.get(&member))
+                            .is_some()
+                    );
                     acyclic_harness_core::model::accumulate_usage(&mut usage, metadata)?;
                     continue;
                 }
@@ -502,7 +522,13 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         });
     }
     assert_eq!(transport.sent.lock().unwrap().len(), 5);
-    assert_eq!(usage["members"].as_object().unwrap().len(), 4);
+    assert_eq!(
+        usage
+            .get("members")
+            .and_then(Value::as_object)
+            .map(serde_json::Map::len),
+        Some(4)
+    );
     Ok(())
 }
 

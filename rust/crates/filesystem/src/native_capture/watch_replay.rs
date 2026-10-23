@@ -352,6 +352,7 @@ pub async fn capture_watch_batch<
             source_root: &source_root,
             watch_epoch: Some(epoch),
             baseline: None,
+            policy,
             maximum_extent_spans: options.maximum_extent_spans,
             meter,
             host_links: Vec::new(),

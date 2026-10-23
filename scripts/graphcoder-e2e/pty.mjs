@@ -29,9 +29,11 @@ export function matches(screen, raw, condition) {
 export async function pty(processes, binary, fixture, input, capture) {
   let program, args;
   if (process.platform === "win32") {
-    assert.ok(process.env.E2E_CONPTY_HOST, "precompile prepare-conpty.ps1 -Executable and set E2E_CONPTY_HOST");
+    assert.ok(process.env.E2E_CONPTY_HOST, "set E2E_CONPTY_HOST to the bb2-built ConPTY executable");
     program = process.env.E2E_CONPTY_HOST;
-    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, "e2e/tiny", "8000", input.resume ? "resume" : "fresh"];
+    const modelOption = fixture.args.indexOf("--model");
+    const model = modelOption < 0 ? "" : fixture.args[modelOption + 1];
+    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, model, "8000", input.resume ? "resume" : "fresh"];
   } else {
     // Python sets the controlling terminal on Linux and macOS and exposes a
     // kill signal targeting the executable, so wrapper death cannot fake SIGKILL.

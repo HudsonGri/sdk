@@ -9,7 +9,7 @@ pub(super) async fn capture_observed_paths_from_root<
     batch_size: usize,
     maximum_extent_spans: u32,
     source_root: &HostRoot,
-    baseline: Option<&NativeViewBaseline>,
+    attribution: (Option<&NativeViewBaseline>, &CapturePolicy),
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
@@ -18,7 +18,8 @@ pub(super) async fn capture_observed_paths_from_root<
     let mut batch = CaptureBatch {
         source_root,
         watch_epoch: None,
-        baseline,
+        baseline: attribution.0,
+        policy: attribution.1,
         maximum_extent_spans,
         meter,
         host_links: Vec::new(),
@@ -134,6 +135,7 @@ pub(super) struct CaptureBatch<'a> {
     pub(super) source_root: &'a HostRoot,
     pub(super) watch_epoch: Option<u64>,
     pub(super) baseline: Option<&'a NativeViewBaseline>,
+    pub(super) policy: &'a CapturePolicy,
     pub(super) maximum_extent_spans: u32,
     pub(super) meter: &'a NativeMaterializationWork,
     pub(super) host_links: Vec<([u8; 16], NamespacePath)>,
@@ -154,6 +156,26 @@ impl CaptureBatch<'_> {
             Some(observation) => Some(observation),
             None => observe_host_path(self.source_root, &host_path, self.meter)?,
         };
+        #[cfg(feature = "local")]
+        if let (Some(state), Some(record), Some(observed)) =
+            (&self.policy.materializations, current, &observation)
+            && crate::materializer::postimage::matches(
+                state,
+                self.source_root,
+                &path,
+                record,
+                observed,
+                self.meter,
+            )
+            .await?
+        {
+            ensure_current_host_node(self.source_root, &host_path, observed, self.meter)?;
+            self.retain_link_anchor(&path, observed, checkout.volume_config().hard_links)?;
+            capture_drop_path(path, self.meter)?;
+            capture_drop_host_path(host_path, self.meter)?;
+            self.receipt.examined_paths = checked_increment(self.receipt.examined_paths)?;
+            return Ok(());
+        }
         if let Some(metadata) = observation {
             return self
                 .present(checkout, path, current, intent, host_path, metadata)
@@ -183,6 +205,27 @@ impl CaptureBatch<'_> {
 
         capture_drop_host_path(host_path, self.meter)?;
         self.receipt.examined_paths = checked_increment(self.receipt.examined_paths)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "local")]
+    fn retain_link_anchor(
+        &mut self,
+        path: &NamespacePath,
+        metadata: &HostStat,
+        hard_links: bool,
+    ) -> Result<(), CaptureError> {
+        // Attribution suppresses an authored mutation, but the observed inode
+        // still anchors aliases discovered later in this same capture batch.
+        if hard_links
+            && host_kind(metadata)? == FileKind::Regular
+            && metadata.nlink() > 1
+            && self.link_position(metadata)?.is_none()
+        {
+            let path = clone_capture_path(path, self.meter)?;
+            capture_reserve(&mut self.host_links, 1, self.meter)?;
+            self.host_links.push((metadata.identity().to_bytes(), path));
+        }
         Ok(())
     }
 

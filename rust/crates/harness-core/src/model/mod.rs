@@ -22,7 +22,7 @@ mod provider;
 mod reasoning;
 mod request;
 #[cfg(any(feature = "filesystem", feature = "tui"))]
-mod usage;
+pub(crate) mod usage;
 #[cfg(any(feature = "filesystem", feature = "tui"))]
 #[doc(hidden)]
 pub use usage::accumulate_usage;

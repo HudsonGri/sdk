@@ -4,31 +4,57 @@ use axum::{body::Body, extract::State, http::StatusCode, response::Response};
 use harness_mock_model::{Engine, Script, bind_result, events_with_usage};
 use std::sync::Mutex;
 
+type FixtureResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 struct Fixture {
     engine: Engine,
     records: Vec<Value>,
     killed: std::path::PathBuf,
 }
 
+fn required<T>(value: Option<T>, label: &str) -> std::io::Result<T> {
+    value.ok_or_else(|| std::io::Error::other(format!("missing alloy fixture {label}")))
+}
+
+fn field<'a>(value: &'a Value, pointer: &str) -> &'a Value {
+    value.pointer(pointer).unwrap_or(&Value::Null)
+}
+
 async fn reply(
     State(state): State<Arc<Mutex<Fixture>>>,
     uri: axum::http::Uri,
     Json(body): Json<Value>,
-) -> Response {
+) -> Result<Response, (StatusCode, String)> {
+    fixture_reply(&state, &uri, &body)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+fn fixture_reply(
+    state: &Mutex<Fixture>,
+    uri: &axum::http::Uri,
+    body: &Value,
+) -> FixtureResult<Response> {
     let path = uri
         .path()
         .trim_start_matches('/')
         .strip_prefix("v1/")
         .unwrap_or_default();
-    let mut state = state.lock().unwrap();
-    let tokens = state.engine.input_tokens("alloy", &body).unwrap();
-    let (step, status, bytes, hold) = match state.engine.take("alloy", path, &body) {
+    let mut state = state
+        .lock()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let tokens = required(
+        state.engine.input_tokens("alloy", body),
+        "input token count",
+    )?;
+    let (step, status, bytes, hold) = match state.engine.take("alloy", path, body) {
         Some((index, step)) => {
-            let step = bind_result(step, &body).unwrap();
-            let bytes = step.json.as_ref().map_or_else(
-                || events_with_usage(path, &step, tokens).unwrap().concat(),
-                Value::to_string,
-            );
+            let step = bind_result(step, body)?;
+            let bytes = match &step.json {
+                Some(json) => json.to_string(),
+                None => {
+                    required(events_with_usage(path, &step, tokens), "response events")?.concat()
+                }
+            };
             (Some(index), step.status.unwrap_or(200), bytes, step.hold)
         }
         None if path == "count" => (None, 200, json!({"input_tokens":tokens}).to_string(), false),
@@ -40,11 +66,11 @@ async fn reply(
     if status == 409 {
         eprintln!(
             "unmatched alloy tool result: {}",
-            harness_mock_model::last_content(&body, true)
+            harness_mock_model::last_content(body, true)
         );
     }
     if hold {
-        std::fs::write(&state.killed, b"accepted").unwrap();
+        std::fs::write(&state.killed, b"accepted")?;
     }
     let body = if hold {
         Body::from_stream(futures::stream::pending::<
@@ -53,8 +79,8 @@ async fn reply(
     } else {
         Body::from(bytes)
     };
-    Response::builder()
-        .status(StatusCode::from_u16(status).unwrap())
+    Ok(Response::builder()
+        .status(StatusCode::from_u16(status)?)
         .header(
             "content-type",
             if path == "count" {
@@ -63,8 +89,7 @@ async fn reply(
                 "text/event-stream"
             },
         )
-        .body(body)
-        .unwrap()
+        .body(body)?)
 }
 
 fn expand(value: &mut Value, url: &str) {
@@ -80,24 +105,24 @@ fn subset(actual: &Value, expected: &Value) -> bool {
     match expected {
         Value::Object(fields) => fields
             .iter()
-            .all(|(name, value)| subset(&actual[name], value)),
+            .all(|(name, value)| actual.get(name).is_some_and(|actual| subset(actual, value))),
         _ => actual == expected,
     }
 }
 
-async fn case(document: &str) {
-    let mut case: Value = serde_json::from_str(document).unwrap();
-    let directory = tempfile::tempdir().unwrap();
+async fn case(document: &str) -> FixtureResult {
+    let mut case: Value = serde_json::from_str(document)?;
+    let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
     for path in [&workspace, &settings] {
-        std::fs::create_dir(path).unwrap();
+        std::fs::create_dir(path)?;
     }
-    if let Some(files) = case["settings"].as_object() {
+    if let Some(files) = field(&case, "/settings").as_object() {
         for (path, text) in files {
             let path = settings.join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text.as_str().unwrap()).unwrap();
+            std::fs::create_dir_all(required(path.parent(), "settings parent")?)?;
+            std::fs::write(path, required(text.as_str(), "settings text")?)?;
         }
     }
     let killed = directory.path().join("kill-ready");
@@ -105,56 +130,72 @@ async fn case(document: &str) {
         engine: Engine::new(Script {
             cases: [(
                 "alloy".into(),
-                serde_json::from_value(case["model"].clone()).unwrap(),
+                serde_json::from_value(field(&case, "/model").clone())?,
             )]
             .into(),
         }),
         records: Vec::new(),
         killed: killed.clone(),
     }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     expand(
-        &mut case["catalog"],
-        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        required(case.get_mut("catalog"), "catalog")?,
+        &format!("http://{}/v1", listener.local_addr()?),
     );
     let app = Router::new().fallback(reply).with_state(state.clone());
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, case["catalog"].to_string()).unwrap();
-    for input in case["inputs"].as_array().unwrap() {
-        let command = case_command(&case, input, &workspace, &settings, &catalog);
-        let killed = input.get("kill_on").map(|_| killed.clone());
-        let result = run(command, killed.clone()).await;
-        if killed.is_some() {
-            assert!(result.unwrap_err().starts_with("killed"));
-            continue;
-        }
-        let output = result.unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(input["exit"].as_i64().unwrap_or(0) as i32),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        for expected in input["stderr_contains"].as_array().into_iter().flatten() {
-            assert!(String::from_utf8_lossy(&output.stderr).contains(expected.as_str().unwrap()));
-        }
-        if output.status.success() {
-            let outcomes = results(&output.stdout);
-            let outcome = outcomes.last().unwrap();
-            assert_eq!(outcome["ok"]["text"], input["answer"]);
-            if let Some(usage) = case["assert"].get("member_usage") {
-                assert!(
-                    subset(&outcome["ok"]["metadata"]["members"], usage),
-                    "{outcome}"
-                );
-            }
+    std::fs::write(&catalog, field(&case, "/catalog").to_string())?;
+    for input in required(field(&case, "/inputs").as_array(), "inputs")? {
+        let command = case_command(&case, input, &workspace, &settings, &catalog)?;
+        let result = run(command, input.get("kill_on").map(|_| killed.clone())).await;
+        if input.get("kill_on").is_some() {
+            assert!(matches!(result, Err(ref error) if error.starts_with("killed")));
+        } else {
+            verify_output(&case, input, &result.map_err(std::io::Error::other)?)?;
         }
     }
-    verify(&case, &state.lock().unwrap().records, &workspace);
+    verify(
+        &case,
+        &state
+            .lock()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .records,
+        &workspace,
+    )?;
     server.abort();
+    Ok(())
+}
+
+fn verify_output(case: &Value, input: &Value, output: &std::process::Output) -> FixtureResult {
+    assert_eq!(
+        output.status.code(),
+        Some(i32::try_from(field(input, "/exit").as_i64().unwrap_or(0))?),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for expected in field(input, "/stderr_contains")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains(required(expected.as_str(), "stderr text")?)
+        );
+    }
+    if output.status.success() {
+        let outcomes = results(&output.stdout);
+        let outcome = required(outcomes.last(), "final output")?;
+        assert_eq!(field(outcome, "/ok/text"), field(input, "/answer"));
+        if let Some(usage) = field(case, "/assert").get("member_usage") {
+            assert!(
+                subset(field(outcome, "/ok/metadata/members"), usage),
+                "{outcome}"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn case_command(
@@ -163,8 +204,7 @@ fn case_command(
     workspace: &Path,
     settings: &Path,
     catalog: &Path,
-) -> Command {
-    let operation = "00000000-0000-0000-0000-000000000001";
+) -> FixtureResult<Command> {
     let mut command = Command::new(build_metadata::executable());
     command
         .current_dir(workspace)
@@ -176,9 +216,9 @@ fn case_command(
         .arg(catalog)
         .args([
             "--operation",
-            operation,
+            "00000000-0000-0000-0000-000000000001",
             "-p",
-            input["text"].as_str().unwrap(),
+            required(field(input, "/text").as_str(), "input text")?,
         ])
         .env("HOME", settings)
         .env("USERPROFILE", settings)
@@ -191,127 +231,128 @@ fn case_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(selection) = case["selection"].as_str() {
+    if let Some(selection) = field(case, "/selection").as_str() {
         command.args(["--model", selection]);
     }
-    command
+    Ok(command)
 }
 
-fn verify(case: &Value, records: &[Value], workspace: &Path) {
+fn verify(case: &Value, records: &[Value], workspace: &Path) -> FixtureResult {
     let generations: Vec<_> = records
         .iter()
-        .filter(|record| record["path"] != "count")
+        .filter(|record| field(record, "/path") != "count")
         .collect();
     assert_eq!(
         generations.len() as u64,
-        case["assert"]["requests"].as_u64().unwrap()
+        required(field(case, "/assert/requests").as_u64(), "request count")?
     );
     assert!(
-        records.iter().all(|record| record["status"] != 409),
+        records.iter().all(|record| field(record, "/status") != 409),
         "{records:?}"
     );
-    if let Some(paths) = case["assert"].get("generation_paths") {
+    if let Some(paths) = field(case, "/assert").get("generation_paths") {
         assert_eq!(
             Value::Array(
                 generations
                     .iter()
-                    .map(|record| record["path"].clone())
+                    .map(|record| field(record, "/path").clone())
                     .collect()
             ),
             *paths
         );
     }
-    if let Some(counts) = case["assert"]["generation_counts"].as_object() {
+    if let Some(counts) = field(case, "/assert/generation_counts").as_object() {
         for (path, count) in counts {
             assert_eq!(
                 generations
                     .iter()
-                    .filter(|record| record["path"] == *path)
+                    .filter(|record| field(record, "/path") == path)
                     .count() as u64,
-                count.as_u64().unwrap()
+                required(count.as_u64(), "path count")?
             );
         }
     }
-    if let Some(period) = case["assert"]["generation_period"].as_u64() {
-        let period = usize::try_from(period).unwrap();
-        assert!(
-            generations
-                .iter()
-                .enumerate()
-                .all(|(index, record)| record["path"] == generations[index % period]["path"])
-        );
+    if let Some(period) = field(case, "/assert/generation_period").as_u64() {
+        let period = usize::try_from(period)?;
+        assert!(period > 0);
+        for (index, record) in generations.iter().enumerate() {
+            let expected = required(generations.get(index % period), "period member")?;
+            assert_eq!(field(record, "/path"), field(expected, "/path"));
+        }
     }
     let mut consumed: Vec<_> = records
         .iter()
-        .filter_map(|record| record["step"].as_u64())
+        .filter_map(|record| field(record, "/step").as_u64())
         .collect();
     consumed.sort_unstable();
     assert_eq!(
         consumed,
-        (0..case["model"]["steps"].as_array().unwrap().len() as u64).collect::<Vec<_>>()
+        (0..required(field(case, "/model/steps").as_array(), "model steps")?.len() as u64)
+            .collect::<Vec<_>>()
     );
-    for expected in case["assert"]["http"].as_array().into_iter().flatten() {
+    for expected in field(case, "/assert/http").as_array().into_iter().flatten() {
         assert!(
             records.iter().any(|record| subset(record, expected)),
             "{expected}"
         );
     }
-    if let Some(files) = case["assert"]["files"].as_object() {
+    if let Some(files) = field(case, "/assert/files").as_object() {
         for (path, text) in files {
             assert_eq!(
-                std::fs::read_to_string(workspace.join(path)).unwrap(),
-                text.as_str().unwrap()
+                std::fs::read_to_string(workspace.join(path))?,
+                required(text.as_str(), "file text")?
             );
         }
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn alloy_round_robin() {
+async fn alloy_round_robin() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-round-robin.json"
     ))
-    .await;
+    .await
 }
 #[tokio::test]
-async fn alloy_weighted() {
+async fn alloy_weighted() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-weighted.json"
     ))
-    .await;
+    .await
 }
 #[tokio::test]
-async fn alloy_per_role() {
+async fn alloy_per_role() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-per-role.json"
     ))
-    .await;
+    .await
 }
 #[tokio::test]
-async fn alloy_settings() {
+async fn alloy_settings() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-settings.json"
     ))
-    .await;
+    .await
 }
 #[tokio::test]
-async fn alloy_capacity() {
+async fn alloy_capacity() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-capacity.json"
     ))
-    .await;
+    .await
 }
 #[tokio::test]
-async fn alloy_retry() {
+async fn alloy_retry() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-retry.json"
     ))
-    .await;
+    .await
 }
 #[tokio::test]
-async fn alloy_resume() {
+async fn alloy_resume() -> FixtureResult {
     case(include_str!(
         "../../../../../../../scripts/graphcoder-e2e/cases/alloy-resume.json"
     ))
-    .await;
+    .await
 }

@@ -37,7 +37,12 @@ impl Registry {
                     .map_err(|_| invalid("invalid alloy identity"))?,
             )?
         } else {
-            resolved.models[0].model().clone()
+            resolved
+                .models
+                .first()
+                .ok_or_else(|| invalid("alloy has no members"))?
+                .model()
+                .clone()
         };
         Ok(resolved)
     }

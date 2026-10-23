@@ -218,6 +218,8 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
             )?);
         }
     }
-    let policy = CapturePolicy::excluding(excluded).map_err(storage)?;
+    let policy = CapturePolicy::excluding(excluded)
+        .map_err(storage)?
+        .with_materializations(workspace.store.clone());
     Ok((options, policy))
 }

@@ -42,16 +42,7 @@ impl StockExecution<'_> {
                 &mut text,
                 &mut prior_messages,
             )?;
-            // A replay traverses each persisted step once, reconstructing the
-            // same per-member totals without a process-local usage counter.
-            if let Some(members) = metadata.get_mut("members") {
-                let mut previous = completed
-                    .get_mut("members")
-                    .map(Value::take)
-                    .unwrap_or(Value::Null);
-                crate::model::accumulate_usage(&mut previous, members.take())?;
-                *members = previous;
-            }
+            crate::model::usage::accumulate_members(&mut completed, &mut metadata, self.io)?;
             completed = metadata;
             if calls.is_empty() {
                 // A Stop block prevents settlement and consumes the step budget.

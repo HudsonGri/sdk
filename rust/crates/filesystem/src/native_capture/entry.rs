@@ -39,7 +39,7 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            None,
+            (None, &CapturePolicy::default()),
             &scope.native,
         )
         .await
@@ -98,7 +98,7 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
             batch_size,
             options.maximum_extent_spans,
             &source_root,
-            baseline,
+            (baseline, &CapturePolicy::default()),
             meter,
         )
         .await?;
@@ -193,6 +193,8 @@ pub(crate) async fn capture_subtrees_with_native_work<
             }
             let host_policy = CapturePolicy {
                 excluded_prefixes: clone_capture_paths(&policy.excluded_prefixes, None, meter)?,
+                #[cfg(feature = "local")]
+                materializations: None,
             };
             let (source_path, source_path_bytes) =
                 crate::native_host::clone_path(&options.source_root, &mut meter.clone())
@@ -254,7 +256,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            baseline,
+            (baseline, policy),
             meter,
         )
         .await
@@ -409,7 +411,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            None,
+            (None, policy),
             meter,
         )
         .await

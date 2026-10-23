@@ -635,6 +635,8 @@ mod collection;
 mod lazy_log;
 mod records;
 use records::*;
+#[cfg(feature = "native-watch")]
+pub(crate) mod native_postimages;
 mod native_records;
 #[cfg(test)]
 mod tests;

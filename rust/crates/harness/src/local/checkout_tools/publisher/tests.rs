@@ -8,6 +8,12 @@ async fn fixture() -> Result<(
 )> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open_publication_fixture(directory.path(), state.path()).await?;
+    let publisher = publication_fixture_publisher(&harness).await?;
+    Ok((directory, state, harness, publisher))
+}
+
+async fn open_publication_fixture(directory: &Path, state: &Path) -> Result<LocalHarness> {
     let model = Model::new(
         "scripted".into(),
         "publication".into(),
@@ -15,11 +21,14 @@ async fn fixture() -> Result<(
         serde_json::Value::Null,
     )?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-    let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model, provider))?
-            .state_directory(state.path()),
+    LocalHarness::open(
+        crate::test_support::local_harness_config(directory, (model, provider))?
+            .state_directory(state),
     )
-    .await?;
+    .await
+}
+
+async fn publication_fixture_publisher(harness: &LocalHarness) -> Result<CheckoutPublisher> {
     let tools = Arc::new(
         CheckoutTools::new(
             harness
@@ -41,7 +50,7 @@ async fn fixture() -> Result<(
         &harness.signed,
         harness.limits.file_bytes,
     );
-    Ok((directory, state, harness, publisher))
+    Ok(publisher)
 }
 
 #[tokio::test]
@@ -122,6 +131,130 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
         before,
         "another binding reloaded the already selected checkout"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn materialized_writes_keep_pinned_edits_valid_and_capture_external_changes() -> Result<()> {
+    for target in ["exact.txt", "nested/deep/exact.txt"] {
+        materialized_write_sequence(target).await?;
+    }
+    Ok(())
+}
+
+async fn materialized_write_sequence(target: &str) -> Result<()> {
+    let (directory, state, harness, publisher) = fixture().await?;
+    let (original, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            target,
+            b"original",
+            "text/plain",
+            "exact.txt",
+            None,
+        )?
+        .await?;
+    let (edited, _) = publisher
+        .stage_at(OperationId::new(), &original, b"edited", None)?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join(target)).map_err(storage)?,
+        b"edited"
+    );
+    // Release the entire composition, including its watcher and store handles.
+    // Only durable staged attribution may preserve the pinned generation.
+    drop(publisher);
+    drop(harness);
+    let harness = open_publication_fixture(directory.path(), state.path()).await?;
+    assert_eq!(edited.volume(), &harness.project);
+    let reopened = publication_fixture_publisher(&harness).await?;
+    let (latest, _) = reopened
+        .stage_at(OperationId::new(), &edited, b"reopened", None)?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join(target)).map_err(storage)?,
+        b"reopened"
+    );
+    // Same-length external bytes are an authored mutation, never our staged
+    // postimage. The original strict generation fence must reject this edit.
+    std::fs::write(directory.path().join(target), b"external").map_err(storage)?;
+    assert!(
+        reopened
+            .stage_at(OperationId::new(), &latest, b"forbidden", None)?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join(target)).map_err(storage)?,
+        b"external"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn materialized_write_attribution_does_not_hide_replacement_or_backdated_access() -> Result<()>
+{
+    for replace in [false, true] {
+        let (directory, _state, _harness, publisher) = fixture().await?;
+        let (file, _) = publisher
+            .stage_once(
+                OperationId::new(),
+                "identity.txt",
+                b"same",
+                "text/plain",
+                "identity.txt",
+                None,
+            )?
+            .await?;
+        let path = directory.path().join("identity.txt");
+        if replace {
+            let replacement = directory.path().join("replacement.txt");
+            std::fs::write(&replacement, b"same").map_err(storage)?;
+            std::fs::remove_file(&path).map_err(storage)?;
+            std::fs::rename(&replacement, &path).map_err(storage)?;
+        } else {
+            std::fs::File::open(&path)
+                .map_err(storage)?
+                .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))
+                .map_err(storage)?;
+        }
+        assert!(
+            publisher
+                .stage_at(OperationId::new(), &file, b"forbidden", None)?
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).map_err(storage)?, b"same");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn materialized_write_attribution_does_not_hide_user_chmod() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let (file, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "mode.txt",
+            b"same",
+            "text/plain",
+            "mode.txt",
+            None,
+        )?
+        .await?;
+    let path = directory.path().join("mode.txt");
+    let mut permissions = std::fs::metadata(&path).map_err(storage)?.permissions();
+    permissions.set_mode(permissions.mode() ^ 0o100);
+    std::fs::set_permissions(&path, permissions).map_err(storage)?;
+    assert!(
+        publisher
+            .stage_at(OperationId::new(), &file, b"forbidden", None)?
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).map_err(storage)?, b"same");
     Ok(())
 }
 

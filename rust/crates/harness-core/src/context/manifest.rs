@@ -295,7 +295,13 @@ impl ContextStage for ManifestStage {
                     if let Some(work) = work.as_deref_mut() {
                         work.admit_copy(bytes)?;
                     }
-                    context.messages[..index + count].rotate_left(count);
+                    context
+                        .messages
+                        .get_mut(..index + count)
+                        .ok_or_else(|| {
+                            Error::Invalid("late context placement exceeds admitted history".into())
+                        })?
+                        .rotate_left(count);
                     if let Some(work) = work.as_deref_mut() {
                         work.copy_bytes(bytes)?;
                     }

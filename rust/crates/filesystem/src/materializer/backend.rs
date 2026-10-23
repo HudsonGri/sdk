@@ -163,7 +163,14 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
                 MaterializationEdit::SetMetadata { image, .. } => native_metadata_fingerprint(&live, Some(&decode_native_metadata(image)?), &backend.work)?,
                 MaterializationEdit::Rename { .. } => return Err(Self::Error::UnsupportedRename),
             };
-            let metadata = if matches!(edit, MaterializationEdit::SetMetadata { .. }) { Some(native_metadata(&host_stat(live.0, live.1, &backend.work)?.ok_or(Self::Error::MissingEntry)?)) } else { None };
+            let metadata = match edit {
+                MaterializationEdit::SetMetadata { .. } => Some(native_metadata(&host_stat(live.0, live.1, &backend.work)?.ok_or(Self::Error::MissingEntry)?)),
+                #[cfg(feature = "native-watch")]
+                MaterializationEdit::Install { .. } => Some(crate::WorkspaceMetadata::from_engine(
+                    crate::native_capture::physical_metadata(&host_stat(target.0, target.1, &backend.work)?.ok_or(Self::Error::MissingEntry)?),
+                )),
+                _ => None,
+            };
             let (image, allocation) = encode_native_witness(before, after, metadata, &backend.work)?;
             Ok(MaterializationPreimage { image, custody: Some(allocation) })
         }).await

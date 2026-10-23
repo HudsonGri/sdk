@@ -141,9 +141,12 @@
   "assert": {
     "requests": 4,
     "wire_contains": [
-      "a/tiny",
-      "b/tiny"
+      "a/tiny"
     ],
+    "generation_counts": {
+      "messages": 3,
+      "responses": 1
+    },
     "http": [
       {
         "path": "responses",

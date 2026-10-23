@@ -82,10 +82,27 @@ pub struct CaptureOptions {
 }
 
 /// Canonical path eligibility for native capture.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct CapturePolicy {
     pub(super) excluded_prefixes: Vec<NamespacePath>,
+    #[cfg(feature = "local")]
+    pub(super) materializations: Option<crate::LocalCoreStateStore>,
 }
+
+impl PartialEq for CapturePolicy {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(feature = "local")]
+        let same = match (&self.materializations, &other.materializations) {
+            (Some(left), Some(right)) => left.same_namespace(right),
+            (None, None) => true,
+            _ => false,
+        };
+        #[cfg(not(feature = "local"))]
+        let same = true;
+        same && self.excluded_prefixes == other.excluded_prefixes
+    }
+}
+impl Eq for CapturePolicy {}
 
 impl CapturePolicy {
     /// Creates a policy from canonical namespace prefixes.
@@ -97,7 +114,17 @@ impl CapturePolicy {
         prefixes.dedup_by(|prefix, ancestor| prefix.is_within(ancestor));
         Ok(Self {
             excluded_prefixes: prefixes,
+            #[cfg(feature = "local")]
+            materializations: None,
         })
+    }
+
+    /// Recognizes only exact, durably staged outputs of this materializer.
+    #[cfg(feature = "local")]
+    #[must_use]
+    pub fn with_materializations(mut self, state: crate::LocalCoreStateStore) -> Self {
+        self.materializations = Some(state);
+        self
     }
 
     /// Borrows the canonical exclusions for native watcher registration.
@@ -165,6 +192,10 @@ pub struct WatchCaptureReceipt {
 /// Fail-closed native capture errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum CaptureError {
+    /// Exact materializer attribution could not be authenticated.
+    #[cfg(feature = "local")]
+    #[error(transparent)]
+    MaterializationState(Box<crate::LocalCoreStateStoreError>),
     /// Capture bounds or source root are invalid.
     #[error("native capture options are invalid")]
     InvalidOptions,
@@ -191,6 +222,13 @@ pub enum CaptureError {
     /// The canonical original filesystem operation retained its typed cause.
     #[error(transparent)]
     Kernel(Box<crate::FsError>),
+}
+
+#[cfg(feature = "local")]
+impl From<crate::LocalCoreStateStoreError> for CaptureError {
+    fn from(error: crate::LocalCoreStateStoreError) -> Self {
+        Self::MaterializationState(Box::new(error))
+    }
 }
 
 impl From<crate::CancellationError> for CaptureError {

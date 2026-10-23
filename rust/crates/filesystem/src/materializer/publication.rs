@@ -113,6 +113,22 @@ where
     let result = async {
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
+        let journal = if journal.phase == MaterializationPhase::Preparing {
+            materializer
+                .capture_preimages(journal, &mut before_effect)
+                .await?
+        } else {
+            journal
+        };
+        #[cfg(feature = "native-watch")]
+        super::postimage::remember(
+            state,
+            to,
+            &journal,
+            &materializer.backend.held_target,
+            &work,
+        )
+        .await?;
         materializer
             .replay(
                 journal,
