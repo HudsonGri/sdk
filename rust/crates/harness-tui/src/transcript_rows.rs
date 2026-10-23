@@ -1,4 +1,4 @@
-use crate::WrappedLines;
+use crate::{RowWindow, TranscriptAnchor, TranscriptPart, WrappedLines};
 use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 use std::ops::Range;
 
@@ -32,7 +32,7 @@ impl<'a> TranscriptRows<'a> {
 
     /// Number of displayed rows, without copying either cache.
     pub fn len(self) -> usize {
-        self.answer.rows().len() + self.tools.map_or(0, |tools| tools.rows().len())
+        self.answer.shown().len() + self.tools.map_or(0, |tools| tools.shown().len())
     }
 
     /// Whether there are any displayed rows.
@@ -55,7 +55,7 @@ impl<'a> TranscriptRows<'a> {
     }
 
     fn separator(self) -> bool {
-        !self.answer.rows().is_empty() && self.tools.is_some_and(|tools| !tools.rows().is_empty())
+        self.answer.source_len() != 0 && self.tools.is_some_and(|tools| tools.source_len() != 0)
     }
 
     fn folded_offset(self) -> usize {
@@ -70,27 +70,58 @@ impl<'a> TranscriptRows<'a> {
         self.folded_offset() + self.tools.map_or(0, |tools| tools.index.text.len())
     }
 
-    pub(crate) fn folded_row(self, row: usize) -> Option<Range<usize>> {
-        if row < self.answer.rows().len() {
-            self.answer.folded_rows.get(row).cloned()
+    pub(crate) fn windows(self) -> (RowWindow, Option<RowWindow>) {
+        (self.answer.window(), self.tools.map(WrappedLines::window))
+    }
+
+    fn part(self, row: usize) -> Option<(&'a WrappedLines, usize, usize)> {
+        if row < self.answer.shown().len() {
+            Some((self.answer, self.answer.window().start + row, 0))
         } else {
-            let range = self
-                .tools?
-                .folded_rows
-                .get(row - self.answer.rows().len())?;
-            Some(self.folded_offset() + range.start..self.folded_offset() + range.end)
+            let tools = self.tools?;
+            let row = row - self.answer.shown().len();
+            (row < tools.shown().len())
+                .then(|| (tools, tools.window().start + row, self.source_offset()))
         }
     }
 
-    pub(crate) fn source_row(self, at: usize) -> Option<usize> {
-        if !self.answer.rows().is_empty() && at <= self.answer.text().len() {
-            self.answer.source_rows.get(at).copied()
+    pub(crate) fn folded_row(self, row: usize) -> Option<Range<usize>> {
+        let (source, row, offset) = self.part(row)?;
+        let range = source.index.folded_range(&source.ranges()[row]);
+        let offset = if offset == 0 { 0 } else { self.folded_offset() };
+        Some(offset + range.start..offset + range.end)
+    }
+
+    pub(crate) fn source_anchor(self, at: usize) -> Option<TranscriptAnchor> {
+        let (source, part, at) = if self.answer.source_len() != 0 && at <= self.answer.text().len()
+        {
+            (self.answer, TranscriptPart::Answer, at)
         } else {
-            self.tools?
-                .source_rows
-                .get(at.checked_sub(self.source_offset())?)
-                .map(|row| self.answer.rows().len() + row)
-        }
+            (
+                self.tools?,
+                TranscriptPart::Tools,
+                at.checked_sub(self.source_offset())?,
+            )
+        };
+        Some(TranscriptAnchor {
+            part,
+            position: source.position_of(at),
+        })
+    }
+
+    pub(crate) fn folded_at_source(self, at: usize) -> Option<Range<usize>> {
+        let (source, at, offset) =
+            if self.answer.source_len() != 0 && at <= self.answer.text().len() {
+                (self.answer, at, 0)
+            } else {
+                (
+                    self.tools?,
+                    at.checked_sub(self.source_offset())?,
+                    self.folded_offset(),
+                )
+            };
+        let range = source.index.folded_range(&source.row_range_at(at));
+        Some(offset + range.start..offset + range.end)
     }
 
     fn origin(self, at: usize) -> Range<usize> {
@@ -152,15 +183,9 @@ impl<'a> TranscriptRows<'a> {
     }
 
     pub(crate) fn range(self, row: usize) -> Range<usize> {
-        if row < self.answer.rows().len() {
-            self.answer.ranges().get(row).cloned().unwrap_or(0..0)
-        } else {
-            self.tools
-                .and_then(|tools| tools.ranges().get(row - self.answer.rows().len()))
-                .map_or(0..0, |range| {
-                    self.source_offset() + range.start..self.source_offset() + range.end
-                })
-        }
+        let (source, row, offset) = self.part(row).expect("visible transcript row");
+        let range = &source.ranges()[row];
+        offset + range.start..offset + range.end
     }
 
     pub(crate) fn render(
@@ -172,14 +197,7 @@ impl<'a> TranscriptRows<'a> {
         area: Rect,
         buffer: &mut Buffer,
     ) {
-        let (source, row, offset) = if row < self.answer.rows().len() {
-            (self.answer, row, 0)
-        } else {
-            let Some(tools) = self.tools else {
-                return;
-            };
-            (tools, row - self.answer.rows().len(), self.source_offset())
-        };
+        let (source, row, offset) = self.part(row).expect("visible transcript row");
         source.render_ranges((row, offset), matches, selected, style, area, buffer);
     }
 }

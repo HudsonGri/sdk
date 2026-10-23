@@ -32,6 +32,10 @@ pub enum InputEffect {
         /// Move to the preceding match instead of the following one.
         previous: bool,
     },
+    /// A source anchor selected by the transcript track; the host writes layout.json.
+    ScrollTo {
+        anchor: Option<crate::TranscriptAnchor>,
+    },
     /// Interrupt the active operation.
     Interrupt,
     /// Exit requested by double interrupt or Ctrl+D on an empty prompt.
@@ -93,6 +97,7 @@ pub struct PromptInput {
     editing: Option<MessageEdit>,
     click: Option<(u16, u16, u64, u8)>,
     pub(crate) dragging: bool,
+    pub(crate) scrollbar_dragging: bool,
     pub(crate) input_width: usize,
     last_activity: u64,
 }

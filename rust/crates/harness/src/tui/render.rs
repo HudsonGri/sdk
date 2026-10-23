@@ -14,6 +14,7 @@ mod selection;
 mod stream_text;
 mod task;
 mod tool;
+mod viewport;
 use stream_text::StreamText;
 
 /// Disposable incremental render cache. Authoritative state is always ClientViews
@@ -35,6 +36,9 @@ pub struct ClientRenderer {
     reasoning_rows: Vec<Line<'static>>,
     transcript: Vec<Line<'static>>,
     wrapped: bool,
+    top: Option<super::TranscriptAnchor>,
+    view_height: usize,
+    reasoning_visible: bool,
     transcript_changed: usize,
     reasoning_changed: usize,
     wrapped_transcript: super::WrappedLines,
@@ -290,8 +294,16 @@ impl ClientRenderer {
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
         self.wrap_tools(width);
-        self.wrapped_reasoning
-            .update(&self.reasoning_rows, self.reasoning_changed, width);
+        self.reasoning_visible = viewport::reasoning(files)?;
+        self.wrapped_reasoning.update(
+            if self.reasoning_visible {
+                &self.reasoning_rows
+            } else {
+                &[]
+            },
+            self.reasoning_changed,
+            width,
+        );
         self.transcript_changed = self.transcript.len();
         self.reasoning_changed = self.reasoning_rows.len();
         let side_width = areas.side.width.saturating_sub(2);
@@ -303,33 +315,17 @@ impl ClientRenderer {
                 .update(&self.plans, self.plans_changed, side_width);
             self.goal_changed = self.goal.len();
             self.plans_changed = self.plans.len();
+            self.wrapped_goal.view_from(
+                super::RowPosition::default(),
+                usize::from(areas.side.height),
+            );
+            self.wrapped_plans.view_from(
+                super::RowPosition::default(),
+                usize::from(areas.side.height),
+            );
         }
         self.wrapped = true;
-        let layout = files
-            .state(crate::client::CommandFileRoot::Session, "layout.json")?
-            .unwrap_or_default();
-        self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
-        let rows = super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
-        self.search.project(rows, self.search_open);
-        if self.search_open {
-            self.search.update(
-                rows,
-                layout["search_query"].as_str().unwrap_or(""),
-                layout["search_index"].as_i64().unwrap_or(0),
-                input.theme.style(super::config::ThemeRole::Selection),
-            );
-            let height = usize::from(areas.transcript.height);
-            let first = if self.search.count() != 0 {
-                self.search
-                    .selected_row(rows, layout["search_index"].as_i64().unwrap_or(0))
-            } else {
-                rows.len()
-                    .saturating_sub(height)
-                    .saturating_sub(layout["history_after"].as_u64().unwrap_or(0) as usize)
-            }
-            .min(rows.len().saturating_sub(height));
-            self.search.prepare(rows, first, height);
-        }
+        self.select_view(files, input, usize::from(areas.transcript.height))?;
         Ok(())
     }
 
@@ -453,7 +449,7 @@ impl ClientRenderer {
         }
         if reasoning {
             screen.reasoning = if self.wrapped {
-                self.wrapped_reasoning.rows()
+                self.wrapped_reasoning.shown()
             } else {
                 &self.reasoning_rows
             };
@@ -472,8 +468,6 @@ impl ClientRenderer {
                     super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
                 screen.transcript_search = Some((rows, &self.search));
                 screen.reasoning = &[];
-                screen.search_row =
-                    (self.search.count() != 0).then(|| self.search.selected_row(rows, index));
                 screen.status = Line::raw(format!(
                     "Find: {}/{}{} matches · Enter next · Shift+Enter previous · Escape closes",
                     self.search.position(index),
@@ -509,26 +503,32 @@ impl ClientRenderer {
         Screen {
             header: self.header.clone(),
             transcript: if self.wrapped {
-                self.wrapped_transcript.rows()
+                self.wrapped_transcript.shown()
             } else {
                 &self.transcript
             },
             tools: if self.wrapped {
-                self.wrapped_tools.rows()
+                self.wrapped_tools.shown()
             } else {
                 self.task.tools()
             },
             diff: &self.diff,
             goal: if self.wrapped && self.side_wrapped {
-                self.wrapped_goal.rows()
+                self.wrapped_goal.shown()
             } else {
                 &self.goal
             },
             plans: if self.wrapped && self.side_wrapped {
-                self.wrapped_plans.rows()
+                self.wrapped_plans.shown()
             } else {
                 &self.plans
             },
+            hidden_tail: self.wrapped && self.top.is_some(),
+            scrollbar: Some(if self.wrapped {
+                self.source_window()
+            } else {
+                (0..0, 0)
+            }),
             notifications: &self.composed_notices,
             status: self.status.clone(),
             ..Screen::default()
