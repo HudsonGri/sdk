@@ -416,3 +416,95 @@ fn negative_control_omitting_popup_capture_is_detected() {
 fn inactive_scrollbars_release_capture_without_writing() {
     run(capture_ends_with_release_focus_or_hidden_track());
 }
+
+async fn route_sequence<const SKIP_FOCUS: bool>(actions: &[u8]) {
+    let mut fixture = Fixture::new().await;
+    let first = Some(TranscriptAnchor {
+        part: TranscriptPart::Answer,
+        position: RowPosition::default(),
+    });
+    let mut captured = false;
+    let mut expected = None;
+    for &action in actions {
+        let track = fixture.areas.scrollbar;
+        let mut seek = false;
+        let event = match action {
+            0 => {
+                captured = true;
+                seek = true;
+                expected = first;
+                mouse(MouseEventKind::Down(MouseButton::Left), track.x, track.y)
+            }
+            1 => {
+                seek = captured;
+                if captured {
+                    expected = None;
+                }
+                mouse(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    track.x,
+                    track.bottom() - 1,
+                )
+            }
+            2 => {
+                captured = false;
+                mouse(MouseEventKind::Up(MouseButton::Left), track.x, track.y)
+            }
+            3 => {
+                captured = false;
+                InputEvent::Focus(false)
+            }
+            4 => {
+                captured = false;
+                let area = crate::tui::PromptBox::input_area(fixture.areas.prompt);
+                mouse(MouseEventKind::Down(MouseButton::Left), area.x + 1, area.y)
+            }
+            5 => {
+                captured = false;
+                fixture.terminal.backend_mut().resize(60, 0);
+                fixture.paint();
+                mouse(MouseEventKind::Drag(MouseButton::Left), track.x, track.y)
+            }
+            _ => mouse(MouseEventKind::Down(MouseButton::Right), track.x, track.y),
+        };
+        let effects = if SKIP_FOCUS && action == 3 {
+            // Keep all actual routing and file publication, but drop the focus
+            // event that releases capture, reproducing a stale pointer owner.
+            Vec::new()
+        } else {
+            fixture.route::<true>(event)
+        };
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| matches!(effect, InputEffect::ScrollTo { .. }))
+                .count(),
+            usize::from(seek),
+            "pointer routing must equal the independent capture model"
+        );
+        fixture.apply(effects).await;
+        assert_eq!(client::tui_anchor(&fixture.files).unwrap(), expected);
+        assert_eq!(fixture.input.editor.text(), "unsent draft");
+        if action == 5 {
+            fixture.terminal.backend_mut().resize(60, 20);
+            fixture.paint();
+        }
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: arbitrary pointer/focus/resize sequences publish precisely the
+    // source positions selected by an independent capture reducer, retain the
+    // draft, and release capture on focus loss, release, or a zero-sized track.
+    #[test]
+    fn routed_pointer_sequences_match_the_file_model(actions in proptest::collection::vec(0u8..7, 0..20)) {
+        run(route_sequence::<false>(&actions));
+    }
+}
+
+#[test]
+#[should_panic(expected = "pointer routing must equal the independent capture model")]
+fn negative_control_losing_focus_release_fails_the_same_model() {
+    run(route_sequence::<true>(&[0, 3, 1]));
+}
