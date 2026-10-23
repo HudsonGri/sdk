@@ -70,8 +70,8 @@ mod claim;
 pub use claim::{ClaimCheck, StoreClaim, StoreHandle};
 mod descriptor;
 pub use descriptor::{
-    CACHED_DESCRIPTORS_VARIABLE, CachedFile, FileLease, WriteAt, cached_descriptor_capacity,
-    cached_descriptors,
+    CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorCost, FileLease, WriteAt,
+    cached_descriptor_capacity, cached_descriptors,
 };
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};

@@ -20,7 +20,8 @@ mod model;
 #[cfg(all(test, not(acyclic_native_runtime_loom)))]
 mod tests;
 
-use cache::{Cache, Cost, Entry, Files, Lease};
+pub use cache::Cost as DescriptorCost;
+use cache::{Access, Cache, Cost, Entry, Files, Lease};
 
 /// The cache on this machine's files.
 struct Native;
@@ -36,11 +37,13 @@ impl Files for Native {
     type File = File;
     type Identity = Identity;
 
-    fn reopen(&self, path: &Path, write: bool) -> io::Result<File> {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(write)
-            .open(path)
+    fn reopen(&self, path: &Path, access: Access) -> io::Result<File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(access == Access::Write);
+        if access == Access::Directory {
+            directory_options(&mut options);
+        }
+        options.open(path)
     }
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -57,6 +60,31 @@ impl Files for Native {
         crate::flush_file_data(file)
     }
 }
+
+/// Opens a directory itself, never one a symbolic link at its last component
+/// names; the identity check refuses any other directory that took the name.
+#[cfg(unix)]
+fn directory_options(options: &mut std::fs::OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+}
+
+/// Opens a directory itself, never a reparse point's target, sharing it as
+/// a held root does.
+#[cfg(windows)]
+fn directory_options(options: &mut std::fs::OpenOptions) {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    options
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn directory_options(_: &mut std::fs::OpenOptions) {}
 
 /// The environment variable that bounds the idle descriptors a process
 /// keeps, read once as the process first caches a file.
@@ -161,8 +189,32 @@ impl CachedFile {
         durable: bool,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<Self> {
-        Entry::new(cache(), file, path, write, durable, &mut charge(meter))
+        let access = if write { Access::Write } else { Access::Read };
+        Entry::new(cache(), file, path, access, durable, &mut charge(meter))
             .map(|entry| Self { entry })
+    }
+
+    /// Caches the directory `directory`, opened at `path`, charging
+    /// `charge` each [`DescriptorCost`] before its work. A reopen opens
+    /// `path` as a directory, never through a symbolic link at its last
+    /// component, and is refused unless it is still the very directory
+    /// cached. Its lease is for reading and for opening names beneath it.
+    pub fn directory(
+        directory: File,
+        path: &Path,
+        charge: &mut dyn FnMut(DescriptorCost) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        Entry::new(cache(), directory, path, Access::Directory, false, charge)
+            .map(|entry| Self { entry })
+    }
+
+    /// [`CachedFile::lease`], charging `charge` each [`DescriptorCost`]
+    /// before its work.
+    pub fn lease_charged(
+        &self,
+        charge: &mut dyn FnMut(DescriptorCost) -> io::Result<()>,
+    ) -> io::Result<FileLease> {
+        self.entry.lease(charge).map(|handle| FileLease { handle })
     }
 
     /// The file's descriptor, held open until the lease drops.
