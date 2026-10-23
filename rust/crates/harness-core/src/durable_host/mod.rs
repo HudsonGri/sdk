@@ -215,6 +215,14 @@ pub struct TaskJournalOwner<P> {
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
+#[cfg(feature = "filesystem")]
+impl<P> Drop for TaskJournalOwner<P> {
+    fn drop(&mut self) {
+        // The record is freed with its owner, so its memo handle goes first.
+        self.host.admissions.forget(&self.admission);
+    }
+}
+
 mod admission;
 mod admission_read;
 #[cfg(feature = "filesystem")]
