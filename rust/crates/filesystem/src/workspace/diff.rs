@@ -1,6 +1,7 @@
 use super::*;
 
 mod created;
+mod paths;
 
 /// Immutable semantic delta between two exact generations.
 pub struct ChangeSet<A, O> {
@@ -187,7 +188,7 @@ async fn collect_all_paths<O: AsyncObjectStore>(
         for (_, records) in &search.0.records {
             for (path, record) in records {
                 accounting.charge_items(1)?;
-                merge_changed_record(
+                paths::append(
                     &mut paths,
                     path,
                     Some(*record),
@@ -200,6 +201,7 @@ async fn collect_all_paths<O: AsyncObjectStore>(
         let bytes = namespace_records_bytes(&search.0.records);
         reverse_drop(search, bytes, accounting)?;
     }
+    paths::sort_and_coalesce(&mut paths, accounting)?;
     retain_changed_paths(paths, accounting)
 }
 

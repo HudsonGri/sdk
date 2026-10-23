@@ -1,5 +1,45 @@
 use super::*;
 
+#[tokio::test]
+async fn small_directory_move_with_unrelated_paths_preserves_boundary_budget()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("small-move-large-namespace"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/src"))?;
+    seed.write_text("/src/file", "retained").await?;
+    for index in 0..2048 {
+        seed.write_text(&format!("/unrelated-{index:04}"), "unrelated")
+            .await?;
+    }
+    let TransactionCommit::Committed(base) = commit(&mut seed).await? else {
+        return Err("seed did not commit".into());
+    };
+    let mut moved = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(moved, rename("/src", "/dst", false))?;
+    let TransactionCommit::Committed(current) = commit(&mut moved).await? else {
+        return Err("move did not commit".into());
+    };
+    let (changes, _) = unbounded!(base, diff_to(&current, 16))?;
+    let receipt = changes
+        .changed_paths(
+            4,
+            crate::performance::BOUNDARY_BUDGET,
+            &CancellationToken::new(),
+        )
+        .await?;
+    let names = receipt
+        .value
+        .0
+        .iter()
+        .map(|entry| namespace_path_text(&entry.path))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(names, ["/dst", "/dst/file", "/src", "/src/file"]);
+    assert!(receipt.work.bytes_copied < crate::performance::BOUNDARY_BUDGET.bytes_copied);
+    println!("SMALL_MOVE_WORK {:?}", receipt.work);
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn raw_changed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     changes: &ChangeSet<A, O>,
@@ -167,15 +207,13 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
             .iter()
             .all(|change| change.before.is_some() != change.after.is_some())
     );
-    drop(paths);
     drop(guard);
-    // Selecting only changed file IDs loses descendants whose records did not
-    // change. Such a producer would miss both narrow-prefix watch notifications.
-    let (incomplete, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
-    assert!(!incomplete.iter().any(|change| {
-        super::namespace_path_text(&change.path).is_ok_and(|path| path.ends_with("/nested/file"))
-    }));
-    drop(incomplete);
+    // The public retained delta and live publication must expose the same
+    // unchanged descendants, including narrow-prefix watch notifications.
+    let (retained, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+    assert_eq!(retained, paths);
+    drop(paths);
+    drop(retained);
     drop(guard);
     assert!(matches!(
         raw_endpoint_paths(&changes, 1, &original, &cancellation).await,

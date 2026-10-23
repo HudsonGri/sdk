@@ -174,7 +174,7 @@ pub(super) async fn matches_content<
         Ok(matches)
     }
     .await;
-    work.finish(result, &accounting)
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn read_link<
