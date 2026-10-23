@@ -588,3 +588,6 @@ mod thinking_frame_tests;
     not(target_arch = "wasm32")
 ))]
 mod viewport_cost;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod scrollbar_tests;
