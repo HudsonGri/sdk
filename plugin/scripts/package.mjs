@@ -122,7 +122,7 @@ const marketplace = {
   plugins: [{
     name: "acyclic",
     source: { source: "local", path: "./plugin" },
-    policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+    policy: { installation: "AVAILABLE" },
     category: "Developer Tools",
   }],
 };

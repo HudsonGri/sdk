@@ -84,7 +84,6 @@ const expectedMcp = {
       command: "./bin/acyclic",
       args: ["__mcp"],
       cwd: ".",
-      env_vars: ["XDG_STATE_HOME"],
       required: true,
     },
   },

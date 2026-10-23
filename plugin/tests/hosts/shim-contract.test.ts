@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { test } from "bun:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager,
   type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -107,4 +109,30 @@ test("host manifests and shims fit the native hook budget", () => {
   const hooks = JSON.parse(codex).hooks;
   assert.equal(hooks.PostToolUse[0].hooks[0].input.hook.tool_response, "${tool_response}");
   assert(!source("../../.mcp.json").includes("XDG_STATE_HOME"));
+});
+
+test("release packaging validates without state access or install authentication", () => {
+  const directory = mkdtempSync(join(tmpdir(), "shim-package-"));
+  const script = (name: string) => fileURLToPath(new URL(`../../scripts/${name}`, import.meta.url));
+  const run = (name: string, args: string[]) => spawnSync(process.execPath, [script(name), ...args], {
+    encoding: "utf8", timeout: 2000,
+  });
+  try {
+    const binary = join(directory, "fixture-binary");
+    writeFileSync(binary, "fixture executable bytes; packaging never executes the input binary");
+    const output = join(directory, "release");
+    const built = run("package.mjs", ["--binary", `linux-x64-gnu=${binary}`, "--out", output]);
+    assert.equal(built.status, 0, built.stderr);
+    const marketplace = JSON.parse(readFileSync(join(output, "marketplace.json"), "utf8"));
+    assert.equal(marketplace.plugins[0].policy.authentication, undefined);
+    const validated = run("validate-package.mjs", [output]);
+    assert.equal(validated.status, 0, validated.stderr);
+    const path = join(output, "plugin", ".mcp.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    manifest.mcpServers["acyclic-hooks"].env_vars = ["XDG_STATE_HOME"];
+    writeFileSync(path, JSON.stringify(manifest));
+    const rejected = run("validate-package.mjs", [output]);
+    assert.notEqual(rejected.status, 0, "negative control: state-dependent hook manifests must be rejected");
+    assert.match(rejected.stderr, /MCP declaration/);
+  } finally { rmSync(directory, {recursive: true, force: true}); }
 });
