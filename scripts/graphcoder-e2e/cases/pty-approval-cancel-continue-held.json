@@ -81,10 +81,9 @@
           "send": "\u0004",
           "when": {
             "contains": [
-              "cancelled",
+              "interaction cancelled",
               "○"
-            ],
-            "task_failure": "cancelled"
+            ]
           }
         }
       ],
