@@ -258,3 +258,26 @@ async fn completion_direct_resume_commits_only_after_the_selected_fold() {
     assert_ne!(completion.cursor, cut);
     assert_eq!(source.attempts.lock().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn document_deliveries_cannot_commit_another_readers_cursor() {
+    let source = fixture(false, false).await.unwrap();
+    let mut first_views = crate::test_support::empty_client_views();
+    let mut second_views = crate::test_support::empty_client_views();
+    let queries = [(Query::File(FileKey::Goal), 1)];
+    let mut first = super::super::DocumentFiles::observe(&source, &mut first_views, &queries, 4096)
+        .await
+        .unwrap();
+    let mut second =
+        super::super::DocumentFiles::observe(&source, &mut second_views, &queries, 4096)
+            .await
+            .unwrap();
+    let before = second_views.clone();
+    write(&source, "GOAL.md", b"owned delivery").await.unwrap();
+    let foreign = first.read_change().await.unwrap();
+    assert!(second.apply_change(foreign, &mut second_views).is_err());
+    assert_eq!(second_views, before);
+    assert!(first.next_change(&mut first_views).await.unwrap());
+    assert!(second.next_change(&mut second_views).await.unwrap());
+    assert_eq!(first_views, second_views);
+}

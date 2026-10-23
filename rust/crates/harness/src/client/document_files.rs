@@ -5,13 +5,16 @@ use crate::{
     task_volume::{FileKey, FileQuerySource, Query},
 };
 use futures::FutureExt as _;
+use std::sync::Arc;
 
 /// Authorized goal and plan readers retained at their last applied cuts.
 pub struct DocumentFiles {
+    owner: Arc<()>,
     follows: Vec<FileFollow>,
 }
 /// One selected document delivery. Apply it before waiting again.
 pub struct DocumentUpdate {
+    owner: Arc<()>,
     index: usize,
     update: FileUpdate,
 }
@@ -35,7 +38,10 @@ impl DocumentFiles {
             follows.push(follow);
         }
         *views = replacement;
-        Ok(Self { follows })
+        Ok(Self {
+            owner: Arc::new(()),
+            follows,
+        })
     }
     /// Read without advancing a committed fold; cancellation retains delivery.
     pub async fn read_change(&mut self) -> Result<DocumentUpdate> {
@@ -50,6 +56,7 @@ impl DocumentFiles {
         }
         let ((index, update), _, _) = futures::future::select_all(reads).await;
         Ok(DocumentUpdate {
+            owner: Arc::clone(&self.owner),
             index,
             update: update?,
         })
@@ -60,6 +67,11 @@ impl DocumentFiles {
         update: DocumentUpdate,
         views: &mut ClientViews,
     ) -> Result<bool> {
+        if !Arc::ptr_eq(&self.owner, &update.owner) {
+            return Err(crate::Error::Invalid(
+                "document reader does not own this delivery".into(),
+            ));
+        }
         self.follows
             .get_mut(update.index)
             .ok_or_else(|| {
