@@ -5,7 +5,7 @@ use acyclic_harness::{
     client::{ClientViews, CommandSession},
     task_volume::TaskVolume,
     tui::{
-        ClientRenderer, Editor, PromptBox, PromptInput, ScreenAreas, Viewport,
+        ClientRenderer, Editor, PromptInput, ScreenAreas, Viewport,
         key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
         ratatui::{
             Frame, Terminal,
@@ -266,7 +266,7 @@ impl Rig {
         renderer.update(views, owner);
         prompt_files.refresh(files, input).unwrap();
         input.refresh_completions();
-        let back = client::tui_scroll(files).unwrap();
+        let back = client::tui_modal_scroll(files).unwrap();
         renderer.configure(views, owner, files).unwrap();
         input.busy = renderer.is_busy();
         let size = *size;
@@ -290,12 +290,11 @@ impl Rig {
 
     /// view.rs after its wait: prompt input, file effects, then prompt persistence.
     pub fn apply(&mut self, event: InputEvent) {
-        let effects = self.input.event(
-            event,
-            PromptBox::input_area(self.areas.prompt),
-            &mut self.viewport,
-            1000,
-        );
+        let effects = self
+            .areas
+            .event(&mut self.input, event, &mut self.viewport, 1000, |byte| {
+                self.renderer.anchor_at(byte)
+            });
         let Self {
             runtime,
             files,
@@ -303,6 +302,7 @@ impl Rig {
             prompt_files,
             areas,
             maximum_scroll,
+            renderer,
             ..
         } = self;
         runtime.block_on(async {
@@ -313,6 +313,7 @@ impl Rig {
                     effect,
                     usize::from(areas.transcript.height),
                     *maximum_scroll,
+                    |from, rows| renderer.move_view(from, rows),
                 )
                 .await
                 .unwrap();
@@ -334,14 +335,22 @@ impl Rig {
     }
 
     pub fn scroll_back(&mut self, rows: u32) {
+        let anchor = self
+            .renderer
+            .move_view(None, -isize::try_from(rows).unwrap());
         let Self { runtime, files, .. } = self;
         runtime.block_on(async {
+            let mut layout = files
+                .state(client::CommandFileRoot::Session, "layout.json")
+                .unwrap()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(anchor) = anchor {
+                layout["transcript_top"] = serde_json::to_value(anchor).unwrap();
+            } else {
+                layout.as_object_mut().unwrap().remove("transcript_top");
+            }
             files
-                .write_state(
-                    client::CommandFileRoot::Session,
-                    "layout.json",
-                    &serde_json::json!({ "transcript_back": rows }),
-                )
+                .write_state(client::CommandFileRoot::Session, "layout.json", &layout)
                 .await
                 .unwrap();
         });
