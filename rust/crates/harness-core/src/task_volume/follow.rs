@@ -2,6 +2,7 @@ use super::{Error, FileValue, Generation, Query, Result, SCHEMA, TaskVolume, seg
 use acyclic_stream::{ReadRequest, StreamProvider};
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Serializable next-record cursor. Never infer continuity from a native watch.
@@ -266,7 +267,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         #[cfg(not(acyclic_harness_loom))]
         let replace = true;
         if replace {
-            *self.index.lock().await = fresh.index.into_inner();
+            let index = Arc::try_unwrap(fresh.index)
+                .map_err(|_| Error::ResetRequired)?
+                .into_inner();
+            *self.index.lock().await = index;
         }
         self.snapshot_follow(query, maximum_files, true).await
     }

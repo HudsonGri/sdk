@@ -326,10 +326,10 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
     let mut input = PromptInput::default();
     PromptFiles::default().refresh(&files, &mut input).unwrap();
     let mut renderer = ClientRenderer::default();
-    renderer.transcript = (0..6000)
+    let source = (0..6000)
         .map(|row| Line::raw(format!("row {row} needle")))
-        .collect();
-    renderer.wrapped_transcript.replace(&renderer.transcript, 0);
+        .collect::<Vec<_>>();
+    renderer.wrapped_transcript.replace(&source, 0);
     paint_frame(&mut renderer, &files, &input, 80);
     assert!(renderer.search.pending());
     let initial = renderer

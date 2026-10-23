@@ -31,7 +31,9 @@ fn appended_unicode_styles_and_crlf_equal_eager_replacement() {
             } else {
                 Color::Blue
             });
-            for line in &mut source { line.spans.push(Span::styled(text, style)); }
+            for line in &mut source {
+                line.spans.push(Span::styled(text, style));
+            }
             actual.append_line(text, style);
             same_projection(&mut actual, &source, width);
         }
@@ -45,7 +47,11 @@ fn flat<const REPLACE: bool>(bytes: usize) -> (usize, usize, usize) {
     actual.view(Top::Tail, 10);
     WrappedLines::take_work();
     if REPLACE {
-        for line in &mut source { for span in &mut line.spans { span.content.to_mut().push('x'); } }
+        for line in &mut source {
+            for span in &mut line.spans {
+                span.content.to_mut().push('x');
+            }
+        }
         actual.update(&source, 0, 80);
     } else {
         actual.append_line("x", Style::default());
@@ -93,7 +99,11 @@ fn hidden<const WRAP: bool>() {
         (0, 0, 0),
         "hidden appends do not wrap"
     );
-    for line in &mut source { for span in &mut line.spans { span.content.to_mut().push_str(&"x".repeat(32)); } }
+    for line in &mut source {
+        for span in &mut line.spans {
+            span.content.to_mut().push_str(&"x".repeat(32));
+        }
+    }
     same_projection(&mut actual, &source, 80);
 }
 
