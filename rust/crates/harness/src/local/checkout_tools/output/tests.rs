@@ -180,3 +180,111 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
     harness.disconnect_unfinished().await?;
     Ok(())
 }
+
+/// Holds the first clock read after arming, as a loaded host delays a journal
+/// fence step. Every other read is the system clock.
+#[derive(Default)]
+struct HeldClock {
+    armed: std::sync::atomic::AtomicBool,
+    held: std::sync::atomic::AtomicUsize,
+}
+
+impl acyclic_stream::UnixMillisClock for HeldClock {
+    fn now_unix_millis(&self) -> u64 {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(
+                u64::from(CONTROL_TIMEOUT_MS) + 250,
+            ));
+            self.held.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
+    }
+}
+
+// Regression: under host load the journal can answer a fenced output
+// publication after more than the native control bound. The chunk must still
+// be published, so a successful command is never reported as a failed
+// capture. Negative control: bounding `await_fence` by `CONTROL_TIMEOUT_MS`
+// fails this test with "deadline has elapsed", the main-gate failure of the
+// bash stderr and both-streams scenarios.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chunk_whose_fence_step_is_held_past_the_control_bound_is_published() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let clock = Arc::new(HeldClock::default());
+    let model = Model::new(
+        "scripted".into(),
+        "output".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(
+            directory.path(),
+            (model, Arc::new(ScriptedModelProvider::new([]))),
+        )?
+        .state_directory(state.path())
+        .clock(clock.clone()),
+    )
+    .await?;
+    let operation = OperationId::new();
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(operation, "held output").await?
+    else {
+        panic!("durable admission");
+    };
+    let worker = crate::distributed::Worker {
+        id: "held-output".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let crate::distributed::WorkPull::Claimed(lease) = harness
+        .runtime
+        .task_host()
+        .pull_work(&worker, Some(operation), &mut None)
+        .await?
+    else {
+        panic!("task claim");
+    };
+    harness
+        .runtime
+        .task_host()
+        .start_task(&lease, &mut None)
+        .await?;
+    let task = Arc::new(
+        harness
+            .runtime
+            .task_context(
+                task_id,
+                crate::scheduler::LeaseFence::from(&lease.reservation),
+            )
+            .await?,
+    );
+    let context = ToolContext::new(task, OperationId::new(), "bash-call", None)?;
+    let mut output =
+        Output::open(&context, Arc::clone(harness.task_files()), b"bash".to_vec()).await?;
+    clock.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || output.observe(ProcessOutput::Stderr(b"held diagnostic")))
+        .await
+        .map_err(storage)?
+        .map_err(storage)?;
+    assert_eq!(
+        clock.held.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the publication's fence step was not held"
+    );
+    let snapshot = harness
+        .task_files()
+        .observe(Query::Root, None, 16)
+        .await?
+        .snapshot
+        .unwrap();
+    assert!(
+        snapshot
+            .files
+            .iter()
+            .any(|file| file.bytes.as_ref() == b"held diagnostic"),
+        "the held chunk was not published"
+    );
+    Ok(())
+}

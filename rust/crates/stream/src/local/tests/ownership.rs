@@ -57,7 +57,9 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         let terminal = Arc::downgrade(&provider.inner);
         drop(provider);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while terminal.upgrade().is_some() {
+            // The provider can disappear before the detached work drops its
+            // accounting guards. Wait for every SDK meter owner as well.
+            while terminal.upgrade().is_some() || Arc::strong_count(&meter) != 1 {
                 tokio::task::yield_now().await;
             }
         })
@@ -132,7 +134,8 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
             provider.tail(StreamPath::new("guard-owned-drain")?).await?,
             1
         );
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let cleanup_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(cleanup_deadline, async {
             while weak.upgrade().is_some() {
                 tokio::task::yield_now().await;
             }
@@ -144,6 +147,14 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
             .await?
             .ok_or("owned guarded commit lost its original identity")?;
         drop(provider);
+        tokio::time::timeout_at(cleanup_deadline, async {
+            // The live provider can retain metered state after guard release.
+            // Once it is dropped, wait for every SDK accounting guard too.
+            while Arc::strong_count(&meter) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
         let reopened = LocalStream::open(directory.path(), limits).await?;
         assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
         drop(reopened);
