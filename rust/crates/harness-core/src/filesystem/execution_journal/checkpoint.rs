@@ -231,6 +231,7 @@ where
             || state.turn != self.turn_operation(operation)
             || state.volume != self.index_volume_digest(io)?
             || state.tail == 0
+            || state.roots[4].is_none()
             || state
                 .roots
                 .iter()

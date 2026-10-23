@@ -120,22 +120,61 @@ fn malformed_nodes_cannot_create_cycles_or_unbounded_paths() -> Result<()> {
         "forward/self link accepted"
     );
     assert!(Node::decode(&bytes, 2, None).is_ok());
-    let (bytes, _) = Node::Branch {
-        bit: 256,
-        children: [child; 2],
-    }
-    .encode(None)?;
     assert!(
-        Node::decode(&bytes, 2, None).is_err(),
-        "out-of-range branch accepted"
+        Node::Branch {
+            bit: 256,
+            children: [child; 2],
+        }
+        .encode(None)
+        .is_err(),
+        "out-of-range branch was encoded"
     );
     let (bytes, _) = Node::Leaf {
         key: [0; 32],
         value: b"value",
     }
     .encode(None)?;
-    for length in 0..bytes.len() {
+    for length in 0..node::LEAF_HEADER_BYTES {
         assert!(Node::decode(&bytes[..length], 0, None).is_err());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn record_framing_never_substitutes_for_the_authenticated_value_digest() -> Result<()> {
+    let provider = Arc::new(acyclic_stream::MemoryStream::default());
+    let path = StreamPath::new("truncated/index")?;
+    let (bytes, _) = Node::Leaf {
+        key: [1; 32],
+        value: b"value",
+    }
+    .encode(None)?;
+    let digest = crate::model::hash_bytes(&bytes, None)?;
+    for (sequence, length) in (node::LEAF_HEADER_BYTES..bytes.len()).enumerate() {
+        let sequence = sequence as u64;
+        // A shorter value is structurally valid inside its SDK frame. The
+        // authenticated parent must still reject every such substitution.
+        assert!(Node::decode(&bytes[..length], sequence, None).is_ok());
+        provider
+            .append(acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records: vec![bytes[..length].to_vec().into()],
+                if_tail: Some(sequence),
+                idempotency_key: None,
+            })
+            .await?;
+        let reader = Reader {
+            provider: &provider,
+            path: &path,
+            base: sequence + 1,
+            staged: &[],
+            io: None,
+            cache: None,
+        };
+        assert!(
+            reader.read(NodeRef { sequence, digest }).await.is_err(),
+            "truncated value reused its parent's proof"
+        );
     }
     Ok(())
 }

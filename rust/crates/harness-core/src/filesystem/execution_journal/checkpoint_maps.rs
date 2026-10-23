@@ -7,43 +7,61 @@ use summary_map::{SummaryKey, SummaryMap};
 mod model_cell;
 
 trait Entry: serde::de::DeserializeOwned + Serialize {
+    #[cfg(test)]
     fn heap_bytes(&self) -> Result<u64> {
         Ok(0)
     }
 
+    fn encode(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes>;
+    fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Self>;
+}
+impl Entry for bool {
     fn encode(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
-        match io {
-            Some(io) => io.encode(&Cell { value: self }, io.remaining()?.bytes_encoded, false),
-            None => serde_json::to_vec(&Cell { value: self })
-                .map(Into::into)
-                .map_err(|_| corrupt(None)),
-        }
+        fixed_bytes(&[u8::from(*self)], io)
     }
-
     fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Self> {
-        let (cell, hold): (Cell<Self>, _) = match io {
-            Some(io) => {
-                let (cell, hold) = io.decode(
-                    std::marker::PhantomData::<Cell<Self>>,
-                    bytes,
-                    crate::wire::ErrorCode::Storage,
-                )?;
-                (cell, Some(hold))
-            }
-            None => (
-                crate::contract::json_from_slice(bytes).map_err(|_| corrupt(None))?,
-                None,
-            ),
-        };
-        if let Some(mut hold) = hold {
-            hold.substitute(cell.value.heap_bytes()?)?;
-            hold.into_retained()?;
+        crate::model::charge_items(io, 1)?;
+        match bytes {
+            [0] => Ok(false),
+            [1] => Ok(true),
+            _ => Err(corrupt(io)),
         }
-        Ok(cell.value)
     }
 }
-impl Entry for bool {}
-impl Entry for (u64, [u8; 32]) {}
+impl Entry for (u64, [u8; 32]) {
+    fn encode(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
+        let mut bytes = [0; 40];
+        bytes[..8].copy_from_slice(&self.0.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.1);
+        fixed_bytes(&bytes, io)
+    }
+    fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Self> {
+        crate::model::charge_items(io, 1)?;
+        let bytes: &[u8; 40] = bytes.try_into().map_err(|_| corrupt(io))?;
+        Ok((
+            u64::from_le_bytes(bytes[..8].try_into().map_err(|_| corrupt(io))?),
+            bytes[8..].try_into().map_err(|_| corrupt(io))?,
+        ))
+    }
+}
+
+fn fixed_bytes(value: &[u8], io: Option<&PreparationIo>) -> Result<OwnedBytes> {
+    crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut bytes = crate::core::reserve_copy_vector(value.len(), &mut quota)?;
+        if let Some(work) = quota.work().as_deref_mut() {
+            work.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: value.len() as u64,
+                items: 1,
+            })?;
+            work.copy_bytes(value.len() as u64)?;
+        }
+        bytes.extend_from_slice(value);
+        quota.transfer();
+        crate::store::operations::owned_bytes_from_retained_vec(bytes, quota.work())
+            .map(|(bytes, _)| bytes)
+    })
+}
 impl Entry for Option<ModelEventAdmission> {
     fn encode(&self, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         model_cell::encode(self.as_ref(), io)
@@ -53,6 +71,7 @@ impl Entry for Option<ModelEventAdmission> {
         model_cell::decode(bytes, io)
     }
 
+    #[cfg(test)]
     fn heap_bytes(&self) -> Result<u64> {
         self.as_ref().map_or(Ok(0), |state| {
             crate::core::owned_sum(
@@ -63,12 +82,14 @@ impl Entry for Option<ModelEventAdmission> {
     }
 }
 
+#[cfg(test)]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cell<V> {
     value: V,
 }
 
+#[cfg(test)]
 impl<V: Entry> PreparationRecord for Cell<V> {
     fn maximum_slot_bytes() -> u64 {
         // Entry is closed over scalars, a fixed tuple, and a model admission
@@ -164,19 +185,7 @@ where
         let persistent_index::node::Node::Leaf { value, .. } = read.node(io)? else {
             return Err(corrupt(io));
         };
-        let hold;
-        let cell: Cell<(u64, [u8; 32])> = if let Some(io) = io {
-            let decoded = io.decode(
-                std::marker::PhantomData::<Cell<(u64, [u8; 32])>>,
-                value,
-                crate::wire::ErrorCode::Storage,
-            )?;
-            hold = Some(decoded.1);
-            decoded.0
-        } else {
-            hold = None;
-            crate::contract::json_from_slice(value).map_err(|_| corrupt(None))?
-        };
+        let cell = <(u64, [u8; 32])>::decode(value, io)?;
         let digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
@@ -184,8 +193,7 @@ where
                 work,
             )
         })?;
-        let valid = cell.value == (sequence, digest);
-        drop(hold);
+        let valid = cell == (sequence, digest);
         if valid { Ok(true) } else { Err(changed(io)) }
     }
 
@@ -233,7 +241,13 @@ where
             | ExecutionEvent::ToolCompleted { step, call_id, .. }
             | ExecutionEvent::ToolFailed { step, call_id, .. } => {
                 let call = crate::model::hash_bytes(call_id.as_bytes(), io)?;
-                load(&mut summary.tools, &reader, roots[3], (*step, call)).await?;
+                if !summary.tools.contains_key(&(*step, call), io)?
+                    && let Some(state) =
+                        step_index::tool_state(&reader, roots[4], recovery.state.tail, *step, call)
+                            .await?
+                {
+                    summary.tools.insert((*step, call), state, io)?;
+                }
             }
             ExecutionEvent::Started { .. } => {}
         }
@@ -253,7 +267,7 @@ where
                 snapshot(writer, &summary.retries, io).await?,
                 snapshot(writer, &summary.contexts, io).await?,
                 snapshot(writer, &summary.models, io).await?,
-                snapshot(writer, &summary.tools, io).await?,
+                None,
                 None,
             ]);
         };
@@ -276,14 +290,10 @@ where
                 let value = summary.models.get(&key, io)?.ok_or_else(|| corrupt(io))?;
                 roots[2] = Some(store(writer, roots[2], key.digest(io)?, value, io).await?);
             }
-            ExecutionEvent::ToolStarted { step, call_id, .. }
-            | ExecutionEvent::ToolCompleted { step, call_id, .. }
-            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
-                let key = (*step, crate::model::hash_bytes(call_id.as_bytes(), io)?);
-                let value = summary.tools.get(&key, io)?.ok_or_else(|| corrupt(io))?;
-                roots[3] = Some(store(writer, roots[3], key.digest(io)?, value, io).await?);
-            }
-            ExecutionEvent::Started { .. } => {}
+            ExecutionEvent::ToolStarted { .. }
+            | ExecutionEvent::ToolCompleted { .. }
+            | ExecutionEvent::ToolFailed { .. }
+            | ExecutionEvent::Started { .. } => {}
         }
         Ok(roots)
     }
@@ -308,6 +318,35 @@ fn changed(io: Option<&PreparationIo>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_cells_use_exact_binary_widths_and_reject_json_or_padding() -> Result<()> {
+        let value = (u64::MAX, [255; 32]);
+        let bytes = value.encode(None)?;
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(<(u64, [u8; 32])>::decode(&bytes, None)?, value);
+        let json = serde_json::to_vec(&Cell { value }).map_err(|_| corrupt(None))?;
+        assert!(
+            json.len() > bytes.len(),
+            "JSON negative control did not exceed the scalar width"
+        );
+        assert!(<(u64, [u8; 32])>::decode(&json, None).is_err());
+        for length in 0..bytes.len() {
+            assert!(<(u64, [u8; 32])>::decode(&bytes[..length], None).is_err());
+        }
+        let mut padded = bytes.to_vec();
+        padded.push(0);
+        assert!(<(u64, [u8; 32])>::decode(&padded, None).is_err());
+        for value in [false, true] {
+            let bytes = value.encode(None)?;
+            assert_eq!(bytes.len(), 1);
+            assert_eq!(bool::decode(&bytes, None)?, value);
+        }
+        for bytes in [&[][..], &[2][..], &[0, 0][..]] {
+            assert!(bool::decode(bytes, None).is_err());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn model_admission_cells_exceed_one_record_without_restricting_calls() -> Result<()> {

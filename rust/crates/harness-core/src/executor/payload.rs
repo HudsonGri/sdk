@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn preparation_output<'a>(
+pub(crate) fn preparation_output<'a>(
     io: Option<&'a PreparationIo>,
     before: u64,
     retained: u64,

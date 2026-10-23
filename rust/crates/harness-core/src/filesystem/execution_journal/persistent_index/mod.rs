@@ -71,8 +71,8 @@ impl Scratch {
 }
 
 /// Values retire before the pool that funds their backing storage.
-struct Funded<T> {
-    values: Vec<T>,
+pub(super) struct Funded<T> {
+    pub(super) values: Vec<T>,
     io: Option<PreparationIo>,
 }
 
@@ -96,14 +96,14 @@ impl<T> Funded<T> {
         }
         Ok(())
     }
-    fn new(io: Option<&PreparationIo>) -> Result<Self> {
+    pub(super) fn new(io: Option<&PreparationIo>) -> Result<Self> {
         Ok(Self {
             values: Vec::new(),
             io: io.map(PreparationIo::retained_pool).transpose()?,
         })
     }
 
-    fn push(&mut self, value: T) -> Result<()> {
+    pub(super) fn push(&mut self, value: T) -> Result<()> {
         self.reserve_slot()?;
         self.values.push(value);
         Ok(())

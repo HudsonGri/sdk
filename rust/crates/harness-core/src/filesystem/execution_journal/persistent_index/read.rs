@@ -11,9 +11,13 @@ pub(in crate::filesystem::execution_journal) struct ReadNode<'a> {
     // The committed SDK value owns native custody intrinsically.
     _hold: Option<crate::filesystem::fork_preparer_io::DecodeReservation<'a>>,
     sequence: u64,
+    reference: NodeRef,
 }
 
 impl ReadNode<'_> {
+    pub(in crate::filesystem::execution_journal) fn reference(&self) -> NodeRef {
+        self.reference
+    }
     pub(super) fn sequence(&self) -> u64 {
         self.sequence
     }
@@ -73,6 +77,7 @@ impl<'a, P: StreamProvider> Reader<'a, P> {
             storage,
             _hold: hold,
             sequence: reference.sequence,
+            reference,
         };
         if !matches!(&read.storage, Storage::Cached(_))
             && crate::model::hash_bytes(read.bytes(), self.io)? != reference.digest

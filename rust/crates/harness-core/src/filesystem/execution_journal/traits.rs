@@ -48,6 +48,15 @@ where
         Some(self.verifier.audience())
     }
 
+    fn indexed_records<'a>(
+        &'a self,
+        query: crate::executor::ExecutionRecordQuery<'a>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::executor::IndexedExecutionFuture<'a>>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.indexed_step(query, io))
+            .map(Some)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,

@@ -54,12 +54,15 @@ mod replay;
 mod replay_capacity_tests;
 mod router;
 mod selected;
+mod step_index;
 mod summary;
 mod summary_authorization;
 #[cfg(test)]
 mod summary_authorization_tests;
 mod summary_cache;
 mod summary_map;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_support;
 #[cfg(test)]
 mod tests;
 mod traits;

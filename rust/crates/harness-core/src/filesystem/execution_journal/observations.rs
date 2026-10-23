@@ -15,7 +15,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn refresh_cached_summary(
+    pub(super) async fn refresh_cached_summary(
         &self,
         operation: OperationId,
         cache: &mut SummaryCache,
@@ -385,6 +385,7 @@ where
                 .await?;
             if let Some(recovery) = committed {
                 summary.recovery = Some(recovery);
+                summary.pending_steps.clear();
                 edit.finish();
                 drop(bytes);
                 drop(body_hold);

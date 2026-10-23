@@ -24,7 +24,7 @@ async fn cold_append_recovery_measurements() -> Result<()> {
 
 async fn check_cold_recovery(native: bool) -> Result<()> {
     for count in [1, 100, 1_000] {
-        let original = super::turn_cost::journal().await?;
+        let original = crate::filesystem::execution_journal::test_support::journal().await?;
         let operation = OperationId::new();
         original
             .append(

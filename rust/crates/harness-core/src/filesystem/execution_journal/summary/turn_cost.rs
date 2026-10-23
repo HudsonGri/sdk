@@ -1,5 +1,6 @@
 use super::*;
 use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
+use crate::filesystem::execution_journal::test_support::journal;
 
 #[tokio::test]
 async fn authenticated_replay_defers_payload_loading_until_consumption() -> Result<()> {
@@ -371,59 +372,4 @@ fn quiescence_work_is_flat_for_a_thousand_settled_dispatches() -> Result<()> {
         assert_eq!(io.receipt().items_examined - before, 1);
     }
     Ok(())
-}
-
-pub(in crate::filesystem::execution_journal) async fn journal() -> Result<
-    FilesystemExecutionJournal<
-        acyclic_stream::MemoryStream,
-        acyclic_fs::MemoryAuthorityBackend,
-        acyclic_fs::MemoryObjectBackend,
-    >,
-> {
-    let provider = crate::resources::ProviderRef::new(
-        "append-cost".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
-    let agent = crate::AgentId::from_bytes([81; 16]);
-    let volume = VolumeRef::new(
-        provider,
-        "append-cost".into(),
-        VolumeClass::AgentPrivate,
-        crate::conversation::VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityIssuer::new(
-        "append-cost",
-        [81; 32],
-        crate::core::Authority {
-            kind: crate::core::AggregateKind::Conversation,
-            id: crate::ConversationId::from_bytes([82; 16]).to_string(),
-        },
-    );
-    let scope = issuer.issue(
-        "owner",
-        &crate::Capabilities::new([
-            volume.capability(VolumeOperation::Read, &mut None)?,
-            volume.capability(VolumeOperation::Write, &mut None)?,
-        ]),
-        Some(agent),
-        None,
-        &mut None,
-    )?;
-    FilesystemExecutionJournal::new(
-        Arc::new(acyclic_stream::MemoryStream::default()),
-        host,
-        &SchemaRegistry::new(),
-        crate::filesystem::FilesystemJournalBinding {
-            volume: &volume,
-            verifier: &issuer.verifier(&mut None)?,
-            scope: &scope,
-            maximum_bytes: 65_536,
-            io: None,
-        },
-    )
 }

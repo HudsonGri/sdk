@@ -19,6 +19,7 @@ pub(super) struct ExecutionSummary {
     pub(super) pages: persistent_index::NodeCache,
     pub(super) scratch: Option<persistent_index::Scratch>,
     pub(super) partial: bool,
+    pub(super) pending_steps: step_index::Pending,
 }
 
 impl ExecutionSummary {
@@ -342,6 +343,14 @@ impl ExecutionSummary {
             ExecutionEvent::Started { .. } => {}
         }
         self.retries.insert(key, (sequence, digest), io)?;
+        self.pending_steps.push(
+            sequence,
+            key,
+            digest,
+            event.step(),
+            tool_key.map(|key| (key, !matches!(event, ExecutionEvent::ToolStarted { .. }))),
+            io,
+        )?;
         self.tail = sequence;
         Ok(())
     }

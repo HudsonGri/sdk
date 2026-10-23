@@ -118,9 +118,10 @@ where
         let mut writer =
             persistent_index::Writer::new(&self.stream, &pages, base, io, summary.scratch.take())?;
         writer.set_cache(std::mem::take(&mut summary.pages), io)?;
-        let roots = self
+        let mut roots = self
             .stage_summary_index(&mut writer, summary, retry, event, io)
             .await?;
+        roots[4] = summary.pending_steps.stage(&mut writer, roots[4]).await?;
         summary.pages = writer.prepare_cache()?;
         let state = IndexState {
             operation,

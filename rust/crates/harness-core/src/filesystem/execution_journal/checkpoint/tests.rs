@@ -132,7 +132,7 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
             }
         })
         .transpose()?;
-    let journal = super::super::summary::tests::turn_cost::journal().await?;
+    let journal = crate::filesystem::execution_journal::test_support::journal().await?;
     let operation = OperationId::new();
     let mut summary = ExecutionSummary {
         operation: Some(operation),
@@ -185,7 +185,7 @@ async fn check_cut(native: Option<bool>) -> Result<()> {
 
 #[tokio::test]
 async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Result<()> {
-    let journal = super::super::summary::tests::turn_cost::journal().await?;
+    let journal = crate::filesystem::execution_journal::test_support::journal().await?;
     let operation = OperationId::new();
     let mut summary = ExecutionSummary {
         operation: Some(operation),

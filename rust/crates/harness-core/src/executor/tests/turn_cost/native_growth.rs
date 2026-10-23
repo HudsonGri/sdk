@@ -1,5 +1,85 @@
 use super::*;
 
+/// Keeps the independently validated replay fallback in the native custody
+/// tests even when the provider also supports direct persisted step queries.
+pub(super) struct ReplayOnly<'a>(pub(super) &'a dyn ExecutionJournal);
+
+impl ExecutionJournal for ReplayOnly<'_> {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<ExecutionClaim<'a>> {
+        self.0.claim_execution(operation, io)
+    }
+    fn replay<'a>(
+        &'a self,
+        operation: OperationId,
+        after: u64,
+        maximum: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.0.replay(operation, after, maximum, io)
+    }
+    fn append<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        self.0.append(operation, key, event, io)
+    }
+    fn append_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        self.0.append_if_tail(operation, tail, key, event, io)
+    }
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        bytes: &'a [u8],
+        media: &'static str,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.0.stage(operation, key, bytes, media, io)
+    }
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.0.load(reference, io)
+    }
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        self.0.supports_native_execution(work)
+    }
+    fn open_interaction<'a>(
+        &'a self,
+        id: InteractionId,
+        interaction: &'a Interaction,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        self.0.open_interaction(id, interaction, io)
+    }
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: InteractionId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
+        self.0.interaction_outcome(id, io)
+    }
+}
+
 #[tokio::test]
 async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;

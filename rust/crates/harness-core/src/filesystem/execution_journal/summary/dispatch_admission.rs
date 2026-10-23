@@ -25,7 +25,7 @@ async fn allocation_cuts_cannot_commit_an_unreported_tool_claim() -> Result<()> 
 }
 
 async fn run_cut(native: bool, cutoff: u64) -> Result<(bool, u64)> {
-    let journal = super::turn_cost::journal().await?;
+    let journal = crate::filesystem::execution_journal::test_support::journal().await?;
     let operation = OperationId::from_bytes([83; 16]);
     journal
         .append(

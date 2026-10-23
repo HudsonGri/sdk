@@ -65,7 +65,7 @@ pub(super) struct RecordIndex<'a> {
 }
 
 impl ExecutionEvent {
-    pub(super) fn step(&self) -> Option<u32> {
+    pub(crate) fn step(&self) -> Option<u32> {
         match self {
             Self::Started { .. } => None,
             Self::ContextPrepared { step, .. }
@@ -79,7 +79,7 @@ impl ExecutionEvent {
         }
     }
 
-    fn copy_indexed(&self, io: Option<&PreparationIo>) -> Result<Self> {
+    pub(crate) fn copy_indexed(&self, io: Option<&PreparationIo>) -> Result<Self> {
         use ExecutionEvent::*;
         let file = |value: &FileRef| crate::model::clone_file(value, io);
         let text = |value: &str| stock_string_copy(value, io);
@@ -365,8 +365,24 @@ impl StockExecution<'_> {
         step: u32,
         include_started: bool,
         maximum: usize,
-        select: impl Fn(&ExecutionEvent) -> bool,
+        select: impl Fn(&ExecutionEvent) -> bool + Send + Sync,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
+        validate_journal(journal, self.io)?;
+        let query = ExecutionRecordQuery {
+            operation,
+            step,
+            include_started,
+            maximum_step_records: ExecutionRecordQuery::step_bound(self.stock.limits),
+            maximum,
+            select: &select,
+        };
+        if let Some(future) = journal.indexed_records(query, self.io)?
+            && let Some(result) = future.await?
+        {
+            // Keep the fallback validator's prefix untouched. A later raw append
+            // must still pass complete sequence and retry-identity validation.
+            return Ok(result);
+        }
         let mut index = self.records.lock().await;
         if let Err(error) = index.refresh(journal, operation, self.io).await {
             // A cancelled/failed page is not an authenticated cache prefix.

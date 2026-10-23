@@ -186,7 +186,7 @@ pub(crate) async fn replay_execution<'a>(
 
 #[cfg(feature = "filesystem")]
 impl ExecutionRecord {
-    pub(super) fn payload_bytes(&self, io: Option<&PreparationIo>) -> Result<u64> {
+    pub(crate) fn payload_bytes(&self, io: Option<&PreparationIo>) -> Result<u64> {
         (self.idempotency_key.capacity() as u64)
             .checked_add(self.event.payload_bytes(io)?)
             .ok_or_else(|| {

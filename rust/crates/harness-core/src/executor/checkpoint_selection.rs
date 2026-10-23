@@ -8,14 +8,49 @@ pub async fn canonical_checkpoint_for_operation(
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Option<FileRef>> {
-    let records = replay_execution(
-        journal,
-        operation_id,
-        1,
-        |event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
-        io,
-    )
-    .await?;
+    validate_journal(journal, io)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let before = io
+        .filter(|io| io.original_native_work().is_some())
+        .map(PreparationIo::owned_bytes)
+        .transpose()?
+        .unwrap_or(0);
+    let query = ExecutionRecordQuery {
+        operation: operation_id,
+        step: 0,
+        include_started: false,
+        maximum_step_records: ExecutionRecordQuery::step_bound(limits),
+        maximum: 1,
+        select: &|event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
+    };
+    let indexed = match journal.indexed_records(query, io)? {
+        Some(future) => future.await?,
+        None => None,
+    };
+    let records = if let Some((tail, records)) = indexed {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let hold = io
+            .filter(|io| io.original_native_work().is_some())
+            .map(|io| {
+                let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                    stock_boundary(Some(io), Storage, "indexed checkpoint ownership underflows")
+                })?;
+                io.guard_owned(retained)
+            })
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let hold = None;
+        (tail, records, hold)
+    } else {
+        replay_execution(
+            journal,
+            operation_id,
+            1,
+            |event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
+            io,
+        )
+        .await?
+    };
     let Some(record) = records.1.first() else {
         return Ok(None);
     };

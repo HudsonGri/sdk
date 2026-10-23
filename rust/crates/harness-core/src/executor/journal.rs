@@ -18,6 +18,38 @@ pub(super) fn validate_journal(
     Ok(())
 }
 
+/// Bounded selection from one complete authenticated execution step.
+pub struct ExecutionRecordQuery<'a> {
+    /// Exact operation whose authenticated step is selected.
+    pub operation: OperationId,
+    /// Step ordinal within that operation.
+    pub step: u32,
+    /// Includes the operation's initial binding in the selection.
+    pub include_started: bool,
+    /// Bound on all observations admitted for this step, including summary work.
+    pub maximum_step_records: usize,
+    /// Bound on the selected output records.
+    pub maximum: usize,
+    /// Selection applied only after authenticating each indexed observation.
+    pub select: &'a (dyn Fn(&ExecutionEvent) -> bool + Send + Sync),
+}
+
+/// Selected observations and the complete journal tail at their authenticated cut.
+pub type IndexedExecutionRecords = (u64, Vec<ExecutionRecord>);
+/// Optional indexed result; a missing result requires ordinary journal replay.
+pub type IndexedExecutionFuture<'a> =
+    crate::conversation::BoundedContentFuture<'a, Option<IndexedExecutionRecords>>;
+
+impl ExecutionRecordQuery<'_> {
+    pub(crate) fn step_bound(limits: Limits) -> usize {
+        limits
+            .model_events_per_step
+            .saturating_mul(2)
+            .saturating_add(limits.tool_calls_per_step.saturating_mul(3))
+            .saturating_add(7)
+    }
+}
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Excludes live attempts before replay can mistake them for crashed work.
@@ -47,6 +79,16 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         maximum: u32,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>>;
+
+    /// Selects a complete authenticated step at a current journal cut.
+    /// `None` requires ordinary replay; an index must never omit an unindexed tail.
+    fn indexed_records<'a>(
+        &'a self,
+        _query: ExecutionRecordQuery<'a>,
+        _io: Option<&'a PreparationIo>,
+    ) -> Result<Option<IndexedExecutionFuture<'a>>> {
+        Ok(None)
+    }
 
     /// Appends one reconstructable observation on the original optional ledger.
     fn append<'a>(

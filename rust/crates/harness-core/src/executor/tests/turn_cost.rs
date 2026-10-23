@@ -346,6 +346,10 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
 async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
     let journal = storage.journal();
+    // This exercises the fallback driver cache. The Filesystem journal's
+    // persisted index can now answer without retaining a full driver index.
+    let replay_only = native_growth::ReplayOnly(journal.as_ref());
+    let journal: &dyn ExecutionJournal = &replay_only;
     let operation = OperationId::new();
     journal
         .append(
@@ -388,9 +392,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
             ..StockExecution::ordinary(&executor)
         };
         for _ in 0..2 {
-            let records = execution
-                .prefix_records(journal.as_ref(), operation, 0)
-                .await?;
+            let records = execution.prefix_records(journal, operation, 0).await?;
             assert_eq!(records.len(), 2);
             let output = io.guard_owned(io.owned_bytes()?)?;
             drop(records);
@@ -399,7 +401,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
             assert!(
                 execution
                     .ensure_started(
-                        journal.as_ref(),
+                        journal,
                         &TurnInput {
                             operation_id: operation,
                             input: ModelContent::Text("different binding".into()),
@@ -423,7 +425,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
         cancellation.cancel();
         assert!(
             execution
-                .prefix_records(journal.as_ref(), operation, 0)
+                .prefix_records(journal, operation, 0)
                 .await
                 .is_err()
         );

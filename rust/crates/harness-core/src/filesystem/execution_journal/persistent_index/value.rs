@@ -4,7 +4,7 @@ use read::ReadNode;
 
 const LINK_BYTES: usize = 41;
 const HEADER_BYTES: usize = 52;
-const CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES - 41 - LINK_BYTES;
+const CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES - node::LEAF_HEADER_BYTES - LINK_BYTES;
 
 struct Header {
     length: usize,
@@ -26,7 +26,7 @@ impl Header {
         };
         // A chain cannot contain more pages than precede its root. Reject an
         // impossible advertised allocation before reserving its output buffer.
-        if length <= acyclic_stream::MAX_RECORD_BYTES - 41
+        if length <= acyclic_stream::MAX_RECORD_BYTES - node::LEAF_HEADER_BYTES
             || last.sequence >= sequence
             || length.div_ceil(CHUNK_BYTES) as u64 > last.sequence.saturating_add(1)
         {
@@ -94,7 +94,7 @@ impl<P: StreamProvider> Writer<'_, P> {
         value: &[u8],
         io: Option<&PreparationIo>,
     ) -> Result<NodeRef> {
-        if value.len() <= acyclic_stream::MAX_RECORD_BYTES - 41 {
+        if value.len() <= acyclic_stream::MAX_RECORD_BYTES - node::LEAF_HEADER_BYTES {
             return self.set(root, key, value).await;
         }
         let mut previous = None;
