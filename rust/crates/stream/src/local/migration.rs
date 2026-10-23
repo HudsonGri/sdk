@@ -102,6 +102,45 @@ impl LocalStream {
 mod tests {
     use super::*;
 
+    /// An operator-supplied offline copy is never checked into the repository.
+    #[tokio::test]
+    #[ignore = "requires ACYCLIC_STREAM_OFFLINE_COPY pointing to a private closed store"]
+    async fn capacity_copy_operator_fixture() -> Result<(), Box<dyn std::error::Error>> {
+        let source = std::env::var("ACYCLIC_STREAM_OFFLINE_COPY")?;
+        let directory = tempfile::tempdir()?;
+        let previous = LocalStreamLimits::default();
+        let provider = LocalStream::open(&source, previous).await?;
+        let expected = provider.inner.provider.encode_state().await;
+        drop(provider);
+        let increased = LocalStreamLimits {
+            memory: MemoryLimits {
+                paths: 500_000,
+                ..previous.memory
+            },
+            ..previous
+        };
+        let migrated = LocalStream::copy_with_increased_capacity(
+            &source,
+            directory.path().join("migrated"),
+            previous,
+            increased,
+        )
+        .await?;
+        assert_eq!(migrated.inner.provider.encode_state().await, expected);
+        migrated
+            .append(AppendRequest {
+                path: StreamPath::new(
+                    "capacity-verification/new/hierarchy/with/more/than/four/paths",
+                )?,
+                records: vec![Bytes::from_static(b"verified")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        println!("Complete recovered state preserved; new hierarchy allocation succeeded.");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn capacity_copy_preserves_history_retries_and_source()
     -> Result<(), Box<dyn std::error::Error>> {
