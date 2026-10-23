@@ -1,14 +1,11 @@
 //! Git-shaped compatibility state over filesystem generations.
 
-use crate::kernel::{FileKind, NamespacePath};
-use crate::model::{CheckoutMode, GenerationSelector, VolumeLimits};
+use crate::kernel::FileKind;
 use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
-use crate::storage::ByteRange;
-use crate::workspace::customer_path;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GenerationId,
-    IdempotencyKey, OperationId, ResolvedFile, ResolvedFileRangeReadRequest, TransactionCommit,
-    WorkBudget, Workspace, WorkspaceError, WorkspaceId,
+    IdempotencyKey, OperationId, TransactionCommit, WorkBudget, Workspace, WorkspaceError,
+    WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,8 +16,6 @@ use uuid::Uuid;
 pub(super) const STATE_VERSION: u32 = 1;
 
 pub(super) const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
-
-pub(super) const GREP_READ_CONCURRENCY: usize = 32;
 
 pub(super) const MAXIMUM_PATCH_FILE_BYTES: u64 = 64 * 1024 * 1024;
 

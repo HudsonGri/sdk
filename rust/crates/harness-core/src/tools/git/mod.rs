@@ -11,7 +11,7 @@ use acyclic_fs::{
     WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
     apply_git_patch, blame_git_generations, capture_git_compatible_generation,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts,
-    git_paths_preserving_reserved, git_restore_paths, grep_git_generation, walk_git_tree,
+    git_paths_preserving_reserved, git_restore_paths, WorkspaceRestore, walk_git_tree,
 };
 use serde_json::json;
 use std::{
@@ -51,6 +51,8 @@ use crate::Error;
 pub(crate) struct WorkspaceGitExecutor<'a, F> {
     /// Revalidates task ownership before every effect.
     pub before_effect: &'a F,
+    pub read_allowed: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    pub search_progress: Option<&'a dyn SearchProgress>,
     /// Shared local filesystem.
     pub fs: &'a LocalFs,
     /// Durable compatibility and lineage store.
@@ -116,6 +118,10 @@ mod errors;
 mod failure;
 pub use failure::Failure;
 mod executor;
+mod index;
+mod search;
+pub use index::{IndexedNames, NamePage};
+pub use search::{GrepProgress, NameWalk, SearchName, SearchProgress, search_ignore, walk_names};
 mod materialize;
 mod resolve;
 mod restore;

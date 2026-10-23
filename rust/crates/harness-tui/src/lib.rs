@@ -65,7 +65,7 @@ pub use transcript_rows::TranscriptRows;
 #[cfg(feature = "tui")]
 pub use completion::{
     Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork,
-    completion_request, fuzzy_score,
+    PATH_RESULT_COUNT, PathMatches, completion_request, fuzzy_score,
 };
 #[cfg(feature = "tui")]
 pub use completion_popup::CompletionPopup;

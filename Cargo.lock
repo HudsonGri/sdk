@@ -202,6 +202,7 @@ dependencies = [
  "hmac 0.13.0",
  "http",
  "icu_casemap",
+ "imbl",
  "indexed_db_futures",
  "js-sys",
  "libc",

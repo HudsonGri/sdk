@@ -42,6 +42,8 @@ async fn execute(
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &args
             .iter()
@@ -120,6 +122,8 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &["merge".into(), "topic".into()],
         || async {
@@ -666,6 +670,8 @@ async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> Te
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
+            read_allowed: &|_| true,
+            search_progress: None,
         },
         &["merge".into(), "topic".into()],
         || {

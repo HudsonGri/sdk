@@ -183,7 +183,13 @@ where
                 pattern,
                 path,
                 tree,
-            } => self.grep(pattern, path.as_deref(), tree).await,
+            } => {
+                let result = self.grep(*tree, pattern, path.as_deref()).await?;
+                Ok(GitFilesystemResult::Data {
+                    kind: "grep".to_owned(),
+                    value: serde_json::to_value(result).map_err(json_error)?,
+                })
+            }
             GitFilesystemAction::Blame { path, commits } => self.blame(path, commits).await,
             GitFilesystemAction::Clean {
                 dry_run,

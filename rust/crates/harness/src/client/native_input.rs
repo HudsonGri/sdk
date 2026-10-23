@@ -56,6 +56,9 @@ async fn next_event<
     let animation = animation_frame::<true>(animation);
     tokio::pin!(animation);
     loop {
+        completions
+            .refresh_query(prompt, commands.selected_task()?.or(commands.active_task()))
+            .await?;
         let revision = client.presentation_revision();
         tokio::select! {
             biased;

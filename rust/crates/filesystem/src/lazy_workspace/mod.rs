@@ -103,6 +103,10 @@ pub use qualification::NativePublicationSnapshot;
 pub(crate) use qualification::NativeSnapshotContext;
 pub use selected_plan::SelectedImportPlan;
 mod binding;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+mod name_changes;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+pub use name_changes::{NativeNameChanges, NativeNameDelta};
 mod exactify;
 mod materialize;
 mod overlay;

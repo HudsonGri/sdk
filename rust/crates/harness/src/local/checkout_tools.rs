@@ -21,6 +21,7 @@ mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
 pub(super) mod shell;
+mod search;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -111,18 +112,14 @@ impl CheckoutTools {
         {
             let mut state = lock_owned(StateArc::clone(&shared)).await;
             if !state.initialized {
-                let (active, pending) = workspace.selected_view().await?;
+                let (active, _) = workspace.selected_view().await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
-                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
-                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
-                    .await?;
-                state.watcher = if workspace.fresh {
-                    Some(capture::Cursor::initial(&workspace, &capture_policy)?)
-                } else {
-                    None
-                };
+                // Construction is passive. Recovery and capture belong to
+                // commands that enter the physical checkout; name/content
+                // search must be usable before any such command runs.
+                state.watcher = None;
                 state.initialized = true;
             }
         }
@@ -325,11 +322,13 @@ impl ToolExecutor for CheckoutTools {
         let context = context
             .ok_or_else(|| Error::Unauthorized("checkout command requires a task".into()))?;
         let scope = context.effective_scope();
+        let search = search::command(invocation).is_some();
         if (invocation.name != crate::tools::shell::PLATFORM.name && invocation.name != "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || (!(scope.grants().contains(&self.read_grant)
-                && scope.grants().contains(&self.write_grant))
+            || (!search
+                && !(scope.grants().contains(&self.read_grant)
+                    && scope.grants().contains(&self.write_grant))
                 && self.child_project(context)?.is_none())
             || crate::tools::catalog()
                 .find(|spec| spec.name == invocation.name)
@@ -352,6 +351,10 @@ impl ToolExecutor for CheckoutTools {
             let original = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            if let Some(parsed) = search::command(&invocation) {
+                let request = serde_json::to_vec(&invocation).map_err(storage)?;
+                return self.search(parsed, original, request).await;
+            }
             if let Some(project) = self.child_project(original)? {
                 let selected = self.child_checkout(original, project).await?;
                 return selected.execute(invocation, context).await;

@@ -49,6 +49,16 @@ impl NativeDemandSource {
         Ok(())
     }
 
+    #[cfg(all(windows, feature = "native-watch"))]
+    pub(crate) fn capture_name_journal(
+        &self,
+        work: &mut crate::NativeMaterializationWork,
+    ) -> Result<crate::NameJournalCheckpoint, crate::WindowsUsnError> {
+        crate::windows_usn::capture_held_checkpoint(&self.inner.root, work)?
+            .name_checkpoint(self.inner.identity)
+            .map_err(|_| crate::WindowsUsnError::InvalidCheckpoint)
+    }
+
     /// Returns the stable identity of the already-open native root.
     #[must_use]
     pub fn root_identity(&self) -> crate::NativeRootIdentity {

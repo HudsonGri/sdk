@@ -40,7 +40,7 @@ impl CheckoutTools {
         let (relative, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
         let read_only = matches!(
             parsed.arguments[0].as_str(),
-            "diff" | "log" | "show" | "status"
+            "diff" | "log" | "show" | "status" | "grep"
         );
         for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
@@ -57,7 +57,7 @@ impl CheckoutTools {
         }
         if !relative.is_empty() && !read_only && parsed.arguments[0] != "merge" {
             return Err(Error::Unsupported(
-                "--volume supports diff, log, show, status and merge".into(),
+                "--volume supports diff, log, show, status, grep and merge".into(),
             ));
         }
         if !relative.is_empty() && mount.view.source.is_none() {
@@ -93,6 +93,21 @@ impl CheckoutTools {
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         owner.verify_owner(None)?.await?;
+        let (_, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
+        let read_allowed = |path: &str| {
+            mount
+                .check(
+                    acyclic_fs::access::Action::Read,
+                    path,
+                    self.clock.now_unix_millis() / 1000,
+                )
+                .is_ok()
+        };
+        let native = match &source {
+            Some(source) => Some(source.native().await),
+            None => None,
+        };
+        let native = native.as_ref().and_then(|guard| guard.as_ref());
         let (task, fence) = owner.task_binding();
         let lease_id = lease_identity(task, context.operation_id(), fence);
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(
@@ -176,6 +191,8 @@ impl CheckoutTools {
                     author: "LocalHarness",
                     authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                         .unwrap_or(i64::MAX),
+                    read_allowed: &read_allowed,
+                    search_progress: None,
                 },
                 &parsed.arguments,
                 || async { owner.verify_owner(None)?.await },

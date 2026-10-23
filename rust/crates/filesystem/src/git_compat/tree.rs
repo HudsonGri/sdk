@@ -140,15 +140,6 @@ pub struct GitGrepMatch {
     pub text: String,
 }
 
-/// Bounded machine-readable grep result.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GitGrepResult {
-    /// Literal matching lines in stable path/line order.
-    pub matches: Vec<GitGrepMatch>,
-    /// More paths, bytes, or matches existed beyond the supplied bounds.
-    pub truncated: bool,
-}
-
 /// One line attributed across explicit compatibility history.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitBlameLine {

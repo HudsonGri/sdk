@@ -134,6 +134,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self.workspace
     }
 
+    /// Checks a metadata walk's native mount boundary without reading contents.
+    pub async fn same_volume_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        directory: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        if snapshot.workspace_id != self.workspace.id() {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        let stop = cancellation(ctx);
+        let (path, guard) = NamespacePath::parse_in_profile(
+            directory,
+            self.workspace.profile(),
+            self.workspace.limits(),
+            ctx,
+            stop,
+        )?;
+        let result = accounted!(ctx, |work, stop| self.source.same_volume(
+            snapshot.source,
+            &path,
+            work,
+            stop
+        ));
+        let bytes = path.retained_bytes();
+        drop(path);
+        crate::kernel::retire_allocation(guard, bytes, ctx)?;
+        result
+    }
+
     /// Reopens a related workspace over the same source capability.
     pub async fn open_related(
         &self,

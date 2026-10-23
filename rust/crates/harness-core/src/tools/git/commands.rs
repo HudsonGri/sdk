@@ -43,7 +43,10 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     authored_at_seconds: i64,
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
-    if !git_transition_command(argv)
+    // Read-only content search must never recover a pending mutation as a
+    // side effect. Its caller deliberately holds no publication lease.
+    if !argv.first().is_some_and(|command| command == "grep")
+        && !git_transition_command(argv)
         && repository
             .resume(executor)
             .await

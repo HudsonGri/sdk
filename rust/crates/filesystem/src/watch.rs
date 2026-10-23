@@ -2720,6 +2720,7 @@ impl NativeWatch {
     pub fn accept_windows_usn_baseline(
         &mut self,
         checkpoint: crate::WindowsUsnCheckpoint,
+        work: &mut crate::NativeMaterializationWork,
     ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
         if self.rescan_in_progress {
             return Err(NativeWatchError::RescanAlreadyInProgress);
@@ -2733,13 +2734,9 @@ impl NativeWatch {
         {
             return Err(NativeWatchError::RescanAlreadyInProgress);
         }
-        let verified = match crate::validate_windows_usn_checkpoint(&self.root, checkpoint) {
+        let verified = match crate::validate_windows_usn_checkpoint(&self.root, checkpoint, work) {
             Ok(crate::WindowsUsnContinuity::Unchanged) => crate::WindowsUsnContinuity::Unchanged,
-            Ok(_) => {
-                return Ok(Ok(crate::WindowsUsnContinuity::BaselineRequired(
-                    crate::WindowsUsnDiscontinuity::VolumeAdvanced,
-                )));
-            }
+            Ok(baseline) => return Ok(Ok(baseline)),
             Err(error) => return Ok(Err(error)),
         };
         // The journal verifies prior hints; this lock fences later callbacks.
