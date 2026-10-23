@@ -43,7 +43,7 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
             } else {
                 65_536
             },
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         };
         let provider = ScriptedModelProvider::new([]).with_context_capacity(capacity);
         let provider = Arc::new(if matches!(case, Case::Accounting) {
