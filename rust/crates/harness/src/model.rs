@@ -5,6 +5,9 @@ use futures::{future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod reasoning;
+pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
+
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Model {
@@ -152,6 +155,7 @@ impl ModelContent {
                         ));
                     }
                 }
+                ModelContentPart::Reasoning { block } => block.validate_limits(limits)?,
                 ModelContentPart::Text { .. } => {}
             }
         }
@@ -211,6 +215,11 @@ pub enum ModelContentPart {
     Text {
         /// Model-visible text.
         text: String,
+    },
+    /// Canonical reasoning in its original assistant-turn position.
+    Reasoning {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
     },
     /// Immutable file reference with an explicit byte-resolution policy.
     File {
@@ -279,6 +288,11 @@ pub enum ModelEvent {
     Reasoning {
         /// Incremental reasoning content.
         delta: String,
+    },
+    /// Completed canonical reasoning, retained in transcript order.
+    ReasoningBlock {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
     },
     /// Complete request to invoke one registered tool.
     ToolCall {

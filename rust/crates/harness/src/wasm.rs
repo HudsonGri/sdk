@@ -266,6 +266,9 @@ enum WasmFileProjectionPolicy {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelContentPart {
+    Reasoning {
+        block: crate::model::ReasoningBlock,
+    },
     Text {
         text: String,
     },
@@ -351,6 +354,9 @@ struct WasmModelRequestWire {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelEvent {
+    ReasoningBlock {
+        block: crate::model::ReasoningBlock,
+    },
     Content {
         delta: String,
     },
@@ -2571,6 +2577,7 @@ pub fn admit_model_event(
             .checked_add(delta.len() as u64)
             .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
         ModelEvent::Reasoning { .. }
+        | ModelEvent::ReasoningBlock { .. }
         | ModelEvent::ToolCall { .. }
         | ModelEvent::Completed { .. } => prior_text_bytes,
     };
@@ -2587,6 +2594,7 @@ pub fn admit_model_event(
         event: match event {
             ModelEvent::Content { delta } => WasmModelEvent::Content { delta },
             ModelEvent::Reasoning { delta } => WasmModelEvent::Reasoning { delta },
+            ModelEvent::ReasoningBlock { block } => WasmModelEvent::ReasoningBlock { block },
             ModelEvent::ToolCall {
                 call_id,
                 name,

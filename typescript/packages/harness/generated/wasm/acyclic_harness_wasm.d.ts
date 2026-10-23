@@ -223,6 +223,55 @@ export interface WasmTurnPreparation {
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
 
 /**
+ * Origin identity used when choosing native replay or foreign context.
+ */
+export interface ReasoningOrigin {
+    /**
+     * Protocol family, rather than a display name or registry alias.
+     */
+    provider: string;
+    /**
+     * Exact selected model that produced this block.
+     */
+    model: string;
+    /**
+     * Nonsecret scope digest; None means ownership is unknown.
+     */
+    credential_scope: number[] | undefined;
+}
+
+/**
+ * Preservation result recorded without changing the original transcript block.
+ */
+export type ReasoningOutcome = "preserved-readable" | "preserved-opaque" | "missing-content" | "suppressed-display" | "unsupported-shape";
+
+/**
+ * Provider-neutral reasoning retained in the canonical transcript.
+ */
+export interface ReasoningBlock {
+    /**
+     * Meaning of the retained content, independent of its wire representation.
+     */
+    kind: ReasoningKind;
+    /**
+     * Readable content verified by the origin adapter, when available.
+     */
+    text: string | undefined;
+    /**
+     * Provider family, model and credential ownership of the native payload.
+     */
+    origin: ReasoningOrigin;
+    /**
+     * Exact native continuation bytes; projection never edits this payload.
+     */
+    continuity: number[];
+    /**
+     * What the origin adapter could preserve.
+     */
+    outcome: ReasoningOutcome;
+}
+
+/**
  * Public model-message input used by the runtime validator.  The content
  * input intentionally reuses the generated camelCase facade type while the
  * Rust parser below still consumes the canonical `ModelMessage` DTO.
@@ -231,6 +280,11 @@ export interface WasmModelMessageInput {
     role: WasmModelRole;
     content: WasmModelContentInput;
 }
+
+/**
+ * Reasoning shapes normalized by the adapters.
+ */
+export type ReasoningKind = "readable" | "summary" | "encrypted" | "redacted" | "signature" | "opaque";
 
 /**
  * Stable wire identity used during compatibility handshakes.
@@ -403,9 +457,9 @@ export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
 
 export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
 
-export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
+export type WasmModelContentPart = { kind: "reasoning"; block: ReasoningBlock } | { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
 
-export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+export type WasmModelEvent = { kind: "reasoning_block"; block: ReasoningBlock } | { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 
 export type WasmModelRole = "system" | "user" | "assistant" | "tool";
 
