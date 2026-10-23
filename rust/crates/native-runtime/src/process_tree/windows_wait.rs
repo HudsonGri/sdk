@@ -107,12 +107,29 @@ fn wait(child: &mut Child, deadline: Instant, precise: bool) -> io::Result<ExitS
     if let Some(status) = child.try_wait()? {
         return Ok(status);
     }
-    if Instant::now() >= deadline {
+    if crate::deadline::now() >= deadline {
         return Err(exit_timeout());
+    }
+    #[cfg(feature = "test-support")]
+    if crate::deadline::simulation::is_active() {
+        let deadline = crate::deadline::Deadline::at(deadline);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if deadline.expired() {
+                return Err(exit_timeout());
+            }
+            crate::deadline::sleep(
+                deadline
+                    .remaining()
+                    .min(std::time::Duration::from_millis(1)),
+            );
+        }
     }
     let resume = ResumeNotification::new()?;
     let timer = precise.then(deadline_timer).flatten();
-    wait_with_resume(child, deadline, timer, &resume, Instant::now)
+    wait_with_resume(child, deadline, timer, &resume, crate::deadline::now)
 }
 
 pub(in crate::process_tree) fn wait_with_resume(

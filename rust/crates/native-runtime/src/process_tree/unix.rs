@@ -586,16 +586,16 @@ fn group_has_no_live_members(
     group: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<bool> {
-    let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
+    let deadline = crate::deadline::now() + super::ProcessTree::TERMINATION_TIMEOUT;
     loop {
         if group_snapshot_has_no_live_members(group, meter)? {
             return Ok(true);
         }
-        if std::time::Instant::now() >= deadline {
+        if crate::deadline::now() >= deadline {
             return Ok(false);
         }
         super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-            std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
+            crate::deadline::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
             Ok(())
         })?;
     }

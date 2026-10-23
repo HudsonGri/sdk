@@ -339,7 +339,7 @@ where
     F::Output: Send + 'static,
 {
     let Some(context) = Context::current() else {
-        return TaskHandle::native(tokio::spawn(future));
+        return TaskHandle::native(tokio::spawn(crate::deadline::simulation::inherit_future(future)));
     };
     let active = context.accept("task");
     let owned = active.0.clone();
@@ -389,13 +389,13 @@ where
                 result
             }),
         ))
-    } else if crate::inline_blocking_allowed() {
+    } else if crate::inline_blocking_allowed() || crate::deadline::simulation::is_active() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        BlockingOwner::Shared(tokio::spawn(async move {
+        BlockingOwner::Shared(tokio::spawn(crate::deadline::simulation::inherit_future(async move {
             host_work(crate::run_blocking_io(work, None), None).await
-        }))
+        })))
     } else {
         // Without a simulation this is the production path: Tokio's blocking
         // pool, which a paused Tokio clock observes as outstanding work, so
@@ -487,6 +487,7 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    let future = crate::deadline::simulation::inherit_future(future);
     match &context.schedule.0.executor {
         Some(executor) => executor.spawn(future),
         None => TaskHandle::native(tokio::spawn(future)),
