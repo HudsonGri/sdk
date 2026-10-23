@@ -81,6 +81,26 @@ fn every_admission_root_and_its_fields_have_accounting() {
     );
 }
 
+#[repr(align(256))]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct AlignedKey(u64);
+impl OwnedBytes for AlignedKey {
+    fn owned_heap_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+}
+
+#[test]
+fn over_aligned_tree_storage_includes_node_padding() -> Result<()> {
+    let mut map = BTreeMap::new();
+    let mut set = BTreeSet::new();
+    map.insert(AlignedKey(1), ());
+    set.insert(AlignedKey(1));
+    covers(map)?;
+    covers(set)?;
+    Ok(())
+}
+
 fn json_values() -> impl Strategy<Value = Value> {
     prop_oneof![
         Just(Value::Null),

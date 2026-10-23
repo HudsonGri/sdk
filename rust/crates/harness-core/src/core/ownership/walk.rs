@@ -155,10 +155,13 @@ fn tree_nodes<T>(len: usize) -> Result<u64> {
     // The public API cannot distinguish a fresh empty tree from an empty
     // tree retaining its leaf root after removal of its last entry.
     let nodes = 1 + len.saturating_sub(1) / 5;
-    let bytes = std::mem::size_of::<T>()
-        .checked_mul(11)
-        .and_then(|slots| slots.checked_add(14 * std::mem::size_of::<usize>()))
-        .and_then(|node| node.checked_mul(nodes))
+    // Account for header/slot/edge padding too, including over-aligned keys.
+    let layout = std::alloc::Layout::array::<T>(11)
+        .ok()
+        .and_then(|slots| std::alloc::Layout::new::<[usize; 2]>().extend(slots).ok())
+        .and_then(|(leaf, _)| leaf.extend(std::alloc::Layout::new::<[usize; 12]>()).ok());
+    let bytes = layout
+        .and_then(|(node, _)| node.pad_to_align().size().checked_mul(nodes))
         .ok_or_else(|| Error::Invalid("tree ownership overflows".into()))?;
     Ok(bytes as u64)
 }
