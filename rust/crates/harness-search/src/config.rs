@@ -84,6 +84,13 @@ impl SearchConfig {
         }
     }
 
+    /// Confine credential lookup to this configuration's explicitly supplied keys.
+    #[must_use]
+    pub fn without_native_sources(mut self) -> Self {
+        self.native_sources = false;
+        self
+    }
+
     fn key(&self) -> Result<Option<String>> {
         self.resolve_with(keychain, |variable| {
             Ok(crate::native_environment::variable(variable)

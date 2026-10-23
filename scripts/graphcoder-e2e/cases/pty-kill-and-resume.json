@@ -50,7 +50,8 @@
           },
           "send": "\u0004"
         }
-      ]
+      ],
+      "resume": true
     }
   ],
   "assert": {

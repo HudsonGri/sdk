@@ -76,6 +76,11 @@ async fn open(
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
     let search = acyclic_harness::search::SearchConfig::from_file(&settings.search_config_path())?;
+    let search = if args.settings_root.is_some() {
+        search.without_native_sources()
+    } else {
+        search
+    };
     if let Some(provider) = search.provider()? {
         config = config.search_provider(provider);
     }

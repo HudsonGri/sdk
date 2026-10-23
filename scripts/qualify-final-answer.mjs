@@ -10,7 +10,7 @@ import { isAbsolute, join } from "node:path";
 
 const [binary, scenario = "unicode", mode = "prompt"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping binary required");
-assert.ok(["unicode", "empty", "completed-only", "terminal-output"].includes(scenario));
+assert.ok(["unicode", "empty", "completed-only", "terminal-output", "pre-dispatch"].includes(scenario));
 assert.ok(["prompt", "jsonl"].includes(mode));
 const root = mkdtempSync(join(tmpdir(), "final-answer-"));
 const workspace = join(root, "workspace"), settings = join(root, "settings");
@@ -18,6 +18,7 @@ mkdirSync(workspace);
 for (const path of ["AppData/Local", "AppData/Roaming", "codex-home"]) {
   mkdirSync(join(settings, path), { recursive: true });
 }
+const failed = scenario === "pre-dispatch";
 const answer = scenario === "empty" ? "" : "  final λ\nanswer 猫\n";
 const sse = value => `data: ${JSON.stringify(value)}\n\n`;
 let requests = 0;
@@ -26,7 +27,7 @@ const server = createServer(async (request, response) => {
   for await (const chunk of request) bytes += chunk;
   const body = JSON.parse(bytes);
   response.setHeader("content-type", request.url === "/count" ? "application/json" : "text/event-stream");
-  if (request.url === "/count") { response.end('{"input_tokens":64}'); return; }
+  if (request.url === "/count") { response.end(JSON.stringify({ input_tokens: failed ? 70000 : 64 })); return; }
   assert.equal(request.url, "/responses");
   requests++;
   const step = body.input.filter(item => item.type === "function_call_output").length;
@@ -54,7 +55,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const catalog = join(root, "catalog.json");
 writeFileSync(catalog, JSON.stringify({ fixture: {
   adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
-  models: { tiny: { capacity: { context_tokens: 8192, output_tokens: 1024 }, features: { tools: true, images: false } } },
+  models: { tiny: { capacity: { context_tokens: failed ? 65536 : 8192, output_tokens: failed ? 4096 : 1024 }, features: { tools: true, images: false } } },
   max_event_bytes: 8192,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
 } }));
@@ -75,21 +76,25 @@ async function run(replay) {
     bytes: { text: JSON.stringify({ kind: "prompt", text: "qualify final answer", source: null, mentions: [] }) } };
   child.stdin.end(mode === "jsonl" && !replay ? `${JSON.stringify(request)}\n` : "");
   const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
-  assert.equal(code, 0, stderr);
+  assert.equal(code, failed ? 1 : 0, stderr);
   const frames = stdout.trim().split("\n").map(line => JSON.parse(line));
   const files = [...frames[0][1].files, ...frames.slice(1).flatMap(change => [change.file, ...change.files].filter(Boolean))];
   const results = files.filter(file => file.key.Session?.file.ExecutionResult === operation)
     .map(file => JSON.parse(file.bytes.text));
   assert.equal(results.length, 1, "one authoritative result");
-  assert.equal(results[0].completion, "completed");
-  assert.equal(results[0].ok.steps, 3);
-  assert.equal(results[0].ok.text, answer);
+  assert.equal(results[0].completion, failed ? "failed" : "completed");
+  if (failed) {
+    assert.match(JSON.stringify(results[0]), /mandatory content leaves no compaction source/);
+  } else {
+    assert.equal(results[0].ok.steps, 3);
+    assert.equal(results[0].ok.text, answer);
+  }
 }
 try {
   await run(false);
-  assert.equal(requests, 3);
+  assert.equal(requests, failed ? 0 : 3);
   await run(true);
-  assert.equal(requests, 3, "replay must not dispatch again");
+  assert.equal(requests, failed ? 0 : 3, "replay must not dispatch again");
   console.log(`PASS final-answer ${scenario} ${mode}`);
 } finally {
   server.closeAllConnections();

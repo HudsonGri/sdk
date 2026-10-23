@@ -108,3 +108,13 @@ fn malformed_config_and_keychain_errors_do_not_disclose_secrets() -> Result<()> 
     assert!(!error.to_string().contains("unknown-secret"));
     Ok(())
 }
+
+#[test]
+fn isolated_settings_never_consult_native_credentials() -> Result<()> {
+    let config = SearchConfig::default().without_native_sources();
+    assert_eq!(config.resolve_with(
+        |_| panic!("isolated settings consulted keychain"),
+        |_| panic!("isolated settings consulted environment"),
+    )?, None);
+    Ok(())
+}
