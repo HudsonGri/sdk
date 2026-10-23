@@ -174,8 +174,9 @@ async fn root_metadata_does_not_interrupt_file_diffs_or_replay() -> TestResult {
         )
         .await?
         .value;
+    let root = checkout.root().root_file_id;
     let mut root_metadata = checkout
-        .read_metadata("/", BOUNDARY_BUDGET, &cancel)
+        .read_metadata(root, BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
     root_metadata.modified_ns = acyclic_fs::kernel::MetadataField::Value(1_700_000_000_000_000_000);
