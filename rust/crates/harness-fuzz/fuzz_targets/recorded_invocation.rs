@@ -1,7 +1,8 @@
 #![no_main]
 #[cfg(test)]
 use acyclic_harness::{
-    AgentId, Capabilities, Result, conversation, executor, filesystem, model, projection, resources, tool,
+    AgentId, Capabilities, Result, conversation, executor, filesystem, model, projection,
+    resources, tool,
 };
 
 mod recorded_invocation_input;
