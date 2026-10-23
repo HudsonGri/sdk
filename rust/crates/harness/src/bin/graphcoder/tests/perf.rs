@@ -31,16 +31,41 @@ impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
 
 /// Bytes, write calls and flushes reaching the terminal output half.
 #[derive(Clone, Default)]
-struct Counter(Rc<RefCell<(Vec<u8>, u64, u64)>>);
+struct Counter(Rc<RefCell<DeviceLog>>);
+
+#[derive(Default)]
+struct DeviceLog {
+    bytes: Vec<u8>,
+    writes: u64,
+    flushes: u64,
+    boundaries: Vec<usize>,
+    allocations: u64,
+}
+
+impl Counter {
+    /// Recorder storage belongs to the observer, not to the output path.
+    /// Nested allocation scopes still contribute to the enclosing measurement.
+    fn record(&self, update: impl FnOnce(&mut DeviceLog)) {
+        let mut device = self.0.borrow_mut();
+        let allocations = acyclic_test_support::measure(|| update(&mut device)).count_total;
+        device.allocations += allocations;
+    }
+
+    fn mark_frame(&self) {
+        self.record(|device| device.boundaries.push(device.bytes.len()));
+    }
+}
+
 impl io::Write for Counter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let mut device = self.0.borrow_mut();
-        device.0.extend_from_slice(bytes);
-        device.1 += 1;
+        self.record(|device| {
+            device.bytes.extend_from_slice(bytes);
+            device.writes += 1;
+        });
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.borrow_mut().2 += 1;
+        self.0.borrow_mut().flushes += 1;
         Ok(())
     }
 }
@@ -133,8 +158,6 @@ pub(super) struct Rig {
     shown: Option<(Rect, acyclic_harness::tui::TranscriptAnchor)>,
     /// Whether moved bands are scrolled on the device, as view.rs does.
     regions: bool,
-    /// Device length after each frame.
-    boundaries: Vec<usize>,
 }
 
 enum Output {
@@ -252,7 +275,6 @@ impl Rig {
             frames: 0,
             shown: None,
             regions: true,
-            boundaries: Vec::new(),
         };
         rig.frame();
         rig
@@ -305,7 +327,7 @@ impl Rig {
         self.areas = areas;
         self.maximum_scroll = maximum_scroll;
         self.frames += 1;
-        self.boundaries.push(self.output.0.borrow().0.len());
+        self.output.mark_frame();
     }
 
     /// view.rs after its wait: prompt input, file effects, then prompt persistence.
@@ -387,33 +409,44 @@ impl Rig {
     }
 
     pub fn measure(&mut self, run: impl FnOnce(&mut Self)) -> Work {
+        self.measure_with_observer::<false>(run)
+    }
+
+    fn measure_with_observer<const INCLUDE: bool>(&mut self, run: impl FnOnce(&mut Self)) -> Work {
         let (bytes, writes, flushes) = self.counts();
         let frames = self.frames;
+        let observer = self.output.0.borrow().allocations;
         let allocations = acyclic_test_support::measure(|| run(self)).count_total;
+        let observer = self.output.0.borrow().allocations - observer;
         let (b, w, f) = self.counts();
         Work {
             frames: self.frames - frames,
             bytes: b - bytes,
             writes: w - writes,
             flushes: f - flushes,
-            allocations,
+            allocations: if INCLUDE {
+                allocations
+            } else {
+                allocations - observer
+            },
         }
     }
 
     fn counts(&self) -> (u64, u64, u64) {
         let device = self.output.0.borrow();
-        (device.0.len() as u64, device.1, device.2)
+        (device.bytes.len() as u64, device.writes, device.flushes)
     }
 
     /// What a terminal emulator shows after each frame since construction.
     fn screens(&self) -> Vec<Screen> {
-        let bytes = &self.output.0.borrow().0;
+        let device = self.output.0.borrow();
         let mut emulator = Emulator::new();
         let mut start = 0;
-        self.boundaries
+        device
+            .boundaries
             .iter()
             .map(|&end| {
-                emulator.advance(&bytes[start..end]);
+                emulator.advance(&device.bytes[start..end]);
                 start = end;
                 emulator.screen()
             })
@@ -617,6 +650,35 @@ fn mixed(rig: &mut Rig) {
     }
 }
 
+fn allocation_boundary<const INCLUDE: bool>() {
+    let mut rig = Rig::with_output(0, 20, 5, false);
+    {
+        let mut device = rig.output.0.borrow_mut();
+        device.bytes = Vec::new();
+        device.boundaries = Vec::new();
+    }
+    let work = rig.measure_with_observer::<INCLUDE>(|rig| {
+        io::Write::write_all(&mut rig.output, b"observed frame bytes").unwrap();
+        rig.output.mark_frame();
+        // Application-owned storage must remain in the measured total.
+        std::hint::black_box(Box::new([0u8; 64]));
+    });
+    assert_eq!((work.bytes, work.writes), (20, 1));
+    assert_eq!(rig.output.0.borrow().boundaries, [20]);
+    assert_eq!(work.allocations, 1, "device observer storage is excluded");
+}
+
+#[test]
+fn allocation_measurement_excludes_only_device_observer_storage() {
+    allocation_boundary::<false>();
+}
+
+#[test]
+#[should_panic(expected = "device observer storage is excluded")]
+fn negative_control_device_observer_storage_contaminates_allocations() {
+    allocation_boundary::<true>();
+}
+
 #[test]
 fn every_changed_frame_is_one_device_write_independent_of_transcript_length() {
     let mut work = Vec::new();
@@ -646,7 +708,11 @@ fn every_changed_frame_is_one_device_write_independent_of_transcript_length() {
         let unchanged =
             after.frames - changed(&screens[screens.len() - 1 - after.frames as usize..]);
         assert!(unchanged > 0, "unchanged frames are measured");
-        assert_eq!(after.allocations + unchanged, before.allocations);
+        assert_eq!(
+            after.allocations + unchanged,
+            before.allocations,
+            "{lines} lines: before={before:?}, after={after:?}, unchanged={unchanged}"
+        );
         assert!(
             before.writes > 10 * before.frames,
             "baseline issues per-command writes"
@@ -707,7 +773,7 @@ fn streamed_rows(height: u16, regions: bool) -> Vec<usize> {
     rig.regions = regions;
     (0..4)
         .map(|_| {
-            let start = rig.output.0.borrow().0.len();
+            let start = rig.output.0.borrow().bytes.len();
             let work = rig.measure(|rig| {
                 rig.stream("A streamed paragraph line.\n\n");
                 rig.frame();
@@ -716,7 +782,7 @@ fn streamed_rows(height: u16, regions: bool) -> Vec<usize> {
             // Hardware region scrolling also moves the adjacent scrollbar;
             // the diff repairs its cells separately from transcript content.
             rows_addressed(
-                &rig.output.0.borrow().0[start..],
+                &rig.output.0.borrow().bytes[start..],
                 rig.areas.transcript.right(),
             )
             .len()
@@ -755,7 +821,7 @@ fn wheel_rows(height: u16, regions: bool, notches: usize) -> usize {
     super::file_views::append_text(&mut rig.views, &rig.owner.id, false, &body);
     rig.frame();
     rig.scroll_back(100);
-    let start = rig.output.0.borrow().0.len();
+    let start = rig.output.0.borrow().bytes.len();
     let mut batch = client::InputBatch::new();
     batch.extend((0..notches).map(|_| wheel(true)));
     let mut effects = Vec::new();
@@ -780,7 +846,7 @@ fn wheel_rows(height: u16, regions: bool, notches: usize) -> usize {
     assert!(batch.is_empty());
     assert_eq!((work.frames, work.writes), (1, 1));
     let addressed = rows_addressed(
-        &rig.output.0.borrow().0[start..],
+        &rig.output.0.borrow().bytes[start..],
         rig.areas.transcript.right(),
     );
     let band = rig.areas.transcript;
