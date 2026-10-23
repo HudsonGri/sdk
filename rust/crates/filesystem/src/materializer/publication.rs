@@ -150,6 +150,9 @@ where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
+    // Admitted before the first open: planning, preparation and the backend
+    // all hold descriptors under this one admission.
+    let admission = NativeTreeMaterializationBackend::admission().await?;
     before_effect().await?;
     if work.budget() != request.budget || from.id() != request.from || to.id() != request.to {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -227,7 +230,13 @@ where
         )
         .await?;
     }
-    let backend = NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
+    let backend = NativeTreeMaterializationBackend::new(
+        root,
+        operation,
+        allocation,
+        work.clone(),
+        admission,
+    )?;
     let materializer = JournaledMaterializer::new(store, backend);
     materializer.verify_allocation(&journal).await?;
     if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {

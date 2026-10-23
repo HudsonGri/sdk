@@ -14,12 +14,17 @@ use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+mod admission;
 mod cache;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(all(test, not(acyclic_native_runtime_loom)))]
 mod tests;
 
+pub use admission::{
+    ADMITTED_DESCRIPTORS_VARIABLE, DescriptorAdmission, admit_descriptors,
+    admitted_descriptor_capacity,
+};
 pub use cache::Cost as DescriptorCost;
 use cache::{Access, Cache, Cost, Entry, Files, Lease};
 
