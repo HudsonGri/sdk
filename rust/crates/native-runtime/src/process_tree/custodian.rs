@@ -279,24 +279,30 @@ fn recorded_process(identity: &str) -> io::Result<Option<OwnedHandle>> {
     else {
         return Err(io::ErrorKind::InvalidData.into());
     };
-    // SAFETY: open then verify the full recorded identity before waiting.
-    let process = unsafe {
-        OpenProcess(
-            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
-    };
-    if process.is_null() {
+    let Some(process) = open_process(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, pid)?
+    else {
         return Ok(None);
-    }
-    // SAFETY: OpenProcess transferred this handle.
-    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    };
     if creation_time(process.as_raw_handle())? == created {
         Ok(Some(process))
     } else {
         Ok(None)
     }
+}
+
+fn open_process(access: u32, pid: u32) -> io::Result<Option<OwnedHandle>> {
+    // SAFETY: opens an unshared handle, owned on success.
+    let process = unsafe { OpenProcess(access, 0, pid) };
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    // SAFETY: OpenProcess transferred this handle.
+    Ok(Some(unsafe { OwnedHandle::from_raw_handle(process) }))
 }
 
 /// A process's PID and creation time, which no later process shares.
@@ -378,42 +384,44 @@ impl Members {
         if self.0.contains_key(&pid) {
             return Ok(());
         }
-        // SAFETY: opening a handle to a PID; owned below.
-        let process = unsafe {
-            OpenProcess(
-                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                pid,
-            )
-        };
-        if process.is_null() {
+        let Some(process) =
+            open_process(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, pid)?
+        else {
             return Ok(());
-        }
+        };
         let mut member = 0;
-        let mut wait: HANDLE = std::ptr::null_mut();
-        // SAFETY: owned process and Job handles and a writable result; the
-        // wait reports once, with the PID as its context.
-        let watched = unsafe {
-            IsProcessInJob(process, job, &raw mut member) != 0
-                && member != 0
-                && RegisterWaitForSingleObject(
-                    &raw mut wait,
-                    process,
-                    Some(member_exited),
-                    std::ptr::with_exposed_provenance(pid as usize),
-                    INFINITE,
-                    WT_EXECUTEONLYONCE,
-                ) != 0
-        };
-        if watched {
-            self.0.insert(pid, (process, wait));
+        // SAFETY: the retained process handle and supplied Job handle, with a
+        // writable membership result. Failure conveys no membership evidence.
+        if unsafe { IsProcessInJob(process.as_raw_handle(), job, &raw mut member) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if member == 0 {
             return Ok(());
         }
-        let error = io::Error::last_os_error();
-        // SAFETY: the handle opened above.
-        unsafe { CloseHandle(process) };
-        // Only a failed registration of a member is an error.
-        if member != 0 { Err(error) } else { Ok(()) }
+        let mut wait: HANDLE = std::ptr::null_mut();
+        // SAFETY: this retained member's handle and a writable wait handle;
+        // the wait reports once, with the PID as its context.
+        if unsafe {
+            RegisterWaitForSingleObject(
+                &raw mut wait,
+                process.as_raw_handle(),
+                Some(member_exited),
+                std::ptr::with_exposed_provenance(pid as usize),
+                INFINITE,
+                WT_EXECUTEONLYONCE,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        self.0.insert(
+            pid,
+            (
+                std::os::windows::io::IntoRawHandle::into_raw_handle(process),
+                wait,
+            ),
+        );
+        Ok(())
     }
 
     /// Releases the member `pid`, whose exit its wait reported.
@@ -452,4 +460,53 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(accounting.ActiveProcesses)
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn opening_failure_is_not_a_process_exit_witness() {
+        // SAFETY: this test's thread-local last-error slot.
+        unsafe { SetLastError(0) };
+        // Unsupported access bits cause a real OpenProcess failure against
+        // this still-running process, without changing its security policy.
+        let opened = open_process(u32::MAX, std::process::id());
+        // SAFETY: read this thread's actual OpenProcess failure cause.
+        let code = unsafe { GetLastError() };
+        eprintln!("CUSTODIAN_OPEN_FAILURE native_error={code} result={opened:?}");
+        assert_ne!(code, 0, "the OS must reject the requested access");
+        assert!(
+            opened.is_err(),
+            "an inaccessible live process must not be classified as exited"
+        );
+    }
+
+    #[test]
+    fn an_invalid_job_cannot_prove_a_live_process_is_not_a_member() {
+        let mut members = Members::default();
+        let admitted = members.admit(INVALID_HANDLE_VALUE, std::process::id());
+        eprintln!("CUSTODIAN_MEMBERSHIP_FAILURE result={admitted:?}");
+        assert!(
+            admitted.is_err(),
+            "a failed Job query must not classify a live process as a nonmember"
+        );
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn a_recorded_process_requires_both_its_pid_and_creation_time() -> io::Result<()> {
+        let process = open_process(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            std::process::id(),
+        )?
+        .ok_or(io::ErrorKind::NotFound)?;
+        let recorded = identity(process.as_raw_handle())?;
+        assert!(recorded_process(&recorded)?.is_some());
+        let created = creation_time(process.as_raw_handle())?;
+        let reused = format!("{}-{}", std::process::id(), created ^ 1);
+        assert!(recorded_process(&reused)?.is_none());
+        Ok(())
+    }
 }
