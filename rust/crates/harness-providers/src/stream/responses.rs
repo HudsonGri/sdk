@@ -115,7 +115,7 @@ impl State<'_> {
         let content = item["content"]
             .as_array()
             .ok_or_else(|| invalid("response message content must be an array"))?;
-        let (_, text) = self
+        let (last, text) = self
             .completed_message
             .get_or_insert_with(|| (position, String::new()));
         self.budget.string(text, "")?;
@@ -132,7 +132,7 @@ impl State<'_> {
                     .ok_or_else(|| invalid("assistant message text must be a string"))?,
             )?;
         }
-        self.completed_message.as_mut().unwrap().0 = position;
+        *last = position;
         Ok(())
     }
 }

@@ -24,10 +24,15 @@ where
         pipeline: ContextPipeline,
         tools: &crate::tool::ToolRegistry,
         context: Arc<TaskContext>,
-        (fence, operation, reconcile_only, digest): (&LeaseFence, OperationId, bool, [u8; 32]),
+        (fence, operation, reconcile_only, digest, phase): (
+            &LeaseFence,
+            OperationId,
+            bool,
+            [u8; 32],
+            &mut crate::executor::DispatchPhase,
+        ),
         prompt: &ModelContent,
         io: Option<&super::super::PreparationIo>,
-        phase: &mut crate::executor::DispatchPhase,
     ) -> Result<PromptHooks> {
         if !pipeline
             .configuration_sources()
@@ -80,8 +85,7 @@ where
                     &input,
                     tools,
                     &context,
-                    (fence, operation, reconcile_only),
-                    phase,
+                    (fence, operation, reconcile_only, phase),
                 )
                 .await?
             {
@@ -133,8 +137,12 @@ where
         input: &serde_json::Value,
         tools: &crate::tool::ToolRegistry,
         context: &Arc<TaskContext>,
-        (fence, operation, reconcile_only): (&LeaseFence, OperationId, bool),
-        phase: &mut crate::executor::DispatchPhase,
+        (fence, operation, reconcile_only, phase): (
+            &LeaseFence,
+            OperationId,
+            bool,
+            &mut crate::executor::DispatchPhase,
+        ),
     ) -> Result<std::result::Result<Vec<String>, String>> {
         if bound.rules.commands(event, input, tools)?.next().is_none() {
             return Ok(Ok(Vec::new()));

@@ -228,10 +228,9 @@ where
                     pipeline,
                     &tools,
                     Arc::clone(&context),
-                    (fence, operation, reconciliation_only, manifest_digest),
+                    (fence, operation, reconciliation_only, manifest_digest, phase),
                     &command.input,
                     io,
-                    phase,
                 )
             })?
             .await?
