@@ -69,6 +69,11 @@ test('only the selected Cargo test artifact can start execution', () => {
     target: { name: 'acyclic_harness', kind: ['lib'] }, executable: '/fixture/test' };
   const output = JSON.stringify(artifact) + '\n';
   assert.equal(testExecutable(entry, output), artifact.executable);
+  const integration = { ...artifact, target: { name: 'main', kind: ['test'] } };
+  assert.equal(testExecutable({ ...entry, target: 'main' }, JSON.stringify(integration)), artifact.executable);
+  assert.throws(() => testExecutable({ ...entry, target: 'main' }, JSON.stringify({
+    ...integration, target: { name: 'main', kind: ['test', 'bin'] },
+  })), /selected test executable/);
   for (const invalid of ['', output + output,
     JSON.stringify({ ...artifact, profile: { test: false } }),
     JSON.stringify({ ...artifact, target: { name: 'other', kind: ['lib'] } }),
@@ -83,8 +88,12 @@ test('all Cargo library target kinds qualify including combined rlib and cdylib 
   // The former lib-only predicate drops the real Harness artifact despite its
   // test profile and authoritative executable. No crate-specific exception.
   assert.equal(artifact.target.kind.includes('lib'), false);
-  for (const kinds of [['lib'], ['rlib'], ['dylib'], ['cdylib'], ['staticlib'], ['proc-macro'], ['rlib', 'cdylib']]) {
-    assert.equal(testExecutable(entry, JSON.stringify({ ...artifact, target: { ...artifact.target, kind: kinds } })), artifact.executable);
+  const libraryKinds = ['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'];
+  // Every nonempty subset, including all combined crate-type declarations.
+  for (let mask = 1; mask < 2 ** libraryKinds.length; mask++) {
+    const kinds = libraryKinds.filter((_, index) => mask & (2 ** index));
+    const output = JSON.stringify({ ...artifact, target: { ...artifact.target, kind: kinds } });
+    assert.equal(testExecutable(entry, output), artifact.executable);
   }
   for (const kinds of [[], ['lib', 'bin'], ['example'], ['bench'], ['custom-build']]) {
     assert.throws(() => testExecutable(entry, JSON.stringify({ ...artifact, target: { ...artifact.target, kind: kinds } })), /selected test executable/);
