@@ -153,9 +153,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
     const WARMUP: u64 = 16;
     const TRANSITIONS: u64 = WARMUP + 10 * N;
     let mut recent = VecDeque::new();
-    let mut total = acyclic_fs::WorkCounters::default();
-    let mut input_bytes = 0_u64;
-    let mut small = None;
     for index in 0_u64..TRANSITIONS {
         let mut id = [0_u8; 16];
         id[..8].copy_from_slice(&(index / 4 + 1).to_le_bytes());
@@ -211,19 +208,27 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         else {
             panic!("fresh model event replayed")
         };
-        if index >= WARMUP {
-            input_bytes += serde_json::to_vec(&(
-                &owner.audience,
-                event.revision,
-                event.operation_id,
-                event.intent_digest,
-                &event.scope,
-                &event.causal_parent,
-                &event.payload,
-            ))
-            .expect("signed input")
-            .len() as u64;
-        }
+        // Compare the exact same signed event against a legally compacted
+        // predecessor. Different events contain variable-width JSON digests
+        // and independently minted authority proofs: their byte counts are
+        // different inputs, not an exact linear cost model for one another.
+        let mut compact = state.copy(&mut None)?;
+        compact.set_resident_event_limit(1)?;
+        compact.set_resident_terminal_effect_limit(1)?;
+        let compact_query = NativeMaterializationWork::new(budget, &CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let compact_io = crate::filesystem::PreparationIo::from_native_work(&compact_query)?;
+        let ApplyResult::Applied {
+            event: compact_event,
+        } = compact.apply_committed(event.clone(), &mut Some(&mut compact_io.history_io()))?
+        else {
+            panic!("fresh compact model application replayed")
+        };
+        compact.mark_indexed_terminal_effect_with_work(
+            &compact_event,
+            &mut Some(&mut compact_io.history_io()),
+        )?;
+        drop(compact_io);
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
@@ -236,14 +241,22 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         drop(io);
         let receipt = query.receipt();
         if index >= WARMUP {
-            total = total.checked_add(receipt).expect("work counters fit");
+            // Peak residency is not additive; the retained-state checks below
+            // separately prove that old observations release their custody.
+            let actual = acyclic_fs::WorkCounters {
+                peak_allocation_bytes: 0,
+                ..receipt
+            };
+            let compact_work = acyclic_fs::WorkCounters {
+                peak_allocation_bytes: 0,
+                ..compact_query.receipt()
+            };
+            assert_eq!(
+                actual, compact_work,
+                "transition {index} work depends on resident history"
+            );
         }
-        if index + 1 == WARMUP + N {
-            small = Some((
-                serde_json::to_value(total).expect("work counters"),
-                input_bytes,
-            ));
-        }
+        drop(compact);
         assert_eq!(&state, reference.reducer(), "transition {index}");
         assert!(state.events.len() <= 4);
         assert!(
@@ -258,21 +271,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
                 retired.admit_retained(available).map_err(Error::from)?;
             }
         }
-    }
-    let (small, small_bytes) = small.expect("small workload");
-    let input_bound = input_bytes.max(10 * small_bytes);
-    let large = serde_json::to_value(total).expect("work counters");
-    for (counter, value) in small.as_object().expect("work counters") {
-        assert!(
-            u128::from(
-                large
-                    .get(counter)
-                    .and_then(serde_json::Value::as_u64)
-                    .expect("counter")
-            ) * u128::from(small_bytes)
-                <= u128::from(value.as_u64().expect("counter")) * u128::from(input_bound),
-            "{counter} grows faster than the signed input: {small:?} -> {large:?}"
-        );
     }
     assert_eq!(state.revision(), TRANSITIONS + 1);
     let mut oldest = [0_u8; 16];
