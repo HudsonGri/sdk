@@ -21,7 +21,7 @@ pub(super) struct Stored {
     pub(super) info: SharedInfo,
     pub(super) body: StoredBody,
 }
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(super) struct Upload {
     pub(super) bucket: SharedInfo<String>,
     pub(super) key: SharedInfo<String>,

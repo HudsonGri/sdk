@@ -65,20 +65,20 @@ proptest! {
         let mut candidate = request_with(&tools.iter().map(String::as_str).collect::<Vec<_>>());
         for tool in &mut candidate.tools { tool.revision.clone_from(&revision); }
         // A retained, no-longer-granted call is replayable, never advertised.
-        candidate.messages.push(acyclic_harness::model::ModelMessage {
-            role: acyclic_harness::model::ModelRole::Assistant,
-            content: acyclic_harness::model::ModelContent::Part(
-                acyclic_harness::model::ModelContentPart::ToolCall(
-                    acyclic_harness::model::ToolCall::new("old".into(), "hidden.tool@old".into(), serde_json::json!({})),
+        candidate.messages.push(acyclic_harness_core::model::ModelMessage {
+            role: acyclic_harness_core::model::ModelRole::Assistant,
+            content: acyclic_harness_core::model::ModelContent::Part(
+                acyclic_harness_core::model::ModelContentPart::ToolCall(
+                    acyclic_harness_core::model::ToolCall::new("old".into(), "hidden.tool@old".into(), serde_json::json!({})),
                 )
             ),
         });
-        candidate.messages.push(acyclic_harness::model::ModelMessage {
-            role: acyclic_harness::model::ModelRole::Tool,
-            content: acyclic_harness::model::ModelContent::Part(
-                acyclic_harness::model::ModelContentPart::ToolResult {
+        candidate.messages.push(acyclic_harness_core::model::ModelMessage {
+            role: acyclic_harness_core::model::ModelRole::Tool,
+            content: acyclic_harness_core::model::ModelContent::Part(
+                acyclic_harness_core::model::ModelContentPart::ToolResult {
                     call_id: "old".into(), name: "hidden.tool@old".into(),
-                    content: acyclic_harness::model::ToolResultContent::Json { value: serde_json::json!({}) },
+                    content: acyclic_harness_core::model::ToolResultContent::Json { value: serde_json::json!({}) },
                 }
             ),
         });
