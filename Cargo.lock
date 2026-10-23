@@ -583,6 +583,7 @@ dependencies = [
  "jsonschema",
  "keyring",
  "loom",
+ "proptest",
  "reqwest 0.12.28",
  "rustls",
  "rustls-platform-verifier",

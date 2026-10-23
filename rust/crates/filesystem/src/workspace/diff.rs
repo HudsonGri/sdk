@@ -441,14 +441,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-        resolve_changed_paths(
-            self,
-            &self.changes,
-            maximum_entries,
-            accounting,
-            cancellation,
-        )
-        .await
+        if self.changes.truncated {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
+        // The path bound limits output. Namespace work remains charged to the
+        // caller's ledger, including unchanged descendants of moved directories.
+        let result = if moves_existing_directory(&self.changes, accounting)? {
+            let from = self.from.workspace.open_checkout(
+                GenerationSelector::Exact(self.from.id),
+                CheckoutMode::read_only_pinned(), accounting, cancellation,
+            ).await?;
+            let to = self.to.workspace.open_checkout(
+                GenerationSelector::Exact(self.to.id),
+                CheckoutMode::read_only_pinned(), accounting, cancellation,
+            ).await?;
+            let view = |root| super::namespace_view::NamespaceView {
+                objects: self.from.workspace.volume.fs.objects(),
+                config: self.from.workspace.volume.config(),
+                root,
+            };
+            let result = collect_all_paths(
+                [Some(view(from.value.root())), Some(view(to.value.root()))],
+                u32::MAX, accounting, cancellation,
+            ).await;
+            to.retire(accounting)?;
+            from.retire(accounting)?;
+            result?
+        } else {
+            resolve_changed_paths(self, &self.changes, u32::MAX, accounting, cancellation).await?
+        };
+        if result.0.len() > maximum_entries as usize {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
+        Ok(result)
     }
 
     /// Computes the bounded net delta of two contiguous change sets.

@@ -75,7 +75,75 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
 
-    for (prompt, expected, edit, blocked) in [
+    for (prompt, expected, edit, blocked) in scenarios() {
+        if let Some(edit) = edit {
+            script.lock().unwrap().push_back((expected, edit));
+        }
+        script.lock().unwrap().push_back((expected, ANSWER.into()));
+        let operation = OperationId::new();
+        let output = execute_with(
+            &workspace,
+            &catalog,
+            &settings,
+            operation,
+            Mode::Prompt,
+            (prompt, if blocked { 3 } else { 0 }),
+        )
+        .await;
+        let completions: Vec<_> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .flat_map(|line| {
+                let change = jsonl::parse_change(line).unwrap();
+                change.file.into_iter().chain(change.files)
+            })
+            .filter(|file| {
+                matches!(
+                    file.key,
+                    FileKey::Session {
+                        file: TaskFile::ExecutionResult(_),
+                        ..
+                    }
+                )
+            })
+            .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["completion"].clone())
+            .collect();
+        let expected_completion = if blocked { "blocked" } else { "completed" };
+        assert_eq!(completions, [json!(expected_completion)]);
+        assert!(script.lock().unwrap().is_empty());
+        // Replay, including blocked output, must issue no further HTTP work.
+        execute_with(
+            &workspace,
+            &catalog,
+            &settings,
+            operation,
+            Mode::Prompt,
+            (prompt, if blocked { 3 } else { 0 }),
+        )
+        .await;
+        if blocked {
+            for mode in [Mode::Jsonl, Mode::Dumb] {
+                execute_with(
+                    &workspace,
+                    &catalog,
+                    &settings,
+                    operation,
+                    mode,
+                    (prompt, 3),
+                )
+                .await;
+            }
+            assert!(script.lock().unwrap().is_empty());
+        }
+    }
+    server.abort();
+}
+
+type Scenario = (&'static str, (bool, bool), Option<String>, bool);
+
+fn scenarios() -> [Scenario; 10] {
+    [
         ("hello", (false, false), None, false),
         (
             "Use GOAL MODE",
@@ -125,53 +193,5 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
         ("hello", (false, false), None, false),
         ("Use plan mode", (false, true), None, false),
         ("hello", (false, false), None, false),
-    ] {
-        if let Some(edit) = edit {
-            script.lock().unwrap().push_back((expected, edit));
-        }
-        script.lock().unwrap().push_back((expected, ANSWER.into()));
-        let operation = OperationId::new();
-        let output = execute_with(
-            &workspace,
-            &catalog,
-            &settings,
-            operation,
-            Mode::Prompt,
-            (prompt, if blocked { 3 } else { 0 }),
-        )
-        .await;
-        let completions: Vec<_> = std::str::from_utf8(&output)
-            .unwrap()
-            .lines()
-            .skip(1)
-            .flat_map(|line| {
-                let change = jsonl::parse_change(line).unwrap();
-                change.file.into_iter().chain(change.files)
-            })
-            .filter(|file| {
-                matches!(
-                    file.key,
-                    FileKey::Session {
-                        file: TaskFile::ExecutionResult(_),
-                        ..
-                    }
-                )
-            })
-            .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["completion"].clone())
-            .collect();
-        let expected_completion = if blocked { "blocked" } else { "completed" };
-        assert_eq!(completions, [json!(expected_completion)]);
-        assert!(script.lock().unwrap().is_empty());
-        // Replay, including blocked output, must issue no further HTTP work.
-        execute_with(
-            &workspace,
-            &catalog,
-            &settings,
-            operation,
-            Mode::Prompt,
-            (prompt, if blocked { 3 } else { 0 }),
-        )
-        .await;
-    }
-    server.abort();
+    ]
 }

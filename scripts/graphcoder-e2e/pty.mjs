@@ -20,10 +20,17 @@ function bold(terminal, text) {
 export function matches(screen, raw, condition) {
   const visible = screenText(screen);
   return (condition.contains ?? []).every(text => visible.includes(text))
+    && (!condition.task_failure || expectedTaskFailure(visible, condition))
     && (condition.absent ?? []).every(text => !visible.includes(text))
     && (!condition.bold || bold(screen, condition.bold))
     && (condition.raw ?? []).every(text => raw.includes(text))
     && (!condition.cursor || raw.lastIndexOf("\x1b[?25h") > raw.lastIndexOf("\x1b[?25l"));
+}
+
+function expectedTaskFailure(visible, condition) {
+  const message = /task [0-9a-f-]{36} failed: ([^\n]*)/.exec(visible)?.[1];
+  return typeof condition.task_failure === "string" && condition.task_failure.length > 0
+    && message?.startsWith(condition.task_failure);
 }
 
 export async function pty(processes, binary, fixture, input, capture) {
@@ -50,10 +57,11 @@ export async function pty(processes, binary, fixture, input, capture) {
     try {
       const visible = screenText(screen);
       const raw = running.stdout;
-      if (raw.includes("has overflowed its stack") || /task [0-9a-f-]{36} failed:/.test(visible)) {
+      const action = input.actions[index];
+      if (raw.includes("has overflowed its stack") || (/task [0-9a-f-]{36} failed:/.test(visible)
+          && !expectedTaskFailure(visible, action.when))) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
-      const action = input.actions[index];
       if (action.after_request && !fixture.requests.some(event => event.path === action.after_request.path && event.step === action.after_request.step)) return;
       if (!matches(screen, raw, action.when)) return;
       snapshots.push({ action: index, visible });
