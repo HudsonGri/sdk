@@ -97,6 +97,15 @@ impl Screen {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn three_prompts_in_the_tui_continue_one_conversation() {
+    conversation(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_task_exits_the_tui_nonzero() {
+    conversation(true).await;
+}
+
+async fn conversation(blocked: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -113,6 +122,19 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
                 async move {
                     let mut bodies = bodies.lock().unwrap();
                     bodies.push(body);
+                    if blocked && bodies.len() == 1 {
+                        let event = json!({"type":"response.output_item.done","output_index":0,
+                            "item":{"type":"function_call","call_id":"block_goal","name":"write",
+                            "arguments":json!({"path":".volumes/scratch/GOAL.md",
+                                "text":"---\nstatus: blocked\nreason: waiting\n---\nShip",
+                                "media_type":"text/markdown","display_name":"goal"}).to_string()}});
+                        let completed =
+                            json!({"type":"response.completed","response":{"status":"completed"}});
+                        return (
+                            [("content-type", "text/event-stream")],
+                            format!("data: {event}\n\ndata: {completed}\n\n"),
+                        );
+                    }
                     let text = ANSWERS.get(bodies.len() - 1).copied().unwrap_or("EXTRA");
                     ([("content-type", "text/event-stream")], answer(text))
                 }
@@ -164,6 +186,8 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
             .current_dir(&workspace)
             .env("TERM", "xterm-256color")
             .env("HOME", &home)
+            .env("CODEX_HOME", home.join("codex-home"))
+            .env_remove("OPENAI_API_KEY")
             .env("XDG_DATA_HOME", home.join("data"))
             .stdin(Stdio::from(user.try_clone().unwrap()))
             .stdout(Stdio::from(user.try_clone().unwrap()))
@@ -192,10 +216,12 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
         screen.until("composer", |bytes| {
             find(bytes, "GraphCoder").is_some() && find(bytes, "└").is_some()
         });
-        for (index, prompt) in ["first prompt", "second prompt", "third prompt"]
-            .into_iter()
-            .enumerate()
-        {
+        let prompts: &[&str] = if blocked {
+            &["Use goal mode"]
+        } else {
+            &["first prompt", "second prompt", "third prompt"]
+        };
+        for (index, prompt) in prompts.iter().enumerate() {
             let start = screen.bytes().len();
             screen
                 .input
@@ -205,7 +231,7 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
             // whole. The status glyph turns busy, then idle once it is in.
             screen.until(ANSWERS[index], |bytes| {
                 let bytes = &bytes[start..];
-                requested.lock().unwrap().len() == index + 1
+                requested.lock().unwrap().len() == (if blocked { 2 } else { index + 1 })
                     && find(bytes, "●").is_some_and(|busy| find(&bytes[busy..], "○").is_some())
             });
         }
@@ -217,8 +243,20 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
     .await
     .unwrap();
     reader.join().unwrap();
-    assert!(driven.success(), "{driven:?}");
+    assert_eq!(
+        driven.code(),
+        Some(if blocked { 3 } else { 0 }),
+        "{driven:?}"
+    );
     let bodies = bodies.lock().unwrap();
+    if blocked {
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[1].to_string().contains("block_goal"));
+        stop.send(()).unwrap();
+        drop(bodies);
+        server.await.unwrap();
+        return;
+    }
     assert_eq!(bodies.len(), 3);
     // Each later request carries every earlier prompt and answer.
     for (index, body) in bodies.iter().enumerate() {

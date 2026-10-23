@@ -113,8 +113,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         })
         .await;
         phase(|| client::disconnect_local(local)).await?;
-        result?;
-        return Ok(0);
+        return Ok(result?.exit_code());
     }
     let (mut connection, target) = phase(|| client::connect_local(local, operation)).await?;
     let mut output = std::io::stdout().lock();

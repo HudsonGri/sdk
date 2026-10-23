@@ -13,7 +13,7 @@ pub async fn run(
     local: Arc<LocalHarness>,
     operation: OperationId,
     inline: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<client::HeadlessOutcome, Box<dyn std::error::Error>> {
     let authority = local.client_owner();
     let mut client = client::TaskFileClient::observe_task(
         local.task_files().as_ref(),
@@ -63,7 +63,7 @@ pub async fn run(
             .await?;
         renderer.update_files(&client, &authority);
         if commands.exit_requested()? {
-            return Ok(());
+            return Ok(commands.exit_outcome()?);
         }
         prompt_files.refresh(&commands, &mut input)?;
         input.refresh_completions();

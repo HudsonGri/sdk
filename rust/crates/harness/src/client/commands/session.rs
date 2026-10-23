@@ -268,6 +268,23 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         self.outputs.keys().next_back().copied().unwrap_or(0)
     }
 
+    /// Process outcome of the latest settled command in this session. Reopening
+    /// derives the same status from immutable results, including blocked goals.
+    pub fn exit_outcome(&self) -> Result<crate::client::HeadlessOutcome> {
+        self.outputs
+            .values()
+            .next_back()
+            .map(|key| {
+                let file = self
+                    .files
+                    .get(key)
+                    .ok_or_else(|| Error::Conflict("output file missing".into()))?;
+                crate::client::command_output::completion(&file.bytes)
+            })
+            .transpose()
+            .map(|outcome| outcome.unwrap_or(crate::client::HeadlessOutcome::Completed))
+    }
+
     /// Every retained result after the renderer's own cursor, oldest first.
     pub fn output_since(&self, after: u64) -> impl Iterator<Item = Result<(u64, Value)>> + '_ {
         self.outputs
