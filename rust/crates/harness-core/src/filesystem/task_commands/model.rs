@@ -343,8 +343,11 @@ where
             if reconciliation_only {
                 let result =
                     BoundedContentFuture::new(io, || execution.reconcile_progress(input))?.await;
-                return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
-                    .await;
+                let journal = require_journal()?;
+                return BoundedContentFuture::new(io, || {
+                    Self::reconcile_model(result.map(drop), journal, operation, io)
+                })?
+                .await;
             }
             phase.delegate();
             Self::model_progress(
