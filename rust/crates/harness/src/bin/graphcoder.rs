@@ -81,6 +81,22 @@ async fn open(
 
 // Own native phase futures separately from the CLI orchestration frame.
 async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
+    if args.host_workspace {
+        let directory = args
+            .host_state_directory
+            .as_ref()
+            .ok_or("host state directory absent")?;
+        let local = Arc::new(
+            phase(|| {
+                LocalHarness::open(
+                    LocalHarnessConfig::native_host(&args.workspace).state_directory(directory),
+                )
+            })
+            .await?,
+        );
+        phase(|| acyclic_harness::local::host_files::serve(local)).await?;
+        return Ok(0);
+    }
     let operation = args
         .operation
         .as_deref()

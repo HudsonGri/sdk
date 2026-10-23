@@ -10,6 +10,7 @@ mod bootstrap;
 mod performance_tests;
 
 mod children;
+pub(in crate::local) mod git;
 mod mounts;
 mod task_views;
 pub(in crate::local) use children::created_project;
@@ -117,7 +118,7 @@ impl LocalWorkspace {
     /// child projection authors its volume aliases, so every reader of
     /// authored history must reserve them rather than rely on capture.
     pub(super) fn volume_owned_paths(&self) -> Result<Vec<String>> {
-        let mut owned = Vec::new();
+        let mut owned = vec![super::host_workspace::HOST_VIEW_ROOT.to_owned()];
         for (relative, mount) in self.mounts.mounts() {
             if !relative.is_empty() && mount.view.source.is_some() {
                 owned.extend(volumes::owned(&self.path, relative)?);
@@ -287,7 +288,6 @@ pub(super) async fn open(
     let &Attach {
         volume,
         scratch,
-        directory,
         native_mounts,
         ..
     } = attach;
@@ -329,6 +329,7 @@ pub(super) async fn open(
         view.workspace().id(),
         Arc::clone(&mounts),
     )));
+    let mount_directory = path.join(super::host_workspace::HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -337,7 +338,7 @@ pub(super) async fn open(
         path,
         fresh,
         view,
-        mount_directory: directory.join("task-views"),
+        mount_directory,
         mounted: None,
         filesystem: filesystem.clone(),
         store,

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     distributed::{WorkPull, Worker},
-    runtime::RuntimeTask,
+    runtime::{RuntimeTask, TaskStateProvider},
     scheduler::LeaseFence,
 };
 
@@ -14,6 +14,10 @@ struct Fixture {
 
 impl Fixture {
     async fn open() -> Result<Self> {
+        Self::configuration(false).await
+    }
+
+    async fn configuration(passive: bool) -> Result<Self> {
         let checkout = tempfile::tempdir().map_err(storage)?;
         let state = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("source.txt"), b"root source").map_err(storage)?;
@@ -25,7 +29,9 @@ impl Fixture {
                 },
             ),
         );
-        let harness = LocalHarness::open(
+        let config = if passive {
+            LocalHarnessConfig::native_host(checkout.path())
+        } else {
             crate::test_support::local_harness_config(
                 checkout.path(),
                 (
@@ -40,9 +46,9 @@ impl Fixture {
             )?
             .compaction(crate::context::CompactionPolicy::Disabled)
             .without_default_tools()
-            .state_directory(state.path().join("runtime")),
-        )
-        .await?;
+        };
+        let harness =
+            LocalHarness::open(config.state_directory(state.path().join("runtime"))).await?;
         Ok(Self {
             checkout,
             state,
@@ -89,18 +95,14 @@ impl Fixture {
     }
 
     async fn attach(&self, context: &TaskContext, mounts: &Path) -> Result<HostWorkspace> {
-        let workspace = self.harness.workspace().unwrap();
+        let workspace = self
+            .harness
+            .workspace()
+            .ok_or_else(|| Error::NotFound("fixture workspace".into()))?;
         HostWorkspace::attach(
-            &workspace.filesystem,
-            workspace.store.clone(),
+            Arc::clone(workspace),
             context,
-            HostWorkspaceAttachment {
-                root: acyclic_fs::hold_root(&workspace.path).map_err(storage)?,
-                admitted_mount_root: acyclic_fs::hold_root(mounts).map_err(storage)?,
-                state_directory: self.state.path().join("host"),
-                project: self.harness.project().clone(),
-                scratch: self.harness.scratch().clone(),
-            },
+            acyclic_fs::hold_root(mounts).map_err(storage)?,
         )
         .await
     }
@@ -151,6 +153,17 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
         std::fs::read(nested.path().join("child.txt")).map_err(storage)?,
         b"child only"
     );
+    workspace
+        .fs(
+            &parent,
+            OperationId::new(),
+            &format!("merge agents/{}", fork.task()),
+        )
+        .await?;
+    assert_eq!(
+        std::fs::read(workspace.path().join("child.txt")).map_err(storage)?,
+        b"child only"
+    );
     assert!(fixture.provider.requests().is_empty());
     Ok(())
 }
@@ -160,13 +173,22 @@ async fn task_grants_parentage_and_cancellation_fence_every_boundary() -> Result
     let fixture = Fixture::open().await?;
     let parent = fixture.task(None).await?;
     let foreign = fixture.task(None).await?;
-    let mounts = tempfile::tempdir().map_err(storage)?;
+    let root = acyclic_fs::hold_root(fixture.checkout.path()).map_err(storage)?;
+    let mounts = root
+        .create_directories(Path::new(HOST_VIEW_ROOT))
+        .map_err(storage)?;
     let workspace = fixture.attach(&parent, mounts.path()).await?;
     let unrelated = fixture
         .task(Some(foreign.owned_task_binding(None)?.0))
         .await?;
     assert!(workspace.fork(&parent, &unrelated).await.is_err());
     assert!(workspace.reopen(&parent, &unrelated).await.is_err());
+    assert!(
+        workspace
+            .fs(&foreign, OperationId::new(), "log")
+            .await
+            .is_err()
+    );
     assert!(
         workspace
             .capture(&foreign, OperationId::new())
@@ -187,6 +209,12 @@ async fn task_grants_parentage_and_cancellation_fence_every_boundary() -> Result
     assert!(workspace.fork(&narrowed_parent, &child).await.is_err());
     assert!(workspace.reopen(&narrowed_parent, &child).await.is_err());
     assert!(
+        workspace
+            .fs(&narrowed_parent, OperationId::new(), "log")
+            .await
+            .is_err()
+    );
+    assert!(
         fixture
             .attach(&narrowed_parent, mounts.path())
             .await
@@ -206,6 +234,7 @@ async fn task_grants_parentage_and_cancellation_fence_every_boundary() -> Result
         .cancel(fork.task())
         .await?;
     assert!(fork.capture(&child, OperationId::new()).await.is_err());
+    assert!(fork.fs(&child, OperationId::new(), "log").await.is_err());
     assert!(workspace.fork(&parent, &child).await.is_err());
     assert!(workspace.reopen(&parent, &child).await.is_err());
     fixture
@@ -236,6 +265,104 @@ async fn attachment_rejects_an_arbitrary_in_checkout_mount_root() -> Result<()> 
         Err(Error::Invalid(_))
     ));
     assert!(!fixture.state.path().join("host").exists());
+    let external = tempfile::tempdir().map_err(storage)?;
+    assert!(matches!(
+        fixture.attach(&parent, external.path()).await,
+        Err(Error::Invalid(_))
+    ));
     assert!(fixture.provider.requests().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_children_use_shared_allocations_and_never_dispatch_an_agent() -> Result<()> {
+    let fixture = Fixture::configuration(true).await?;
+    assert!(fixture.harness.agent.is_none());
+    assert!(fixture.harness.settings.is_none());
+    assert!(fixture.harness.tools().definitions(None)?.is_empty());
+    assert!(fixture.harness.command_model(None).await.is_err());
+    assert!(fixture.harness.stock_commands(None).await.is_err());
+    let operation = OperationId::new();
+    let task = fixture
+        .harness
+        .admit_host_task(operation, "codex", "native-session")
+        .await?;
+    assert_eq!(
+        fixture
+            .harness
+            .admit_host_task(operation, "codex", "native-session")
+            .await?,
+        task
+    );
+    assert!(
+        fixture
+            .harness
+            .admit_host_task(operation, "pi", "changed-session")
+            .await
+            .is_err()
+    );
+    let parent = fixture.harness.bind_host_task(task).await?;
+    let root = acyclic_fs::hold_root(fixture.checkout.path()).map_err(storage)?;
+    let mounts = root
+        .create_directories(Path::new(HOST_VIEW_ROOT))
+        .map_err(storage)?;
+    let workspace = fixture.attach(&parent, mounts.path()).await?;
+    std::fs::write(workspace.path().join("parent.txt"), b"native parent").map_err(storage)?;
+    workspace.capture(&parent, OperationId::new()).await?;
+    let child_task = fixture
+        .harness
+        .admit_host_child(&parent, "native-child")
+        .await?;
+    assert_eq!(
+        fixture
+            .harness
+            .admit_host_child(&parent, "native-child")
+            .await?,
+        child_task
+    );
+    let child = fixture.harness.bind_host_task(child_task).await?;
+    let fork = workspace.fork(&parent, &child).await?;
+    assert!(fork.path().starts_with(mounts.path()));
+    assert_eq!(
+        std::fs::read(fork.path().join("parent.txt")).map_err(storage)?,
+        b"native parent"
+    );
+    assert!(workspace.verify(&child).await.is_err());
+    std::fs::write(fork.path().join("child.txt"), b"native child").map_err(storage)?;
+    fork.capture(&child, OperationId::new()).await?;
+    workspace
+        .fs(&parent, OperationId::new(), "merge agents/native-child")
+        .await?;
+    assert_eq!(
+        std::fs::read(workspace.path().join("child.txt")).map_err(storage)?,
+        b"native child"
+    );
+    let narrowed = parent.scoped(
+        Capabilities::new(std::iter::empty::<&str>()),
+        parent.scope().limits(),
+    )?;
+    assert!(
+        fixture
+            .harness
+            .admit_host_child(&narrowed, "forbidden")
+            .await
+            .is_err()
+    );
+    fixture
+        .harness
+        .finish_host_task(&child, crate::Outcome::Succeeded(serde_json::Value::Null))
+        .await?;
+    assert!(fixture.harness.bind_host_task(child_task).await.is_err());
+    assert!(fork.capture(&child, OperationId::new()).await.is_err());
+    assert!(fixture.provider.requests().is_empty());
+    let machine = super::super::host_task::NativeHostTask::new();
+    assert!(
+        crate::workflow::ResumableMachine::transition(
+            machine.as_ref(),
+            &serde_json::Value::Null,
+            &serde_json::Value::Null
+        )
+        .is_err()
+    );
     Ok(())
 }

@@ -2,9 +2,7 @@
 use super::super::checkout_tools::{State, reconciliation};
 use super::*;
 use acyclic_fs::PublicationPermit;
-use acyclic_fs::{
-    CancellationToken, IdempotencyKey, LazyWorkspaceStore as _, MountOptions, WorkBudget,
-};
+use acyclic_fs::{CancellationToken, IdempotencyKey, MountOptions, WorkBudget};
 
 impl LocalWorkspace {
     pub(in crate::local) async fn fork_task(

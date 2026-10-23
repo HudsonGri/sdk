@@ -1,23 +1,59 @@
 //! Native manifest and installer contracts, without a provider or agent runtime.
 use acyclic_harness::host_hooks::{
-    CLAUDE_EVENTS, claude_hook_executable, claude_hooks, claude_manifest,
+    CLAUDE_EVENTS, MINIMUM_CODEX_VERSION, check_codex_version, claude_hook_executable,
+    claude_hooks, claude_manifest,
 };
 use proptest::prelude::*;
 use serde_json::json;
 
 #[test]
+fn codex_minimum_version_is_enforced_without_compatibility_fallback() {
+    for output in [
+        "codex-cli 0.164.0\n",
+        "codex-cli 0.165.0",
+        "codex-cli 1.0.0",
+    ] {
+        assert!(check_codex_version(output).is_ok(), "{output}");
+    }
+    for output in [
+        "codex-cli 0.146.0",
+        "codex-cli 0.163.99",
+        "codex-cli 0.164.0-alpha",
+        "codex-cli 0.164",
+        "codex-cli 0.164.0.1",
+        "codex-cli 0.164.0 invalid",
+        "other 9.0.0",
+        "",
+    ] {
+        let error = check_codex_version(output).unwrap_err().to_string();
+        assert!(error.contains(MINIMUM_CODEX_VERSION), "{error}");
+    }
+}
+
+#[test]
 fn manifest_contains_only_native_lifecycle_commands() {
     let manifest = claude_manifest("fixture");
     assert!(manifest.get("mcpServers").is_none());
-    assert_eq!(manifest["version"], "fixture");
-    let events = manifest["hooks"].as_object().unwrap();
+    assert_eq!(
+        manifest.get("version").expect("manifest version"),
+        "fixture"
+    );
+    let events = manifest
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+        .expect("manifest hooks");
     assert_eq!(events.len(), CLAUDE_EVENTS.len());
     for event in CLAUDE_EVENTS {
-        let hook = &events[event][0]["hooks"][0];
+        let hook = events
+            .get(event)
+            .and_then(|groups| groups.pointer("/0/hooks/0"))
+            .expect("manifest hook");
         assert!(hook.get("args").is_none());
         assert_eq!(
-            hook["command"],
-            format!("\"${{CLAUDE_PLUGIN_ROOT}}/../bin/acyclic\" __hook claude-code {event}")
+            hook.get("command"),
+            Some(&json!(format!(
+                "\"${{CLAUDE_PLUGIN_ROOT}}/../bin/acyclic\" __hook claude-code {event}"
+            )))
         );
     }
 }
@@ -32,14 +68,14 @@ proptest! {
         #[cfg(not(windows))]
         let expected = executable;
         for (event, groups) in claude_hooks(&expected) {
-            let group = &groups[0];
-            let hook = &group["hooks"][0];
+            let group = groups.first().expect("owned hook group");
+            let hook = group.pointer("/hooks/0").expect("owned hook");
             prop_assert!(hook.get("args").is_none());
-            prop_assert_eq!(acyclic_harness::tools::parse_command(hook["command"].as_str().unwrap())?,
+            prop_assert_eq!(acyclic_harness::tools::parse_command(hook.get("command").and_then(serde_json::Value::as_str).expect("hook command"))?,
                 vec![expected.clone(), "__hook".into(), "claude-code".into(), event.into()]);
             prop_assert_eq!(claude_hook_executable(event, group), Some(expected.clone()));
             let mut foreign = group.clone();
-            foreign["hooks"][0]["permissionDecision"] = json!("allow");
+            foreign.pointer_mut("/hooks/0").and_then(serde_json::Value::as_object_mut).expect("hook object").insert("permissionDecision".into(), json!("allow"));
             prop_assert!(claude_hook_executable(event, &foreign).is_none());
         }
     }
@@ -48,15 +84,37 @@ proptest! {
 #[test]
 fn ownership_rejects_split_arguments_foreign_hooks_and_changed_lifecycle() {
     for (event, groups) in claude_hooks("/owned/acyclic") {
-        let mut split = groups[0].clone();
-        split["hooks"][0]["command"] = json!("/owned/acyclic");
-        split["hooks"][0]["args"] = json!(["__hook", "claude-code", event]);
+        let mut split = groups.first().expect("owned hook group").clone();
+        split
+            .pointer_mut("/hooks/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("hook object")
+            .insert("command".into(), json!("/owned/acyclic"));
+        split
+            .pointer_mut("/hooks/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("hook object")
+            .insert("args".into(), json!(["__hook", "claude-code", event]));
         assert!(claude_hook_executable(event, &split).is_none());
-        let mut foreign = groups[0].clone();
-        foreign["hooks"][0]["command"] = json!(format!("'foreign' __hook claude-code {event}"));
+        let mut foreign = groups.first().expect("owned hook group").clone();
+        foreign
+            .pointer_mut("/hooks/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("hook object")
+            .insert(
+                "command".into(),
+                json!(format!("'foreign' __hook claude-code {event}")),
+            );
         assert!(claude_hook_executable(event, &foreign).is_none());
-        let mut changed = groups[0].clone();
-        changed["hooks"][0]["command"] = json!("'/owned/acyclic' __hook claude-code AnotherEvent");
+        let mut changed = groups.first().expect("owned hook group").clone();
+        changed
+            .pointer_mut("/hooks/0")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("hook object")
+            .insert(
+                "command".into(),
+                json!("'/owned/acyclic' __hook claude-code AnotherEvent"),
+            );
         assert!(claude_hook_executable(event, &changed).is_none());
         assert!(claude_hook_executable("AnotherEvent", &groups[0]).is_none());
     }
@@ -78,8 +136,16 @@ fn native_shell_receives_arguments_from_both_manifest_and_installer() {
     let installed = claude_hooks(executable.to_str().unwrap());
     for event in CLAUDE_EVENTS {
         for hook in [
-            &manifest["hooks"][event][0]["hooks"][0],
-            &installed[event][0]["hooks"][0],
+            manifest
+                .get("hooks")
+                .and_then(|hooks| hooks.get(event))
+                .and_then(|groups| groups.pointer("/0/hooks/0"))
+                .expect("manifest hook"),
+            installed
+                .get(event)
+                .and_then(|groups| groups.first())
+                .and_then(|group| group.pointer("/hooks/0"))
+                .expect("installed hook"),
         ] {
             let output = std::process::Command::new("sh")
                 .arg("-c")

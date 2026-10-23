@@ -6,14 +6,43 @@
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
+mod routing;
+pub use routing::route_tool;
+
+/// First supported Codex release, including native MCP lifecycle hooks.
+pub const MINIMUM_CODEX_VERSION: &str = "0.164.0";
+
+/// Refuses unsupported or unidentifiable hosts before installation mutates files.
+pub fn check_codex_version(output: &str) -> crate::Result<()> {
+    let version = output.trim().strip_prefix("codex-cli ").ok_or_else(|| {
+        crate::Error::Invalid(format!(
+            "cannot identify Codex; requires Codex >= {MINIMUM_CODEX_VERSION}"
+        ))
+    })?;
+    let numbers = version
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<std::result::Result<Vec<_>, _>>();
+    if !numbers
+        .is_ok_and(|numbers| numbers.len() == 3 && numbers.as_slice() >= [0, 164, 0].as_slice())
+    {
+        return Err(crate::Error::Unsupported(format!(
+            "Codex {version} is unsupported; requires Codex >= {MINIMUM_CODEX_VERSION}; upgrade Codex before installing or using Acyclic"
+        )));
+    }
+    Ok(())
+}
+
 /// Claude lifecycle boundaries used for workspace coordination.
-pub const CLAUDE_EVENTS: [&str; 7] = [
+pub const CLAUDE_EVENTS: [&str; 9] = [
     "SessionStart",
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
     "SubagentStart",
     "SubagentStop",
+    "WorktreeCreate",
+    "WorktreeRemove",
     "SessionEnd",
 ];
 

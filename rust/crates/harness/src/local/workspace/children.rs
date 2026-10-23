@@ -1,7 +1,6 @@
 //! Authenticated child allocation shared by workspace clients and executors.
 use super::*;
 use crate::runtime::{RuntimeScope, TaskContext};
-use acyclic_fs::facade::FsWork as _;
 
 impl LocalWorkspace {
     pub(in crate::local) async fn project_view(&self, project: &VolumeRef) -> Result<View> {

@@ -93,6 +93,30 @@
           }
         ]
       }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code WorktreeCreate",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code WorktreeRemove",
+            "timeout": 120,
+            "statusMessage": "Acyclic is routing the workspace"
+          }
+        ]
+      }
     ]
   }
 }

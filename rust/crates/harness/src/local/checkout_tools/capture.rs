@@ -16,7 +16,12 @@ mod converge;
 mod tests;
 
 // Exclude owned projections individually below, never their authored siblings.
-const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system"];
+const EXCLUDED: &[&str] = &[
+    ".git",
+    ".acyclic-sdk",
+    ".system",
+    crate::local::host_workspace::HOST_VIEW_ROOT,
+];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -93,29 +98,16 @@ impl CheckoutTools {
             bool,
         )>,
     ) -> Result<()> {
-        let (physical, _) = selected;
-        if let Some(mount) = &physical.mounted {
-            mount
-                .sync_with_permit(permit, &mount.native_work()?, move |_| {
-                    let owner = owner.clone();
-                    async move {
-                        if let Some((owner, settlement)) = owner {
-                            owner.verify(settlement, &mut None).await?;
-                        }
-                        Ok::<(), Error>(())
-                    }
-                })
-                .await
-                .map_err(|failure| failure.cause)?;
-            return Ok(());
-        }
-        // A file publication's physical write is owed a capture of its own.
-        // Finish it first, so this capture never records that write.
-        self.finish_owed_write(selected, slot, permit).await?;
-        self.capture_changes(selected, slot, operation, phase, permit)
-            .await
+        capture(
+            (&self.capture_options, &self.capture_policy),
+            selected,
+            slot,
+            (operation, phase),
+            permit,
+            owner,
+        )
+        .await
     }
-
     /// Records, before a file publication's physical write, that the write
     /// is owed its own capture on its staged generation. A capture another
     /// write still owes is finished first.
@@ -155,24 +147,46 @@ impl CheckoutTools {
         )
         .await
     }
-    async fn capture_changes(
-        &self,
-        selected: (&LocalWorkspace, &workspace::View),
-        slot: &mut Option<Cursor>,
-        operation: OperationId,
-        phase: u8,
-        permit: PublicationPermit,
-    ) -> Result<()> {
-        record_changes(
-            (&self.capture_options, &self.capture_policy),
-            selected,
-            slot,
-            (operation, phase),
-            permit,
-            &|| async { Ok(()) },
-        )
-        .await
+}
+/// Captures native effects with the original task journal's publication fence.
+pub(in crate::local) async fn capture(
+    configuration: (&CaptureOptions, &CapturePolicy),
+    selected: (&LocalWorkspace, &workspace::View),
+    slot: &mut Option<Cursor>,
+    operation: (OperationId, u8),
+    permit: PublicationPermit,
+    owner: Option<(
+        Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
+        bool,
+    )>,
+) -> Result<()> {
+    let (physical, _) = selected;
+    if let Some(mount) = &physical.mounted {
+        mount
+            .sync_with_permit(permit, &mount.native_work()?, move |_| {
+                let owner = owner.clone();
+                async move { verify_owner(&owner).await }
+            })
+            .await
+            .map_err(|failure| failure.cause)?;
+        return Ok(());
     }
+    // Settle a file publication under its own operation before this capture.
+    let verify = || async { verify_owner(&owner).await };
+    finish_owed_write(configuration, selected, slot, permit, &verify).await?;
+    record_changes(configuration, selected, slot, operation, permit, &verify).await
+}
+
+async fn verify_owner(
+    owner: &Option<(
+        Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
+        bool,
+    )>,
+) -> Result<()> {
+    if let Some((owner, settlement)) = owner {
+        owner.verify(*settlement, &mut None).await?;
+    }
+    Ok(())
 }
 pub(in crate::local) async fn finish_owed_write<F, Fut>(
     configuration: (&CaptureOptions, &CapturePolicy),
