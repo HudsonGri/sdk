@@ -18,7 +18,6 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
- "acyclic-actors",
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
@@ -88,7 +87,6 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
- "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-proto-build",
  "acyclic-test-support",
@@ -174,7 +172,6 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
- "acyclic-fs",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-grpc-observability",
@@ -350,9 +347,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-fs",
  "acyclic-grpc-observability",
- "acyclic-harness",
  "acyclic-harness-core",
- "acyclic-harness-providers",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-machines",
@@ -618,7 +613,6 @@ dependencies = [
 name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
- "acyclic-harness-tui",
  "acyclic-native-runtime",
  "acyclic-test-support",
  "alacritty_terminal",
@@ -751,7 +745,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
- "acyclic-manifest",
  "acyclic-stream",
  "bytes",
  "futures",
@@ -771,7 +764,6 @@ dependencies = [
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
- "acyclic-markdown",
  "acyclic-markdown-work",
  "proptest",
  "pulldown-cmark",
@@ -955,7 +947,6 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-proto-build",
- "acyclic-stream",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
  "async-trait",
