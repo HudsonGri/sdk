@@ -9,6 +9,8 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
+    pub(in crate::executor) records:
+        tokio::sync::Mutex<crate::executor::record_index::RecordIndex<'a>>,
 }
 
 /// The turn's compaction policy, resolved once from the original IO, with the
@@ -31,6 +33,7 @@ impl<'a> StockExecution<'a> {
             io: None,
             summary: None,
             compaction: once_cell::sync::OnceCell::new(),
+            records: tokio::sync::Mutex::new(Default::default()),
         }
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {

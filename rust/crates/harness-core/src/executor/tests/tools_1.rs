@@ -376,6 +376,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         ExecutionClaims::default(),
+        AtomicUsize::new(0),
     );
     assert_eq!(
         executor
@@ -403,6 +404,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
             AtomicUsize::new(0),
             AtomicUsize::new(0),
             ExecutionClaims::default(),
+            AtomicUsize::new(0),
         );
         assert_eq!(
             executor
@@ -440,6 +442,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         ExecutionClaims::default(),
+        AtomicUsize::new(0),
     );
     assert!(
         executor
@@ -554,6 +557,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         ExecutionClaims::default(),
+        AtomicUsize::new(0),
     );
     assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
     let incomplete = Journal(
@@ -573,6 +577,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         ExecutionClaims::default(),
+        AtomicUsize::new(0),
     );
     assert!(matches!(
         executor
@@ -597,6 +602,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         AtomicUsize::new(0),
         AtomicUsize::new(0),
         ExecutionClaims::default(),
+        AtomicUsize::new(0),
     );
     assert!(matches!(
         executor

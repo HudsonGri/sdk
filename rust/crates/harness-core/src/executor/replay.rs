@@ -186,7 +186,7 @@ pub(crate) async fn replay_execution<'a>(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ExecutionRecord {
-    fn payload_bytes(&self) -> Result<u64> {
+    pub(super) fn payload_bytes(&self) -> Result<u64> {
         use ExecutionEvent::*;
         let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match &self.event {
             Started { .. } | ModelStopped { .. } => (None, [None; 3]),
@@ -221,6 +221,10 @@ impl ExecutionRecord {
             self.idempotency_key.capacity() as u64,
             call.map_or(0, |call| call.capacity() as u64),
         )?;
+        let bytes = match &self.event {
+            ToolFailed { cause, .. } => native_size_add(bytes, cause.message.capacity() as u64)?,
+            _ => bytes,
+        };
         files.into_iter().flatten().try_fold(bytes, |bytes, file| {
             native_size_add(bytes, file.logical_owned_bytes()?)
         })

@@ -8,11 +8,37 @@ struct Node<T> {
     bit: u16,
     children: [usize; 2],
 }
-pub(super) struct Index<T = Position> {
+pub(crate) struct Index<T = Position> {
     nodes: Vec<Node<T>>,
     roots: [Option<usize>; 2],
 }
+impl<T> Default for Index<T> {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            roots: [None; 2],
+        }
+    }
+}
 impl<T: Copy> Index<T> {
+    /// Funds two nodes for another key without rebuilding the retained prefix.
+    pub(crate) fn reserve_key(&mut self, io: Option<&PreparationIo>) -> Result<()> {
+        let required = self
+            .nodes
+            .len()
+            .checked_add(2)
+            .ok_or_else(super::inventory::overflow)?;
+        if required > self.nodes.capacity() {
+            let capacity = self
+                .nodes
+                .capacity()
+                .max(2)
+                .checked_mul(2)
+                .ok_or_else(super::inventory::overflow)?;
+            crate::executor::stock_vec_reserve(&mut self.nodes, capacity, io)?;
+        }
+        Ok(())
+    }
     pub(super) fn new(
         parts: usize,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -25,7 +51,7 @@ impl<T: Copy> Index<T> {
             roots: [None; 2],
         })
     }
-    pub(super) fn get(
+    pub(crate) fn get(
         &self,
         domain: usize,
         key: &[u8; 32],
@@ -61,7 +87,7 @@ impl<T: Copy> Index<T> {
             node = current.children[direction(key, current.bit)];
         }
     }
-    pub(super) fn set(
+    pub(crate) fn set(
         &mut self,
         domain: usize,
         key: [u8; 32],

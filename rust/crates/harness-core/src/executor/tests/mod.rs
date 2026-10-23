@@ -368,6 +368,7 @@ struct Journal(
     AtomicUsize,
     AtomicUsize,
     ExecutionClaims,
+    AtomicUsize,
 );
 
 impl Journal {
@@ -493,7 +494,7 @@ impl ExecutionJournal for Journal {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.3.fetch_add(1, Ordering::SeqCst);
             validate_execution_page(maximum)?;
-            Ok(self
+            let records: Vec<_> = self
                 .0
                 .lock()
                 .unwrap()
@@ -501,7 +502,9 @@ impl ExecutionJournal for Journal {
                 .filter(|record| record.operation_id == operation_id && record.sequence > after)
                 .take(maximum as usize)
                 .cloned()
-                .collect())
+                .collect();
+            self.7.fetch_add(records.len(), Ordering::SeqCst);
+            Ok(records)
         })
     }
 
@@ -744,6 +747,7 @@ mod tool_hooks;
 mod tool_metadata;
 mod tools_1;
 mod tools_2;
+mod turn_cost;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,
     input_schema: Value,
