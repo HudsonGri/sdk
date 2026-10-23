@@ -521,7 +521,7 @@ async fn hook_and_bash_turns_leave_a_clean_checkout() -> Result<()> {
         settings(&script, "hook-ran").to_string(),
     )
     .map_err(super::super::storage)?;
-    for (name, bash) in [("hooked", false), ("bash", true)] {
+    for (name, bash) in [("hooked", false), ("shell", true)] {
         let workspace = root.path().join(name);
         std::fs::create_dir(&workspace).map_err(super::super::storage)?;
         // A Git checkout sees no untracked mount point while one is live.
@@ -535,7 +535,7 @@ async fn hook_and_bash_turns_leave_a_clean_checkout() -> Result<()> {
             .then(|| {
                 super::checked_commands::call(
                     0,
-                    "bash",
+                    "shell",
                     "test -d .volumes/scratch && printf 'MOUNTED STATUS[%s]'                      \"$(git status --porcelain --untracked-files=all)\"",
                 )
             })
@@ -608,7 +608,7 @@ async fn native_cleanup_preserves_preexisting_checkout_artifacts() -> Result<()>
     )
     .map_err(super::super::storage)?;
     let provider = scripted([
-        super::checked_commands::call(0, "bash", "test -d .volumes/scratch && printf mounted"),
+        super::checked_commands::call(0, "shell", "test -d .volumes/scratch && printf mounted"),
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = open_checkout(root.path(), "preserved", &home, &provider).await?;
@@ -674,7 +674,7 @@ async fn reopened_start_hooks_read_persisted_scratch_data() -> Result<()> {
     let first = scripted([
         super::checked_commands::call(
             0,
-            "bash",
+            "shell",
             "printf SCRATCH-NOTE-WREN > .volumes/scratch/note",
         ),
         ScriptedTurn::Text("written".into()),
