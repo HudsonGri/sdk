@@ -203,7 +203,7 @@ pub fn decode_event_payload(
         Some(JsonValueSchema::EventPayload),
         &mut |charge| match charge {
             JsonCodecCharge::Admission { value_shape, .. } => {
-                quota.replace(json_decode_owned_bytes(value_shape, false, code)?.0)
+                quota.replace(json_decode_owned_bytes(value_shape, None, code)?.0)
             }
             charge => match quota.work().as_deref_mut() {
                 Some(io) => io.codec_charge(charge),
