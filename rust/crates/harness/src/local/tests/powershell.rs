@@ -31,7 +31,7 @@ async fn direct_shell_command_uses_native_powershell() -> Result<()> {
     assert!(matches!(
         resolution,
         crate::client::CommandResolution::Tool {
-            tool: crate::client::CommandTool::Bash,
+            tool: crate::client::CommandTool::Shell,
             ..
         }
     ));
@@ -99,14 +99,10 @@ async fn scripted_powershell_reads_writes_runs_and_captures_exit_code() -> Resul
             "write",
             json!({"path":"from-write.txt", "text":"file tool input", "media_type":"text/plain", "display_name":"from-write.txt"}),
         ),
-        call(
-            "shell",
-            "powershell",
-            json!({"command": command, "cwd":"src"}),
-        ),
+        call("shell", "shell", json!({"command": command, "cwd":"src"})),
         call(
             "scratch",
-            "powershell",
+            "shell",
             json!({"command":"[Console]::Write((Get-Content -Raw scratch.txt))", "cwd":".volumes/scratch"}),
         ),
         ScriptedTurn::Text("done".into()),
@@ -184,11 +180,7 @@ async fn powershell_cancellation_kills_parent_and_descendant() -> Result<()> {
         marker.display().to_string().replace('\'', "''")
     );
     let provider = scripted([
-        call(
-            "running",
-            "powershell",
-            json!({"command":script, "timeout":5}),
-        ),
+        call("running", "shell", json!({"command":script, "timeout":5})),
         ScriptedTurn::Text("unexpected completion".into()),
     ]);
     let harness = LocalHarness::open(
@@ -249,7 +241,7 @@ async fn powershell_approval_patterns_block_execution() -> Result<()> {
     std::fs::create_dir(home.path().join(".claude")).map_err(super::super::storage)?;
     let executable = super::super::checkout_tools::shell::executable()?;
     let deny = json!({"hookSpecificOutput":{"permissionDecision":"deny", "permissionDecisionReason":"PowerShell policy denied"}});
-    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"^(powershell|PowerShell)$", "hooks":[{
+    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"shell", "hooks":[{
         "type":"command", "command":executable,
         "args":["-NoProfile", "-NonInteractive", "-Command", format!("[Console]::Write('{}')", deny)],
         "onFailure":"block"
@@ -262,7 +254,7 @@ async fn powershell_approval_patterns_block_execution() -> Result<()> {
     let provider = scripted([
         call(
             "denied",
-            "powershell",
+            "shell",
             json!({"command":"Set-Content -LiteralPath forbidden.txt -Value executed"}),
         ),
         ScriptedTurn::Text("done".into()),

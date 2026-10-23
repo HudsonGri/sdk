@@ -4,7 +4,7 @@
    "hooks": {
     "PreToolUse": [
      {
-      "matcher": "Bash",
+      "matcher": "shell",
       "hooks": [
        {
         "type": "command",
@@ -24,7 +24,7 @@
   },
   "results": {
    "call": {
-    "name": "bash",
+    "name": "shell",
     "content": {
      "kind": "error",
      "message": {
@@ -37,7 +37,7 @@
    {
     "messages": [
      {
-      "$contains": "Use the stock bash tool."
+      "$contains": "Use the stock shell tool."
      }
     ]
    },
@@ -58,7 +58,7 @@
         "hooks": {
           "PreToolUse": [
             {
-              "matcher": "PowerShell",
+              "matcher": "shell",
               "hooks": [
                 {
                   "type": "command",
@@ -74,7 +74,7 @@
     "expect": {
       "results": {
         "call": {
-          "name": "powershell"
+          "name": "shell"
         }
       }
     }
