@@ -37,7 +37,7 @@ request, decision and durability path as a restrictive policy. Pass
 
 An `allow` or `deny` settles the request; `ask` advances to the next stage.
 Exhausting the chain denies the action. Within one rule set, matching `deny`
-wins over `ask`, which wins over `allow`. Omitted or null selectors are
+wins over `ask`, which wins over `allow`. Omitted or null `tool` and `arguments` fields are
 wildcards; supplied arguments must equal the complete arguments object.
 Rules can also conjoin `selectors` against the exact argument object. Each uses an
 RFC 6901 `pointer`: `{"kind":"pattern","pointer":"/command","pattern":"cargo test *"}`

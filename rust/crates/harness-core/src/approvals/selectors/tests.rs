@@ -50,15 +50,27 @@ fn approval_selectors_conjoin_command_path_and_volume() -> Result<()> {
 
 #[test]
 fn approval_selectors_reject_invalid_pointers_and_paths_and_do_not_match_opaque() {
+    let rejected = |selector| {
+        ApprovalPolicy {
+            approvers: vec![Approver::Rules {
+                principal: "rules".into(),
+                rules: vec![ApprovalRule {
+                    tool: None,
+                    arguments: None,
+                    selectors: vec![selector],
+                    verdict: RuleVerdict::Allow,
+                }],
+                fallback: RuleVerdict::Allow,
+            }],
+        }
+        .bind()
+        .is_err()
+    };
     for pointer in ["command", "/bad~2", "/trailing~"] {
-        assert!(
-            ApprovalSelector::Equal {
-                pointer: pointer.into(),
-                value: Value::Null
-            }
-            .validate()
-            .is_err()
-        );
+        assert!(rejected(ApprovalSelector::Equal {
+            pointer: pointer.into(),
+            value: Value::Null
+        }));
     }
     for root in [
         "",
@@ -67,14 +79,10 @@ fn approval_selectors_reject_invalid_pointers_and_paths_and_do_not_match_opaque(
         "/src//private",
         "src\\private",
     ] {
-        assert!(
-            ApprovalSelector::PathWithin {
-                pointer: "/path".into(),
-                root: root.into()
-            }
-            .validate()
-            .is_err()
-        );
+        assert!(rejected(ApprovalSelector::PathWithin {
+            pointer: "/path".into(),
+            root: root.into()
+        }));
     }
     let escaped = ApprovalSelector::Equal {
         pointer: "/a~1b/~0".into(),
@@ -141,6 +149,6 @@ fn approval_command_patterns_are_anchored_and_literal_except_for_stars() {
     assert!("echo cargo test core".contains("cargo test "));
     assert!(!pattern_matches("test?", "tests"));
     assert!(pattern_matches("a**b*c", "abbbc"));
-    assert!(pattern_matches("é*λ", "é text λ"));
+    assert!(pattern_matches("Ã©*Î»", "Ã© text Î»"));
     assert!(!pattern_matches("a*a", "a"));
 }
