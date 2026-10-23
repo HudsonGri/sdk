@@ -2,6 +2,7 @@
 mod certification;
 mod codex;
 mod install;
+mod sessions;
 #[cfg(test)]
 mod tests;
 
@@ -50,6 +51,8 @@ fn run() -> Result<()> {
         let task = parse_task(id)?;
         args.drain(..2);
         task
+    } else if let Ok(task) = env::var("ACYCLIC_TASK") {
+        parse_task(&task)?
     } else {
         serde_json::from_value(
             host_files::request(
@@ -82,7 +85,10 @@ fn internal(args: &[String]) -> Result<bool> {
             println!("acyclic {}", env!("CARGO_PKG_VERSION"));
         }
         "__mcp" => {
-            codex::serve()?;
+            sessions::serve(args.get(1).map_or("codex", String::as_str))?;
+        }
+        "host" => {
+            codex::launch(args.get(1..).unwrap_or_default())?;
         }
         "__hook" => {
             let [_, host, event] = args else {
@@ -92,15 +98,7 @@ fn internal(args: &[String]) -> Result<bool> {
                 Ok(input) => hook(host, event, input),
                 Err(error) => hook_failure(event, &error.to_string()),
             };
-            if event == "WorktreeCreate" {
-                let path = answer
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| answer.to_string())?;
-                println!("{path}");
-            } else {
-                println!("{answer}");
-            }
+            println!("{answer}");
         }
         "__workspace" => {
             let action = serde_json::from_value(read_json(io::stdin().lock())?)?;
@@ -167,7 +165,7 @@ fn action(task: TaskId, args: &[String]) -> Result<HostAction> {
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | cancel ID | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | cancel ID | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
@@ -186,7 +184,12 @@ fn read_json(input: impl io::Read) -> Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn hook(host: &str, event: &str, input: Value) -> Value {
+fn hook(host: &str, event: &str, mut input: Value) -> Value {
+    if let Some(task) = env::var_os("ACYCLIC_TASK")
+        && let Some(object) = input.as_object_mut()
+    {
+        object.insert("task".into(), json!(task));
+    }
     let result = (|| -> Result<Value> {
         let cwd = PathBuf::from(
             input
@@ -206,10 +209,6 @@ fn hook(host: &str, event: &str, input: Value) -> Value {
     result.unwrap_or_else(|error| hook_failure(event, &error.to_string()))
 }
 
-fn hook_failure(event: &str, error: &str) -> Value {
-    if event == "PreToolUse" {
-        json!({"hookSpecificOutput":{"hookEventName":event,"permissionDecision":"deny","permissionDecisionReason":error}})
-    } else {
-        json!({"continue":false,"stopReason":error})
-    }
+fn hook_failure(_event: &str, error: &str) -> Value {
+    json!({"continue":false,"stopReason":error})
 }

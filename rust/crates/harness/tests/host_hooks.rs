@@ -33,7 +33,10 @@ fn codex_minimum_version_is_enforced_without_compatibility_fallback() {
 #[test]
 fn manifest_contains_only_native_lifecycle_commands() {
     let manifest = claude_manifest("fixture");
-    assert!(manifest.get("mcpServers").is_none());
+    assert_eq!(
+        manifest.pointer("/mcpServers/acyclic-sessions/args"),
+        Some(&json!(["__mcp", "claude-code"]))
+    );
     assert_eq!(
         manifest.get("version").expect("manifest version"),
         "fixture"

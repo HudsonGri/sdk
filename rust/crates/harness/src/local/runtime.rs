@@ -30,87 +30,8 @@ pub(super) async fn open(
     Scope,
     Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
 )> {
-    let stock = Arc::new(StockTurnMachine::new());
-    let preparation = Arc::new(ForkPreparationMachine::new());
-    let child = Arc::new(crate::filesystem::ChildAgentMachine::new());
-    let definition = stock.definition()?;
-    let child_definition = child.definition()?;
-    let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
-    let mut grants = vec![
-        "task:spawn:acyclic.direct_tool@1".to_owned(),
-        "model:generate".to_owned(),
-        "operation:declare".to_owned(),
-        "conversation:bind".to_owned(),
-        "conversation:append".to_owned(),
-        "conversation:select_context".to_owned(),
-        "operation:observe".to_owned(),
-        "operation:cancel".to_owned(),
-        "operation:wake".to_owned(),
-        "mail:read".to_owned(),
-        "mail:send".to_owned(),
-        "fork:publish".to_owned(),
-        "project:merge".to_owned(),
-        format!(
-            "task:spawn:{}@{}",
-            child_definition.identity().name,
-            child_definition.identity().version
-        ),
-        format!(
-            "task:spawn:{}@{}",
-            definition.identity().name,
-            definition.identity().version
-        ),
-        format!(
-            "task:spawn:{}@{}",
-            fork.identity().name,
-            fork.identity().version
-        ),
-    ];
-    if config.passive {
-        grants.retain(|grant| {
-            matches!(
-                grant.as_str(),
-                "fork:publish"
-                    | "project:merge"
-                    | "operation:declare"
-                    | "operation:observe"
-                    | "operation:cancel"
-                    | "operation:wake"
-            ) || grant
-                == &format!(
-                    "task:spawn:{}@{}",
-                    fork.identity().name,
-                    fork.identity().version
-                )
-        });
-    }
-    #[cfg(feature = "native-execution")]
-    if config.passive {
-        grants.push(format!("task:spawn:{}", super::host_task::TASK));
-    }
-    for volume in [config.project, config.scratch] {
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            grants.push(volume.capability(operation, &mut None)?);
-        }
-        grants.push(volume.directory_read_capability("", &mut None)?);
-    }
-    for definition in config.tools.definitions(None)? {
-        grants.push(format!("tool:call:{}", definition.name));
-    }
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-    grants.extend(
-        config
-            .capabilities
-            .iter()
-            // Registry definitions above already supply every tool-call grant.
-            .filter(|grant| !grant.starts_with("tool:call:"))
-            .map(str::to_owned),
-    );
-    grants.push(
-        config
-            .journal
-            .directory_read_capability("inputs", &mut None)?,
-    );
+    let (tasks, machines, spawns) = runtime_registry(config.passive)?;
+    let mut grants = runtime_grants(&config, spawns)?;
     let scope = RuntimeScope::new(
         Capabilities::new(grants.iter().map(String::as_str)),
         config.limits,
@@ -143,31 +64,8 @@ pub(super) async fn open(
         config.issuer,
         None,
     )?);
-    let mut tasks = TaskRegistry::default();
-    #[cfg(feature = "native-execution")]
-    let native_host = super::host_task::NativeHostTask::new();
-    #[cfg(feature = "native-execution")]
-    if config.passive {
-        tasks.register(native_host.definition()?)?;
-    }
-    if !config.passive {
-        tasks.register(definition)?;
-        tasks.register(child_definition)?;
-    }
-    tasks.register(fork)?;
-    let mut machines = MachineRegistry::default();
-    #[cfg(feature = "native-execution")]
-    if config.passive {
-        machines.register(native_host, &mut None)?;
-    }
-    if !config.passive {
-        LocalHarness::register_commands(&mut tasks, &mut machines)?;
-        machines.register(stock, &mut None)?;
-        machines.register(child, &mut None)?;
-    }
-    machines.register(preparation, &mut None)?;
     let mut runtime = LocalTaskRuntime::open(
-        config.stream,
+        config.stream.clone(),
         config.files.clone(),
         config.journal,
         Some(config.scratch),
@@ -191,6 +89,131 @@ pub(super) async fn open(
     .with_task_files(task_files.clone())?;
     runtime.bind_task_files(Some(projection_files.clone()));
     #[cfg(feature = "native-execution")]
+    let runtime = attach_workspace(runtime, config, &signed, projection_files.clone()).await?;
+    Ok((Arc::new(runtime), signed, projection_files))
+}
+
+fn runtime_grants(config: &Configuration<'_>, spawns: [String; 3]) -> Result<Vec<String>> {
+    let fork_grant = spawns
+        .last()
+        .ok_or_else(|| Error::Invalid("fork grant absent".into()))?
+        .clone();
+    let mut grants = vec![
+        "task:spawn:acyclic.direct_tool@1".to_owned(),
+        "model:generate".to_owned(),
+        "operation:declare".to_owned(),
+        "conversation:bind".to_owned(),
+        "conversation:append".to_owned(),
+        "conversation:select_context".to_owned(),
+        "operation:observe".to_owned(),
+        "operation:cancel".to_owned(),
+        "operation:wake".to_owned(),
+        "mail:read".to_owned(),
+        "mail:send".to_owned(),
+        "fork:publish".to_owned(),
+        "project:merge".to_owned(),
+    ];
+    grants.extend(spawns);
+    if config.passive {
+        grants.retain(|grant| {
+            matches!(
+                grant.as_str(),
+                "fork:publish"
+                    | "project:merge"
+                    | "operation:declare"
+                    | "operation:observe"
+                    | "operation:cancel"
+                    | "operation:wake"
+            ) || grant == &fork_grant
+        });
+    }
+    #[cfg(feature = "native-execution")]
+    if config.passive {
+        grants.push(format!("task:spawn:{}", super::host_task::TASK));
+    }
+    for volume in [config.project, config.scratch] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            grants.push(volume.capability(operation, &mut None)?);
+        }
+        grants.push(volume.directory_read_capability("", &mut None)?);
+    }
+    for definition in config.tools.definitions(None)? {
+        grants.push(format!("tool:call:{}", definition.name));
+    }
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    grants.extend(
+        config
+            .capabilities
+            .iter()
+            // Registry definitions above already supply every tool-call grant.
+            .filter(|grant| !grant.starts_with("tool:call:"))
+            .map(str::to_owned),
+    );
+    grants.push(
+        config
+            .journal
+            .directory_read_capability("inputs", &mut None)?,
+    );
+    Ok(grants)
+}
+
+fn runtime_registry(passive: bool) -> Result<(TaskRegistry, MachineRegistry, [String; 3])> {
+    let stock = Arc::new(StockTurnMachine::new());
+    let preparation = Arc::new(ForkPreparationMachine::new());
+    let child = Arc::new(crate::filesystem::ChildAgentMachine::new());
+    let definition = stock.definition()?;
+    let child_definition = child.definition()?;
+    let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
+    let spawns = [
+        format!(
+            "task:spawn:{}@{}",
+            child_definition.identity().name,
+            child_definition.identity().version
+        ),
+        format!(
+            "task:spawn:{}@{}",
+            definition.identity().name,
+            definition.identity().version
+        ),
+        format!(
+            "task:spawn:{}@{}",
+            fork.identity().name,
+            fork.identity().version
+        ),
+    ];
+    let mut tasks = TaskRegistry::default();
+    #[cfg(feature = "native-execution")]
+    let native_host = super::host_task::NativeHostTask::new();
+    #[cfg(feature = "native-execution")]
+    if passive {
+        tasks.register(native_host.definition()?)?;
+    }
+    if !passive {
+        tasks.register(definition)?;
+        tasks.register(child_definition)?;
+    }
+    tasks.register(fork)?;
+    let mut machines = MachineRegistry::default();
+    #[cfg(feature = "native-execution")]
+    if passive {
+        machines.register(native_host, &mut None)?;
+    }
+    if !passive {
+        LocalHarness::register_commands(&mut tasks, &mut machines)?;
+        machines.register(stock, &mut None)?;
+        machines.register(child, &mut None)?;
+    }
+    machines.register(preparation, &mut None)?;
+    Ok((tasks, machines, spawns))
+}
+
+#[cfg(feature = "native-execution")]
+async fn attach_workspace(
+    runtime: LocalTaskRuntime,
+    config: Configuration<'_>,
+    signed: &Scope,
+    projection_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+) -> Result<LocalTaskRuntime> {
     let runtime = match config.workspace {
         Some(workspace) => {
             let tools = Arc::new(
@@ -198,7 +221,7 @@ pub(super) async fn open(
                     workspace,
                     config.project,
                     config.clock,
-                    Arc::clone(&projection_files),
+                    projection_files,
                 )
                 .await?,
             );
@@ -207,7 +230,7 @@ pub(super) async fn open(
                 config.files,
                 config.project,
                 config.verifier,
-                &signed,
+                signed,
                 config.limits.file_bytes,
             );
             let runtime = runtime.with_content_publisher(Arc::new(publisher))?;
@@ -219,5 +242,5 @@ pub(super) async fn open(
         }
         None => runtime,
     };
-    Ok((Arc::new(runtime), signed, projection_files))
+    Ok(runtime)
 }

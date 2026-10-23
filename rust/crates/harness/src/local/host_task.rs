@@ -118,6 +118,17 @@ impl LocalHarness {
     /// Allocates the same isolated project/private volumes and child request
     /// files as `GraphCoder`, while admitting a passive native-host task.
     pub async fn admit_host_child(&self, parent: &TaskContext, reference: &str) -> Result<TaskId> {
+        self.admit_host_child_request(parent, reference, "Native host subagent")
+            .await
+    }
+
+    /// Publishes the host's actual spawn prompt in the shared child request.
+    pub async fn admit_host_child_request(
+        &self,
+        parent: &TaskContext,
+        reference: &str,
+        prompt: &str,
+    ) -> Result<TaskId> {
         use crate::task_volume::{ChildFile, ChildRequest, Component, FileKey, FileValue, Query};
         let (task, _) = parent.owned_task_binding(None)?;
         let owner = parent
@@ -143,7 +154,7 @@ impl LocalHarness {
             .await?;
         let files = child_files.as_ref().unwrap_or(&self.task_files);
         let request = ChildRequest {
-            prompt: "Native host subagent".into(),
+            prompt: prompt.into(),
             model: None,
             tools: None,
             grants: Some(parent.scope().grants().iter().map(str::to_owned).collect()),

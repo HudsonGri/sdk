@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Result<()> {
+    for (host, flags, resume_option) in [
+        (
+            "claude-code",
+            vec!["--settings", "policy.json", "--permission-mode", "default"],
+            "--resume",
+        ),
+        (
+            "pi",
+            vec!["--thinking", "high", "--session-dir", "native-sessions"],
+            "--session",
+        ),
+    ] {
+        let flags = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let command = codex::child(
+            host,
+            &flags,
+            Path::new("admitted-view"),
+            Some("native-reference"),
+        )?;
+        assert_eq!(command.get_current_dir(), Some(Path::new("admitted-view")));
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for pair in flags.as_chunks::<2>().0 {
+            assert!(arguments.windows(2).any(|window| window == pair));
+        }
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == [resume_option, "native-reference"])
+        );
+    }
+    assert!(
+        codex::validate(
+            "claude-code",
+            &["--permission-mode".into(), "default".into()]
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() -> Result<()> {
     let task = serde_json::from_value(json!("00000000-0000-0000-0000-000000000001"))?;
     let args = ["discard", "agents/child's-view"].map(String::from);
@@ -36,28 +81,22 @@ fn malformed_and_oversized_inputs_fail_before_any_workspace_request() {
 }
 
 #[test]
-fn failed_coordination_denies_execution_without_granting_native_permissions() {
-    let denied = hook_failure("PreToolUse", "owner unavailable");
+fn failed_lifecycle_coordination_stops_without_changing_native_permissions() {
+    let denied = hook_failure("SessionStart", "owner unavailable");
+    assert!(denied.get("hookSpecificOutput").is_none());
     assert_eq!(
-        denied
-            .pointer("/hookSpecificOutput/permissionDecision")
-            .unwrap()
-            .clone(),
-        "deny"
-    );
-    assert_eq!(
-        hook_failure("SubagentStart", "missing fork")
+        hook_failure("Stop", "owner unavailable")
             .get("continue")
             .unwrap()
             .clone(),
         false
     );
     assert_eq!(
-        hook("codex", "PreToolUse", json!({}))
-            .pointer("/hookSpecificOutput/permissionDecision")
+        hook("codex", "SessionStart", json!({}))
+            .get("continue")
             .unwrap()
             .clone(),
-        "deny"
+        false
     );
 }
 
@@ -80,13 +119,13 @@ fn claude_installation_preserves_foreign_hooks_permissions_and_unrelated_setting
             .and_then(Value::as_array)
             .ok_or("fixture hook missing")?
             .len(),
-        2
+        1
     );
     assert_eq!(document.get("permissions"), original.get("permissions"));
     assert_eq!(document.get("theme"), Some(&json!("dark")));
     install::update_claude(&mut document, &executable.to_string_lossy(), false)?;
     assert_eq!(document, original);
-    let mut invalid = json!({"hooks":{"PreToolUse":"foreign"}});
+    let mut invalid = json!({"hooks":{"Stop":"foreign"}});
     assert!(install::update_claude(&mut invalid, &executable.to_string_lossy(), true).is_err());
     Ok(())
 }

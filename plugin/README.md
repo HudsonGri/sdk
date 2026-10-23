@@ -1,63 +1,75 @@
 # Native host workspace coordination
 
-Claude Code, Codex and Pi own their agents, models, context, tools and
-permissions. Acyclic hooks select and capture shared harness workspaces.
-GraphCoder owns the shared task tree, filesystem history and merge operation.
-The plugin contains no agent executor or background service.
+Claude Code, Codex and Pi run their own sessions, providers, tools, permissions
+and agent loops. Acyclic coordinates isolated workspaces, capture and merges
+through an already-running GraphCoder harness.
 
-Install the package and start GraphCoder **outside** the host sandbox, from
-the checkout the native host will use:
+Start GraphCoder outside the host sandbox, from the workspace:
 
 ```sh
-npm install -g @acyclic-labs/plugin
 graphcoder --host-workspace --host-state-directory /path/to/explicit/state
 acyclic install codex
+acyclic host codex -- --sandbox workspace-write --ask-for-approval never
 ```
 
-Supported installer targets are `codex`, `claude-code` and `pi`. Codex must be
-at least **0.164.0**; installation and `doctor codex` refuse older or unknown
-versions. Pi targets `@earendil-works/pi-coding-agent` **1.1.0**. Claude hooks
-require native `WorktreeCreate` support. Use `--plugin-root PATH` to select
-package assets and `--settings PATH` to select a Claude settings file or Pi
-extension file. Native host configuration directories remain host-owned.
+Codex requires **0.164.0 or later**; install and doctor reject older or unknown
+versions. Pi targets **1.1.0**. Use `--plugin-root PATH` for package assets and
+`--settings PATH` for a Claude settings file or Pi extension file.
 
-The installed hooks declare their access through these workspace paths:
+The plugin's `spawn` tool starts a separate native host process in the admitted
+lazy view under `<workspace>/.volumes/agents/`: `codex exec`, `claude -p`, or
+`pi --mode json -p`. Native instruction/config discovery and tools run there.
+Native built-in subagents keep their host behavior and **are not harness forks**.
 
-| Path | Use |
-| --- | --- |
-| `.acyclic-sdk/host-files/owner.json` | Read the existing GraphCoder endpoint |
-| `.acyclic-sdk/host-files/requests/` | Publish workspace requests |
-| `.acyclic-sdk/host-files/results/` | Read and retire disposable results |
-| `.volumes/agents/` | Native child working views |
+The root launcher forwards the same explicit native policy arguments to managed
+children. Spawn cannot override them. Codex requires explicit `--sandbox` and
+`--ask-for-approval`; Claude requires explicit `--settings` and
+`--permission-mode`. Launch Claude with its native plugin directory enabled:
 
-These paths are inside the host's existing writable workspace. Installation
-adds no writable sandbox roots or state-directory permissions. Keep Codex's
-workspace-write sandbox and Claude's native permissions enabled. A CLI call
-inside the sandbox never opens harness state, starts GraphCoder or creates
-service identity or lifecycle lock files. Start GraphCoder first; an absent
-endpoint produces an error. Its durable request/claim/result files remain in
-the harness even when disposable workspace projections are removed.
+```sh
+acyclic host claude-code -- --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude
+acyclic host pi --
+```
+
+Direct native sessions continue to work normally. Managed spawn requires the
+launcher context; host metadata does not provide the effective security policy,
+so the plugin does not guess it. Native configuration directories remain owned
+by the native host. The plugin never reads credentials or native transcripts.
+Pi's native CLI receives its saved native session file when resuming.
+
+The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
+`resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
+`prompt`. They use the same child request, inbox, control, status, delivered
+and result files as GraphCoder. Wait completes after the accepted inputs settle.
+Cancel stops and reaps the native child process tree before capturing partial
+writes. Resume re-launches the saved native session in the recreated view.
+Archive freezes the shared child reference permanently.
+
+Capture happens at native turn/session boundaries and child process exit.
+Failed or cancelled native tools leave their filesystem state capturable;
+there is no per-tool pending-write ledger or pre/post hook pairing.
 
 ```sh
 acyclic agents
 acyclic fs log
 acyclic --task TASK_ID fs merge agents/CHILD_REF
-acyclic --task TASK_ID capture
-acyclic cancel TASK_ID
-acyclic reopen TASK_ID
 ```
 
-Native hosts stop their own agents and tools before cancellation or capture.
-Pending native writes block capture and merge. Reopening retains task history;
-it does not start a model or an agent. Pi's extension delegates subagent
-sessions to Pi's own SDK and uses its session manager for context forks.
-Claude's worktree hook returns the shared child view as the native cwd.
-Codex child filesystem inputs are routed through lifecycle hooks; native
-session-cwd selection and sandbox acceptance require real-host qualification.
+All sandboxed coordination and custody writes stay within the existing workspace:
 
-The separate [identity package](identity-mcp.md) retains its existing command
-surface. Workspace coordination does not require or inspect host credentials.
+| Path | Use |
+| --- | --- |
+| `.acyclic-sdk/host-files/owner.json` | Discover the running GraphCoder owner |
+| `.acyclic-sdk/host-files/requests/` | Publish coordination requests |
+| `.acyclic-sdk/host-files/results/` | Read and retire disposable results |
+| `.acyclic-sdk/host-processes/` | Native process custody and exclusive ownership |
+| `.volumes/agents/` | Admitted native child working views |
 
-Source changes and manifest discovery alone do not establish cross-platform
-qualification. The plugin e2e lane owns sandbox-enabled Linux, macOS and
-Windows host acceptance, with results in `Q:/lanes/plugin-e2e/`.
+Install declares workspace access without adding sandbox roots. Commands never
+start a service or write state-directory identities or lifecycle locks. Keep the
+host sandbox and permissions enabled. GraphCoder must already be running.
+
+The separate [identity package](identity-mcp.md) retains its command surface.
+The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
+`Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
+native model-session acceptance.

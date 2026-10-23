@@ -1,0 +1,141 @@
+"""Linux, no models: native-process fixture plus the real Codex sandbox.
+
+Run on bb2: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER.
+Executables must already be built. Native model-session acceptance belongs to
+the real-host e2e suite; this regression never reads native authentication.
+"""
+import json, os, pathlib, selectors, subprocess, sys, tempfile, time
+if len(sys.argv) != 4:
+ raise SystemExit(__doc__)
+acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:])
+started=time.monotonic()
+with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary:
+ root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
+ env={'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied')}
+ for key in ('HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','XDG_STATE_HOME','XDG_CONFIG_HOME','XDG_DATA_HOME'):
+  directory=root/key.lower();directory.mkdir();env[key]=str(directory)
+ (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
+ fake=bin_dir/'codex'
+ fake.write_text('''#!/usr/bin/env python3
+import json,os,pathlib,subprocess,sys,time
+args=sys.argv[1:]
+if 'exec' not in args:
+ assert args==['--sandbox','workspace-write','--ask-for-approval','never'],args
+ cwd=pathlib.Path.cwd()
+ assert str(cwd)==os.environ['ACYCLIC_WORKSPACE']==os.environ['FIXTURE_WORKSPACE']
+ assert json.loads(os.environ['ACYCLIC_HOST_ARGS'])==args
+ (cwd/'root-launch.json').write_text(json.dumps({'task':os.environ['ACYCLIC_TASK'],'args':args}))
+ sys.exit(0)
+assert args[4:6]==['exec','--json'],args
+assert args[args.index('--sandbox')+1]=='workspace-write'
+assert args[args.index('--ask-for-approval')+1]=='never'
+cwd=pathlib.Path.cwd()
+assert args[args.index('--cd')+1]==str(cwd)
+assert cwd.is_relative_to(pathlib.Path(os.environ['FIXTURE_WORKSPACE'])/'.volumes/agents')
+assert (cwd/'AGENTS.md').read_text()=='native instruction discovery fixture'
+first=sys.stdin.read(1)
+if first=='B':
+ (cwd/'ready').write_text('ready')
+ time.sleep(30)
+prompt=first+sys.stdin.read()
+assert prompt in ('failed','cancelled','first','resumed')
+(cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
+print(json.dumps({'type':'thread.started','thread_id':'fixture-native-id'}),flush=True)
+base=[os.environ['FIXTURE_CODEX'],'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','--']
+denied=subprocess.run(base+['sh','-c','printf denied > "$1"','fixture',os.environ['FIXTURE_OUTSIDE']],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+assert denied.returncode!=0 and not pathlib.Path(os.environ['FIXTURE_OUTSIDE']).exists()
+subprocess.run(base+['sh','-c','printf native > "$1"','fixture',prompt+'.txt'],check=True)
+if prompt=='cancelled':
+ child=subprocess.Popen(['sh','-c','sleep 30'])
+ (cwd/'descendant.pid').write_text(str(child.pid))
+ (cwd/'ready').write_text('ready')
+ time.sleep(30)
+if prompt=='failed': sys.exit(17)
+if prompt=='resumed': assert args[args.index('resume')+1]=='fixture-native-id'
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'native done'}}),flush=True)
+''');fake.chmod(0o755)
+ owner=None;bridge=None;pending=b'';responses={};sequence=0
+ def start_owner():
+  global owner
+  log=(root/'owner.log').open('w+')
+  owner=subprocess.Popen([graphcoder,'--host-workspace','--host-state-directory',str(state),'--workspace',str(workspace)],cwd=workspace,env=env,stdout=log,stderr=log)
+  deadline=time.monotonic()+2
+  while not (workspace/'.acyclic-sdk/host-files/owner.json').exists():
+   assert owner.poll() is None,(root/'owner.log').read_text()[-1000:]
+   assert time.monotonic()<deadline,'owner readiness';time.sleep(.01)
+ def client(action):
+  result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True,timeout=2)
+  assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
+ def start_bridge(task):
+  global bridge,pending,responses
+  pending=b'';responses={}
+  bridge=subprocess.Popen([acyclic,'__mcp','codex'],cwd=workspace,env={**env,'ACYCLIC_HOST_ARGS':json.dumps(['--sandbox','workspace-write','--ask-for-approval','never']),'ACYCLIC_WORKSPACE':str(workspace),'ACYCLIC_TASK':task},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'bridge.log').open('w+'))
+ def submit(name,reference,prompt=None):
+  global sequence
+  sequence+=1;args={'reference':reference}
+  if prompt is not None:args['prompt']=prompt
+  bridge.stdin.write((json.dumps({'jsonrpc':'2.0','id':sequence,'method':'tools/call','params':{'name':name,'arguments':args}})+'\n').encode());bridge.stdin.flush();return sequence
+ def response(identifier):
+  global pending
+  deadline=time.monotonic()+3
+  with selectors.DefaultSelector() as ready:
+   ready.register(bridge.stdout,selectors.EVENT_READ)
+   while identifier not in responses:
+    if b'\n' not in pending:
+     remaining=deadline-time.monotonic();assert remaining>0 and ready.select(remaining),('MCP response',identifier,(root/'bridge.log').read_text()[-1200:])
+     chunk=os.read(bridge.stdout.fileno(),65536);assert chunk,'bridge exited';pending+=chunk
+    while b'\n' in pending:
+     line,pending=pending.split(b'\n',1);message=json.loads(line);responses[message['id']]=message
+  message=responses.pop(identifier);assert 'error' not in message,message
+  result=message['result'];assert not result.get('isError'),result
+  return json.loads(result['content'][0]['text'])
+ def tool(name,reference,prompt=None):return response(submit(name,reference,prompt))
+ def close_bridge():
+  global bridge
+  if bridge and bridge.poll() is None:bridge.stdin.close();assert bridge.wait(timeout=2)==0,(root/'bridge.log').read_text()[-1200:]
+  bridge=None
+ def stop_owner():
+  global owner
+  if owner and owner.poll() is None:owner.terminate();assert owner.wait(timeout=2)==0,(root/'owner.log').read_text()[-1200:]
+  owner=None
+ try:
+  # Native global policy flags must precede exec; this is checked without a model.
+  base=[real_codex,'--sandbox','workspace-write','--ask-for-approval','never','exec','--json','--cd',str(workspace)]
+  for tail in (['--help'],['resume','fixture-id','--help']):
+   parsed=subprocess.run(base+tail,cwd=workspace,env=env,capture_output=True,text=True,timeout=2)
+   assert parsed.returncode==0,parsed.stderr[-1000:]
+  start_owner()
+  launched=subprocess.run([acyclic,'host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],cwd=workspace,env=env,capture_output=True,text=True,timeout=2)
+  assert launched.returncode==0,(launched.stdout,launched.stderr)
+  parent=json.loads((workspace/'root-launch.json').read_text())['task'];start_bridge(parent)
+  failed=tool('spawn','failed','failed');finished=tool('wait','failed')
+  assert finished['status']['settled'] and finished['results'][0]['outcome'].get('Failed'),finished
+  client({'kind':'fs','task':parent,'command':'merge agents/failed'});assert (workspace/'failed.txt').read_text()=='native'
+  cancelled=tool('spawn','cancelled','cancelled');view=pathlib.Path(cancelled['cwd']);deadline=time.monotonic()+2
+  while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)
+  waiter=submit('wait','cancelled');stopped=tool('cancel','cancelled');response(waiter)
+  assert stopped['status']['state']=='Interrupted' and stopped['status']['settled'],stopped
+  pid=int((view/'descendant.pid').read_text());proc=pathlib.Path('/proc')/str(pid)/'stat'
+  assert not proc.exists() or proc.read_text().split()[2]=='Z','descendant still running after cancel'
+  client({'kind':'fs','task':parent,'command':'merge agents/cancelled'});assert (workspace/'cancelled.txt').read_text()=='native'
+  blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd']);deadline=time.monotonic()+2
+  while not (view/'ready').exists():assert time.monotonic()<deadline,'blocked input readiness';time.sleep(.01)
+  stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['status']['state']=='Interrupted',stopped
+  original=tool('spawn','retained','first');tool('wait','retained');old_view=original['cwd']
+  close_bridge();stop_owner();start_owner();start_bridge(parent)
+  resumed=tool('resume','retained','resumed');tool('wait','retained')
+  assert resumed['cwd']!=old_view,'retained view was not recreated'
+  launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and 'fixture-native-id' in launch['args']
+  client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
+  archived=tool('archive','retained');assert archived['status']['state']=='Archived',archived
+  close_bridge();stop_owner()
+  print(json.dumps({'suite':'managed-native-session-supervision','native_agent_fixture':True,'real_codex_workspace_write_sandbox':True,'model_calls':0,'cwd_and_discovery':True,'failed_and_cancelled_capture_merge':True,'outside_denied':True,'cancel_kills_descendants':True,'blocked_input_cancellable':True,'wait_live':True,'resume_after_view_recreation':True,'seconds':time.monotonic()-started}),flush=True)
+ except BaseException:
+  for name in ('owner.log','bridge.log'):
+   path=root/name
+   if path.exists():print('FIXTURE_'+name,path.read_text()[-4000:],flush=True)
+  raise
+ finally:
+  if bridge and bridge.poll() is None:bridge.kill();bridge.wait(timeout=2)
+  if owner and owner.poll() is None:owner.terminate();owner.wait(timeout=2)
+assert time.monotonic()-started<10,'native supervision fixture exceeded ten seconds'

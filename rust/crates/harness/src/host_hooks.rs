@@ -6,9 +6,6 @@
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-mod routing;
-pub use routing::route_tool;
-
 /// First supported Codex release, including native MCP lifecycle hooks.
 pub const MINIMUM_CODEX_VERSION: &str = "0.164.0";
 
@@ -34,17 +31,7 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
 }
 
 /// Claude lifecycle boundaries used for workspace coordination.
-pub const CLAUDE_EVENTS: [&str; 9] = [
-    "SessionStart",
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "SubagentStart",
-    "SubagentStop",
-    "WorktreeCreate",
-    "WorktreeRemove",
-    "SessionEnd",
-];
+pub const CLAUDE_EVENTS: [&str; 3] = ["SessionStart", "Stop", "SessionEnd"];
 
 /// Command hooks for an installed executable, quoted as one shell argument.
 ///
@@ -71,9 +58,6 @@ fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
                     "statusMessage": "Acyclic is routing the workspace"
                 }]),
             );
-            if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
-                group.insert("matcher".into(), json!(".*"));
-            }
             (event, vec![Value::Object(group)])
         })
         .collect()
@@ -85,10 +69,11 @@ pub fn claude_manifest(version: &str) -> Value {
     json!({
         "name": "acyclic",
         "version": version,
-        "description": "Coordinate native subagent workspaces with the shared harness.",
+        "description": "Coordinate separate native sessions with the shared harness.",
         "author": {"name": "Acyclic Labs"},
         "license": "Apache-2.0",
-        "hooks": command_hooks("\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\"")
+        "hooks": command_hooks("\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\""),
+        "mcpServers": {"acyclic-sessions": {"command":"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic", "args":["__mcp","claude-code"]}}
     })
 }
 

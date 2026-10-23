@@ -1,15 +1,13 @@
-// Acyclic native workspace shim. Pi's SDK owns sessions, providers and tools.
-import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager,
-  type AgentSession, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+// Acyclic native workspace shim. Pi's CLI owns sessions, providers and tools.
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createInterface } from "node:readline";
 import { Type } from "typebox";
 
 const executable = "__ACYCLIC_EXECUTABLE__";
-type Location = { task: string; cwd: string };
 type Action = Record<string, unknown>;
-const thisExtension = fileURLToPath(import.meta.url);
+type Location = { task: string; cwd: string };
+type Response = { isError?: boolean; content: {type: string; text: string}[] };
 
 function workspace<T>(cwd: string, action: Action): Promise<T> {
   return new Promise((yes, no) => {
@@ -21,141 +19,73 @@ function workspace<T>(cwd: string, action: Action): Promise<T> {
   });
 }
 
-function result(value: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
-}
-
-export async function drainNativeSession(native: AgentSession, finished: Promise<void>) {
-  await native.abort();
-  await native.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-  await finished.catch(() => {});
-}
-
-export default function acyclic(pi: ExtensionAPI) { install(pi); }
-
-function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
-  let selected = binding;
-  let rootSession = inheritedRoot;
-  const children = new Map<string, { native: AgentSession; finished: Promise<void>; location: Location }>();
+export default function acyclic(pi: ExtensionAPI) {
+  let selected: Location | undefined;
+  let bridge: ChildProcessWithoutNullStreams | undefined;
+  let ended: Promise<void> | undefined;
+  let sequence = 0;
+  const pending = new Map<number, {yes: (value: Response) => void; no: (error: Error) => void}>();
   const task = () => { if (!selected) throw new Error("Acyclic workspace owner is unavailable"); return selected; };
-  const nativeHook = (ctx: ExtensionContext, event: string, extra: Action = {}) => workspace(ctx.cwd, {
-    kind: "hook", host: "pi", event,
-    input: { session_id: rootSession, cwd: ctx.cwd, task: task().task, ...extra },
-  });
 
-  pi.on("session_start", async (_event, ctx) => {
-    if (!binding) {
-      rootSession = ctx.sessionManager.getSessionId();
-      selected = await workspace<Location>(ctx.cwd, { kind: "open", host: "pi", session: rootSession });
+  function call(name: string, args: Action, signal?: AbortSignal): Promise<Response> {
+    if (!bridge) {
+      const location = task();
+      bridge = spawn(executable, ["__mcp", "pi"], {cwd: location.cwd, windowsHide: true,
+        env: {...process.env, ACYCLIC_WORKSPACE: location.cwd, ACYCLIC_TASK: location.task}});
+      bridge.stderr.resume();
+      const stop = (error: Error) => { for (const entry of pending.values()) entry.no(error); pending.clear(); };
+      createInterface({input: bridge.stdout}).on("line", line => {
+        try {
+          const message = JSON.parse(line);
+          const entry = pending.get(message.id);
+          if (!entry) return;
+          pending.delete(message.id);
+          if (message.error) entry.no(new Error(message.error.message)); else entry.yes(message.result);
+        } catch { stop(new Error("Invalid Acyclic coordination response")); }
+      });
+      bridge.on("error", stop);
+      ended = new Promise(resolve => bridge!.once("exit", () => {stop(new Error("Acyclic coordination session ended")); bridge = undefined; resolve();}));
+      bridge.stdin.write(JSON.stringify({jsonrpc: "2.0", id: 0, method: "initialize", params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "acyclic-pi", version: "0.2.0"}}}) + "\n");
+      bridge.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/initialized"}) + "\n");
     }
-  });
-  pi.on("tool_call", async (event, ctx) => {
-    if (["spawn_agent", "wait_agent", "cancel_agent", "reopen_agent"].includes(event.toolName)) return;
-    try {
-      const answer = await nativeHook(ctx, "PreToolUse", { tool_name: event.toolName, tool_use_id: event.toolCallId, tool_input: event.input }) as {hookSpecificOutput?: {updatedInput?: Record<string, unknown>}};
-      if (answer.hookSpecificOutput?.updatedInput) Object.assign(event.input, answer.hookSpecificOutput.updatedInput);
-    } catch (error) { return { block: true, reason: String(error) }; }
-  });
-  pi.on("tool_result", async (event, ctx) => {
-    if (["spawn_agent", "wait_agent", "cancel_agent", "reopen_agent"].includes(event.toolName)) return;
-    await nativeHook(ctx, "PostToolUse", { tool_name: event.toolName, tool_use_id: event.toolCallId, tool_input: event.input, tool_response: event.content });
-  });
-  pi.on("session_shutdown", async (_event, ctx) => {
-    for (const child of children.values()) await drainNativeSession(child.native, child.finished);
-    if (selected) await workspace(ctx.cwd, { kind: "capture", task: selected.task });
-    for (const child of children.values()) child.native.dispose();
-  });
-
-  async function start(location: Location, manager: SessionManager, prompt: string, ctx: ExtensionContext, restore = false) {
-    const loader = new DefaultResourceLoader({
-      cwd: location.cwd, agentDir: getAgentDir(),
-      extensionFactories: [api => install(api, location, rootSession)],
-      extensionsOverride: base => ({ ...base, extensions: base.extensions.filter(extension => resolve(extension.resolvedPath) !== resolve(thisExtension)) }),
+    const id = ++sequence;
+    return new Promise<Response>((yes, no) => {
+      const cancel = () => {
+        bridge?.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/cancelled", params: {requestId: id}}) + "\n");
+        pending.delete(id); no(new Error("Coordination request cancelled"));
+      };
+      if (signal?.aborted) { cancel(); return; }
+      signal?.addEventListener("abort", cancel, {once: true});
+      pending.set(id, {yes: value => {signal?.removeEventListener("abort", cancel); yes(value);},
+        no: error => {signal?.removeEventListener("abort", cancel); no(error);}});
+      bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", id, method: "tools/call", params: {name, arguments: args}}) + "\n");
     });
-    await loader.reload();
-    const { session } = await createAgentSession({ cwd: location.cwd, model: restore ? undefined : ctx.model,
-      scopedModels: [...ctx.scopedModels], thinkingLevel: restore ? undefined : pi.getThinkingLevel(),
-      tools: pi.getActiveTools(), sessionManager: manager, resourceLoader: loader });
-    try {
-      await session.bindExtensions({ uiContext: ctx.ui, mode: ctx.mode });
-      await nativeHook(ctx, "NativeSession", {task: location.task,
-        native_session: {id: session.sessionId, file: session.sessionFile ?? null}});
-    } catch (error) {
-      try { await drainNativeSession(session, Promise.resolve()); } finally { session.dispose(); }
-      throw error;
-    }
-    const finished = session.prompt(prompt).finally(async () => {
-      await workspace(location.cwd, { kind: "capture", task: location.task });
-    });
-    finished.catch(() => {}); // The wait tool reports the native SDK outcome.
-    const child = {native: session, finished, location};
-    children.set(location.task, child);
-    return child;
   }
 
-  pi.registerTool({
-    name: "spawn_agent", label: "Native subagent", description: "Fork this task's workspace and start a native Pi SDK session. Merge with acyclic fs merge agents/<task>.",
-    parameters: Type.Object({ prompt: Type.String(), fresh: Type.Optional(Type.Boolean()) }),
-    async execute(call, params, _signal, _update, ctx) {
-      const parent = task();
-      const entries = ctx.sessionManager.getBranch();
-      if (entries.length > 4096) throw new Error("Native branch exceeds the context entry bound");
-      const boundary = entries.find(entry => entry.type === "message" && entry.message.role === "assistant" &&
-        entry.message.content.some(part => part.type === "toolCall" && part.id === call));
-      if (!params.fresh && !boundary) throw new Error("Spawn invocation is absent from Pi's current native branch");
-      const location = await workspace<Location>(ctx.cwd, { kind: "fork", parent: parent.task, reference: call });
-      const source = ctx.sessionManager.getSessionFile();
-      const manager = params.fresh ? (source ? SessionManager.create(location.cwd) : SessionManager.inMemory(location.cwd)) : source
-        ? SessionManager.forkFrom(source, location.cwd)
-        : SessionManager.inMemory(location.cwd, undefined, entries.slice(0, entries.indexOf(boundary!)));
-      if (!params.fresh && source) {
-        if (boundary!.parentId) manager.branch(boundary!.parentId); else manager.resetLeaf();
-      }
-      await start(location, manager, params.prompt, ctx);
-      return result(location);
-    },
+  pi.on("session_start", async (_event, ctx) => {
+    selected = process.env.ACYCLIC_TASK ? {task: process.env.ACYCLIC_TASK, cwd: ctx.cwd}
+      : await workspace<Location>(ctx.cwd, {kind: "open", host: "pi", session: ctx.sessionManager.getSessionId()});
+    await workspace(ctx.cwd, {kind: "hook", host: "pi", event: "NativeSession",
+      input: {task: task().task, native_session: {id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? null}}});
   });
-  pi.registerTool({
-    name: "wait_agent", label: "Wait for native subagent", description: "Wait for a native Pi session and capture its completed writes.",
-    parameters: Type.Object({ task: Type.String() }),
-    async execute(_call, params) {
-      const child = children.get(params.task);
-      if (!child) throw new Error("Native child session is not open");
-      await child.finished;
-      return result({ ...child.location, completed: true });
-    },
+  pi.on("agent_end", async (_event, ctx) => {
+    if (selected) await workspace(ctx.cwd, {kind: "capture", task: selected.task});
   });
-  pi.registerTool({
-    name: "cancel_agent", label: "Cancel native subagent", description: "Abort through Pi, then cancel shared task ownership.",
-    parameters: Type.Object({ task: Type.String() }),
-    async execute(_call, params, _signal, _update, ctx) {
-      const child = children.get(params.task);
-      if (!child) throw new Error("Native child session is not open");
-      await drainNativeSession(child.native, child.finished);
-      const value = await workspace(ctx.cwd, { kind: "cancel", task: params.task });
-      child.native.dispose(); children.delete(params.task);
-      return result(value);
-    },
+  pi.on("session_shutdown", async (_event, ctx) => {
+    bridge?.stdin.end(); await ended;
+    if (selected) await workspace(ctx.cwd, {kind: "capture", task: selected.task});
   });
-  pi.registerTool({
-    name: "reopen_agent", label: "Reopen native subagent", description: "Resume a stopped native Pi session in its retained task view.",
-    parameters: Type.Object({ task: Type.String(), prompt: Type.String() }),
-    async execute(_call, params, _signal, _update, ctx) {
-      const child = children.get(params.task);
-      if (!child) {
-        const location = await workspace<Location>(ctx.cwd, { kind: "reopen", task: params.task });
-        const saved = await nativeHook(ctx, "NativeSession", {task: params.task}) as {id: string; file: string | null};
-        if (!saved.file) throw new Error("Pi's in-memory session has no persisted transcript to reopen");
-        await start(location, SessionManager.forkFrom(saved.file, location.cwd), params.prompt, ctx, true);
-        return result(location);
-      }
-      await child.finished;
-      await workspace(ctx.cwd, { kind: "reopen", task: params.task });
-      child.finished = child.native.prompt(params.prompt).finally(async () => {
-        await workspace(child.location.cwd, { kind: "capture", task: params.task });
-      });
-      child.finished.catch(() => {});
-      return result(child.location);
-    },
-  });
+
+  for (const name of ["spawn", "send", "wait", "archive", "cancel", "resume"]) {
+    const prompt = ["spawn", "send", "resume"].includes(name);
+    pi.registerTool({name, label: `Acyclic ${name}`,
+      description: `${name} a separate native Pi process in an admitted workspace view. Native subagents are unmanaged. Merge with acyclic fs merge agents/<reference>.`,
+      parameters: Type.Object({reference: Type.String(), ...(prompt ? {prompt: Type.String()} : {})}, {additionalProperties: false}),
+      async execute(_call, params, signal) {
+        const response = await call(name, params, signal);
+        if (response.isError) throw new Error(response.content.map(item => item.text).join("\n"));
+        return {content: response.content.map(item => ({type: "text" as const, text: item.text})), details: response};
+      },
+    });
+  }
 }

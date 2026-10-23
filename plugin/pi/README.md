@@ -1,26 +1,22 @@
-# Pi native SDK shim
+# Pi native session coordination
 
-`index.ts` targets `@earendil-works/pi-coding-agent` **1.1.0**. It registers
-workspace coordination tools and forwards lifecycle observations to the
-already-running GraphCoder workspace owner. Pi's native `createAgentSession`,
-`SessionManager` and `DefaultResourceLoader` retain agent execution, context,
-models, tools and extension loading.
+Install the extension with `acyclic install pi`, start GraphCoder outside the
+native host, then launch Pi with explicit native options:
 
-Install with `acyclic install pi`. Start GraphCoder outside the host sandbox
-as described in [the plugin README](../README.md). Child sessions receive
-their shared harness view under the checkout's `.volumes/agents/` as cwd.
-`spawn_agent`, `wait_agent`, `cancel_agent` and `reopen_agent` manage native
-SDK handles; `acyclic fs merge agents/<ref>` performs the shared merge.
+```sh
+acyclic host pi --
+```
 
-The shim stores no separate durable task index, execution journal, provider
-or filesystem tool implementation. The shared harness owns resource
-allocation, task files, capture and history. Cancellation first aborts the
-native Pi session, drains its descendant extensions, waits for it, then requests
-shared task cancellation.
+The extension provides spawn/send/wait/cancel/archive/resume. It calls the same
+coordination shim as Codex and Claude. Each managed child is a separate native
+Pi CLI process whose cwd is the admitted view inside workspace/.volumes/agents.
+Pi owns discovery, tools, providers and its agent loop. Native built-in subagents
+retain their own behavior and are not harness forks.
 
-Reopen uses a retained native SDK handle when available. After a process
-restart, Pi's native `SessionManager.forkFrom` restores its persisted session
-into the retained task view. Ordinary task files hold only the native session
-ID and file reference; the harness never opens the transcript. In-memory
-sessions have no transcript and cannot be recovered after process exit.
-The full recursive host acceptance matrix remains qualification work.
+The launcher preserves native arguments and inherited process restrictions.
+Capture follows agent end, session shutdown and reaped child process trees;
+there are no per-tool write markers. Resume passes the saved native session
+reference to Pi in the recreated view. The extension only obtains that opaque
+reference from Pi's session manager; Pi reads its own transcript.
+
+Merge captured changes with `acyclic fs merge agents/<reference>`.

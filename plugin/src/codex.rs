@@ -1,93 +1,190 @@
-//! Codex's unlisted lifecycle MCP hook. No model-visible tools or execution.
+//! Native launch arguments. No provider, native tool replacement, or agent loop.
 use super::*;
-use std::io::{BufRead as _, Write as _};
+use std::process::{Command, Stdio};
 
-pub(super) fn serve() -> Result<()> {
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    loop {
-        let mut line = Vec::new();
-        if input.by_ref().take(65_537).read_until(b'\n', &mut line)? == 0 {
-            return Ok(());
-        }
-        if line.len() > 65_536 {
-            return Err("MCP hook exceeds shared command file bound".into());
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
+pub(super) fn validate(host: &str, args: &[String]) -> Result<()> {
+    let (sandbox, approval, allowed): (&str, &str, &[&str]) = match host {
+        "codex" => (
+            "--sandbox",
+            "--ask-for-approval",
+            &[
+                "--sandbox",
+                "--ask-for-approval",
+                "--config",
+                "--model",
+                "--profile",
+            ],
+        ),
+        "claude-code" => (
+            "--settings",
+            "--permission-mode",
+            &[
+                "--settings",
+                "--permission-mode",
+                "--model",
+                "--allowedTools",
+                "--disallowedTools",
+                "--tools",
+                "--setting-sources",
+                "--plugin-dir",
+            ],
+        ),
+        "pi" => (
+            "",
+            "",
+            &[
+                "--model",
+                "--provider",
+                "--thinking",
+                "--tools",
+                "--extension",
+                "--session-dir",
+            ],
+        ),
+        _ => return Err("host launcher supports codex, claude-code or pi".into()),
+    };
+    if args
+        .chunks(2)
+        .any(|pair| !matches!(pair, [name, _] if allowed.contains(&name.as_str())))
+    {
+        return Err("provide explicit native policy arguments as --option VALUE pairs; prompts belong in the native host".into());
+    }
+    for name in [sandbox, approval] {
+        if name.is_empty() {
             continue;
         }
-        let response = match serde_json::from_slice(&line) {
-            Ok(message) => answer(&message),
-            Err(_) => Some(
-                json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"invalid JSON"}}),
-            ),
-        };
-        if let Some(response) = response {
-            let mut output = io::stdout().lock();
-            serde_json::to_writer(&mut output, &response)?;
-            writeln!(output)?;
-            output.flush()?;
+        if args
+            .chunks(2)
+            .filter(|pair| matches!(*pair, [key, _] if key == name))
+            .count()
+            != 1
+        {
+            return Err(format!(
+                "host requires exactly one {name} VALUE; children inherit it unchanged"
+            )
+            .into());
         }
+    }
+    Ok(())
+}
+
+pub(super) fn program(host: &str) -> Result<&'static str> {
+    match host {
+        "codex" => Ok("codex"),
+        "claude-code" => Ok("claude"),
+        "pi" => Ok("pi"),
+        _ => Err("unsupported native host".into()),
     }
 }
 
-fn answer(message: &Value) -> Option<Value> {
-    let id = message.get("id")?;
-    let params = message.get("params").unwrap_or(&Value::Null);
-    let result = match message.get("method").and_then(Value::as_str) {
-        Some("initialize") => {
-            json!({"protocolVersion":params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2025-06-18"),"capabilities":{"tools":{}},"serverInfo":{"name":"acyclic-hooks","version":env!("CARGO_PKG_VERSION")}})
+pub(super) fn child(
+    host: &str,
+    args: &[String],
+    cwd: &Path,
+    session: Option<&str>,
+) -> Result<Command> {
+    validate(host, args)?;
+    let mut command = Command::new(program(host)?);
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if host == "codex" {
+        command.args(args).args(["exec", "--json", "--cd"]).arg(cwd);
+        if let Some(id) = session {
+            command.args(["resume", id]);
         }
-        Some("ping") => json!({}),
-        Some("tools/list") => json!({"tools":[]}),
-        Some("tools/call") if params.get("name").and_then(Value::as_str) == Some("hook") => {
-            let event = params
-                .pointer("/arguments/event")
+        command.arg("-");
+    } else if host == "claude-code" {
+        command
+            .args(["-p", "--output-format", "stream-json", "--verbose"])
+            .args(args);
+        if let Some(id) = session {
+            command.args(["--resume", id]);
+        }
+    } else {
+        command.args(["--mode", "json", "-p"]).args(args);
+        if let Some(file) = session {
+            command.args(["--session", file]);
+        }
+    }
+    Ok(command)
+}
+
+pub(super) fn launch(args: &[String]) -> Result<()> {
+    let host = args.first().ok_or("host requires codex or claude-code")?;
+    let flags = args.get(1..).unwrap_or_default();
+    let flags = flags.strip_prefix(&["--".to_owned()]).unwrap_or(flags);
+    validate(host, flags)?;
+    let cwd = env::current_dir()?;
+    let location = host_files::request(
+        &cwd,
+        HostAction::Open {
+            host: host.clone(),
+            session: acyclic_harness::OperationId::new().to_string(),
+        },
+    )?;
+    let task = serde_json::from_value(location.get("task").cloned().ok_or("native task absent")?)?;
+    let status = Command::new(program(host)?)
+        .args(flags)
+        .current_dir(&cwd)
+        .env("ACYCLIC_HOST_ARGS", serde_json::to_string(flags)?)
+        .env("ACYCLIC_WORKSPACE", &cwd)
+        .env(
+            "ACYCLIC_TASK",
+            location
+                .get("task")
                 .and_then(Value::as_str)
-                .unwrap_or("PreToolUse");
-            let mut input = params
-                .pointer("/arguments/hook")
-                .cloned()
-                .unwrap_or(Value::Null);
-            if let Some(thread) = params.pointer("/_meta/threadId").and_then(Value::as_str)
-                && let Some(object) = input.as_object_mut()
-            {
-                object.insert("thread_id".into(), json!(thread));
-            }
-            let response = hook("codex", event, input);
-            json!({"content":[{"type":"text","text":response.to_string()}]})
-        }
-        _ => {
-            return Some(
-                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}}),
-            );
-        }
-    };
-    Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
+                .ok_or("native task absent")?,
+        )
+        .status()?;
+    host_files::request(&cwd, HostAction::Capture { task })?;
+    if !status.success() {
+        return Err(format!("native {host} exited {status}").into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn lifecycle_bridge_exposes_no_agent_or_tool_catalog() {
+    fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result<()> {
+        let flags = [
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+        ]
+        .map(str::to_owned);
+        assert!(validate("codex", &flags[..2]).is_err());
+        let command = child("codex", &flags, Path::new("view"), Some("resume-id"))?;
+        assert_eq!(command.get_current_dir(), Some(Path::new("view")));
         assert_eq!(
-            answer(&json!({"id":1,"method":"tools/list"}))
-                .unwrap()
-                .pointer("/result/tools")
-                .cloned()
-                .unwrap(),
-            json!([])
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
+                "exec",
+                "--json",
+                "--cd",
+                "view",
+                "resume",
+                "resume-id",
+                "-"
+            ]
         );
-        assert_eq!(
-            answer(&json!({"id":2,"method":"tools/call","params":{"name":"run_tool"}}))
-                .unwrap()
-                .pointer("/error/code")
-                .cloned()
-                .unwrap(),
-            -32601
+        assert!(
+            !command
+                .get_args()
+                .any(|arg| arg.to_string_lossy().contains("bypass"))
         );
-        assert!(answer(&json!({"method":"notifications/initialized"})).is_none());
+        Ok(())
     }
 }

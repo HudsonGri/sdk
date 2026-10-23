@@ -79,28 +79,6 @@ impl HostWorkspace {
         self.task
     }
 
-    /// Identity of the selected authored cut, for binding native spawn events
-    /// that do not carry their parent tool-call identity.
-    pub async fn fork_point(&self, context: &TaskContext) -> Result<String> {
-        let owner = self.verify(context).await?;
-        let _state =
-            crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
-        let (selected, pending) = self.workspace.selected_view().await?;
-        if pending.is_some() {
-            return Err(Error::Conflict(
-                "workspace reconciliation is pending".into(),
-            ));
-        }
-        let view = selected.as_ref().unwrap_or_else(|| self.workspace.view());
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let cut = view
-            .snapshot(&mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation))
-            .await
-            .map_err(storage)?;
-        owner.verify_owner(None)?.await?;
-        serde_json::to_string(&cut.authored_generation.digest()).map_err(storage)
-    }
-
     /// Registers the native host's child identity in the same git facade as
     /// `GraphCoder`. Only an authenticated direct child may receive this alias.
     pub async fn name_child(

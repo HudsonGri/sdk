@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
-mod event_tests;
 mod events;
+mod sessions;
+pub use sessions::SessionAction;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
@@ -18,6 +18,20 @@ mod tests;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
+    /// Discover native children from the shared input index, without histories.
+    Sessions {
+        /// Owning parent task.
+        parent: TaskId,
+    },
+    /// Native session lifecycle over the ordinary child mailbox files.
+    Session {
+        /// Owning parent task.
+        parent: TaskId,
+        /// Parent-local child name.
+        reference: String,
+        /// File operation; never executes the host.
+        action: SessionAction,
+    },
     /// Translate a native lifecycle event into workspace coordination only.
     Hook {
         /// Native host name.
@@ -63,7 +77,7 @@ pub enum HostAction {
         /// Ordinary shared filesystem command.
         command: String,
     },
-    /// Cancel shared task ownership. The native host kills its own agent.
+    /// Publish an interrupt for the plugin that owns the native process tree.
     Cancel {
         /// Task whose ownership is cancelled.
         task: TaskId,
@@ -107,6 +121,22 @@ impl HostWorkspaceOwner {
     /// model, a native host, a shell command or another harness tool.
     pub async fn dispatch(&mut self, operation: OperationId, action: HostAction) -> Result<Value> {
         match action {
+            HostAction::Sessions { parent } => {
+                self.attach(parent).await?;
+                let references = self
+                    .files(parent)
+                    .await?
+                    .inner
+                    .child_references()
+                    .await
+                    .map_err(storage)?;
+                serde_json::to_value(references).map_err(storage)
+            }
+            HostAction::Session {
+                parent,
+                reference,
+                action,
+            } => self.session(operation, parent, &reference, action).await,
             HostAction::Hook { host, event, input } => {
                 self.hook(operation, &host, &event, input).await
             }
@@ -125,7 +155,6 @@ impl HostWorkspaceOwner {
             }
             HostAction::Fork { parent, reference } => {
                 self.attach(parent).await?;
-                self.quiescent(parent).await?;
                 let parent = self.attached(parent)?;
                 parent.workspace.capture(&parent.context, operation).await?;
                 let task = self
@@ -141,7 +170,6 @@ impl HostWorkspaceOwner {
             }
             HostAction::Capture { task } => {
                 self.attach(task).await?;
-                self.quiescent(task).await?;
                 let attached = self.attached(task)?;
                 attached
                     .workspace
@@ -149,30 +177,32 @@ impl HostWorkspaceOwner {
                     .await?;
                 self.location(task)
             }
-            HostAction::Fs { task, command } => {
-                self.attach(task).await?;
-                self.quiescent(task).await?;
-                let attached = self.attached(task)?;
-                serde_json::to_value(
-                    attached
-                        .workspace
-                        .fs(&attached.context, operation, &command)
-                        .await?,
-                )
-                .map_err(storage)
-            }
+            HostAction::Fs { task, command } => self.native_fs(operation, task, &command).await,
             HostAction::Cancel { task } => {
-                self.attach(task).await?;
-                self.quiescent(task).await?;
-                let attached = self.attached(task)?;
-                attached
-                    .workspace
-                    .capture(&attached.context, operation)
+                self.require_native(task).await?;
+                let admission = self
+                    .local
+                    .runtime
+                    .task_host()
+                    .observe_admission(task)
                     .await?;
-                self.local.runtime.task_host().cancel(task).await?;
-                self.local.refresh_command_task(task).await?;
-                self.views.remove(&task);
-                Ok(json!({"task":task,"cancel_requested":true}))
+                let parent = admission.parent.ok_or_else(|| {
+                    Error::Unsupported("stop the native root through its host".into())
+                })?;
+                let reference = admission
+                    .input
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::Invalid("native child reference absent".into()))?;
+                self.session(
+                    operation,
+                    parent,
+                    reference,
+                    SessionAction::Control {
+                        control: crate::task_volume::Control::Interrupt,
+                    },
+                )
+                .await
             }
             HostAction::Query { task, query } => {
                 self.attach(task).await?;
@@ -181,6 +211,51 @@ impl HostWorkspaceOwner {
                 serde_json::to_value(snapshot).map_err(storage)
             }
         }
+    }
+
+    async fn native_fs(
+        &mut self,
+        operation: OperationId,
+        task: TaskId,
+        command: &str,
+    ) -> Result<Value> {
+        self.attach(task).await?;
+        let parsed = crate::tools::parse_fs_command(command)?;
+        if let [name, reference] = parsed.arguments.as_slice()
+            && name == "merge"
+            && let Some(reference) = reference.strip_prefix("agents/")
+        {
+            let reference = crate::task_volume::Component::new(reference).map_err(storage)?;
+            let lifecycle = self
+                .files(task)
+                .await?
+                .inner
+                .child_lifecycle(Some(&reference))
+                .await
+                .map_err(storage)?;
+            for file in lifecycle.files {
+                if matches!(
+                    file.key,
+                    crate::task_volume::FileKey::Child {
+                        file: crate::task_volume::ChildFile::Status,
+                        ..
+                    }
+                ) && !crate::task_volume::ChildStatus::parse(&file.bytes)
+                    .map_err(storage)?
+                    .settled
+                {
+                    return Err(Error::Conflict("native session is still running; wait for its captured result before merging".into()));
+                }
+            }
+        }
+        let attached = self.attached(task)?;
+        serde_json::to_value(
+            attached
+                .workspace
+                .fs(&attached.context, operation, command)
+                .await?,
+        )
+        .map_err(storage)
     }
 
     async fn files(
