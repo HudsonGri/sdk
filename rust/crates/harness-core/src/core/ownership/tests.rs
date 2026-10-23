@@ -286,39 +286,41 @@ fn actions() -> Result<Vec<Value>> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn checkpoint_copy_fits_the_eight_mib_peak_bound() -> Result<()> {
-    let mut reducer = crate::core::tests::reducer_fixture();
-    for revision in 0..64_u8 {
-        reducer.apply(&crate::core::tests::command(
-            crate::core::tests::operation(revision),
-            u64::from(revision),
-            Action::AppendCustom {
-                schema: "example.message".into(),
-                version: 1,
-                content: Box::new(crate::core::tests::request_file(br#"{"text":"hello"}"#)?),
+    for count in [8, 64] {
+        let mut reducer = crate::core::tests::reducer_fixture();
+        for revision in 0..count {
+            reducer.apply(&crate::core::tests::command(
+                crate::core::tests::operation(revision),
+                u64::from(revision),
+                Action::AppendCustom {
+                    schema: "example.message".into(),
+                    version: 1,
+                    content: Box::new(crate::core::tests::request_file(br#"{"text":"hello"}"#)?),
+                },
+            ))?;
+        }
+        let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
+        let io = crate::filesystem::PreparationIo::from_budget(
+            acyclic_fs::performance::WorkBudget {
+                peak_allocation_bytes: 8 * 1024 * 1024,
+                ..acyclic_fs::performance::BOUNDARY_BUDGET
             },
-        ))?;
+            &acyclic_fs::CancellationToken::new(),
+        )?;
+        let mut observer = &io;
+        let copied = snapshot.copy(&mut Some(&mut observer))?;
+        assert_eq!(copied, snapshot);
+        let actual = measure(|| drop(copied)).bytes_current.unsigned_abs();
+        assert!(io.owned_bytes()? >= actual);
+        assert!(io.owned_bytes()? < 8 * 1024 * 1024);
+        println!(
+            "checkpoint events={count}, bytes={}, retained bytes={}, allocator bytes={actual}",
+            serde_json::to_vec(&snapshot)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .len(),
+            io.owned_bytes()?
+        );
     }
-    let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
-    let io = crate::filesystem::PreparationIo::from_budget(
-        acyclic_fs::performance::WorkBudget {
-            peak_allocation_bytes: 8 * 1024 * 1024,
-            ..acyclic_fs::performance::BOUNDARY_BUDGET
-        },
-        &acyclic_fs::CancellationToken::new(),
-    )?;
-    let mut observer = &io;
-    let copied = snapshot.copy(&mut Some(&mut observer))?;
-    assert_eq!(copied, snapshot);
-    let actual = measure(|| drop(copied)).bytes_current.unsigned_abs();
-    assert!(io.owned_bytes()? >= actual);
-    assert!(io.owned_bytes()? < 8 * 1024 * 1024);
-    println!(
-        "checkpoint bytes={}, retained bytes={}, allocator bytes={actual}",
-        serde_json::to_vec(&snapshot)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .len(),
-        io.owned_bytes()?
-    );
     Ok(())
 }
 
