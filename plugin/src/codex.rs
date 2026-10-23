@@ -85,7 +85,14 @@ pub(super) fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Ve
         let inherited_path = match (host, name.as_str()) {
             (_, "--add-dir") | ("claude-code", "--plugin-dir") | ("pi", "--session-dir") => true,
             ("claude-code", "--settings") => !value.trim_start().starts_with('{'),
-            ("pi", "--extension") => cwd.join(value.as_str()).exists(),
+            ("pi", "--extension") => {
+                ![
+                    "npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:",
+                ]
+                .iter()
+                .any(|prefix| value.trim().starts_with(prefix))
+                    && cwd.join(value.as_str()).exists()
+            }
             _ => false,
         };
         if inherited_path && Path::new(value.as_str()).is_relative() {

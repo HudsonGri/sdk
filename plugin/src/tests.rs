@@ -90,9 +90,26 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<(
         "npm:fixture-extension",
         "builtin:fixture",
         "git:example.com/fixture/extension",
+        "github:fixture/extension",
+        "http://example.com/fixture/extension",
+        "https://example.com/fixture/extension",
+        "ssh://example.com/fixture/extension",
     ] {
+        #[cfg(unix)]
+        {
+            let collision = workspace.join(source);
+            std::fs::create_dir_all(collision.parent().ok_or("fixture parent absent")?)?;
+            std::fs::write(
+                collision,
+                "a local filename must not replace a package source",
+            )?;
+        }
         let supplied = ["--extension".into(), source.into()];
-        assert_eq!(codex::parent_flags("pi", &supplied, &workspace)?, supplied);
+        assert_eq!(
+            codex::parent_flags("pi", &supplied, &workspace)?,
+            supplied,
+            "native package source must not become a local extension"
+        );
     }
     Ok(())
 }
@@ -162,7 +179,18 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
         let supplied = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let flags = codex::parent_flags(host, &supplied, Path::new("workspace"))?;
         if host == "pi" {
-            assert_eq!(flags, supplied);
+            assert_eq!(
+                flags,
+                [
+                    "--thinking".to_owned(),
+                    "high".to_owned(),
+                    "--session-dir".to_owned(),
+                    Path::new("workspace")
+                        .join("native-sessions")
+                        .to_string_lossy()
+                        .into_owned()
+                ]
+            );
         } else {
             assert_eq!(
                 flags.get(supplied.len()..).ok_or("workspace root absent")?,
