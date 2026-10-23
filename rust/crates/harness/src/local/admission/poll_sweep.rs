@@ -235,7 +235,6 @@ impl Fixture {
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:runtime");
         let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
-            approval_issuer: Some(approval_issuer),
             approval_policy,
             approval_models: Default::default(),
             task_files,

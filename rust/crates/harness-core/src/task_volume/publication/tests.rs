@@ -84,8 +84,9 @@ impl StreamProvider for NoBarrier {
         &self,
         path: StreamPath,
         from: u64,
+        filter: acyclic_stream::FollowFilter,
     ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        self.0.follow(path, from).await
+        self.0.follow(path, from, filter).await
     }
     async fn children(
         &self,

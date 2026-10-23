@@ -74,8 +74,6 @@ pub struct LocalHarness {
     scratch: VolumeRef,
     journal: VolumeRef,
     verifier: AuthorityVerifier,
-    issuer: Option<AuthorityIssuer>,
-    approval_issuer: Option<AuthorityIssuer>,
     signed: Scope,
     approval_policy: crate::approvals::ApprovalPolicy,
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,

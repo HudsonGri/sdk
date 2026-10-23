@@ -334,6 +334,16 @@ impl Files {
         }
     }
     fn command(&self, case: Case, operation: OperationId) -> Command {
+        let mut command = self.base_command(case);
+        command.args([
+            "--operation",
+            &operation.to_string(),
+            "--input-format",
+            "jsonl",
+        ]);
+        command
+    }
+    fn base_command(&self, case: Case) -> Command {
         let mut command = Command::new(executable());
         command
             .current_dir(&self.workspace)
@@ -351,14 +361,7 @@ impl Files {
             .arg(&self.settings)
             .arg("--catalog")
             .arg(&self.catalog)
-            .args([
-                "--model",
-                "graphcoder-qual/tiny",
-                "--operation",
-                &operation.to_string(),
-                "--input-format",
-                "jsonl",
-            ])
+            .args(["--model", "graphcoder-qual/tiny"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -367,6 +370,39 @@ impl Files {
         }
         command
     }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approvals_prompt_mode_drives_admission_and_default_policy() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let fixture = Fixture {
+        case: Case::Default,
+        address,
+        parent_task: acyclic_harness::TaskId::from_bytes([1; 16]),
+        effects: Arc::new(AtomicUsize::new(0)),
+        root_calls: Arc::new(AtomicUsize::new(0)),
+        child_calls: Arc::new(AtomicUsize::new(0)),
+        reviews: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = fixture.clone().router();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let files = Files::new(Case::Default, address);
+    let mut command = files.base_command(Case::Default);
+    command.args(["-p", "hello"]);
+    let output = tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fixture.verify(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(fixture.root_calls.load(Ordering::SeqCst), 2);
+    server.abort();
+    let _ = server.await;
 }
 #[derive(Default)]
 struct Followed {

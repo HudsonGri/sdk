@@ -45,7 +45,7 @@ pub(crate) fn verify_barrier(broken: bool) {
         let path = StreamPath::new("approval")?;
         block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"approval")],
+            records: vec![crate::OwnedBytes::from_static(b"approval").into()],
             if_tail: None,
             idempotency_key: None,
         })))?;
@@ -65,7 +65,7 @@ pub(crate) fn verify_barrier(broken: bool) {
         );
         block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"next")],
+            records: vec![crate::OwnedBytes::from_static(b"next").into()],
             if_tail: None,
             idempotency_key: None,
         })))?;

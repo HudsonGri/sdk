@@ -76,6 +76,10 @@ impl LocalHarness {
             config.limits.file_bytes,
         )
         .await?;
+        let runtime = match config.approval_issuer.take() {
+            Some(issuer) => runtime.with_approval_authority(&issuer)?,
+            None => runtime,
+        };
         #[cfg(feature = "native-execution")]
         let workspace =
             bound_workspace(checkout, checkout_state, &filesystem, volume, state_owner).await?;
@@ -229,7 +233,6 @@ impl BoundComposition {
             scratch: volume.clone(),
             journal: volume,
             verifier,
-            approval_issuer: config.approval_issuer,
             signed,
             approval_policy: config.approval_policy,
             approval_models: config.approval_models,

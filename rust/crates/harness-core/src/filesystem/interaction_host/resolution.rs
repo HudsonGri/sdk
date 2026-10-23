@@ -229,7 +229,9 @@ where
             self.execute(
                 operation_id,
                 scope,
-                Action::ResolveInteraction { resolution: Box::new(resolution) },
+                Action::ResolveInteraction {
+                    resolution: Box::new(resolution),
+                },
                 owner,
                 None,
             )

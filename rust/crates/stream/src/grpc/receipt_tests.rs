@@ -5,7 +5,7 @@ async fn append(provider: &impl StreamProvider, path: &StreamPath) -> TestResult
     let outcome = provider
         .append(AppendRequest {
             path: path.clone(),
-            records: vec![crate::OwnedBytes::from_static(b"approval")],
+            records: vec![crate::OwnedBytes::from_static(b"approval").into()],
             if_tail: None,
             idempotency_key: None,
         })

@@ -371,7 +371,6 @@ impl Opening {
             scratch,
             journal,
             verifier,
-            approval_issuer: Some(approval_issuer),
             signed,
             approval_policy: self.config.approval_policy,
             approval_models: self.config.approval_models,

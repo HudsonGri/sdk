@@ -179,7 +179,8 @@ pub(super) async fn open(
         crate::core::SchemaRegistry::new(),
         approval_scope,
         config.journal.clone(),
-    )?;
+    )?
+    .with_approval_authority(config.approval_issuer)?;
     runtime.bind_task_files(Some(projection_files.clone()));
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {

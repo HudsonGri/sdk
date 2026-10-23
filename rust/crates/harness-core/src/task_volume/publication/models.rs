@@ -161,7 +161,7 @@ fn an_identical_accepted_copy_never_replaces_the_own_commit() {
         let peer = loom::thread::spawn(move || {
             loom::future::block_on(Box::pin(peer_provider.append(AppendRequest {
                 path,
-                records: vec![record],
+                records: vec![record.into()],
                 if_tail: None,
                 idempotency_key: None,
             })))

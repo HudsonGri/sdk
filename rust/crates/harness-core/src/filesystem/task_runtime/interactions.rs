@@ -108,6 +108,7 @@ where
             ));
         }
         self.interaction_owner = Some(TaskInteractionOwner {
+            approval_authority: None,
             verifier,
             schemas,
             scope,
@@ -115,6 +116,111 @@ where
         });
         self.interaction_host(None)?;
         Ok(self)
+    }
+
+    /// Transfers the approval signer into the runtime's interaction owner.
+    /// Clients retain policy data and cannot issue principals or capabilities.
+    pub fn with_approval_authority(
+        mut self,
+        issuer: &crate::core::AuthorityIssuer,
+    ) -> Result<Self> {
+        let owner = self
+            .interaction_owner
+            .as_mut()
+            .ok_or_else(|| Error::Unsupported("approval conversation owner is not bound".into()))?;
+        if owner.approval_authority.is_some() || issuer.verifier(&mut None)? != owner.verifier {
+            return Err(Error::Unauthorized(
+                "approval authority differs from its owner".into(),
+            ));
+        }
+        owner.approval_authority = Some(issuer.copy(&mut None)?);
+        Ok(self)
+    }
+
+    /// Settles a policy service's decision using its immutable, bound review.
+    /// The runtime issues only this reviewed principal's exact responder grant.
+    pub fn submit_reviewed_approval<'a>(
+        &'a self,
+        task: TaskId,
+        file: &'a crate::task_volume::FileValue,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            use crate::task_volume::{Component, FileKey, Query, TaskFile};
+            let FileKey::Task {
+                task: target,
+                file: TaskFile::ApprovalDecision { request, .. },
+            } = &file.key
+            else {
+                return Err(Error::Unauthorized(
+                    "policy service requires a decision file".into(),
+                ));
+            };
+            let decision = crate::interaction::ApprovalDecisionFile::decode(
+                &file.bytes,
+                self.maximum_payload_bytes,
+            )?;
+            let key = FileKey::Task {
+                task: target.clone(),
+                file: TaskFile::ApprovalReview {
+                    request: request.clone(),
+                    principal: Component::new(
+                        crate::interaction::ApprovalDecisionFile::principal_file(
+                            &decision.principal,
+                        ),
+                    )?,
+                },
+            };
+            let files = self.approval_files(task).await?;
+            let snapshot = files.snapshot(&Query::File(key), 1).await?;
+            let [review] = snapshot.files.as_slice() else {
+                return Err(Error::Unauthorized(
+                    "policy service has no admitted review".into(),
+                ));
+            };
+            let review: crate::approvals::ApprovalReviewFile =
+                crate::contract::json_from_slice(&review.bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            let policy = self
+                .approval_policy_identity()
+                .ok_or_else(|| Error::Unauthorized("approval policy is absent".into()))?;
+            if target.as_str() != task.to_string()
+                || review.principal != decision.principal
+                || review.request_sha256 != decision.request_sha256
+                || review.policy_digest != policy.digest
+                || match review.verdict {
+                    crate::approvals::RuleVerdict::Allow => !decision.approved(),
+                    crate::approvals::RuleVerdict::Deny => decision.approved(),
+                    crate::approvals::RuleVerdict::Ask => false,
+                }
+            {
+                return Err(Error::Unauthorized(
+                    "decision differs from its admitted review".into(),
+                ));
+            }
+            let issuer = self
+                .interaction_owner
+                .as_ref()
+                .and_then(|owner| owner.approval_authority.as_ref())
+                .ok_or_else(|| {
+                    Error::Unsupported("embedding must supply a signed approval decision".into())
+                })?;
+            let id = crate::InteractionId::from_bytes(
+                uuid::Uuid::parse_str(request.as_str())
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .into_bytes(),
+            );
+            let responder = issuer.issue(
+                &review.principal,
+                &crate::Capabilities::new([
+                    "interaction:resolve".to_owned(),
+                    format!("interaction:respond:{id}"),
+                ]),
+                None,
+                None,
+                &mut None,
+            )?;
+            self.write_approval_decision(task, file, &responder).await
+        })
     }
 
     pub(super) fn interaction_host(

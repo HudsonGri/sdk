@@ -417,12 +417,12 @@ async fn indeterminate(
                 scope: responder.clone(),
                 causal_parent: None,
                 action: Action::ResolveInteraction {
-                    resolution: InteractionResolution {
+                    resolution: Box::new(InteractionResolution {
                         id: uuid::Uuid::from_bytes(id.into_bytes()),
                         expected_version: 1,
                         outcome: InteractionOutcome::Indeterminate { operation_id },
                         detail: None,
-                    },
+                    }),
                 },
             },
             None,

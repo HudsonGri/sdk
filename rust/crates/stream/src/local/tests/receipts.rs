@@ -11,7 +11,7 @@ async fn append(provider: &LocalStream, record: &'static [u8]) -> Result {
     let outcome = provider
         .append(AppendRequest {
             path: path(),
-            records: vec![Bytes::from_static(record)],
+            records: vec![Bytes::from_static(record).into()],
             if_tail: None,
             idempotency_key: None,
         })

@@ -110,13 +110,17 @@ impl LocalHarness {
     /// Whether a suspended task has reached an external approver. Automatic
     /// stages must finish before a headless client can safely retire its driver.
     pub async fn awaiting_external_approval(&self, task: TaskId) -> Result<bool> {
-        if self
+        let suspension = match self
             .runtime
             .task_host()
             .workflow_suspension(task, &mut None)
-            .await?
-            .is_none()
+            .await
         {
+            Ok(suspension) => suspension,
+            Err(Error::NotFound(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if suspension.is_none() {
             return Ok(false);
         }
         let task_files = self.runtime.approval_files(task).await?;
@@ -168,11 +172,7 @@ impl LocalHarness {
         let digest = self.approval_digest()?;
         let hash = fingerprint(request)?;
         let interaction: Interaction = serde_json::from_slice(&request.bytes).map_err(storage)?;
-        let admission = self
-            .runtime
-            .task_host()
-            .observe_admission(task)
-            .await?;
+        let admission = self.runtime.task_host().observe_admission(task).await?;
         let parent = admission.parent;
         for (stage, approver) in self.approval_policy.approvers.iter().enumerate() {
             let principal = match approver {
@@ -228,14 +228,23 @@ impl LocalHarness {
                                         tool, arguments, ..
                                     },
                                 ..
-                            } => crate::approvals::ApprovalRule::evaluate(rules, *fallback, tool, arguments),
+                            } => crate::approvals::ApprovalRule::evaluate(
+                                rules, *fallback, tool, arguments,
+                            ),
                             _ => RuleVerdict::Ask,
                         };
                         (verdict, Some("configured approval rules".into()))
                     }
                     Approver::Llm { model, prompt, .. } => {
-                        self.review_model(task_files, request, &principal, model, prompt, admission.limits)
-                            .await?
+                        self.review_model(
+                            task_files,
+                            request,
+                            &principal,
+                            model,
+                            prompt,
+                            admission.limits,
+                        )
+                        .await?
                     }
                 };
                 let review = ApprovalReviewFile {
@@ -253,6 +262,17 @@ impl LocalHarness {
                     reason: review.reason,
                 }));
             }
+        }
+        if evaluate {
+            let review = ApprovalReviewFile {
+                principal: "policy:exhausted".into(),
+                request_sha256: hash,
+                policy_digest: digest,
+                stage: self.approval_policy.approvers.len(),
+                verdict: RuleVerdict::Deny,
+                reason: Some("approval chain exhausted without permission".into()),
+            };
+            publish_review(task_files, review_key(request, &review.principal)?, &review).await?;
         }
         Ok(Some(Stage::Automatic {
             principal: "policy:exhausted".into(),
@@ -301,36 +321,13 @@ impl LocalHarness {
         file: &FileValue,
         principal: &str,
     ) -> Result<()> {
-        let issuer = self.approval_issuer.as_ref().ok_or_else(|| {
-            Error::Unsupported(
-                "embedded approvers must supply signed decisions to the runtime".into(),
-            )
-        })?;
-        let FileKey::Task {
-            file: TaskFile::ApprovalDecision { request, .. },
-            ..
-        } = &file.key
-        else {
-            return Err(Error::Invalid("not an approval decision".into()));
-        };
-        let id = crate::InteractionId::from_bytes(
-            uuid::Uuid::parse_str(request.as_str())
-                .map_err(storage)?
-                .into_bytes(),
-        );
-        let responder = issuer.issue(
-            principal,
-            &Capabilities::new([
-                "interaction:resolve".to_owned(),
-                format!("interaction:respond:{id}"),
-            ]),
-            None,
-            None,
-            &mut None,
-        )?;
-        self.runtime
-            .write_approval_decision(task, file, &responder)
-            .await
+        let decision = ApprovalDecisionFile::decode(&file.bytes, self.limits.file_bytes)?;
+        if decision.principal != principal {
+            return Err(Error::Unauthorized(
+                "decision principal differs from the active approver".into(),
+            ));
+        }
+        self.runtime.submit_reviewed_approval(task, file).await
     }
 
     /// Authenticated human connection submits a decision file. File contents

@@ -10,7 +10,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Ok(self
             .stream
             .0
-            .follow(self.revision)
+            .follow(self.revision, acyclic_stream::FollowFilter::default())
             .await?
             .map(|record| record.map(|_| ()).map_err(Error::from))
             .boxed())

@@ -15,22 +15,23 @@ where
     ) -> Result<()> {
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
         traced(span, async {
-        let host = self.interactions()?;
-        let owner = self.owner.as_ref().map(|(owner, _)| owner);
-        if let Some(owner) = owner {
-            owner.require_interaction_grant(&mut None)?;
-            owner.verify(true, &mut None).await?;
-        }
-        let approval = matches!(response, InteractionResponse::Approval { .. });
-        host.resolve_latest(id, response, responder, owner).await?;
-        if approval {
-            self.published_decision(id, None).await?;
-        }
-        if let Some(owner) = owner {
-            owner.verify(true, &mut None).await?;
-        }
-        Ok(())
-        }).await
+            let host = self.interactions()?;
+            let owner = self.owner.as_ref().map(|(owner, _)| owner);
+            if let Some(owner) = owner {
+                owner.require_interaction_grant(&mut None)?;
+                owner.verify(true, &mut None).await?;
+            }
+            let approval = matches!(response, InteractionResponse::Approval { .. });
+            host.resolve_latest(id, response, responder, owner).await?;
+            if approval {
+                self.published_decision(id, None).await?;
+            }
+            if let Some(owner) = owner {
+                owner.verify(true, &mut None).await?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub(super) async fn open_interaction_with_io(

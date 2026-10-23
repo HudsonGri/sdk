@@ -42,7 +42,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     .native_append(
                         AppendRequest {
                             path: path.clone(),
-                            records: vec![header],
+                            records: vec![header.into()],
                             if_tail: Some(0),
                             idempotency_key: None,
                         },

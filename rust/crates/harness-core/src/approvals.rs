@@ -119,6 +119,7 @@ impl ApprovalPolicy {
                 || principal.len() > 255
                 || principal.starts_with("parent:")
                 || principal.starts_with("model-start:")
+                || principal == "policy:exhausted"
                 || !principals.insert(principal)
             {
                 return Err(Error::Invalid(
@@ -139,13 +140,22 @@ impl ApprovalPolicy {
 
 impl ApprovalRule {
     /// A matching refusal wins over every matching permission in one rule set.
-    pub fn evaluate(rules: &[Self], fallback: RuleVerdict, tool: &str, arguments: &Value) -> RuleVerdict {
-        rules.iter().filter(|rule| rule.matches(tool, arguments)).map(|rule| rule.verdict)
+    pub fn evaluate(
+        rules: &[Self],
+        fallback: RuleVerdict,
+        tool: &str,
+        arguments: &Value,
+    ) -> RuleVerdict {
+        rules
+            .iter()
+            .filter(|rule| rule.matches(tool, arguments))
+            .map(|rule| rule.verdict)
             .reduce(|left, right| match (left, right) {
                 (RuleVerdict::Deny, _) | (_, RuleVerdict::Deny) => RuleVerdict::Deny,
                 (RuleVerdict::Ask, _) | (_, RuleVerdict::Ask) => RuleVerdict::Ask,
                 _ => RuleVerdict::Allow,
-            }).unwrap_or(fallback)
+            })
+            .unwrap_or(fallback)
     }
 
     /// Matches the exact subject that the interaction owner published.

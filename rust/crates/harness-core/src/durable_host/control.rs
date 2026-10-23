@@ -11,15 +11,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<(bool, acyclic_stream::BoxProviderStream<'static, Result<()>>)> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let cancelled = coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                OperationId::from_bytes(task.into_bytes()),
-                &mut None,
-            )?
-            .cancellation_requested;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            &mut None,
+        )?;
+        // Cancelling a passive task settles it immediately without setting
+        // cancellation_requested. Such a terminal owner must stop waiters too.
+        let cancelled = operation.cancellation_requested
+            || operation.phase == crate::scheduler::OperationPhase::Terminal;
         Ok((cancelled, coordinator.change_notifications().await?))
     }
 
