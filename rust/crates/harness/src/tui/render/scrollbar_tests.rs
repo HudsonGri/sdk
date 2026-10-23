@@ -136,7 +136,6 @@ impl Fixture {
                     &mut self.viewport,
                     1,
                 )
-                .into_iter()
                 .collect()
         }
     }
@@ -323,7 +322,7 @@ async fn capture_ends_with_release_focus_or_hidden_track() {
                     .write_state(
                         CommandFileRoot::Session,
                         "layout.json",
-                        &serde_json::json!({"open_view":"feedback"}),
+                        &serde_json::json!({"open_view":"feedback","view_input":"feedback"}),
                     )
                     .await
                     .unwrap();
@@ -340,7 +339,7 @@ async fn capture_ends_with_release_focus_or_hidden_track() {
             !effects
                 .iter()
                 .any(|effect| matches!(effect, InputEffect::ScrollTo { .. })),
-            "inactive track must release capture"
+            "inactive track must release capture after cause {cause}"
         );
         fixture.apply(effects).await;
         assert_eq!(fixture.volume.head().await.unwrap(), before);

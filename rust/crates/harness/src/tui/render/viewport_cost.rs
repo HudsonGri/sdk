@@ -113,6 +113,61 @@ fn fixture(length: usize) -> Fixture {
     }
 }
 
+fn eager_frame(fixture: &mut Fixture, size: Size, page: usize) {
+    let width = size.width;
+    // The old eager path laid out every source line at the
+    // new width and retained every row. These ASCII fixture
+    // lines each fit one row; preserve their original styles.
+    let layouts = fixture
+        .renderer
+        .transcript
+        .iter()
+        .map(|line| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            let layout = Layout::new(&Editor::new(&text), usize::from(width - 1));
+            assert_eq!(layout.rows.len(), 1);
+            layout
+        })
+        .collect::<Vec<_>>();
+    let rows = fixture.renderer.transcript.clone();
+    let total = rows
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.len())
+                .sum::<usize>()
+                + 1
+        })
+        .sum::<usize>();
+    let start = rows
+        .iter()
+        .take(rows.len().saturating_sub(page))
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.len())
+                .sum::<usize>()
+                + 1
+        })
+        .sum::<usize>();
+    let mut screen = fixture.renderer.screen_for(&fixture.files).unwrap();
+    screen.transcript = &rows;
+    screen.scrollbar = Some((start..total, total));
+    fixture
+        .terminal
+        .draw(size, |frame| {
+            let top = screen.tail_scroll(frame.area(), &fixture.input);
+            screen.render(frame, &fixture.input, &mut Viewport::default(), top, 0);
+        })
+        .unwrap();
+    std::hint::black_box(layouts);
+}
+
 fn costs<const EAGER_CONTROL: bool>(length: usize) -> Vec<((usize, usize, usize), u64, u64)> {
     // Both sides open their own provider, followed views, parser, renderer,
     // terminal, journal and device. No candidate cache supplies the old source.
@@ -139,7 +194,7 @@ fn costs<const EAGER_CONTROL: bool>(length: usize) -> Vec<((usize, usize, usize)
                         .transcript
                         .height,
                 );
-                let shown = &source[source.len().saturating_sub(page)..];
+                let shown = source.get(source.len().saturating_sub(page)..).unwrap();
                 let expected = (
                     shown.len(),
                     shown
@@ -152,64 +207,7 @@ fn costs<const EAGER_CONTROL: bool>(length: usize) -> Vec<((usize, usize, usize)
                 WrappedLines::take_work();
                 let allocations = acyclic_test_support::measure(|| {
                     if old {
-                        // The old eager path laid out every source line at the
-                        // new width and retained every row. These ASCII fixture
-                        // lines each fit one row; preserve their original styles.
-                        let layouts = fixture
-                            .renderer
-                            .transcript
-                            .iter()
-                            .map(|line| {
-                                let text: String = line
-                                    .spans
-                                    .iter()
-                                    .map(|span| span.content.as_ref())
-                                    .collect();
-                                let layout =
-                                    Layout::new(&Editor::new(&text), usize::from(width - 1));
-                                assert_eq!(layout.rows.len(), 1);
-                                layout
-                            })
-                            .collect::<Vec<_>>();
-                        let rows = fixture.renderer.transcript.clone();
-                        let total = rows
-                            .iter()
-                            .map(|line| {
-                                line.spans
-                                    .iter()
-                                    .map(|span| span.content.len())
-                                    .sum::<usize>()
-                                    + 1
-                            })
-                            .sum::<usize>();
-                        let start = rows
-                            .iter()
-                            .take(rows.len().saturating_sub(page))
-                            .map(|line| {
-                                line.spans
-                                    .iter()
-                                    .map(|span| span.content.len())
-                                    .sum::<usize>()
-                                    + 1
-                            })
-                            .sum::<usize>();
-                        let mut screen = fixture.renderer.screen_for(&fixture.files).unwrap();
-                        screen.transcript = &rows;
-                        screen.scrollbar = Some((start..total, total));
-                        fixture
-                            .terminal
-                            .draw(size, |frame| {
-                                let top = screen.tail_scroll(frame.area(), &fixture.input);
-                                screen.render(
-                                    frame,
-                                    &fixture.input,
-                                    &mut Viewport::default(),
-                                    top,
-                                    0,
-                                );
-                            })
-                            .unwrap();
-                        std::hint::black_box(layouts);
+                        eager_frame(&mut fixture, size, page);
                     } else {
                         fixture
                             .renderer
