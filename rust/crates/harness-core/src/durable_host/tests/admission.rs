@@ -429,10 +429,17 @@ async fn a_live_owner_shares_its_admission_and_the_memo_retains_none() -> Result
         "each copy holds what a decode holds"
     );
     let shared = Arc::downgrade(&owner.admission);
+    // While its owner lives, the memo holds one weak handle beside the test's.
+    assert_eq!(Arc::weak_count(&owner.admission), 2);
+    assert_eq!(f.host.admissions.handles(), 1);
     // Negative control: a strong holder, as a memo entry that copied or kept the
     // record would be, keeps it alive after its owner is gone, outside every ledger.
     let strong = Arc::clone(&owner.admission);
     drop(owner);
+    // The owner removed its handle before releasing the record: no memo handle
+    // keeps the record's allocation alive after its last strong holder.
+    assert_eq!(Arc::weak_count(&strong), 1);
+    assert_eq!(f.host.admissions.handles(), 0);
     assert!(
         shared.upgrade().is_some(),
         "the control must keep the record alive"
@@ -445,6 +452,30 @@ async fn a_live_owner_shares_its_admission_and_the_memo_retains_none() -> Result
     );
     let (reread, read, reread_bytes) = observed_admission(&f.host, task).await?;
     assert!(reread == first && reread_bytes == first_bytes);
+    // The memo keeps its handles inline: filling it past capacity allocates nothing.
+    let records: Vec<Arc<TaskAdmissionRecord>> = (0..17)
+        .map(|byte| Arc::new(f.admission(140 + byte, Value::Null)))
+        .collect();
+    let remembered = acyclic_test_support::measure(|| {
+        for record in &records {
+            f.host.admissions.remember(record);
+        }
+    });
+    assert_eq!(remembered.bytes_total, 0);
+    assert_eq!(f.host.admissions.handles(), 16);
+    // Negative control: the queue it replaces allocates for the same handles.
+    let queued = acyclic_test_support::measure(|| {
+        let queue: std::collections::VecDeque<_> = records
+            .iter()
+            .map(|record| (record.operation_id, Arc::downgrade(record)))
+            .collect();
+        drop(queue);
+    });
+    assert!(queued.bytes_total > 0);
+    for record in &records {
+        f.host.admissions.forget(record);
+    }
+    assert_eq!(f.host.admissions.handles(), 0);
     assert!(
         copied * 4 < read,
         "a live owner's record is copied ({copied} items) instead of re-read ({read} items)"
