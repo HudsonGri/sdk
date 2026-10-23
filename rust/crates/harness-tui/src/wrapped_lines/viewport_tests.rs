@@ -199,3 +199,223 @@ fn reflow_preserves_the_source_and_search_index() {
     assert_eq!(candidate.index.revision, revision);
     assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
 }
+
+#[test]
+#[ignore = "manual lane before/after measurement"]
+fn client_perf_baseline() {
+    for length in [1000, 10000] {
+        let source = vec![Line::raw("plain transcript row"); length];
+        let mut candidate = WrappedLines::default();
+        for width in [80, 40] {
+            WORK.with(|work| work.set((0, 0, 0)));
+            let started = std::time::Instant::now();
+            let measured = acyclic_test_support::measure(|| {
+                candidate.update(&source, if width == 80 { 0 } else { length }, width);
+                candidate.view(Top::Tail, 10);
+            });
+            eprintln!(
+                "CLIENT_PERF_WINDOWED os={} n={length} width={width} elapsed_us={} work={:?} allocations={} bytes={}",
+                std::env::consts::OS,
+                started.elapsed().as_micros(),
+                WORK.with(|work| work.get()),
+                measured.count_total,
+                measured.bytes_total
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual million-line scroll measurement"]
+fn client_perf_million_line_scroll() {
+    let source = vec![Line::raw("plain transcript row"); 1_000_000];
+    let mut candidate = WrappedLines::default();
+    let started = std::time::Instant::now();
+    candidate.update(&source, 0, 80);
+    eprintln!(
+        "CLIENT_PERF_MILLION os={} ingest_us={}",
+        std::env::consts::OS,
+        started.elapsed().as_micros()
+    );
+    for width in [80, 40] {
+        candidate.reflow(width);
+        WrappedLines::take_work();
+        let started = std::time::Instant::now();
+        let measured = acyclic_test_support::measure(|| {
+            candidate.view(
+                Top::At(RowPosition {
+                    line: 500_000,
+                    row: 0,
+                }),
+                10,
+            );
+        });
+        assert_eq!(WrappedLines::take_work(), (10, 200, 10));
+        eprintln!(
+            "CLIENT_PERF_MILLION os={} width={width} frame_us={} allocations={} bytes={}",
+            std::env::consts::OS,
+            started.elapsed().as_micros(),
+            measured.count_total,
+            measured.bytes_total
+        );
+        WrappedLines::take_work();
+        let started = std::time::Instant::now();
+        candidate.move_by(
+            Some(RowPosition {
+                line: 500_000,
+                row: 0,
+            }),
+            -3,
+            10,
+        );
+        assert_eq!(WrappedLines::take_work(), (3, 60, 3));
+        eprintln!(
+            "CLIENT_PERF_MILLION os={} width={width} wheel_us={}",
+            std::env::consts::OS,
+            started.elapsed().as_micros()
+        );
+    }
+}
+
+fn styled_cells(source: &[Line<'_>], width: u16) -> Vec<(RowPosition, ratatui::buffer::Buffer)> {
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        widgets::{Paragraph, Widget},
+    };
+    let area = Rect::new(0, 0, width, 1);
+    let mut output = Vec::new();
+    for (line, source) in source.iter().enumerate() {
+        let text: String = source
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let layout = Layout::new(&Editor::new(&text), usize::from(width));
+        let mut row = 0;
+        for (index, wrapped) in layout.rows.iter().enumerate() {
+            if wrapped.cells.is_empty() && index > 0 {
+                let previous = &layout.rows[index - 1];
+                if previous.end == wrapped.start
+                    && previous
+                        .cells
+                        .last()
+                        .is_some_and(|cell| cell.column + cell.width == usize::from(width))
+                {
+                    continue;
+                }
+            }
+            let spans = wrapped
+                .cells
+                .iter()
+                .map(|cell| {
+                    let mut end = 0;
+                    let style = source
+                        .spans
+                        .iter()
+                        .find_map(|span| {
+                            end += span.content.len();
+                            (cell.source.start < end).then_some(span.style)
+                        })
+                        .unwrap_or_default();
+                    Span::styled(cell.symbol.clone(), style)
+                })
+                .collect::<Vec<_>>();
+            let mut expected = Line::from(spans).style(source.style);
+            expected.alignment = source.alignment;
+            let mut buffer = Buffer::empty(area);
+            Paragraph::new(expected).render(area, &mut buffer);
+            output.push((RowPosition { line, row }, buffer));
+            row += 1;
+        }
+    }
+    output
+}
+
+fn assert_styled_windows(lose_styles: bool) {
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        style::Color,
+        widgets::{Paragraph, Widget},
+    };
+    let source: Vec<_> = (0..40)
+        .map(|index| {
+            let mut line = Line::from(vec![
+                Span::styled("a日", Style::default().fg(Color::Red)),
+                Span::styled("e", Style::default().fg(Color::Blue)),
+                Span::styled("\u{301}🙂\t", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled("\u{7}z", Style::default().fg(Color::Green)),
+            ])
+            .style(Style::default().bg(Color::DarkGray));
+            line.alignment = Some(match index % 3 {
+                0 => Alignment::Left,
+                1 => Alignment::Center,
+                _ => Alignment::Right,
+            });
+            line
+        })
+        .collect();
+    let mut candidate_source = source.clone();
+    if lose_styles {
+        for line in &mut candidate_source {
+            for span in &mut line.spans {
+                span.style = Style::default();
+            }
+        }
+    }
+    let mut candidate = WrappedLines::default();
+    for width in [3, 7, 11] {
+        candidate.update(
+            &candidate_source,
+            if width == 3 { 0 } else { source.len() },
+            width,
+        );
+        candidate.view(Top::At(RowPosition { line: 20, row: 0 }), 8);
+        let eager = styled_cells(&source, width);
+        let first = eager
+            .iter()
+            .position(|(position, _)| *position == candidate.window().top)
+            .unwrap();
+        let area = Rect::new(0, 0, width, 1);
+        for (row, (_, expected)) in candidate.shown().iter().zip(&eager[first..]) {
+            let mut actual = Buffer::empty(area);
+            Paragraph::new(row.clone()).render(area, &mut actual);
+            assert_eq!(
+                &actual, expected,
+                "styled Unicode viewport differs from eager cells"
+            );
+        }
+    }
+}
+
+#[test]
+fn styled_unicode_windows_match_independent_eager_cells_after_resize() {
+    assert_styled_windows(false);
+}
+
+#[test]
+#[should_panic(expected = "styled Unicode viewport differs from eager cells")]
+fn negative_control_losing_span_styles_fails_the_same_cell_comparison() {
+    assert_styled_windows(true);
+}
+
+#[test]
+fn scroll_distance_uses_only_retained_physical_rows() {
+    let mut candidate = WrappedLines::default();
+    candidate.update(&vec![Line::raw("abcdefgh"); 1000], 0, 4);
+    candidate.view(Top::At(RowPosition { line: 500, row: 1 }), 10);
+    let from = RowPosition { line: 500, row: 1 };
+    assert_eq!(
+        candidate.cached_distance(from, RowPosition { line: 503, row: 0 }),
+        Some(5)
+    );
+    assert_eq!(
+        candidate.cached_distance(from, RowPosition { line: 0, row: 0 }),
+        None
+    );
+    assert_eq!(
+        candidate.cached_distance(from, RowPosition { line: 501, row: 2 }),
+        None
+    );
+}
