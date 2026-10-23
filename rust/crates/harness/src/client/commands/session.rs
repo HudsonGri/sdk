@@ -24,8 +24,11 @@ mod init_models;
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[path = "session_state.rs"]
+mod state;
 #[path = "session_view.rs"]
 mod view;
+use state::StateFile;
 
 pub(crate) trait ComposerResolver: acyclic_stream::ProviderPlatform {
     fn resolve<'a>(
@@ -43,7 +46,7 @@ pub struct CommandSession<P: ?Sized> {
     changes: files::ChangeStream,
     next_change: Option<files::Change>,
     generation: files::Generation,
-    files: BTreeMap<files::FileKey, files::FileValue>,
+    files: BTreeMap<files::FileKey, StateFile>,
     pending: VecDeque<files::FileValue>,
     pending_session: usize,
     pending_tasks: BTreeMap<String, usize>,
@@ -308,15 +311,23 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         root: CommandFileRoot,
         name: &str,
     ) -> Result<Option<&files::FileValue>> {
-        Ok(self.files.get(&self.state_key(root, name)?))
+        Ok(self
+            .files
+            .get(&self.state_key(root, name)?)
+            .map(|file| &file.value))
     }
 
     /// Read one ordinary UI/config file from the latest query cut.
     pub fn state(&self, root: CommandFileRoot, name: &str) -> Result<Option<Value>> {
-        let value: Option<Value> = self
+        self.state_ref(root, name).map(|value| value.cloned())
+    }
+
+    /// Borrow JSON parsed once for this exact accepted file revision.
+    pub fn state_ref(&self, root: CommandFileRoot, name: &str) -> Result<Option<&Value>> {
+        let value = self
             .files
             .get(&self.state_key(root, name)?)
-            .map(|file| serde_json::from_slice(&file.bytes).map_err(codec))
+            .map(StateFile::json)
             .transpose()?;
         if matches!(
             name,
@@ -408,8 +419,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// The selected task is persisted in the session layout, not the input loop.
     pub fn selected_task(&self) -> Result<Option<TaskId>> {
         let value = self
-            .state(CommandFileRoot::Session, "layout.json")?
-            .unwrap_or(Value::Null);
+            .state_ref(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or(&Value::Null);
         match value.get("selected_task") {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(task)) => TaskId::parse(task).map(Some),
@@ -536,6 +547,52 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             self.catalog
                 .set_themes(serde_json::from_slice::<Vec<String>>(&file.bytes).map_err(codec)?)?;
         }
+        self.fold_result(&file)?;
+        if matches!(
+            file.key,
+            files::FileKey::Task {
+                file: files::TaskFile::Request(_),
+                ..
+            } | files::FileKey::Session {
+                file: files::TaskFile::Request(_),
+                ..
+            }
+        ) && !self.files.contains_key(&file.key)
+        {
+            self.pending.push_back(file.clone());
+        }
+        self.fold_pending_execution(&file.key);
+        if self
+            .files
+            .get(&file.key)
+            .is_none_or(|cached| cached.value != file)
+        {
+            self.files.insert(file.key.clone(), StateFile::new(file));
+        }
+        if let Some(previous) = previous
+            && previous != self.selected_task()?
+        {
+            self.loaded_task = None;
+            if let Some(previous) = previous {
+                let query = files::Query::UiDirectory(component(format!("task-{previous}"))?);
+                for range in query.ranges() {
+                    self.files
+                        .extract_if(range, |_, _| {
+                            #[cfg(test)]
+                            {
+                                self.settings_visits += 1;
+                            }
+                            true
+                        })
+                        .for_each(drop);
+                }
+            }
+        }
+        self.trim_archive();
+        Ok(true)
+    }
+
+    fn fold_result(&mut self, file: &files::FileValue) -> Result<()> {
         if matches!(
             file.key,
             files::FileKey::Task {
@@ -609,42 +666,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 }
             }
         }
-        if matches!(
-            file.key,
-            files::FileKey::Task {
-                file: files::TaskFile::Request(_),
-                ..
-            } | files::FileKey::Session {
-                file: files::TaskFile::Request(_),
-                ..
-            }
-        ) && !self.files.contains_key(&file.key)
-        {
-            self.pending.push_back(file.clone());
-        }
-        self.fold_pending_execution(&file.key);
-        self.files.insert(file.key.clone(), file);
-        if let Some(previous) = previous
-            && previous != self.selected_task()?
-        {
-            self.loaded_task = None;
-            if let Some(previous) = previous {
-                let query = files::Query::UiDirectory(component(format!("task-{previous}"))?);
-                for range in query.ranges() {
-                    self.files
-                        .extract_if(range, |_, _| {
-                            #[cfg(test)]
-                            {
-                                self.settings_visits += 1;
-                            }
-                            true
-                        })
-                        .for_each(drop);
-                }
-            }
-        }
-        self.trim_archive();
-        Ok(true)
+        Ok(())
     }
 
     async fn advance(&mut self) -> Result<()> {
@@ -695,16 +717,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Query-derived exit flag used by native and renderer clients alike.
     pub fn exit_requested(&self) -> Result<bool> {
-        let key = self.state_key(CommandFileRoot::Session, "layout.json")?;
-        let value: Value = self
-            .files
-            .get(&key)
-            .map(|file| serde_json::from_slice(&file.bytes))
-            .transpose()
-            .map_err(codec)?
-            .unwrap_or(Value::Null);
-        Ok(value
-            .get("exit_requested")
+        Ok(self
+            .state_ref(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("exit_requested"))
             .and_then(Value::as_bool)
             .unwrap_or(false))
     }

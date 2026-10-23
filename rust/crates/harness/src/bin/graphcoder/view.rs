@@ -20,8 +20,6 @@ pub async fn run(
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let (tty, mut terminal) = open_terminal(inline)?;
-    let terminal_size =
-        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; the read presents one frame.
     let mut batch = client::InputBatch::new();
@@ -38,11 +36,12 @@ pub async fn run(
     client.follow_commands(&commands).await?;
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
     loop {
+        if client::frame_due(&batch) {
+            renderer.wait_frame().await;
+        }
+        let selected = commands.active_task().unwrap_or(task);
         client
-            .follow_task(
-                local.task_files().as_ref(),
-                commands.active_task().unwrap_or(task),
-            )
+            .follow_task(local.task_files().as_ref(), selected)
             .await?;
         renderer.update_files(&client, &authority);
         if commands.exit_requested()? {
@@ -76,6 +75,7 @@ pub async fn run(
                     areas = screen.render(frame, &input, &mut viewport, scroll, now);
                 },
             )?;
+            renderer.frame_presented();
         } else {
             // More of this read is queued: route it against the same layout
             // and present once, after the read.
@@ -144,10 +144,12 @@ fn open_terminal(inline: bool) -> std::io::Result<(Tty, FrameTerminal<tui::term:
         ScreenMode::Alternate
     })?;
     let (tty, output) = tty.split();
-    let terminal_size =
-        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let terminal = FrameTerminal::new(output, terminal_size()?)?;
     Ok((tty, terminal))
+}
+
+fn terminal_size() -> std::io::Result<Size> {
+    crossterm::terminal::size().map(|(width, height)| Size::new(width, height))
 }
 
 /// The presentation boundary shared by the executable and its file-backed Rig.

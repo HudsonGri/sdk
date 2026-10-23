@@ -41,14 +41,22 @@ fn anchor(layout: &serde_json::Value) -> Result<Option<TranscriptAnchor>> {
 
 /// Help owns a separate bounded row offset; transcript movement uses source identity.
 pub fn tui_modal_scroll<P: StreamProvider + ?Sized>(files: &CommandSession<P>) -> Result<usize> {
-    modal_scroll(&layout(files)?)
+    files
+        .state_ref(CommandFileRoot::Session, "layout.json")?
+        .map(modal_scroll)
+        .transpose()
+        .map(|rows| rows.unwrap_or(0))
 }
 
 /// Missing source position follows the live tail.
 pub fn tui_anchor<P: StreamProvider + ?Sized>(
     files: &CommandSession<P>,
 ) -> Result<Option<TranscriptAnchor>> {
-    anchor(&layout(files)?)
+    files
+        .state_ref(CommandFileRoot::Session, "layout.json")?
+        .map(anchor)
+        .transpose()
+        .map(Option::flatten)
 }
 
 /// Rows an input effect moves the focused view toward older output: a page is
