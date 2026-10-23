@@ -42,7 +42,14 @@ impl Reducer {
         &mut self,
         record: &ExtensionRecord,
         revision: u64,
-    ) {
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<()> {
+        if !self.projection.extension_states.contains_key(&record.name) {
+            ownership::admit_tree_insertion::<(String, (EventReference, ExtensionRecord))>(
+                self.projection.extension_states.len(),
+                quota,
+            )?;
+        }
         let reference = EventReference {
             authority: self.authority.clone(),
             revision,
@@ -50,6 +57,7 @@ impl Reducer {
         self.projection
             .extension_states
             .insert(record.name.clone(), (reference, record.clone()));
+        Ok(())
     }
 
     pub(in crate::core) fn append_conversation_message_with_work(
@@ -181,7 +189,7 @@ impl Reducer {
                     quota,
                     |value: &ExtensionConfiguration, work| {
                         value.content.validate(work)?;
-                        owned_bytes(value)
+                        value.owned_heap_bytes()
                     },
                 )?);
             }

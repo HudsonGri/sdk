@@ -1,21 +1,16 @@
 use super::*;
 impl Reducer {
-    pub(in crate::core) fn apply_authenticated_payload(
+    pub(in crate::core) fn apply_authenticated_payload_in_quota(
         &mut self,
         event: &Event,
-        work: &mut Option<&mut dyn HistoryIo>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<()> {
         let planning = if matches!(event.payload, EventPayload::EffectPlanned { .. }) {
-            Some(
-                CodecQuota::produce(work, |quota| {
-                    copying::copy_boxed(event, quota, copying::copy_event)
-                })?
-                .0,
-            )
+            Some(copying::copy_boxed(event, quota, copying::copy_event)?)
         } else {
             None
         };
-        self.apply_payload_with_work(&event.payload, event.revision, work)?;
+        self.apply_payload_in_quota(&event.payload, event.revision, quota)?;
         if let EventPayload::EffectPlanned { effect_id, .. } = event.payload {
             self.projection
                 .effects
@@ -27,11 +22,11 @@ impl Reducer {
     }
 
     #[allow(clippy::too_many_lines, reason = "one arm per event")]
-    pub(in crate::core) fn apply_payload_with_work(
+    pub(in crate::core) fn apply_payload_in_quota(
         &mut self,
         payload: &EventPayload,
         revision: u64,
-        work: &mut Option<&mut dyn HistoryIo>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<()> {
         match payload {
             EventPayload::LifecycleTransitioned { from, to, .. } => {
@@ -51,7 +46,7 @@ impl Reducer {
                         record.implementation_digest,
                         record.fork_policy,
                     )),
-                    work,
+                    quota.work(),
                 )?;
                 if self
                     .projection
@@ -63,7 +58,7 @@ impl Reducer {
                         "extension state version change lacks migration".into(),
                     ));
                 }
-                self.replace_extension_state(record, revision);
+                self.replace_extension_state(record, revision, quota)?;
             }
             EventPayload::ExtensionStateMigrated { migration } => {
                 migration.validate()?;
@@ -76,7 +71,7 @@ impl Reducer {
                         record.implementation_digest,
                         record.fork_policy,
                     )),
-                    work,
+                    quota.work(),
                 )?;
                 let (source, current) = self
                     .projection
@@ -91,7 +86,7 @@ impl Reducer {
                         "extension migration does not match retained state".into(),
                     ));
                 }
-                self.replace_extension_state(record, revision);
+                self.replace_extension_state(record, revision, quota)?;
             }
             EventPayload::ExtensionsSelected {
                 previous,
@@ -107,7 +102,7 @@ impl Reducer {
                     || !self.selected_configuration_matches_with_work(
                         selected,
                         configurations,
-                        work,
+                        quota.work(),
                     )?
                     || selected.iter().any(|extension| {
                         self.projection
@@ -139,7 +134,7 @@ impl Reducer {
                                 &record.extension.name,
                                 record.extension.version,
                                 None,
-                                work,
+                                quota.work(),
                             )?
                             .configuration_schema_digest
                             != Some(record.schema_digest)
@@ -148,6 +143,16 @@ impl Reducer {
                     return Err(Error::Conflict(
                         "extension configuration does not match pinned agent state".into(),
                     ));
+                }
+                if !self
+                    .projection
+                    .configured_extensions
+                    .contains_key(&record.extension)
+                {
+                    ownership::admit_tree_insertion::<(ExtensionDependency, ExtensionConfiguration)>(
+                        self.projection.configured_extensions.len(),
+                        quota,
+                    )?;
                 }
                 self.projection
                     .configured_extensions
@@ -168,7 +173,7 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate(work)?;
+                request.validate(quota.work())?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
@@ -181,12 +186,12 @@ impl Reducer {
                         *guarantee,
                         effect_kind,
                         request,
-                        work,
+                        quota.work(),
                     )?
                 {
                     return Err(Error::Invalid("effect request digest mismatch".into()));
                 }
-                result_schema.validate(work)?;
+                result_schema.validate(quota.work())?;
                 if result_schema.descriptor().media_type() != "application/schema+json"
                     || *result_schema_digest != *result_schema.descriptor().sha256()
                 {
@@ -194,6 +199,10 @@ impl Reducer {
                         "effect result schema digest mismatch".into(),
                     ));
                 }
+                ownership::admit_tree_insertion::<(EffectId, EffectState)>(
+                    self.projection.effects.len(),
+                    quota,
+                )?;
                 let effect = EffectState {
                     provider: provider.clone(),
                     guarantee: *guarantee,
@@ -227,23 +236,26 @@ impl Reducer {
                     .effects
                     .get_mut(&observation.effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                self.authority_verifier.verify_effect(observation, work)?;
+                self.authority_verifier
+                    .verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 effect.status = observation.status.clone();
             }
             EventPayload::ForkPublished { seed } => {
-                self.validate_extension_fork_with_work(seed, work)?;
-                self.require_fresh_fork_with_work(seed, work)?;
-                if let Some(observer) = work.as_deref_mut().filter(|io| !copying::is_native(&**io))
+                self.validate_extension_fork_with_work(seed, quota.work())?;
+                self.require_fresh_fork_with_work(seed, quota.work())?;
+                ownership::admit_tree_insertion::<(Authority, ForkSeed)>(
+                    self.projection.forks.len(),
+                    quota,
+                )?;
+                if quota
+                    .work()
+                    .as_deref()
+                    .is_some_and(|io| !copying::is_native(io))
                 {
-                    let reservation = owned_bytes(seed)?
-                        .checked_add(seed.child.id.len() as u64)
-                        .and_then(|bytes| {
-                            bytes.checked_add(std::mem::size_of::<(Authority, ForkSeed)>() as u64)
-                        })
-                        .ok_or_else(|| Error::Invalid("fork map clone quota overflows".into()))?;
-                    observer.admit_owned(reservation)?;
-                    observer.retain_owned(reservation)?;
+                    let reservation =
+                        owned_sum([seed.owned_heap_bytes()?, seed.child.owned_heap_bytes()?])?;
+                    quota.replace(owned_sum([quota.retained(), reservation])?)?;
                 }
                 self.projection
                     .forks
@@ -251,12 +263,16 @@ impl Reducer {
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
-                receipt.validate_shape(work)?;
-                let key = Self::merge_key(receipt, work)?;
+                receipt.validate_shape(quota.work())?;
+                let key = Self::merge_key(receipt, quota.work())?;
                 if self.projection.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
                 }
-                self.append_conversation_message_with_work(&receipt.notice, work)?;
+                ownership::admit_tree_insertion::<(String, Vec<u8>)>(
+                    self.projection.published_merges.len(),
+                    quota,
+                )?;
+                self.append_conversation_message_with_work(&receipt.notice, quota.work())?;
                 self.projection.published_merges.insert(key);
             }
             EventPayload::ConversationBound { agent } => {
@@ -265,7 +281,7 @@ impl Reducer {
             }
             EventPayload::ConversationMessageAppended { message } => {
                 self.require_conversation()?;
-                self.append_conversation_message_with_work(message, work)?;
+                self.append_conversation_message_with_work(message, quota.work())?;
             }
             EventPayload::ModelContextSelected { selection } => {
                 self.require_conversation()?;
@@ -276,12 +292,16 @@ impl Reducer {
             }
             EventPayload::InteractionOpened { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate(work)?;
+                ticket.validate(quota.work())?;
                 if self.projection.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
                     ));
                 }
+                ownership::admit_tree_insertion::<(
+                    uuid::Uuid,
+                    (InteractionTicket, Option<InteractionResolution>),
+                )>(self.projection.interactions.len(), quota)?;
                 self.projection
                     .interactions
                     .insert(ticket.id, (ticket.as_ref().clone(), None));
