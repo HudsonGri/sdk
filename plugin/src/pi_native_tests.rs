@@ -314,12 +314,13 @@ fn windows_environment_keys_that_differ_only_in_case_are_one_variable() {
             .unwrap()
     );
     let examined = work.receipt().items_examined;
-    // One pass examines each key's bytes once plus one comparison per key.
-    // Negative control: the pairwise scan it replaces examines n(n-1)/2 pairs.
-    let linear = KEYS * 9 * 2;
+    // Hashing reads each key once; nine merge passes and the final scan
+    // compare at most one pair per key each. Negative control: the pairwise
+    // scan it replaces examines n(n-1)/2 pairs.
+    let sorted = KEYS * 9 + KEYS * (9 + 1);
     let pairwise = KEYS * (KEYS - 1) / 2 * 9;
     assert!(
-        examined <= linear && linear < pairwise,
+        examined == sorted && sorted < pairwise,
         "{examined} items for {KEYS} keys"
     );
     let mut folded = distinct;
@@ -342,11 +343,14 @@ fn an_unpaid_case_folded_check_is_refused_before_it_folds_any_key() {
     let environment: BTreeMap<String, String> = (0..64)
         .map(|index| (format!("KEY_{index:04}"), "v".into()))
         .collect();
-    let needed = environment
-        .keys()
-        .map(|key| key.len() as u64 + 1)
-        .sum::<u64>()
-        * 2;
+    // 64 keys of 8 bytes are hashed once, then six merge passes and one scan.
+    let needed = 64 * 9 + 64 * (6 + 1);
+    assert_eq!(
+        super::runtime::case_folded_check_cost(environment.keys())
+            .unwrap()
+            .0,
+        needed
+    );
     let runtime = PiNativeHostRuntime {
         version: PI_NATIVE_VERSION.into(),
         executable: root.join("node"),
@@ -373,4 +377,55 @@ fn an_unpaid_case_folded_check_is_refused_before_it_folds_any_key() {
     let paid = budget(needed);
     assert!(!runtime.case_folded_duplicate(&paid).unwrap());
     assert_eq!(paid.receipt().items_examined, needed);
+}
+
+#[test]
+fn the_case_folded_check_holds_exactly_the_bytes_it_claims() {
+    let root = root_path();
+    for keys in 1..=3_u64 {
+        let environment: BTreeMap<String, String> = (0..keys)
+            .map(|index| (format!("KEY_{index}"), "v".into()))
+            .collect();
+        let (_, claimed) = super::runtime::case_folded_check_cost(environment.keys()).unwrap();
+        let runtime = PiNativeHostRuntime {
+            version: PI_NATIVE_VERSION.into(),
+            executable: root.join("node"),
+            executable_prefix: vec![root.join("pi-cli.js").to_str().unwrap().into()],
+            extension: root.join("acyclic.ts"),
+            provider_extension: None,
+            environment,
+        };
+        let budget = work();
+        // The ledger records its first charge once per budget.
+        budget
+            .charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::default()
+            })
+            .unwrap();
+        let live = budget.live_allocation_bytes();
+        let mut duplicate = None;
+        let measured = acyclic_test_support::measure(|| {
+            duplicate = Some(runtime.case_folded_duplicate(&budget).unwrap());
+        });
+        assert_eq!(duplicate, Some(false));
+        // Two vectors of exactly one 32-byte digest per key, and nothing else.
+        assert_eq!(claimed, keys * 64);
+        assert_eq!(measured.bytes_max, claimed, "{keys} keys");
+        assert_eq!(budget.live_allocation_bytes(), live);
+        // Negative control: the hash table it replaces charged 50 bytes per
+        // key, but any table under four keys allocates four buckets and their
+        // control bytes, so one or two keys overran the charge.
+        let table = acyclic_test_support::measure(|| {
+            let set: std::collections::HashSet<(u64, &str)> =
+                std::collections::HashSet::with_capacity(keys as usize);
+            drop(set);
+        });
+        assert_eq!(
+            table.bytes_max > keys * 50,
+            keys < 3,
+            "{keys} keys: table {} bytes",
+            table.bytes_max
+        );
+    }
 }
