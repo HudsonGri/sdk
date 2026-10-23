@@ -203,7 +203,7 @@ pub(crate) use content::content_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use content::require_owner_reader;
 pub use content::{
-    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentHold, ContentIo,
+    BoundedContentFuture, BoundedOperationFuture, CompositeContentVerifier, ContentAccess, ContentHold, ContentIo,
     ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{

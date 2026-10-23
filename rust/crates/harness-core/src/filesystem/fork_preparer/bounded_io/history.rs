@@ -102,6 +102,9 @@ impl HistoryIo for &PreparationIo {
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
         PreparationIo::allocation_attempt(self, bytes)
     }
+    fn charge_box(&mut self, bytes: u64) -> Result<crate::charged_box::BoxCharge> {
+        PreparationIo::charge_box(self, bytes)
+    }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error {
         Error::Allocation(cause)
     }

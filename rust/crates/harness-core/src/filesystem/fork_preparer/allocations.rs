@@ -591,7 +591,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 preparation,
             )
             .await?;
-            if prior != binding {
+            if *prior != binding {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,

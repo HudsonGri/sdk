@@ -185,7 +185,7 @@ impl LocalHarness {
         let retained = host.reconcile_admission(preparation_operation).await?;
         // Staging has no external execution: retain every input immediately,
         // then fence their authority log together before admitting preparation.
-        let (preparation_record, preparation_request, cut) = preparation::fenced_inputs(
+        let (preparation_record, preparation_request, cut) = crate::conversation::BoundedOperationFuture::new(Some(io_ref), || {preparation::fenced_inputs(
             async {
                 let prepared = if let Some((_, record)) = retained {
                     if record.parent != Some(parent) {
@@ -428,9 +428,9 @@ impl LocalHarness {
                     .map_err(storage)?
                     .map_err(storage)
             },
-        )
+        )})?
         .await?;
-        match host.admit_owned(preparation_record, fence.clone()).await? {
+        match crate::conversation::BoundedOperationFuture::new(Some(io_ref), || {host.admit_owned(preparation_record, fence.clone())})?.await? {
             Admission::Accepted(_) => {}
             Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
             Admission::Indeterminate { operation_id } => {

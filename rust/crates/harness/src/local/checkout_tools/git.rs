@@ -171,7 +171,7 @@ impl CheckoutTools {
                 )
                 .await?;
             }
-            crate::tools::git::run_with_guard(
+            acyclic_fs::in_heap(|| {crate::tools::git::run_with_guard(
                 crate::tools::git::Workspace {
                     filesystem: &workspace.filesystem,
                     store: &workspace.store,
@@ -196,7 +196,7 @@ impl CheckoutTools {
                 },
                 &parsed.arguments,
                 || async { owner.verify_owner(None)?.await },
-            )
+            )})
             .await
         }
         .await;

@@ -87,6 +87,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let events = [
             SchedulerEvent::Declared {
+                // Charged above: `admit_allocation` holds the box's bytes and attempt.
                 spec: Box::new(spec),
             },
             SchedulerEvent::SessionConfigured {

@@ -280,13 +280,18 @@ impl DemandWork {
             bytes,
             |state| {
                 let mut work = state.work;
-                let mut ledger = state.allocations;
+                let mut ledger = state
+                    .allocations
+                    .preview()
+                    .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 work.charge(&delta, &state.budget)?;
                 ledger
                     .claim_bytes(bytes, operations, &mut work, state.budget)
                     .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 state.work = work;
-                state.allocations = ledger;
+                ledger
+                    .commit()
+                    .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                 if let Some(capture) = state.capture_custody() {
                     capture.claim(bytes);
                 }

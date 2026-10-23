@@ -68,6 +68,7 @@ impl<'a> NativeModelStream<'a> {
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         Ok(Self {
+            // Charged above: `custody` claims the stream frame.
             stream: Box::pin(build()),
             custody,
         })
@@ -152,6 +153,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         _: &'a PreparedModelRequest,
     ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async {
             Err(Error::Unsupported(
                 "selected model token counting is unavailable".into(),
@@ -170,6 +172,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         _: ModelDispatch,
         _: &'a [ModelEvent],
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async { Ok(None) })
     }
     /// Pure native capability query.

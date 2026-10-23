@@ -158,6 +158,7 @@ fn schema_error(
         scope.transfer();
         return Error::NativeSchema {
             code: ErrorCode::Invalid,
+            // Unbudgeted: an error source, boxed only as the work fails, to report it.
             source: Box::new(source),
             custody: Some(custody),
         };

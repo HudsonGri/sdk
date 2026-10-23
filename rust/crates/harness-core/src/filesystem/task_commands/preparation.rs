@@ -120,7 +120,7 @@ where
             };
         }
         let report = preparer.prepare_for_task(&fork, &preparation, io).await?;
-        ready(Outcome::Succeeded(report), io)
+        ready(Outcome::Succeeded(report.into_inner()), io)
     }
 
     pub(super) async fn admit(

@@ -88,12 +88,11 @@ async fn read_cold_object<S: AsyncObjectStore>(
     let maximum = limits.maximum_page_object_bytes();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        let mut frame = super::batch::batch_in_heap(accounting, |_| async {
+        let read = crate::heap_future::in_heap_claimed(original, || async {
             let mut work = crate::AuthorityWork::native(original, cancellation);
             store.read(page, maximum, &mut work).await
-        })?;
-        let read = frame.value.as_mut().await;
-        drop(frame);
+        })?
+        .await;
         return read.map(|read| (read, 0)).map_err(read_store_error);
     }
     let (allocations, work, budget, _) = accounting

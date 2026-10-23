@@ -964,7 +964,7 @@ async fn native_lookup_preserves_non_utf8_posix_names() -> Result<(), Box<dyn Er
 async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Error>> {
     use crate::kernel::{LogicalName, NameEncoding};
 
-    let raw = "snowman-Ã¢ËœÆ’"
+    let raw = "snowman-☃"
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
@@ -975,7 +975,7 @@ async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Err
     )?;
     assert_lossless_name(
         FilesystemProfile::Windows,
-        std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
+        std::ffi::OsString::from("snowman-☃"),
         name,
     )
     .await

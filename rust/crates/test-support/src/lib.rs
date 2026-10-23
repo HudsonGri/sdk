@@ -15,6 +15,9 @@ pub mod module_cases;
 pub const MODULE_COMPILER_REACHED: [bool; module_cases::CASES.len()] =
     include!(concat!(env!("OUT_DIR"), "/module-compiler.rs"));
 
+pub mod boxes;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod stack;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

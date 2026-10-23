@@ -93,6 +93,7 @@ pub(super) fn recursive_encoded_equal<T: Serialize>(
     crate::filesystem::PreparationIo::release_since(io, before)?;
     Ok(equal)
 }
+// Charged above: the box is retained and attempted on `io` when one is live.
 pub(in crate::filesystem) fn recursive_box<T>(
     value: T,
     io: Option<&crate::filesystem::PreparationIo>,
@@ -102,6 +103,7 @@ pub(in crate::filesystem) fn recursive_box<T>(
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
+    // Charged above: the box is retained and attempted on `io` when one is live.
     Ok(Box::new(value))
 }
 pub(super) fn derived(

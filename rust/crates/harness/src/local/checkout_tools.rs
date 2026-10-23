@@ -5,7 +5,7 @@ use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_fs::{NativeWatch, PublicationPermit};
+use acyclic_fs::{NativeWatch, PublicationPermit, in_heap};
 use acyclic_stream::BoxProviderFuture;
 
 pub(super) mod access;
@@ -86,7 +86,10 @@ async fn serialized<T, R>(
     state: &StateArc<AsyncMutex<T>>,
     command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> R,
 ) -> R {
-    command(lock_owned(StateArc::clone(state)).await).await
+    let guard = lock_owned(StateArc::clone(state)).await;
+    // Every serialized checkout command runs in a box: its poll frame is never
+    // reserved in the caller's, whichever tool path reached it.
+    acyclic_fs::in_heap(|| command(guard)).await
 }
 
 impl CheckoutTools {
@@ -112,7 +115,7 @@ impl CheckoutTools {
         {
             let mut state = lock_owned(StateArc::clone(&shared)).await;
             if !state.initialized {
-                let (active, _) = workspace.selected_view().await?;
+                let (active, _) = in_heap(|| workspace.selected_view()).await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
@@ -346,7 +349,9 @@ impl ToolExecutor for CheckoutTools {
         mut invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
+        // Each command future is built on the heap, so the tool executor's
+        // poll frames hold pointers rather than every branch's state.
+        in_heap(move || async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             let original = context
                 .as_ref()
@@ -378,13 +383,12 @@ impl ToolExecutor for CheckoutTools {
                 .await?;
             }
             if !self.selected
-                && let Some(selected) = self
-                    .select(
-                        context
-                            .as_ref()
-                            .ok_or_else(|| Error::Invalid("tool context missing".into()))?,
-                    )
-                    .await?
+                && let Some(selected) = {
+                    let task = context
+                        .as_ref()
+                        .ok_or_else(|| Error::Invalid("tool context missing".into()))?;
+                    in_heap(|| self.select(task)).await?
+                }
             {
                 return selected.execute(invocation, context).await;
             }
@@ -427,7 +431,7 @@ impl ToolExecutor for CheckoutTools {
             };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            self.run_checkout_command(
+            acyclic_fs::in_heap(|| {self.run_checkout_command(
                 PreparedCommand {
                     invocation,
                     shell,
@@ -436,7 +440,7 @@ impl ToolExecutor for CheckoutTools {
                     maximum,
                 },
                 context,
-            )
+            )})
             .await
         })
     }

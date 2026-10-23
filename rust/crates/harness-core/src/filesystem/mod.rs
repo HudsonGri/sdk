@@ -46,6 +46,8 @@ mod fork_preparer;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
+#[doc(hidden)]
+pub use fork_preparer::bounded_io::OwnedShared;
 pub use fork_preparer::bounded_io::PreparationIo;
 #[doc(hidden)]
 pub use fork_preparer::bounded_io::PreparationRecord;
@@ -53,7 +55,9 @@ pub use fork_preparer::bounded_io::PreparationRecord;
 pub use fork_preparer::bounded_io::UploadRecord;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
-pub(crate) use fork_preparer::bounded_io::{DecodeReservation, retain_decoded};
+pub(crate) use fork_preparer::bounded_io::{
+    DecodeReservation, OwnedCharge, preparation_slot_bytes, retain_decoded,
+};
 use fork_preparer_io::decode_record;
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
@@ -381,8 +385,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let indexed_path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
             })?;
-            let indexed =
-                read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io).await?;
+            let indexed = crate::conversation::BoundedOperationFuture::new(io, || {
+                read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io)
+            })?
+            .await?;
             if indexed.as_ref() != metadata_bytes.as_slice() {
                 return Err(stock_boundary(
                     io,
@@ -658,6 +664,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .read(&path, maximum_bytes, original, io.cancellation())
                     .await
                     .map_err(|source| Error::NativeWorkspace {
+                        // Unbudgeted: an error source, boxed only as the work fails, to report it.
                         source: Box::new(source),
                         custody: None,
                     })?;

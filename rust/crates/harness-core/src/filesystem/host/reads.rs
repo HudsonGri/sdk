@@ -131,14 +131,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await?
             };
-            return Box::pin(self.read_private_path_indexed(
+            return crate::charged_box::pinned_frame(io, || self.read_private_path_indexed(
                 volume,
                 grant,
                 path,
                 Some(&generation),
                 maximum_bytes,
                 crate::conversation::ContentAccess { ceiling, io },
-            ))
+            ))?
             .await;
         }
 

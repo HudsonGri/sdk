@@ -233,25 +233,25 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
-                capture_baseline(
+                fs_call(capture_baseline(
                     &mut checkout,
                     &capture,
                     &policy,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
+                ))
                 .await
                 .map_err(display)?;
             }
             batch @ WatchBatch::Changes { .. } => {
-                capture_watch_batch(
+                fs_call(capture_watch_batch(
                     &mut checkout,
                     batch,
                     &capture,
                     &policy,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
+                ))
                 .await
                 .map_err(display)?;
             }
@@ -271,13 +271,13 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
-                capture_baseline(
+                fs_call(capture_baseline(
                     &mut checkout,
                     &capture,
                     &policy,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
+                ))
                 .await
                 .map_err(display)?;
                 let trailing = physical
@@ -286,21 +286,21 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .finish_rescan()
                     .map_err(display)?;
-                capture_watch_batch(
+                fs_call(capture_watch_batch(
                     &mut checkout,
                     trailing,
                     &capture,
                     &policy,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
+                ))
                 .await
                 .map_err(display)?;
             }
         }
         if unreported {
             let recorded = recorded_paths(&workspace).await?;
-            capture_watch_batch(
+            fs_call(capture_watch_batch(
                 &mut checkout,
                 WatchBatch::Changes {
                     original: Default::default(),
@@ -313,7 +313,7 @@ impl ControlPlane {
                 &policy,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-            )
+            ))
             .await
             .map_err(display)?;
             if !consumes_changes && !source_advanced_elsewhere && !checkout.has_pending_mutations()
@@ -390,12 +390,14 @@ impl ControlPlane {
             }
             return Ok(());
         }
-        self.mounts
-            .get(agent_id)
-            .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-            .sync()
-            .await
-            .map_err(display)
+        fs_call(
+            self.mounts
+                .get(agent_id)
+                .ok_or_else(|| "subagent mount is unavailable".to_owned())?
+                .sync(),
+        )
+        .await
+        .map_err(display)
     }
 
     pub(crate) async fn propagate_parent_advance(

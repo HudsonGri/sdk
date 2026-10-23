@@ -41,7 +41,7 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        publish_checkout_transition(
+        acyclic_fs::in_heap(|| {publish_checkout_transition(
             self.root,
             self.source_root_identity,
             self.inner.store,
@@ -49,7 +49,7 @@ where
             from,
             to_generation,
             &|| self.validate(),
-        )
+        )})
         .await
     }
 }

@@ -64,6 +64,32 @@ struct Match {
     queries: Range<usize>,
 }
 
+pub(crate) fn validate_request<F: Format>(
+    root: ObjectId,
+    keys: &[F::Key],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+) -> Result<usize, Error> {
+    if root.kind != F::kind() {
+        return Err(Error::WrongRootKind);
+    }
+    if keys.is_empty() {
+        return Err(Error::Empty);
+    }
+    if maximum_queries == 0 || u32::try_from(keys.len()).unwrap_or(u32::MAX) > maximum_queries {
+        return Err(Error::TooManyQueries);
+    }
+    if !limits.page_limits_valid(1) {
+        return Err(Error::InvalidLimits);
+    }
+    Ok(keys
+        .len()
+        .checked_mul(usize::from(limits.maximum_page_height))
+        .and_then(|count| count.checked_add(1))
+        .ok_or(Error::InvalidLimits)?
+        .min(usize::try_from(limits.maximum_visited_pages).map_err(|_| Error::InvalidLimits)?))
+}
+
 pub(crate) async fn lookup_async<S, F>(
     store: &S,
     root: ObjectId,
@@ -225,27 +251,8 @@ impl<'a, F: Format> Machine<'a, F> {
         limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
-        if root.kind != F::kind() {
-            return Err(query_error(Error::WrongRootKind));
-        }
-        if keys.is_empty() {
-            return Err(query_error(Error::Empty));
-        }
-        if maximum_queries == 0 || u32::try_from(keys.len()).unwrap_or(u32::MAX) > maximum_queries {
-            return Err(query_error(Error::TooManyQueries));
-        }
-        if !limits.page_limits_valid(1) {
-            return Err(query_error(Error::InvalidLimits));
-        }
-        let maximum_visited = keys
-            .len()
-            .checked_mul(usize::from(limits.maximum_page_height))
-            .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| query_error(Error::InvalidLimits))?
-            .min(
-                usize::try_from(limits.maximum_visited_pages)
-                    .map_err(|_| query_error(Error::InvalidLimits))?,
-            );
+        let maximum_visited =
+            validate_request::<F>(root, keys, maximum_queries, limits).map_err(query_error)?;
         let requests = Owned::allocate(0, accounting)?;
         let mut ordered = Owned::allocate(keys.len(), accounting)?;
         let initialized: Result<(), crate::FsError> = (|| {

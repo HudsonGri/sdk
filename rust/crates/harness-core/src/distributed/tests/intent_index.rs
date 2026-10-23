@@ -74,7 +74,7 @@ fn omitted_lookup_fails_the_same_independent_map_property() {
     }
     let _restore = Restore;
     OMIT_INDEX_LOOKUP.set(true);
-    assert_index_matches_map(&["".into(), "Ã©".into(), "Ã©x".into()]);
+    assert_index_matches_map(&["".into(), "é".into(), "éx".into()]);
 }
 
 #[test]
@@ -424,13 +424,13 @@ fn index_native_custody_outlives_its_preparation_and_retires_with_the_tree() -> 
     {
         let mut work = Some(&mut observer as &mut dyn HistoryIo);
         let mut quota = CodecQuota::new(&mut work, 0)?;
-        for (sequence, key) in ["a", "ab", "abc", "b", "Ã©", "Ã©x"].into_iter().enumerate() {
+        for (sequence, key) in ["a", "ab", "abc", "b", "é", "éx"].into_iter().enumerate() {
             index.insert_with(key, sequence as u64, &mut quota, |_| Ok(()))?;
         }
         assert_eq!(quota.retained(), 0);
     }
     assert_eq!(observer.into_custody()?.bytes(), 0);
-    assert_eq!(index.get("Ã©x"), Some(5));
+    assert_eq!(index.get("éx"), Some(5));
     drop(index);
     // All native allocations must have returned to this original owner.
     assert_eq!(work.live_allocation_bytes(), baseline);

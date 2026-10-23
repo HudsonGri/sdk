@@ -57,59 +57,83 @@ pub(crate) use obs_span;
 #[derive(Clone, Copy)]
 pub(crate) struct OperationSpan;
 
+/// Runs `future` inside `span` and records its outcome there.
+#[cfg(not(target_arch = "wasm32"))]
+fn traced_frame<T, F: Future<Output = crate::Result<T>>>(
+    span: OperationSpan,
+    future: F,
+) -> impl Future<Output = crate::Result<T>> {
+    let context = span.clone();
+    context.scope(async move {
+        let result = future.await;
+        span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+        if let Err(error) = &result {
+            span.record("error.kind", error.kind());
+        }
+        result
+    })
+}
+
+/// Spans are not recorded on wasm32, so the frame is the future itself.
+#[cfg(target_arch = "wasm32")]
+fn traced_frame<T, F: Future<Output = crate::Result<T>>>(_: OperationSpan, future: F) -> F {
+    future
+}
+
 /// Boxes a trait method's future inside `span` and records its outcome there.
-pub(crate) fn traced<'a, T: 'a>(
+///
+/// `create` builds the future inside the heap allocation's own short frame,
+/// so neither this function nor the caller's poll frame ever holds it.
+#[inline(never)]
+pub(crate) fn traced<'a, T: 'a, F>(
     span: OperationSpan,
-    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let context = span.clone();
-        Box::pin(context.scope(async move {
-            let result = future.await;
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
-        }))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let OperationSpan = span;
-        Box::pin(future)
+    create: impl FnOnce() -> F,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
+where
+    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
+    // Unbudgeted: a caller that holds a live budget uses `traced_on`.
+    acyclic_fs::in_heap(move || traced_frame(span, create()))
+}
+
+/// [`traced`] where an allocation budget is live: the whole frame is charged
+/// on `io` before it is made, and a refused frame is never built.
+#[cfg(feature = "filesystem")]
+#[inline(never)]
+pub(crate) fn traced_on<'a, T: 'a, F>(
+    io: Option<&crate::executor::PreparationIo>,
+    span: OperationSpan,
+    create: impl FnOnce() -> F,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
+where
+    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
+    match crate::charged_box::charged_frame(io, move || traced_frame(span, create())) {
+        Ok(frame) => frame,
+        // Unbudgeted: a refused frame holds only its error.
+        Err(error) => Box::pin(async move { Err(error) }),
     }
 }
 
-// The unmetered caller supplies the one required trait-erasure box. Keep the
-// existing boxed path above intact for admitted future layouts and charges.
+/// [`traced`] where no allocation budget can exist: without the filesystem
+/// there is no budget to charge.
+#[cfg(not(feature = "filesystem"))]
+pub(crate) fn traced_on<'a, T: 'a, F>(
+    _: Option<&crate::executor::PreparationIo>,
+    span: OperationSpan,
+    create: impl FnOnce() -> F,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
+where
+    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
+    // Unbudgeted: no budget exists without the filesystem.
+    traced(span, create)
+}
+
 #[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
-#[inline(always)]
-pub(crate) fn traced_future<'a, T: 'a>(
-    span: OperationSpan,
-    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use futures::FutureExt as _;
-
-        let context = span.clone();
-        // Poll the underlying future in place. A forwarding async block retains
-        // its initial future and await state, duplicating large journal frames.
-        context.scope(future.map(move |result| {
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
-        }))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let OperationSpan = span;
-        future
-    }
-}
+mod typed;
+#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
+pub(crate) use typed::traced_future;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -144,8 +168,8 @@ fn traced_future_retains_one_payload_and_records_only_when_ready() {
     let (seen, _guard) = capture::install();
     let span = obs_span!(INFO, "acyclic.harness.test.payload");
     let future = traced_future(
-        span,
-        Payload {
+        move || span,
+        || Payload {
             bytes: [7; 8192],
             ready: false,
         },
@@ -185,9 +209,9 @@ fn filtered_operation_cannot_record_failure_on_its_parent() {
                 let future =
                     std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
                 let result = if boxed {
-                    futures::executor::block_on(traced(span, future))
+                    futures::executor::block_on(traced(span, || future))
                 } else {
-                    futures::executor::block_on(traced_future(span, future))
+                    futures::executor::block_on(traced_future(|| span, || future))
                 };
                 assert!(result.is_err());
             }

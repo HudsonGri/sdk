@@ -439,14 +439,17 @@ impl Owned<TransactionState> {
                             ..
                         }
                     );
-                    let receipt = super::regular_mutation::apply_regular_mutation_with_accounting(
-                        store,
-                        payload,
-                        mutation,
-                        config,
-                        accounting,
-                        cancellation,
-                    )
+                    // Boxed: the regular mutation frame stays out of this one.
+                    let receipt = crate::heap_future::metered!(erased accounting, |accounting| {
+                        super::regular_mutation::apply_regular_mutation_with_accounting(
+                            store,
+                            payload,
+                            mutation,
+                            config,
+                            accounting,
+                            cancellation,
+                        )
+                    })
                     .await
                     .map_err(|error| {
                         if is_original(accounting) {

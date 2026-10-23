@@ -545,24 +545,24 @@ async fn lazy_view(
         || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
         |workspace| workspace.volume_config(),
     );
-    let source = held_source(
+    let source = acyclic_fs::in_heap(|| {held_source(
         root,
         config,
         original.as_ref().map(|state| state.source),
         native_mounts,
         &work,
         &cancellation,
-    )
+    )})
     .await?;
     let fresh = original.is_none();
     let view = match selected {
         Some(workspace) if !fresh => {
-            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting).await
+            acyclic_fs::in_heap(|| {LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)}).await
         }
         Some(workspace) => {
-            LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting).await
+            acyclic_fs::in_heap(|| {LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)}).await
         }
-        None => LazyWorkspace::attach(
+        None => acyclic_fs::in_heap(|| {LazyWorkspace::attach(
             filesystem,
             &name,
             source,
@@ -573,7 +573,7 @@ async fn lazy_view(
             },
             operation,
             &mut accounting,
-        )
+        )})
         .await
         .map(|(view, ..)| view),
     }

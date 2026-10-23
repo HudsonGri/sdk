@@ -1091,8 +1091,8 @@ fn records_poll_parent(mode: u8, early: bool) -> Result<bool> {
                 )?;
                 if early {
                     Ok(crate::obs::traced_future(
-                        obs_span!(INFO, "acyclic.harness.test.early"),
-                        future,
+                        || obs_span!(INFO, "acyclic.harness.test.early"),
+                        || future,
                     )
                     .boxed())
                 } else {

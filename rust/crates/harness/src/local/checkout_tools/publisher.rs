@@ -363,6 +363,7 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
+                acyclic_fs::in_heap(|| {
                 self.publish(
                     operation,
                     bytes,
@@ -373,6 +374,7 @@ impl ContentPublisher for CheckoutPublisher {
                     },
                     ceiling,
                 )
+                })
                 .await?,
                 None,
             ))
@@ -392,6 +394,7 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
+                acyclic_fs::in_heap(|| {
                 self.publish(
                     operation,
                     bytes,
@@ -402,6 +405,7 @@ impl ContentPublisher for CheckoutPublisher {
                     },
                     ceiling,
                 )
+                })
                 .await?,
                 None,
             ))
@@ -418,8 +422,7 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
-                self.publish(operation, bytes, Publication::Replace(source), ceiling)
-                    .await?,
+                acyclic_fs::in_heap(|| self.publish(operation, bytes, Publication::Replace(source), ceiling)).await?,
                 None,
             ))
         })

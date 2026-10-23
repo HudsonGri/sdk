@@ -114,15 +114,23 @@ impl LocalHarness {
                 super::routing::route(parent, false, selected, settled, existing)
             },
             async |route| match route {
+                // Each admission path is deep; it runs from its own allocation.
                 super::routing::Route::Continue { history } => {
-                    self.continue_conversation(operation, task, parent, history, prompt)
-                        .await
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+                    acyclic_fs::in_heap(|| {
+                        self.continue_conversation(operation, task, parent, history, prompt)
+                    })
+                    .await
                 }
                 super::routing::Route::Child => {
-                    self.prepare_inheritance(task, Some(parent)).await?;
-                    let (receive, model) = self.stage_question(operation, task, prompt).await?;
-                    self.admit_turn(operation, Some(parent), receive, model)
-                        .await
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+                    acyclic_fs::in_heap(|| self.prepare_inheritance(task, Some(parent))).await?;
+                    acyclic_fs::in_heap(|| async {
+                        let (receive, model) = self.stage_question(operation, task, prompt).await?;
+                        self.admit_turn(operation, Some(parent), receive, model)
+                            .await
+                    })
+                    .await
                 }
             },
         )
@@ -199,7 +207,7 @@ impl LocalHarness {
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
         let manifest = self
-            .turn_manifest(operation, question, publisher.as_ref())
+            .turn_manifest(operation, question, publisher.as_ref(), None)
             .await?;
         let prompt = self.prompt_context(Some(task), question).await?;
         self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())
@@ -244,7 +252,14 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
-        Box::pin(async move { Ok(self.submit_claimed(operation, prompt).await?.0) })
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+        acyclic_fs::in_heap(|| async move {
+            Ok(
+                acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt))
+                    .await?
+                    .0,
+            )
+        })
     }
 
     /// Holds the head admitted under `operation` for a caller that admits and
@@ -276,7 +291,8 @@ impl LocalHarness {
             },
         )
         .await?;
-        self.submit_turn(operation, prompt).await
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+        acyclic_fs::in_heap(|| self.submit_turn(operation, prompt)).await
     }
 
     pub(super) async fn stage_turn(
@@ -296,7 +312,7 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)
+            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher, None)
             .await?;
         Ok((receive, model))
     }
@@ -309,7 +325,7 @@ impl LocalHarness {
         limits: Limits,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output(operation, prompt, limits, None)
+            .stage_turn_with_output(operation, prompt, limits, None, None)
             .await?;
         Ok((receive, model))
     }
@@ -320,13 +336,14 @@ impl LocalHarness {
         prompt: &str,
         limits: Limits,
         output: Option<&VolumeRef>,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(
         WorkflowCommand,
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
         let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
-        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref())
+        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref(), io)
             .await
     }
 
@@ -337,12 +354,13 @@ impl LocalHarness {
         limits: Limits,
         output: Option<&VolumeRef>,
         publisher: &dyn ContentPublisher,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(
         WorkflowCommand,
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
-        let manifest = self.turn_manifest(operation, prompt, publisher).await?;
+        let manifest = self.turn_manifest(operation, prompt, publisher, io).await?;
         let (receive, model) = self
             .stage_bound_turn_using(
                 operation,
@@ -361,11 +379,12 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &str,
         publisher: &dyn ContentPublisher,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<crate::conversation::FileRef> {
         Ok(match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
-                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                self.stage_context_manifest_with(operation, Some(prompt), publisher, io)
                     .await?
             }
         })
@@ -548,10 +567,13 @@ impl LocalHarness {
     pub(super) async fn run_as(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
         // The admission's claim is carried into driving, so cancelling this
         // future at any await leaves the head to the next prompt.
-        let (admission, claim) = Box::pin(self.submit_claimed(operation, prompt)).await?;
+        let (admission, claim) =
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt)).await?;
         match admission {
             Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
-                Box::pin(self.resume_claimed(task_id, claim)).await
+                // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+                acyclic_fs::in_heap(|| self.resume_claimed(task_id, claim)).await
             }
             Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Invalid(
                 "local stock turn was not durably admitted".into(),
@@ -580,30 +602,44 @@ impl LocalHarness {
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = Result<bool>> + Send,
     {
+        // Every frame below is paid for on the commands' live budget, if any.
+        let io = commands.frame_io();
         let worker = crate::distributed::Worker {
             id: format!("local-{}", crate::identity::fresh_uuid()),
             available: Default::default(),
             labels: Default::default(),
         };
-        let mut attempt =
-            match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
-                crate::distributed::WorkPull::Claimed(lease) => Some(
+        let mut attempt = match crate::conversation::BoundedOperationFuture::new(io, || async {
+            self.runtime.task_host().recover_work(task, &mut None).await
+        })?
+        .await?
+        {
+            crate::distributed::WorkPull::Claimed(lease) => Some(
+                crate::conversation::BoundedOperationFuture::new(io, || {
                     self.runtime
                         .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                        .await,
-                ),
-                crate::distributed::WorkPull::Unresolved { error, .. } => {
-                    if self.runtime.task_host().outcome(task).await?.is_none() {
-                        return Err(error);
-                    }
-                    None
+                })?
+                .await,
+            ),
+            crate::distributed::WorkPull::Unresolved { error, .. } => {
+                if crate::conversation::BoundedOperationFuture::new(io, || {
+                    self.runtime.task_host().outcome(task)
+                })?
+                .await?
+                .is_none()
+                {
+                    return Err(error);
                 }
-                crate::distributed::WorkPull::Idle => {
+                None
+            }
+            crate::distributed::WorkPull::Idle => {
+                crate::conversation::BoundedOperationFuture::new(io, || {
                     self.runtime
                         .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?
-                }
-            };
+                })?
+                .await?
+            }
+        };
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -613,34 +649,46 @@ impl LocalHarness {
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
                     attempt = Some(
-                        self.runtime
-                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                            .await,
+                        crate::conversation::BoundedOperationFuture::new(io, || {
+                            self.runtime
+                                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                        })?
+                        .await,
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    if !continue_work().await? {
+                    if !crate::conversation::BoundedOperationFuture::new(io, &continue_work)?
+                        .await?
+                    {
                         break;
                     }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
-                    attempt = self
-                        .runtime
-                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?;
+                    attempt = crate::conversation::BoundedOperationFuture::new(io, || {
+                        self.runtime.run_operation(
+                            &worker,
+                            task,
+                            commands,
+                            TRANSITIONS_PER_SLICE,
+                            None,
+                        )
+                    })?
+                    .await?;
                 }
                 _ => break,
             }
         }
-        self.refresh_command_task(task).await?;
+        crate::conversation::BoundedOperationFuture::new(io, || self.refresh_command_task(task))?
+            .await?;
         Ok(())
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
     pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
-        Box::pin(async move {
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+        acyclic_fs::in_heap(|| async move {
             // Claimed before any read, under the gate that serializes
             // supersession, and released by any drop of this future.
             let operation = OperationId::from_bytes(task.into_bytes());
@@ -648,7 +696,8 @@ impl LocalHarness {
                 self.drivers.drive(operation)
             })
             .await;
-            self.resume_claimed(task, Some(claim)).await
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            acyclic_fs::in_heap(|| self.resume_claimed(task, Some(claim))).await
         })
     }
 
@@ -659,14 +708,17 @@ impl LocalHarness {
         task: TaskId,
         mut claim: Option<super::orphans::Driving<'_>>,
     ) -> Result<TurnOutput> {
-        let root = self.loop_root(task).await?;
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+        let root = acyclic_fs::in_heap(|| self.loop_root(task)).await?;
         let mut current = task;
         loop {
-            let output = self.drive_turn(current, claim.take()).await;
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            let output = acyclic_fs::in_heap(|| self.drive_turn(current, claim.take())).await;
             if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
                 return output;
             }
-            match self.continue_goal(current, root).await? {
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            match acyclic_fs::in_heap(|| self.continue_goal(current, root)).await? {
                 Some((next, next_claim)) => {
                     current = next;
                     claim = Some(next_claim);
@@ -699,30 +751,57 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = match self.runtime.harness().attach(task, &definition).await {
-            Ok(handle) => handle,
-            Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
-            Err(error) => return Err(error),
-        };
-        if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
+        let handle =
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            match acyclic_fs::in_heap(|| self.runtime.harness().attach(task, &definition)).await {
+                Ok(handle) => handle,
+                Err(Error::NotFound(_)) => {
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+                    acyclic_fs::in_heap(|| self.recover_unadmitted_turn(task)).await?
+                }
+                Err(error) => return Err(error),
+            };
+        if !super::orphans::settled(
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
+                .await?
+                .as_ref(),
+        ) {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
-            self.advance_with_children(task, &commands, self.task_files.clone(), None)
-                .await?;
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            acyclic_fs::in_heap(|| {
+                self.advance_with_children(task, &commands, self.task_files.clone(), None)
+            })
+            .await?;
             #[cfg(not(feature = "native-execution"))]
-            Box::pin(self.advance(task, &commands)).await?;
-            if self.runtime.task_host().outcome(task).await?.is_none() {
-                let admission = self.runtime.task_host().observe_admission(task).await?;
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            acyclic_fs::in_heap(|| self.advance(task, &commands)).await?;
+            if acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
+                .await?
+                .is_none()
+            {
+                let admission =
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+                    acyclic_fs::in_heap(|| self.runtime.task_host().observe_admission(task))
+                        .await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         } else {
             #[cfg(feature = "native-execution")]
-            self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
+            {
+                let commands = self.commands()?;
+                // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+                acyclic_fs::in_heap(|| {
+                    self.advance_with_children(task, &commands, self.task_files.clone(), None)
+                })
                 .await?;
+            }
             // Advance already refreshes projections; terminal recovery must repair them.
-            self.refresh_command_task(task).await?;
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
+            acyclic_fs::in_heap(|| self.refresh_command_task(task)).await?;
         }
-        match handle.result().await? {
+        match acyclic_fs::in_heap(|| handle.result()).await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
             crate::Outcome::Cancelled => Err(Error::InteractionRejected(

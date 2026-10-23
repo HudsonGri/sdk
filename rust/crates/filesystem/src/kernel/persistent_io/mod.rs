@@ -14,12 +14,10 @@ use crate::async_storage::{
 };
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
 };
-use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;

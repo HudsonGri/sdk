@@ -37,6 +37,15 @@ pub enum HistoryContentFuture<'a, T> {
     Native(crate::NativeFutureBundle<'a, T>),
 }
 
+/// Boxes a history record after charging the box on the bounded work, so a
+/// record boxed under a ledger is never free.
+#[cfg(feature = "filesystem")]
+pub(crate) fn charged_box<T>(
+    value: T,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<crate::charged_box::ChargedBox<T>> {
+    crate::charged_box::ChargedBox::in_history(value, work)
+}
 impl<'a, T> HistoryContentFuture<'a, T> {
     pub(crate) fn new<'w: 'a, F>(
         work: &'a mut Option<&'w mut dyn HistoryIo>,
@@ -69,6 +78,7 @@ impl<'a, T> HistoryContentFuture<'a, T> {
             0
         };
         Ok(Self::Ordinary {
+            // Charged above: the frame's bytes and its allocation attempt.
             future: Box::pin(build(work)),
             frame_bytes,
         })
@@ -108,6 +118,7 @@ impl<'a, T> HistoryContentFuture<'a, T> {
             io.allocation_attempt(bytes)?;
         }
         Ok(Self::Ordinary {
+            // Charged above: the frame's bytes and its allocation attempt.
             future: Box::pin(build(quota.work())),
             frame_bytes: bytes,
         })
@@ -211,6 +222,8 @@ pub trait HistoryIo: Send {
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()>;
     /// Records the attempt after its storage has been admitted.
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()>;
+    /// Charges a box of `bytes` before it is made, held until it is freed.
+    fn charge_box(&mut self, bytes: u64) -> Result<crate::charged_box::BoxCharge>;
     /// Admit allocation.
     fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
         self.admit_owned(bytes)?;

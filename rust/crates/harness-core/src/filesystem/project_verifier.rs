@@ -60,6 +60,7 @@ where
     O: AsyncObjectStore + 'static,
 {
     fn verify<'a>(&'a self, receipt: &'a ProjectMergeReceipt) -> BoxFuture<'a, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             if receipt.source_project.provider() != &self.host.provider
                 || receipt.target_project.provider() != &self.host.provider

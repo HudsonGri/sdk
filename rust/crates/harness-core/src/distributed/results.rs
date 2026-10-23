@@ -97,6 +97,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         reducers: Option<&'a ReducerRegistry>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Option<SchedulerEvent>>> + 'a>>
     {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let expected_revision = self
                 .scheduler

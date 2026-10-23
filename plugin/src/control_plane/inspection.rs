@@ -209,7 +209,7 @@ impl ControlPlane {
         self.authorize_inspection(caller, &agent)?;
         self.ensure_agent_idle(&agent)?;
         if let Some(mount) = self.mounts.get(&agent) {
-            mount.sync().await.map_err(display)?;
+            fs_call(mount.sync()).await.map_err(display)?;
         }
         let route = self
             .state

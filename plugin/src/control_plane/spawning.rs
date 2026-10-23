@@ -306,7 +306,7 @@ impl ControlPlane {
         let pending = pending.clone();
         self.persist()?;
         if let Some(mount) = self.pending_mounts.get(&pending.fork_key) {
-            mount.unmount().await?;
+            fs_call(mount.unmount()).await?;
             self.pending_mounts.remove(&pending.fork_key);
         }
         if let Ok(context) = WorkspaceContextRegistry::new(self.store.clone())

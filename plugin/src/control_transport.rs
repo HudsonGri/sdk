@@ -877,7 +877,7 @@ pub(crate) async fn dispatch_control_request(
         ));
     }
     control
-        .dispatch_request(request, original_native_work)
+        .dispatch_request(request, original_native_work)?
         .await
 }
 
@@ -950,10 +950,25 @@ pub(crate) async fn dispatch_control_envelope(
     }
 }
 
+/// One erased control dispatch, paid for on the request's native ledger.
+pub(crate) type ControlDispatch<'a> = acyclic_harness::conversation::BoundedOperationFuture<
+    'a,
+    acyclic_harness::Result<ControlDispatchResponse>,
+>;
+
+/// Serves one control request.
+///
+/// Dispatch returns one erased future, so no transport or caller future
+/// contains the concrete state of every command the service can run. Its
+/// frame is charged on the request's native ledger, when one is live.
 pub(crate) trait ConcurrentControlRequestDispatcher: Send + Sync {
-    fn dispatch_request(
-        &self,
+    fn dispatch_request<'a>(
+        &'a self,
         request: ControlRequest,
-        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> impl Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send;
+        original_native_work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatch<'a>>;
 }
+
+// A trait whose dispatch returned `impl Future` (or was an `async fn`) would
+// not be dyn-compatible, so this compiles only while dispatch stays erased.
+const _: Option<&dyn ConcurrentControlRequestDispatcher> = None;
