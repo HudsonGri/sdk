@@ -85,12 +85,29 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
         {
             continue;
         }
-        // SAFETY: the terminated kernel name and its exclusive SDK fence remain live.
-        if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
+        // Adopt the locked inode into the normal recovery owner. This is the
+        // same permission-aware detach and control retirement used by explicit
+        // recovery; direct unmount alone requires privileges on macOS.
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let work = Work::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
+        let guard = MountDestinationGuard::from_locked_existing(owner, fence);
+        let mut recovery = crate::native_mount::NativeMountRecoveryOwner::from_locked_existing(
+            path, guard, &work,
+        )?;
+        // Recheck after creating the retirement owner, still under the same
+        // fence. A different kernel mount must never inherit this authority.
+        if mount_table()?
+            .iter()
+            .any(|current| same_mount(&mount, current))
+        {
+            recovery.detach(&work)?;
         }
-        // Keep the fence file: other processes may already hold its inode.
-        drop(owner);
+        // Retirement keeps the original fence until all native controls drain;
+        // it never unlinks the shared fence inode or the destination directory.
     }
     Ok(())
 }

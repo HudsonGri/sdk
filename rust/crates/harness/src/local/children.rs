@@ -4,7 +4,7 @@ use crate::{runtime::TaskSpawner, scheduler::LeaseFence};
 #[cfg(feature = "native-execution")]
 mod admission;
 #[cfg(feature = "native-execution")]
-mod commands;
+pub(super) mod commands;
 #[cfg(feature = "native-execution")]
 mod controller;
 #[cfg(test)]

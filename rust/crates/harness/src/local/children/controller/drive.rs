@@ -7,7 +7,7 @@ impl LocalHarness {
         task: TaskId,
         commands: &'a dyn TaskCommandHost,
         files: Arc<Files>,
-        control: Option<(Arc<Files>, Component)>,
+        control: Option<crate::local::approvals::Inbox>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
@@ -23,6 +23,7 @@ impl LocalHarness {
             let mut jobs = FuturesUnordered::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
+            let approver_done = acyclic_fs::CancellationToken::new();
             for reference in files.inner.child_references().await.map_err(storage)? {
                 if needs_work_count(
                     &reference,
@@ -44,7 +45,10 @@ impl LocalHarness {
                         files.clone(),
                         reference.clone(),
                         request.clone(),
-                        inherited.clone(),
+                        Some(ChildSignals {
+                            inherited: inherited.clone(),
+                            parent_done: approver_done.clone(),
+                        }),
                     ));
                 }
             }
@@ -57,7 +61,7 @@ impl LocalHarness {
                 drained: drained.clone(),
             };
             let parent = async {
-                self.advance_while(task, &scoped, || async {
+                self.advance_while(task, &scoped, control.as_ref(), || async {
                     if cancellation.is_cancelled()
                         || commands
                             .invocation_cancellation()
@@ -67,7 +71,9 @@ impl LocalHarness {
                     }
                     match &control {
                         None => Ok(true),
-                        Some((files, reference)) => Ok(super::super::commands::state(
+                        Some(crate::local::approvals::Inbox {
+                            files, reference, ..
+                        }) => Ok(super::super::commands::state(
                             files,
                             reference,
                             usize::try_from(self.limits.render_bytes).map_err(storage)?,
@@ -77,12 +83,15 @@ impl LocalHarness {
                     }
                 })
                 .await?;
-                if let Some(crate::Outcome::Indeterminate {
-                    operation_id,
-                    cause,
-                }) = self.runtime.task_host().terminal_status(task).await?
-                {
-                    return Err(cause.into_error(operation_id));
+                match self.runtime.task_host().terminal_status(task).await? {
+                    Some(crate::Outcome::Indeterminate {
+                        operation_id,
+                        cause,
+                    }) => {
+                        return Err(cause.into_error(operation_id));
+                    }
+                    Some(_) => approver_done.cancel(),
+                    None => {}
                 }
                 Ok(())
             };
@@ -110,7 +119,7 @@ impl LocalHarness {
                             if !active.contains(&reference) && !matches!(desired(&reference, &values)?, ChildState::Cancelled | ChildState::Archived) {
                                 active.insert(reference.clone());
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
+                                jobs.push(self.service_child(files.clone(), reference, request, Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone() })));
                             }
                         }
                     }
@@ -145,7 +154,7 @@ impl LocalHarness {
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? { continue; }
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
                                 active.insert(reference.clone());
-                                jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
+                                jobs.push(self.service_child(files.clone(), reference, request, Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone() })));
                             }
                         }
                         Wake::Child(result) => {
@@ -156,7 +165,7 @@ impl LocalHarness {
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? {
                                     let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
                                     active.insert(reference.clone());
-                                    jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
+                                    jobs.push(self.service_child(files.clone(), reference, request, Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone() })));
                                 }
                             }
                         }
@@ -169,6 +178,7 @@ impl LocalHarness {
                 }
             }.await;
             if result.is_err() {
+                approver_done.cancel();
                 draining::finish(
                     async {
                         if parent_done {
