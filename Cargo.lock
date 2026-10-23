@@ -781,6 +781,7 @@ dependencies = [
  "rustix 1.1.5",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",

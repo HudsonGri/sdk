@@ -1,10 +1,9 @@
+#[cfg(test)]
+use crate::command::Child;
+use crate::command::Command;
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::process::CommandExt as _;
-#[cfg(test)]
-use std::process::Child;
-use std::process::Command;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
 };
@@ -232,11 +231,10 @@ fn spawn_in_job(
         .transpose()?;
     let started = start_in_job(command, meter, tree);
     if started.is_err()
-        && let Some(mut custodian) = custodian
+        && let Some(custodian) = custodian
     {
         // Never started, the tree has no member for the custodian to await.
-        let _ = custodian.kill();
-        let _ = custodian.wait();
+        custodian.stop();
     }
     started
 }

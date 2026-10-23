@@ -234,6 +234,9 @@ thread_local! {
     pub static SUBSTITUTE_HOOK_NAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 #[cfg(test)]
+#[cfg(windows)]
+mod release_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(any(test, feature = "test-support"))]

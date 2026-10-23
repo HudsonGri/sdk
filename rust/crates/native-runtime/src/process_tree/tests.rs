@@ -4,7 +4,7 @@ use std::io;
 
 #[test]
 fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange() {
-    use std::process::Stdio;
+    use crate::command::Stdio;
     let input = vec![b'x'; 1_048_576];
     for literal in [true, false] {
         #[cfg(windows)]
@@ -63,8 +63,8 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
 #[cfg(unix)]
 #[test]
 fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
-    use std::process::Stdio;
-    let mut command = std::process::Command::new("/bin/sh");
+    use crate::command::Stdio;
+    let mut command = crate::command::Command::new("/bin/sh");
     command
         .args(["-c", "exec sleep 60"])
         .stdin(Stdio::piped())
@@ -74,7 +74,7 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
     let pid = tree
         .child
         .as_ref()
-        .map(std::process::Child::id)
+        .map(crate::command::Child::id)
         .ok_or(io::ErrorKind::NotFound)?;
     let input = vec![b'x'; 1 << 20];
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
@@ -256,9 +256,9 @@ fn suspended_child_launch_fits_its_input_item_allowance() -> io::Result<()> {
     Ok(())
 }
 
+use crate::command::{Command, Stdio};
 use std::fs;
 use std::io::{Read as _, Write as _};
-use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -656,7 +656,6 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
 fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
     #[cfg(windows)]
     let mut command = {
-        use std::os::windows::process::CommandExt as _;
         let mut command = Command::new("powershell.exe");
         command
             .args([

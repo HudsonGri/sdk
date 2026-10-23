@@ -3,6 +3,7 @@ use crate::mcp::sync::{
     atomic::{AtomicU32, Ordering},
 };
 use crate::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
+use acyclic_native_runtime::command::{Command, Stdio};
 use acyclic_native_runtime::{ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
@@ -17,10 +18,7 @@ use rmcp::{
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
-use std::{
-    process::{Command, Stdio},
-    time::Duration,
-};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite};
 

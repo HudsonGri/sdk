@@ -3,9 +3,10 @@
     reason = "process containment and bounded pipes use platform OS calls"
 )]
 
+use crate::command::{Child, Command};
 use crate::obs;
 use std::io::{self, Read};
-use std::process::{Child, Command, ExitStatus, Output};
+use std::process::{ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
