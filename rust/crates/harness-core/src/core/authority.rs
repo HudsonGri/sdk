@@ -1086,5 +1086,6 @@ crate::core::ownership::owned_struct!(Scope {
     agent,
     issuer,
     parent_proof,
-    proof
+    proof,
+    workload
 });

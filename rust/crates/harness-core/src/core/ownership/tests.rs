@@ -158,6 +158,35 @@ proptest! {
 
 fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> {
     let file = fixture!(FileRef, "file-ref")?;
+    let planning = Event {
+        revision: 1,
+        operation_id: crate::OperationId::from_bytes([1; 16]),
+        intent_digest: [0; 32],
+        scope: RecordedScope::from_wire(
+            "planning".into(),
+            crate::Capabilities::default(),
+            "issuer".into(),
+            None,
+        ),
+        attestation: Vec::with_capacity(spare),
+        causal_parent: None,
+        payload: EventPayload::EffectDispatched {
+            effect_id: crate::EffectId::from_bytes([1; 16]),
+            attempt_id: crate::EffectAttemptId::from_bytes([2; 16]),
+        },
+    };
+    let effect = EffectState {
+        provider: "provider".into(),
+        guarantee: EffectGuarantee::ExactlyOnce,
+        effect_kind: "send".into(),
+        request: Box::new(file.clone()),
+        request_digest: [0; 32],
+        result_schema: file.clone(),
+        result_schema_digest: [0; 32],
+        status: EffectStatus::Planned,
+        planning: Some(Box::new(planning)),
+        attempts: Vec::with_capacity(spare),
+    };
     let mut admission = fixture!(TaskAdmissionRecord, "task-admission")?;
     admission.input = payload.clone();
     admission.resource_proofs.reserve_exact(spare);
@@ -179,6 +208,7 @@ fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> 
         read_authorization: None,
     };
     let mut output: Vec<Box<dyn OwnedBytes>> = vec![
+        Box::new(effect),
         Box::new(request),
         Box::new(fixture!(ForkSeed, "fork-seed")?),
         Box::new(fixture!(ForkRequest, "fork-request")?),
@@ -234,7 +264,7 @@ fn wire(file: &str) -> Result<Value> {
 }
 fn observation() -> Result<Value> {
     Ok(
-        json!({"provider":"provider", "effect_id":"11111111-1111-1111-1111-111111111111", "attempt_id":"11111111-1111-1111-1111-111111111111", "request_digest":([1_u8;32]), "guarantee":"exactly_once", "result_schema_digest":([1_u8;32]), "status":{"state":"succeeded","result":wire("file")?}, "proof":([1_u8;32])}),
+        json!({"provider":"provider", "effect_id":"11111111-1111-1111-1111-111111111111", "attempt_id":"11111111-1111-1111-1111-111111111111", "request_digest":([1_u8;32]), "guarantee":"exactly_once", "result_schema_digest":([1_u8;32]), "status":{"state":"succeeded","result":wire("file")?}, "proof":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="}),
     )
 }
 fn ticket() -> Result<Value> {

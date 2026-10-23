@@ -34,7 +34,6 @@ pub(crate) fn owned_effect(effect: &EffectState) -> Result<u64> {
 /// Retained scope, causal parent and payload storage.
 pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     event.owned_heap_bytes()
-
 }
 
 impl<B> snapshot::Projection<ConversationState, B> {

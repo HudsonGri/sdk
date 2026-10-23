@@ -2,6 +2,9 @@
 //!
 //! Keep these bytes pinned: regenerating them with the current implementation
 //! would hide changes to tags, nesting, field order or omitted/default fields.
+//! The workload fixture changes only the 15 scope workload fields and three
+//! effect-receipt encodings deliberately introduced by main #1409. The original
+//! fixture remains alongside it so those independent wire changes are explicit.
 use super::{Action, Command, EffectStatus, EventPayload};
 use crate::fork::{Capture, ResourceRevision};
 use crate::{Error, Result};
@@ -19,24 +22,22 @@ enum Golden {
     Capture(String),
 }
 
-fn invalid(error: serde_json::Error) -> Error {
-    Error::Invalid(error.to_string())
-}
-
 fn round_trip<T: DeserializeOwned + Serialize + PartialEq + Debug>(wire: &str) -> Result<()> {
-    let value: T = serde_json::from_str(wire).map_err(invalid)?;
-    let encoded = serde_json::to_vec(&value).map_err(invalid)?;
+    let value: T = serde_json::from_str(wire).map_err(|error| Error::Invalid(error.to_string()))?;
+    let encoded = serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(encoded, wire.as_bytes(), "{}", std::any::type_name::<T>());
-    let reopened: T = serde_json::from_slice(&encoded).map_err(invalid)?;
+    let reopened: T =
+        serde_json::from_slice(&encoded).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(reopened, value);
     Ok(())
 }
 
 #[test]
 fn boxed_variants_preserve_preboxing_wire_bytes_and_equality() -> Result<()> {
-    let goldens: Vec<Golden> =
-        serde_json::from_str(include_str!("../../tests/fixtures/preboxing-wire.json"))
-            .map_err(invalid)?;
+    let goldens: Vec<Golden> = serde_json::from_str(include_str!(
+        "../../tests/fixtures/preboxing-workload-wire.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut counts = (0, 0, 0, 0, 0, 0);
     for golden in goldens {
         match golden {

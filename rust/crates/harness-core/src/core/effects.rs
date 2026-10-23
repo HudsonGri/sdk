@@ -216,5 +216,6 @@ crate::core::ownership::owned_struct!(EffectState {
     result_schema,
     result_schema_digest,
     status,
+    planning,
     attempts
 });
