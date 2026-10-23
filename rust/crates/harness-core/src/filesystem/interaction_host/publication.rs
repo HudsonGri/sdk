@@ -16,49 +16,34 @@ where
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         io: Option<&PreparationIo>,
     ) -> Result<ApplyResult> {
-        loop {
-            let (copied, retained) = with_history_io(io, |work| {
-                CodecQuota::produce(work, |quota| {
-                    crate::core::copy(
-                        ticket,
-                        quota,
-                        |value: &crate::interaction::InteractionTicket, work| {
-                            value.request.validate(work)?;
-                            crate::core::owned_bytes(value)
-                        },
-                    )
-                })
-            })?;
-            let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-            let result = self
-                .execute(
-                    operation_id,
-                    scope.unwrap_or(&self.owner_scope),
-                    Action::OpenInteraction {
-                        ticket: (copied).into(),
+        let mut transaction = self.transaction(io).await?;
+        let (copied, retained) = with_history_io(io, |work| {
+            CodecQuota::produce(work, |quota| {
+                crate::core::copy(
+                    ticket,
+                    quota,
+                    |value: &crate::interaction::InteractionTicket, work| {
+                        value.request.validate(work)?;
+                        crate::core::owned_bytes(value)
                     },
-                    owner,
-                    io,
-                    None,
                 )
-                .await;
-            drop(hold);
-            match result {
-                Err(error) if error.code() == ErrorCode::Conflict => {
-                    if self
-                        .aggregate(io)
-                        .await?
-                        .0
-                        .reducer()
-                        .interaction(&ticket.id)
-                        .is_some()
-                    {
-                        return Err(error);
-                    }
-                }
-                result => return result,
-            }
-        }
+            })
+        })?;
+        let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+        let result = self
+            .execute(
+                operation_id,
+                scope.unwrap_or(&self.owner_scope),
+                Action::OpenInteraction {
+                    ticket: (copied).into(),
+                },
+                owner,
+                io,
+                &mut transaction,
+            )
+            .await;
+        drop(hold);
+        result
     }
 
     pub(in crate::filesystem) async fn execute(
@@ -68,7 +53,7 @@ where
         action: Action,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         io: Option<&PreparationIo>,
-        aggregate: Option<&mut StreamAggregate<P>>,
+        transaction: &mut InteractionTransaction<'_, P>,
     ) -> Result<ApplyResult> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);
@@ -81,15 +66,7 @@ where
                 )
                 .await?;
         }
-        // A resolution carries its authenticated cut through the complete
-        // transaction. Reopening here would replay the same history again.
-        let mut reconstructed;
-        let aggregate = if let Some(aggregate) = aggregate {
-            aggregate
-        } else {
-            reconstructed = self.aggregate(io).await?;
-            &mut reconstructed.0
-        };
+        let aggregate = &mut transaction.aggregate.0;
         let (committed, _) = crate::store::operations::bounded_operation_with_retained_quota(
             &self.stream,
             self.verifier.audience(),
@@ -133,6 +110,48 @@ where
         let result = aggregate.execute(command, owner, &mut work).await;
         drop(hold);
         result
+    }
+
+    /// Serializes every interaction writer of this provider/conversation before
+    /// reconstructing its cut. The provider owns the registry, so newly composed
+    /// passive and leased hosts cannot accidentally acquire different locks.
+    pub(in crate::filesystem) async fn transaction<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<InteractionTransaction<'a, P>> {
+        let digest = with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(
+                &("harness/v2/interaction-writer", self.verifier.audience()),
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                work,
+            )
+        })?;
+        let mut key = [0; 48];
+        key[..32].copy_from_slice(&digest);
+        key[32..].copy_from_slice(b"interaction-lock");
+        let claims = self.stream.operation_claims();
+        let writer = loop {
+            if let Some(writer) = claims.claim(
+                key,
+                || crate::model::charge_items(io, 1),
+                |bytes| {
+                    io.map(|io| {
+                        let hold = io.guard_owned(bytes)?;
+                        io.allocation_attempt(bytes)?;
+                        Ok::<_, Error>(hold)
+                    })
+                    .transpose()
+                },
+            )? {
+                break writer;
+            }
+            // Waiting acquires ownership; no failed publication is resubmitted.
+            claims.wait_until_released(key).await;
+        };
+        Ok(InteractionTransaction {
+            aggregate: self.aggregate(io).await?,
+            _writer: writer,
+        })
     }
 
     pub(in crate::filesystem) async fn aggregate<'a>(

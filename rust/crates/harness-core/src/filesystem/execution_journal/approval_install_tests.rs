@@ -282,3 +282,112 @@ fn approval_settlement_reconstructs_once_for_every_entry_point() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn approval_writers_share_one_claim_across_composed_hosts_and_entry_points() -> Result<()> {
+    use crate::runtime::InteractionResolver as _;
+    for entry in 0..4 {
+        for released_cut in [false, true] {
+            let initialized = initialized("writer custody", None).await?;
+            let first = &initialized.journal;
+            let second = journal(
+                &initialized._fixture,
+                &initialized._conversation,
+                first.task_files.as_ref().unwrap().clone(),
+            )
+            .await?;
+            let host = second.interactions()?;
+            let id = InteractionId::from_bytes([88; 16]);
+            let request = Interaction::approval(
+                "Concurrent publication".into(),
+                initialized.operation,
+                [5; 32],
+                crate::interaction::ApprovalSubject::Opaque {},
+            )?;
+            if entry != 3 {
+                first.open_interaction(id, &request, None)?.await?;
+            }
+            let human = responder(&initialized._conversation, "human", &[id])?;
+            let file = if entry == 0 {
+                let (ticket, _) = host.read(id, None).await?.unwrap();
+                Some(decision(
+                    id,
+                    "human",
+                    &ApprovalDecisionFile::new(
+                        "human",
+                        ticket.request.descriptor().sha256(),
+                        1,
+                        false,
+                        None,
+                    )?,
+                ))
+            } else {
+                None
+            };
+            // The control holds the same verified cut without writer custody.
+            let cut = if released_cut {
+                Some(first.interactions()?.aggregate(None).await?)
+            } else {
+                None
+            };
+            let transaction = if released_cut {
+                None
+            } else {
+                Some(first.interactions()?.transaction(None).await?)
+            };
+            let publish = async {
+                match entry {
+                    0 => {
+                        second
+                            .write_approval_decision(file.as_ref().unwrap(), &human)
+                            .await
+                    }
+                    1 => host
+                        .resolve_approval(
+                            OperationId::from_bytes([89; 16]),
+                            human.copy(&mut None)?,
+                            id,
+                            1,
+                            false,
+                            None,
+                        )
+                        .await
+                        .map(|_| ()),
+                    2 => {
+                        host.resolve_latest(
+                            id,
+                            InteractionResponse::Approval {
+                                approved: false,
+                                reason: None,
+                            },
+                            &human,
+                            None,
+                        )
+                        .await
+                    }
+                    _ => second.open_interaction(id, &request, None)?.await,
+                }
+            };
+            tokio::pin!(publish);
+            let polled = futures::poll!(publish.as_mut());
+            if released_cut {
+                assert!(
+                    polled.is_ready(),
+                    "the old unowned cut unexpectedly excluded a writer: entry={entry}"
+                );
+                if let std::task::Poll::Ready(result) = polled {
+                    result?;
+                }
+            } else {
+                assert!(
+                    polled.is_pending(),
+                    "separately composed writer bypassed custody: entry={entry}"
+                );
+                drop(transaction);
+                publish.await?;
+            }
+            drop(cut);
+        }
+    }
+    Ok(())
+}

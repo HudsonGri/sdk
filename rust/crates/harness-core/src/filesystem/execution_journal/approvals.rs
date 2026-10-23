@@ -114,9 +114,9 @@ where
         let host = self.interactions()?;
         // The passive route can submit only an already published request in
         // this task. Its bytes must be the interaction owner's exact request.
-        let mut aggregate = host.aggregate(None).await?;
+        let mut transaction = host.transaction(None).await?;
         let ticket = host
-            .read_at(&aggregate.0, id, None)?
+            .read_at(&transaction.aggregate.0, id, None)?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?
             .0;
         let key = FileKey::Task {
@@ -138,9 +138,9 @@ where
             owner.require_interaction_grant(&mut None)?;
             owner.verify(true, &mut None).await?;
         }
-        host.resolve_decision(id, decision, responder, owner, &mut aggregate.0)
+        host.resolve_decision(id, decision, responder, owner, &mut transaction)
             .await?;
-        self.published_decision_from(id, None, aggregate, None)
+        self.published_decision_from(id, None, transaction.aggregate, None)
             .await?;
         if let Some(owner) = owner {
             owner.verify(true, &mut None).await?;

@@ -82,7 +82,7 @@ async fn approval_publication_retains_the_coordinator_until_commit() -> Result<(
                         idempotency_key: key,
                     }
                 };
-                crate::distributed::add_condition(&mut request, condition)?;
+                request.conditions.push(condition);
                 assert!(matches!(
                     stream.commit(request).await?,
                     CommitOutcome::Conflict(_)

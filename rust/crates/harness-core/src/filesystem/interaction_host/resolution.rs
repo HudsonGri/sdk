@@ -76,9 +76,9 @@ where
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
     ) -> Result<()> {
         self.verify_responder_scope(id, responder, None)?;
-        let mut aggregate = self.aggregate(None).await?;
+        let mut transaction = self.transaction(None).await?;
         let (_, prior) = self
-            .read_at(&aggregate.0, id, None)?
+            .read_at(&transaction.aggregate.0, id, None)?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         if let Some(previous) = &prior
             && previous.outcome.is_terminal()
@@ -88,7 +88,7 @@ where
                 InteractionOutcome::Approved {} | InteractionOutcome::Declined {}
             );
             let stored = self
-                .read_resolution_file(&aggregate.0, id, detail, None)
+                .read_resolution_file(&transaction.aggregate.0, id, detail, None)
                 .await?;
             let same = match (stored, &response) {
                 (Some(bytes), InteractionResponse::Approval { approved, reason }) if detail => {
@@ -119,7 +119,7 @@ where
             responder,
             response,
             owner,
-            &mut aggregate.0,
+            &mut transaction,
         )
         .await?;
         Ok(())
@@ -135,11 +135,11 @@ where
         decision: ApprovalDecisionFile,
         responder: &Scope,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
-        aggregate: &mut StreamAggregate<P>,
+        transaction: &mut InteractionTransaction<'_, P>,
     ) -> Result<()> {
         self.verify_responder_scope(id, responder, None)?;
         let (ticket, prior) = self
-            .read_at(aggregate, id, None)?
+            .read_at(&transaction.aggregate.0, id, None)?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         let version = decision.expected_version;
         if ticket.kind != crate::interaction::InteractionKind::Approval
@@ -151,7 +151,10 @@ where
         if let Some(previous) = &prior
             && previous.outcome.is_terminal()
         {
-            let stored = match self.read_resolution_file(aggregate, id, true, None).await? {
+            let stored = match self
+                .read_resolution_file(&transaction.aggregate.0, id, true, None)
+                .await?
+            {
                 Some(bytes) if previous.detail.is_some() => Some(
                     ApprovalDecisionFile::decode(&bytes, self.maximum_bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?,
@@ -173,7 +176,7 @@ where
             responder,
             response,
             owner,
-            aggregate,
+            transaction,
         )
         .await?;
         Ok(())
@@ -187,8 +190,8 @@ where
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
     ) -> Result<ResolutionReceipt> {
         self.verify_responder_scope(binding.1, scope, None)?;
-        let mut aggregate = self.aggregate(None).await?;
-        self.resolve_response_at(binding, scope, response, owner, &mut aggregate.0)
+        let mut transaction = self.transaction(None).await?;
+        self.resolve_response_at(binding, scope, response, owner, &mut transaction)
             .await
     }
 
@@ -198,10 +201,10 @@ where
         scope: &Scope,
         response: InteractionResponse,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
-        aggregate: &mut StreamAggregate<P>,
+        transaction: &mut InteractionTransaction<'_, P>,
     ) -> Result<ResolutionReceipt> {
         let (operation_id, id, expected_version) = binding;
-        let ticket = self.open_resolution(scope, id, expected_version, aggregate)?;
+        let ticket = self.open_resolution(scope, id, expected_version, &transaction.aggregate.0)?;
         let request = self.read_ticket_request(&ticket, None).await?;
         request.validate_response(&response, &mut None)?;
         let (outcome, detail) = match response {
@@ -249,7 +252,7 @@ where
                 },
                 owner,
                 None,
-                Some(aggregate),
+                transaction,
             )
             .await?,
         )
