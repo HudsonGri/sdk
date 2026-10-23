@@ -120,7 +120,7 @@ fn eager_frame(fixture: &mut Fixture, size: Size, page: usize) {
     // lines each fit one row; preserve their original styles.
     let layouts = fixture
         .renderer
-        .transcript
+        .source_rows()
         .iter()
         .map(|line| {
             let text: String = line
@@ -133,7 +133,7 @@ fn eager_frame(fixture: &mut Fixture, size: Size, page: usize) {
             layout
         })
         .collect::<Vec<_>>();
-    let rows = fixture.renderer.transcript.clone();
+    let rows = fixture.renderer.source_rows().to_vec();
     let total = rows
         .iter()
         .map(|line| {
@@ -177,7 +177,7 @@ fn costs<const EAGER_CONTROL: bool>(length: usize) -> Vec<((usize, usize, usize)
             let mut costs = Vec::new();
             for width in [80, 40] {
                 let size = Size::new(width, 20);
-                let source = &fixture.renderer.transcript;
+                let source = fixture.renderer.source_rows();
                 assert!(
                     source
                         .iter()
