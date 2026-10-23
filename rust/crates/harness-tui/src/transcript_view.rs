@@ -170,8 +170,10 @@ pub fn move_transcript(
     let mut anchor = anchor?;
     loop {
         let index = anchor.part.index();
-        if let Some((position, remaining)) =
-            parts[index].as_deref_mut()?.step(anchor.position, rows)
+        if let Some((position, remaining)) = parts
+            .get_mut(index)?
+            .as_deref_mut()?
+            .step(anchor.position, rows)
         {
             anchor.position = position;
             rows = remaining;
@@ -181,14 +183,16 @@ pub fn move_transcript(
         }
         let next = if rows < 0 {
             (0..index).rev().find(|&at| {
-                parts[at]
-                    .as_deref()
+                parts
+                    .get(at)
+                    .and_then(|part| part.as_deref())
                     .is_some_and(|part| part.source_len() != 0)
             })
         } else {
             (index + 1..parts.len()).find(|&at| {
-                parts[at]
-                    .as_deref()
+                parts
+                    .get(at)
+                    .and_then(|part| part.as_deref())
                     .is_some_and(|part| part.source_len() != 0)
             })
         };
@@ -203,7 +207,7 @@ pub fn move_transcript(
         anchor = TranscriptAnchor {
             part: TranscriptPart::at(next),
             position: if rows < 0 {
-                parts[next].as_deref_mut()?.last_position().unwrap()
+                parts.get_mut(next)?.as_deref_mut()?.last_position()?
             } else {
                 RowPosition::default()
             },

@@ -35,9 +35,17 @@ async fn model<const ALWAYS_SCAN: bool>(retained: usize) {
     let before = session.files.len();
     session.settings_visits = 0;
     for _ in 0..4 {
-        crate::client::scroll_tui(&mut session, [3], 1000)
-            .await
-            .unwrap();
+        crate::client::scroll_tui(&mut session, [3], 1000, |from, _| {
+            Some(crate::tui::TranscriptAnchor {
+                position: crate::tui::RowPosition {
+                    line: from.map_or(1, |from| from.position.line + 1),
+                    row: 0,
+                },
+                ..Default::default()
+            })
+        })
+        .await
+        .unwrap();
         if ALWAYS_SCAN {
             session.load_task_settings_impl::<true>().await.unwrap();
         }
