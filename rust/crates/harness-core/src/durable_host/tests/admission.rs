@@ -417,36 +417,37 @@ async fn observed_admission<P: StreamProvider>(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn a_validated_admission_is_read_once_per_host_and_copied_onto_each_ledger() -> Result<()> {
+async fn a_live_owner_shares_its_admission_and_the_memo_retains_none() -> Result<()> {
     let f = fixture().await?;
-    f.host.admit(f.admission(131, json!(0))).await?;
+    let owner = f.running(131).await?;
     let task = TaskId::from_bytes([131; 16]);
-    let (first, read, first_bytes) = observed_admission(&f.host, task).await?;
-    let (second, copied, second_bytes) = observed_admission(&f.host, task).await?;
-    assert!(first == second, "the memo returns the validated admission");
+    let (first, copied, first_bytes) = observed_admission(&f.host, task).await?;
+    let (second, _, second_bytes) = observed_admission(&f.host, task).await?;
+    assert!(first == second && first == *owner.admission());
     assert_eq!(
         first_bytes, second_bytes,
         "each copy holds what a decode holds"
     );
+    let shared = Arc::downgrade(&owner.admission);
+    // Negative control: a strong holder, as a memo entry that copied or kept the
+    // record would be, keeps it alive after its owner is gone, outside every ledger.
+    let strong = Arc::clone(&owner.admission);
+    drop(owner);
+    assert!(
+        shared.upgrade().is_some(),
+        "the control must keep the record alive"
+    );
+    drop(strong);
+    // The memo itself holds nothing: the record is freed with its last owner.
+    assert!(
+        shared.upgrade().is_none(),
+        "the memo kept an admission alive"
+    );
+    let (reread, read, reread_bytes) = observed_admission(&f.host, task).await?;
+    assert!(reread == first && reread_bytes == first_bytes);
     assert!(
         copied * 4 < read,
-        "a later read copies the record ({copied} items) instead of re-reading it ({read} items)"
+        "a live owner's record is copied ({copied} items) instead of re-read ({read} items)"
     );
-    // Negative control: reading through the uncached path pays the full read again.
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        &acyclic_fs::CancellationToken::new(),
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = crate::executor::PreparationIo::from_native_work(&work)?;
-    let reread = f
-        .host
-        .read_admission(
-            OperationId::from_bytes(task.into_bytes()),
-            &mut Some(&mut io.history_io()),
-        )
-        .await?;
-    assert!(reread == first);
-    assert!(work.receipt().items_examined * 2 > read);
     Ok(())
 }
