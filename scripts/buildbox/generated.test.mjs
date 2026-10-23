@@ -23,6 +23,9 @@ const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d
 if(bodies.length!==4)throw Error('missing generated shell');
 for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);}
 const inner=bodies[1];
+const cold=process.env.BUILD_SLOT_REMOTE_COLD==='1';
+const disable='export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1';
+if(inner.includes(disable)!==cold || (cold && inner.indexOf(disable)>inner.indexOf('exec python3 /home/var/bin/bb-job.py')))throw Error('cold jobs can restore or publish snapshots');
 const first=inner.indexOf('\n');
 const requestHash=crypto.createHash('sha256').update(inner.slice(first+1).split('/mnt/bb/jobs/fixture').join('$JOBPREFIX')).digest('hex');
 if(inner.slice(0,first)!=='export BB_TARGET_REQUEST_SHA256='+requestHash)throw Error('generated Cargo provenance digest lost or incomplete');
@@ -37,12 +40,18 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
 }
 `;
   const file=path.join(cwd,'probe.mjs');fs.writeFileSync(file,probe);
-  const result=spawnSync(process.execPath,[file],{encoding:'utf8'});
-  assert.equal(result.status,0,result.stdout+result.stderr);
+  for(const cold of ['0','1']){
+   const result=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:cold}});
+   assert.equal(result.status,0,result.stdout+result.stderr);
+  }
   const generator=path.join(cwd,'generator.mjs');
-  fs.writeFileSync(generator,fs.readFileSync(generator,'utf8').replace('cargoJob || Boolean(receipt?.gate_log)','cargoJob'));
+  const original=fs.readFileSync(generator,'utf8');
+  fs.writeFileSync(generator,original.replace('cargoJob || Boolean(receipt?.gate_log)','cargoJob'));
   const negative=spawnSync(process.execPath,[file],{encoding:'utf8'});
   assert.notEqual(negative.status,0);assert.match(negative.stderr,/gate dropped compiler cache/);
+  fs.writeFileSync(generator,original.replaceAll('BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1','BB_COLD_DISABLED_CONTROL=1'));
+  const coldNegative=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:'1'}});
+  assert.notEqual(coldNegative.status,0);assert.match(coldNegative.stderr,/cold jobs can restore or publish snapshots/);
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 

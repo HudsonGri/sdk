@@ -1,15 +1,41 @@
 """Exercise the actual Cargo proxy's kernel lease ownership."""
 import fcntl
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import bb_cargo_cache as cache
 
 
 class LocalTargetLease(unittest.TestCase):
+    def test_cold_jobs_bypass_store_reads_and_publication_at_both_entries(self):
+        class Executed(Exception):pass
+        for flag in ['BB_CACHE_DISABLED','BB_TARGET_STORE_DISABLED']:
+            with self.subTest(flag=flag), patch.dict(os.environ,{flag:'1','BUILD_SLOT_RECEIPT_META':'unused'},clear=True), \
+                 patch.object(cache.os,'execv',side_effect=Executed) as execute, \
+                 patch.object(cache.store,'private_target',side_effect=AssertionError('store accessed')), \
+                 patch.object(cache.store,'Session') as session:
+                with self.assertRaises(Executed):cache.run(['check','--locked'])
+                execute.assert_called_once_with(cache.CARGO,[cache.CARGO,'check','--locked'])
+                self.assertIsNone(cache.store.prepare({},dict(os.environ),Path('/unused')))
+                session.assert_not_called()
+        # The former proxy reaches store metadata for a cold native job.
+        source=Path(cache.__file__).read_text().replace('store.disabled(env)',"env.get('BB_TARGET_STORE_DISABLED') == '1'")
+        namespace={};exec(compile(source,'old-cold-proxy','exec'),namespace)
+        with patch.dict(os.environ,{'BB_CACHE_DISABLED':'1','BUILD_SLOT_RECEIPT_META':'/missing-cold-fixture'},clear=True), \
+             patch.object(cache.os,'execv',side_effect=Executed) as execute:
+            with self.assertRaises(FileNotFoundError):namespace['run'](['check','--locked'])
+            execute.assert_not_called()
+        source=Path(cache.store.__file__).read_text().replace('if disabled(env) or',"if env.get('BB_TARGET_STORE_DISABLED') == '1' or")
+        namespace={};exec(compile(source,'old-cold-store','exec'),namespace)
+        namespace['private_target']=lambda meta: (_ for _ in ()).throw(AssertionError('store accessed'))
+        with self.assertRaisesRegex(AssertionError,'store accessed'):
+            namespace['prepare']({},{'BB_CACHE_DISABLED':'1'},Path('/unused'))
+
     def test_independent_jobs_with_the_same_virtual_target_do_not_block(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

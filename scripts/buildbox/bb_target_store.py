@@ -231,8 +231,12 @@ class Session:
             self.lock.close(); self.lock = None
 
 
+def disabled(env):
+    return env.get('BB_CACHE_DISABLED') == '1' or env.get('BB_TARGET_STORE_DISABLED') == '1'
+
+
 def prepare(meta, env, job):
-    if env.get('BB_TARGET_STORE_DISABLED') == '1' or not private_target(meta):
+    if disabled(env) or not private_target(meta):
         return None
     key = request_key(meta, env, job)
     if key is None:

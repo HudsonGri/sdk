@@ -582,7 +582,7 @@ if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RU
   // /home/var/bin/bbnpm/npm: \`npm ci\` is skipped when node_modules was installed from the same lockfile hash (node_modules
   // persists per copy and seeds new copies; rsync never carries it).
   let inner = `set -u
-export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BUILD_SLOT_EXEC_IN_PAYLOAD=1
+${COLD ? 'export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1\n' : ''}export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BUILD_SLOT_EXEC_IN_PAYLOAD=1
 export BB_JOB_GIT_SOURCE=/work/src BB_JOB_PRIVATE_MOUNT=1
 export BB_JOB_EXPORT_SPEC=${q(JSON.stringify(exportSpec))}
 if [ "\${BB_JOB_ACTIVE:-}" != 1 ]; then exec python3 /home/var/bin/bb-job.py bash ${J}.sh; fi

@@ -62,6 +62,17 @@ class RuntimeTests(unittest.TestCase):
         bad=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
         self.assertEqual(bad.returncode,0,bad.stderr.decode())
         with self.assertRaises(json.JSONDecodeError):json.loads(bad.stdout)
+    def test_native_cold_entry_propagates_disabled_policy_before_execution(self):
+        script=self.d/'cold-build-slot'
+        script.write_text((HERE/'build-slot').read_text().replace('/home/var/bin/bb-job.py',str(self.worker())))
+        meta=self.d/'cold.receipt-meta.v2.json';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+        env.pop('BB_JOB_ACTIVE',None);env.pop('BB_CACHE_DISABLED',None)
+        result=subprocess.run(['bash',str(script),'--cold',sys.executable,'-c','import os;print(os.environ["BB_CACHE_DISABLED"])'],cwd=self.d,env=env,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(result.stdout,b'1\n')
+        self.assertEqual(json.loads(Path(str(meta)+'.runtime').read_text())['cache'],'disabled')
+
     def test_stdout_bytes_modes_targets_and_xwin_cache(self):
         code='''import os,stat,sys
 from pathlib import Path

@@ -87,7 +87,7 @@ def run(argv):
     env = dict(os.environ)
     build, run_tests = compilation(argv)
     file = env.get('BUILD_SLOT_RECEIPT_META')
-    if not file or build is None or env.get('BB_TARGET_STORE_DISABLED') == '1':
+    if not file or build is None or store.disabled(env):
         os.execv(CARGO, [CARGO] + argv)
     meta = json.loads(Path(file).read_text())
     target = target_path(argv, env)
