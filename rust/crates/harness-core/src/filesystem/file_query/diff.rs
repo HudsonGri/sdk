@@ -24,7 +24,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             &serde_json::to_vec(&base).map_err(|e| crate::Error::Invalid(e.to_string()))?,
         )
         .as_bytes();
-        let (workspace, current, cursor, _, _, records) = self.open_cut(query, None, &io).await?;
+        let FileCut { workspace, current, cursor, records, .. } = self.open_cut(query, None, &io).await?;
         let baseline = self
             .reader
             .host

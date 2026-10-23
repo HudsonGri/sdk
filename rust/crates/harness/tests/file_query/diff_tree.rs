@@ -253,16 +253,22 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
     view.apply(&snapshot, fixture.reader.as_ref(), LIMITS)
         .await?;
     assert!(view.files()["zz-changed"].patch.contains("+after"));
-    let limited = fixture.reader.file_query(
-        &fixture.volume,
-        acyclic_fs::WorkBudget {
-            items_examined: 0,
-            ..BOUNDARY_BUDGET
-        },
-    ).await;
+    let limited = fixture
+        .reader
+        .file_query(
+            &fixture.volume,
+            acyclic_fs::WorkBudget {
+                items_examined: 0,
+                ..BOUNDARY_BUDGET
+            },
+        )
+        .await;
     assert!(match limited {
         Err(_) => true,
-        Ok(limited) => limited.observe_diff(base.id(), maximum_changes).await.is_err(),
+        Ok(limited) => limited
+            .observe_diff(base.id(), maximum_changes)
+            .await
+            .is_err(),
     });
     Ok(())
 }

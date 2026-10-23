@@ -329,7 +329,9 @@ async fn collect_publications(
     let mut seen = initial.cursor.position;
     let mut paths = std::collections::BTreeSet::new();
     let mut removed = std::collections::BTreeSet::new();
-    let mut replay = initial.files.iter()
+    let mut replay = initial
+        .files
+        .iter()
         .map(|file| (file.key.clone(), file.bytes.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
     while seen != target.cursor.position {
@@ -361,7 +363,9 @@ async fn collect_publications(
         }
         wire.push(serde_json::to_value(&change)?);
     }
-    let expected = target.files.iter()
+    let expected = target
+        .files
+        .iter()
         .map(|file| (file.key.clone(), file.bytes.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
     if replay != expected {
@@ -388,7 +392,10 @@ fn check_publication_value(
 ) -> TestResult {
     // A metadata publication can retain the preceding bytes. Once authored
     // bytes appear, a later return to the seed must still fail this oracle.
-    if expected.get(&file.key.path()).and_then(Option::as_deref).map(str::as_bytes)
+    if expected
+        .get(&file.key.path())
+        .and_then(Option::as_deref)
+        .map(str::as_bytes)
         != Some(file.bytes.as_ref())
         && !previous.is_some_and(|previous| previous.as_ref() == file.bytes.as_ref())
     {

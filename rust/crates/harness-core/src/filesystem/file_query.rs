@@ -23,6 +23,16 @@ pub struct FilesystemFileQuery<P, O> {
     policy: Arc<acyclic_fs::access::AccessView>,
 }
 
+struct FileCut<P, O> {
+    workspace: acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
+    current: acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
+    cursor: Cursor,
+    supplied: bool,
+    valid_resume: bool,
+    records: acyclic_stream::RecordStream,
+    permissions: Arc<acyclic_fs::access::PathTrie>,
+}
+
 impl<P, O> Clone for FilesystemFileQuery<P, O> {
     fn clone(&self) -> Self {
         Self {
@@ -150,7 +160,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                 &serde_json::to_vec(&query).map_err(|_| task_volume::Error::InvalidSegment)?,
             )
             .as_bytes();
-            let (_, current, cursor, supplied, valid_resume, records) =
+            let FileCut { workspace, current, cursor, supplied, valid_resume, records, permissions } =
                 self.open_cut(query_id, cursor, &io).await?;
             let selection = Selection::read(
                 &current,
@@ -171,6 +181,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                 },
                 cursor: cursor.clone(),
             });
+            super::access::require_current(&workspace, &permissions, &io).await?;
             let changes = self.changes(
                 query,
                 current,
@@ -194,14 +205,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         query_id: [u8; 32],
         cursor: Option<Cursor>,
         io: &PreparationIo,
-    ) -> task_volume::Result<(
-        acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
-        acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
-        Cursor,
-        bool,
-        bool,
-        acyclic_stream::RecordStream,
-    )> {
+    ) -> task_volume::Result<FileCut<P, O>> {
         let reference = workspace_ref(
             self.reader.host.provider.clone(),
             &self.volume.storage_name(&mut None)?,
@@ -255,7 +259,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             )
             .await?;
         super::access::require_current(&workspace, &permissions, io).await?;
-        Ok((workspace, current, cursor, supplied, valid_resume, records))
+        Ok(FileCut { workspace, current, cursor, supplied, valid_resume, records, permissions })
     }
 
     fn changes(

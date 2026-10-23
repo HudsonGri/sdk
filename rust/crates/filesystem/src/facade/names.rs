@@ -673,7 +673,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     &self.volume,
                     &self.root,
                     self.generation_root,
-                    (&[id], &[]),
+                    &[id],
                     // Bindings can outnumber file records through hard links.
                     // The original work budget bounds this cold traversal.
                     u32::MAX,
