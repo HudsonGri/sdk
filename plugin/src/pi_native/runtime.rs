@@ -56,60 +56,51 @@ impl PiNativeHostRuntime {
     }
 
     /// Whether two keys name one Windows variable: they differ only in ASCII case.
-    /// One pass hashes each folded key once, so the check examines exactly the key
-    /// bytes plus one item per key. That cost and the table are admitted before any
-    /// key is folded: a budget that cannot pay refuses the check without doing it.
+    ///
+    /// Each key's ASCII-folded bytes are hashed once to a 32-byte BLAKE3 digest,
+    /// the digests are merge sorted, and equal neighbours are duplicates. The
+    /// work and memory are exact functions of the key count and key bytes:
+    /// hashing reads each key once, every merge pass compares at most one pair
+    /// per key, the final scan compares one pair per key, and the digests and
+    /// the merge buffer are two vectors of exactly one digest per key. Both are
+    /// admitted before any key is folded, so a budget that cannot pay refuses
+    /// the check without doing it.
     pub(super) fn case_folded_duplicate(&self, work: &NativeMaterializationWork) -> Result<bool> {
-        use std::hash::{BuildHasher, Hash, Hasher};
-        /// A key compared and hashed by its ASCII-folded bytes, carrying its full hash
-        /// so a key's bytes are compared again only when the full hashes are equal.
-        struct Folded<'a>(u64, &'a str);
-        impl PartialEq for Folded<'_> {
-            fn eq(&self, other: &Self) -> bool {
-                self.0 == other.0 && self.1.eq_ignore_ascii_case(other.1)
-            }
-        }
-        impl Eq for Folded<'_> {}
-        impl Hash for Folded<'_> {
-            fn hash<H: Hasher>(&self, state: &mut H) {
-                state.write_u64(self.0);
-            }
-        }
-        let keys = self.environment.len();
-        let examined = self
-            .environment
-            .keys()
-            .try_fold(0_u64, |sum, key| sum.checked_add(key.len() as u64 + 1))
-            .and_then(|bytes| bytes.checked_mul(2))
-            .ok_or(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "Pi host environment size overflow",
-            })?;
-        // Hashing reads every key once; a key whose full hash matches another is
-        // compared once more before it is reported as a duplicate.
+        let (examined, table) = case_folded_check_cost(self.environment.keys())?;
         work.charge(WorkCounters {
             items_examined: examined,
             ..WorkCounters::default()
         })?;
-        let table = keys
-            .checked_mul(2 * (std::mem::size_of::<Folded<'_>>() + 1))
-            .ok_or(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "Pi host environment size overflow",
-            })?;
-        let _table_custody = work.claim(table as u64, 1, WorkCounters::UNCHARGED)?;
-        let hasher = std::collections::hash_map::RandomState::new();
-        let mut seen = std::collections::HashSet::with_capacity_and_hasher(keys, hasher.clone());
+        let _table_custody = work.claim(table, 1, WorkCounters::UNCHARGED)?;
+        let keys = self.environment.len();
+        let mut digests = digest_buffer(keys)?;
+        let mut merged = digest_buffer(keys)?;
         for key in self.environment.keys() {
-            let mut state = hasher.build_hasher();
-            for byte in key.bytes() {
-                state.write_u8(byte.to_ascii_lowercase());
+            let mut hasher = blake3::Hasher::new();
+            let mut folded = [0_u8; 64];
+            for part in key.as_bytes().chunks(folded.len()) {
+                if let Some(folded) = folded.get_mut(..part.len()) {
+                    folded.copy_from_slice(part);
+                    folded.make_ascii_lowercase();
+                    hasher.update(folded);
+                }
             }
-            if !seen.insert(Folded(state.finish(), key)) {
-                return Ok(true);
-            }
+            digests.push(*hasher.finalize().as_bytes());
         }
-        Ok(false)
+        merged.resize(keys, [0; 32]);
+        let mut width = 1;
+        while width < keys {
+            let runs = digests.chunks(2 * width).zip(merged.chunks_mut(2 * width));
+            for (run, out) in runs {
+                let (left, right) = run.split_at(width.min(run.len()));
+                merge_digests(left, right, out);
+            }
+            std::mem::swap(&mut digests, &mut merged);
+            width *= 2;
+        }
+        Ok(digests
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left == right)))
     }
 
     pub(crate) fn validate(&self, work: &NativeMaterializationWork) -> Result<()> {
@@ -526,4 +517,55 @@ struct PiNativeRequestProjection<'a> {
 fn native_argv_path(path: &Path) -> Result<&str> {
     path.to_str()
         .ok_or_else(|| invalid("Pi invocation path is not UTF-8"))
+}
+
+/// Items examined and bytes held by the case-folded duplicate check of `keys`.
+pub(super) fn case_folded_check_cost<'a>(
+    keys: impl ExactSizeIterator<Item = &'a String>,
+) -> Result<(u64, u64)> {
+    let overflow = || Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Invalid,
+        reason: "Pi host environment size overflow",
+    };
+    let count = keys.len() as u64;
+    let passes = u64::from(count.max(1).next_power_of_two().trailing_zeros());
+    let hashed = keys
+        .into_iter()
+        .try_fold(0_u64, |sum, key| sum.checked_add(key.len() as u64 + 1))
+        .ok_or_else(overflow)?;
+    let examined = count
+        .checked_mul(passes + 1)
+        .and_then(|compared| compared.checked_add(hashed))
+        .ok_or_else(overflow)?;
+    let table = count
+        .checked_mul(2 * std::mem::size_of::<[u8; 32]>() as u64)
+        .ok_or_else(overflow)?;
+    Ok((examined, table))
+}
+
+/// A vector of exactly `keys` digest slots.
+fn digest_buffer(keys: usize) -> Result<Vec<[u8; 32]>> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(keys)
+        .map_err(|_| Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Storage,
+            reason: "Pi host environment check cannot allocate its digests",
+        })?;
+    Ok(buffer)
+}
+
+/// Merges two sorted runs into `merged`, one comparison per element at most.
+fn merge_digests(left: &[[u8; 32]], right: &[[u8; 32]], merged: &mut [[u8; 32]]) {
+    let (mut left, mut right) = (left.iter().peekable(), right.iter().peekable());
+    for slot in merged {
+        let next = match (left.peek(), right.peek()) {
+            (Some(l), Some(r)) if r < l => right.next(),
+            (Some(_), _) => left.next(),
+            (None, _) => right.next(),
+        };
+        if let Some(digest) = next {
+            *slot = *digest;
+        }
+    }
 }
