@@ -96,7 +96,9 @@ test("host manifests and shims fit the native hook budget", () => {
   const lines = (text: string) => text.trimEnd().split(/\r?\n/).length;
   const codex = source("../../hooks/hooks.json");
   const bridge = source("../../src/codex.rs");
-  assert(lines(codex) + lines(bridge) <= 300);
+  const codexManifests = ["../../plugin.json", "../../.codex-plugin/plugin.json",
+    "../../.mcp.json", "../../.agents/plugins/marketplace.json"].map(source);
+  assert(lines(codex) + lines(bridge) + codexManifests.reduce((sum, manifest) => sum + lines(manifest), 0) <= 300);
   assert(lines(source("../../pi/index.ts")) <= 300);
   const claude = JSON.parse(source("../../claude/.claude-plugin/plugin.json"));
   assert(lines(source("../../claude/.claude-plugin/plugin.json")) <= 300);
