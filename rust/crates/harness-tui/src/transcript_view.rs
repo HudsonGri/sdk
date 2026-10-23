@@ -5,9 +5,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptPart {
+    /// Optional reasoning preceding the answer.
     Reasoning,
     #[default]
+    /// The retained and streaming answer.
     Answer,
+    /// Tool output following the answer.
     Tools,
 }
 
@@ -33,12 +36,15 @@ impl TranscriptPart {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TranscriptAnchor {
+    /// Source section.
     pub part: TranscriptPart,
+    /// Logical source line and physical row within it.
     pub position: RowPosition,
 }
 
-fn top(parts: &[&mut WrappedLines; 3]) -> Option<TranscriptAnchor> {
+fn top(parts: &[Option<&mut WrappedLines>; 3]) -> Option<TranscriptAnchor> {
     parts.iter().enumerate().find_map(|(index, part)| {
+        let part = part.as_deref()?;
         (!part.shown().is_empty()).then(|| TranscriptAnchor {
             part: TranscriptPart::at(index),
             position: part.window().top,
@@ -46,13 +52,13 @@ fn top(parts: &[&mut WrappedLines; 3]) -> Option<TranscriptAnchor> {
     })
 }
 
-fn tail(parts: &mut [&mut WrappedLines; 3], height: usize, activity: usize) {
+fn tail(parts: &mut [Option<&mut WrappedLines>; 3], height: usize, activity: usize) {
     let mut remaining = height.saturating_sub(activity);
-    for part in parts.iter_mut().rev() {
+    for part in parts.iter_mut().rev().flatten() {
         if remaining == 0 {
             part.hide();
         } else {
-            part.view(Top::Back(0), remaining);
+            part.view(Top::Tail, remaining);
             remaining -= part.shown().len();
         }
     }
@@ -61,13 +67,13 @@ fn tail(parts: &mut [&mut WrappedLines; 3], height: usize, activity: usize) {
 /// Select a physical window without computing a total wrapped-row count.
 /// `activity` is the derived activity row below the source sections.
 pub fn view_transcript(
-    mut parts: [&mut WrappedLines; 3],
+    mut parts: [Option<&mut WrappedLines>; 3],
     anchor: Option<TranscriptAnchor>,
     height: usize,
     activity: usize,
 ) -> Option<TranscriptAnchor> {
     if height == 0 {
-        for part in &mut parts {
+        for part in parts.iter_mut().flatten() {
             part.hide();
         }
         return anchor;
@@ -76,12 +82,15 @@ pub fn view_transcript(
         tail(&mut parts, height, activity);
         return None;
     };
-    for part in &mut parts {
+    for part in parts.iter_mut().flatten() {
         part.hide();
     }
     let mut remaining = height;
     let mut end = true;
     for (index, part) in parts.iter_mut().enumerate().skip(anchor.part.index()) {
+        let Some(part) = part else {
+            continue;
+        };
         if part.source_len() == 0 {
             continue;
         }
@@ -113,7 +122,7 @@ pub fn view_transcript(
 /// Apply one ordered movement, clamped against the composed source plus
 /// activity row. Call repeatedly for a burst, then publish its final anchor.
 pub fn move_transcript(
-    mut parts: [&mut WrappedLines; 3],
+    mut parts: [Option<&mut WrappedLines>; 3],
     from: Option<TranscriptAnchor>,
     mut rows: isize,
     height: usize,
@@ -122,8 +131,22 @@ pub fn move_transcript(
     if height == 0 {
         return from;
     }
+    if rows == isize::MAX {
+        return view_transcript(parts, None, height, activity);
+    }
+    if rows <= -isize::MAX {
+        let first = parts.iter().enumerate().find_map(|(index, part)| {
+            part.as_deref()
+                .filter(|part| part.source_len() != 0)
+                .map(|_| TranscriptAnchor {
+                    part: TranscriptPart::at(index),
+                    position: RowPosition::default(),
+                })
+        });
+        return view_transcript(parts, first, height, activity);
+    }
     let from = view_transcript(
-        parts.each_mut().map(|part| &mut **part),
+        parts.each_mut().map(|part| part.as_deref_mut()),
         from,
         height,
         activity,
@@ -135,17 +158,21 @@ pub fn move_transcript(
             .enumerate()
             .rev()
             .find_map(|(index, part)| {
-                part.last_position().map(|position| TranscriptAnchor {
-                    part: TranscriptPart::at(index),
-                    position,
-                })
+                part.as_deref_mut()?
+                    .last_position()
+                    .map(|position| TranscriptAnchor {
+                        part: TranscriptPart::at(index),
+                        position,
+                    })
             });
         rows = rows.saturating_add(1);
     }
     let mut anchor = anchor?;
     loop {
         let index = anchor.part.index();
-        if let Some((position, remaining)) = parts[index].step(anchor.position, rows) {
+        if let Some((position, remaining)) =
+            parts[index].as_deref_mut()?.step(anchor.position, rows)
+        {
             anchor.position = position;
             rows = remaining;
         }
@@ -153,17 +180,30 @@ pub fn move_transcript(
             break;
         }
         let next = if rows < 0 {
-            (0..index).rev().find(|&at| parts[at].source_len() != 0)
+            (0..index).rev().find(|&at| {
+                parts[at]
+                    .as_deref()
+                    .is_some_and(|part| part.source_len() != 0)
+            })
         } else {
-            (index + 1..parts.len()).find(|&at| parts[at].source_len() != 0)
+            (index + 1..parts.len()).find(|&at| {
+                parts[at]
+                    .as_deref()
+                    .is_some_and(|part| part.source_len() != 0)
+            })
         };
         let Some(next) = next else {
+            if rows > 0 {
+                // The tail can consist solely of the activity row. Crossing
+                // the last source row must enter that frame, not stick on it.
+                return view_transcript(parts, None, height, activity);
+            }
             break;
         };
         anchor = TranscriptAnchor {
             part: TranscriptPart::at(next),
             position: if rows < 0 {
-                parts[next].last_position().unwrap()
+                parts[next].as_deref_mut()?.last_position().unwrap()
             } else {
                 RowPosition::default()
             },
