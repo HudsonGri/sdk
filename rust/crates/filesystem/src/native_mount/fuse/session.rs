@@ -17,13 +17,36 @@ pub(super) struct FuseSessionState {
     pub(super) before: Option<(u64, u64)>,
     pub(super) mount: super::mount::Mount,
     pub(super) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    pub(super) device: Option<OwnedFd>,
+    pub(super) device: Option<FuseDevice>,
     pub(super) notifier: Option<Notifier>,
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
     pub(super) failure: Option<NativeMountError>,
     pub(super) _allocation: NativeAllocation,
+}
+
+/// The session's FUSE device. Until fuser's session owns the device this
+/// state holds a descriptor; afterwards it holds a notifier, which shares
+/// fuser's descriptor and keeps it open, so a mounted view costs one.
+pub(super) enum FuseDevice {
+    Owned(OwnedFd),
+    Session {
+        _notifier: Notifier,
+        device: std::os::fd::RawFd,
+    },
+}
+
+impl FuseDevice {
+    pub(super) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        match self {
+            Self::Owned(device) => device.as_fd(),
+            // SAFETY: the notifier shares the open device that owns this
+            // descriptor, which therefore stays open while it lives.
+            Self::Session { device, .. } => unsafe { std::os::fd::BorrowedFd::borrow_raw(*device) },
+        }
+    }
 }
 
 impl FuseSessionState {
@@ -58,11 +81,12 @@ impl FuseSessionState {
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            self.mount.stop(path, self.device.as_ref())?;
+            self.mount
+                .stop(path, self.device.as_ref().map(FuseDevice::as_fd))?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            if !self.mount.device_detached(device)? {
+            if !self.mount.device_detached(device.as_fd())? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
@@ -208,16 +232,22 @@ impl FuseSession {
                 skips_opendir: false,
             };
             let FuseSessionState { mount, device, .. } = &mut *started;
-            mount.open_into(
+            let mut received = None;
+            let opened = mount.open_into(
                 &request.destination,
                 request.writable,
                 || super::lifecycle::fuse_recovery_helper(work),
-                device,
-            )?;
+                &mut received,
+            );
+            *device = received.map(FuseDevice::Owned);
+            opened?;
+            // A failed handshake closes the session's descriptor, so the
+            // state holds its own until fuser's session owns the device.
             let descriptor = device
                 .as_ref()
                 .ok_or(NativeMountError::FuseShutdownFailed)?
-                .try_clone()?;
+                .as_fd()
+                .try_clone_to_owned()?;
             let session =
                 fuser::Session::from_fd(filesystem, descriptor, fuser::SessionACL::Owner, config)
                     .map_err(|error| {
@@ -226,6 +256,13 @@ impl FuseSession {
                 })?;
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
+            started.device = Some(FuseDevice::Session {
+                _notifier: session.notifier(),
+                device: {
+                    use std::os::fd::{AsFd as _, AsRawFd as _};
+                    session.as_fd().as_raw_fd()
+                },
+            });
             // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
             started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
             let (directory, identity) =

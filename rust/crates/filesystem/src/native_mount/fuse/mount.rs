@@ -4,7 +4,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     os::{
-        fd::{AsRawFd, OwnedFd},
+        fd::{AsRawFd, BorrowedFd, OwnedFd},
         unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixStream},
     },
     path::Path,
@@ -114,7 +114,7 @@ impl Mount {
         Ok(())
     }
 
-    pub(super) fn stop(&mut self, path: &CStr, device: Option<&OwnedFd>) -> io::Result<()> {
+    pub(super) fn stop(&mut self, path: &CStr, device: Option<BorrowedFd<'_>>) -> io::Result<()> {
         if let Some(child) = self.helper.as_mut() {
             if child.try_wait()?.is_none() {
                 child.kill()?;
@@ -170,7 +170,7 @@ impl Mount {
 
     // This is the sole production transition that clears pending. A failed
     // helper or an unsuccessful device check must leave the next retry enabled.
-    pub(super) fn device_detached(&mut self, device: &OwnedFd) -> io::Result<bool> {
+    pub(super) fn device_detached(&mut self, device: BorrowedFd<'_>) -> io::Result<bool> {
         self.observe_detachment(|| {
             let mut poll = libc::pollfd {
                 fd: device.as_raw_fd(),
