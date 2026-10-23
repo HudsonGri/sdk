@@ -473,7 +473,6 @@ fn approval_open_reuses_one_verified_cut_for_new_and_existing_requests() -> Resu
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
     for native in [false, true] {
-        let initialized = runtime.block_on(initialized("open transaction", None))?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(65_536, 64 << 20),
@@ -483,6 +482,7 @@ fn approval_open_reuses_one_verified_cut_for_new_and_existing_requests() -> Resu
         let io = native
             .then(|| PreparationIo::from_native_work(&work))
             .transpose()?;
+        let initialized = runtime.block_on(initialized("open transaction", io.as_ref()))?;
         let id = InteractionId::from_bytes([90; 16]);
         let request = Interaction::approval(
             "Open once".into(),
