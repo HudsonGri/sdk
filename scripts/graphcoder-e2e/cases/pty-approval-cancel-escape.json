@@ -69,6 +69,10 @@
             "contains": [
               "AFTER_CANCEL_E2E_DONE",
               "○"
+            ],
+            "absent": [
+              "failed: cancelled",
+              "E2E approval policy"
             ]
           }
         }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
+import { TerminalFrames, FailureHistory } from "./frames.mjs";
 
 function bold(terminal, text) {
   const buffer = terminal.buffer.active;
@@ -47,23 +48,24 @@ export async function pty(processes, binary, fixture, input, capture) {
     if (input.resume) args.push("--resume");
   }
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const frames = new TerminalFrames(screen), failures = new FailureHistory();
   const killSignal = process.platform === "win32" ? "SIGKILL" : "SIGUSR1";
   const running = processes.start(program, args, { cwd: fixture.workspace, env: fixture.env, scopeKillSignal: killSignal });
   screen.onData(data => running.child.stdin.write(data));
   let index = 0, failure;
   const snapshots = [];
   function frame() {
-    if (failure || index >= input.actions.length) return;
+    if (failure || index >= input.actions.length || !frames.ready()) return;
     try {
       const visible = screenText(screen);
       const raw = running.stdout;
       const action = input.actions[index];
-      if (raw.includes("has overflowed its stack") || (/task [0-9a-f-]{36} failed:/.test(visible)
-          && !expectedTaskFailure(visible, action.when))) {
+      if (raw.includes("has overflowed its stack") || failures.unexpected(visible, action.when)) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
       if (action.after_request && !fixture.requests.some(event => event.path === action.after_request.path && event.step === action.after_request.step)) return;
       if (!matches(screen, raw, action.when)) return;
+      failures.accept(visible, action.when);
       snapshots.push({ action: index, visible });
       index++;
       if (action.prompt !== undefined) running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
@@ -75,7 +77,7 @@ export async function pty(processes, binary, fixture, input, capture) {
   }
   const unsubscribe = fixture.onRequest(frame);
   running.child.stdout.on("data", bytes => {
-    screen.write(bytes, frame);
+    frames.write(bytes, frame);
   });
   const result = await running.closed;
   const raw = result.stdout;
@@ -83,6 +85,7 @@ export async function pty(processes, binary, fixture, input, capture) {
   await new Promise(resolve => screen.write("", resolve));
   const visible = screenText(screen);
   capture({ ...result, raw, snapshots, visible, actions: index });
+  frames.dispose();
   screen.dispose();
   if (failure) throw failure;
   assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${raw}`);

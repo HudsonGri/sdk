@@ -7,6 +7,38 @@ import { Events, Processes } from "./process.mjs";
 import { requests, subset, toolResults } from "./assertions.mjs";
 import { matches } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
+import { TerminalFrames, FailureHistory } from "./frames.mjs";
+
+test("screen assertions observe complete synchronized frames at every fragmentation boundary", async () => {
+  const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
+  for (let cut = 0; cut <= bytes.length; cut++) {
+    const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+    const frames = new TerminalFrames(screen), seen = [];
+    const capture = () => seen.push(screen.buffer.active.getLine(0).translateToString(true));
+    await frames.write(bytes.slice(0, cut), capture);
+    await frames.write(bytes.slice(cut), capture);
+    assert.ok(seen.includes("final"));
+    assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
+    frames.dispose(); screen.dispose();
+  }
+  // Negative control: callbacks after arbitrary writes disclose the half-painted draft.
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  await new Promise(resolve => screen.write(bytes.slice(0, bytes.indexOf("\x1b[Hfinal")), resolve));
+  assert.equal(screen.buffer.active.getLine(0).translateToString(true), "draft");
+  screen.dispose();
+});
+
+test("handled failures retain exact task and reason identity across subsequent actions", () => {
+  const history = new FailureHistory();
+  const old = "task 00000000-0000-0000-0000-000000000001 failed: cancelled";
+  const next = old.replace("0001 failed", "0002 failed");
+  assert.equal(history.unexpected(old, {}), old, "old stateless guard rejects the handled result again");
+  history.accept(old, { task_failure: "cancelled" });
+  assert.equal(history.unexpected(old, {}), undefined);
+  assert.equal(history.unexpected(next, {}), next, "another task's failure must still fail immediately");
+  const changed = old.replace("cancelled", "unauthorized");
+  assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
+});
 
 test("case selection rejects misspellings before starting either executable", async () => {
   const processes = new Processes();

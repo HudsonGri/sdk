@@ -197,7 +197,11 @@ trap 'restore; rm -rf "$proof"' EXIT
 cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
 source .bb-sessions-binaries.env
-for case in pty-approval-cancel-escape pty-approval-cancel-ctrl-c; do
+cases=(pty-approval-cancel-escape pty-approval-cancel-ctrl-c)
+if [ "$control" = stale-outcome-notice ]; then
+ cases=(pty-approval-cancel-continue-held)
+fi
+for case in "${cases[@]}"; do
  expect_failure "$control-$case" env E2E_OUTPUT="$proof/$control-$case" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
 done
 restore
@@ -206,7 +210,7 @@ trap 'rm -rf "$proof"' EXIT
 cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
 source .bb-sessions-binaries.env
-for case in pty-approval-cancel-escape pty-approval-cancel-ctrl-c; do
+for case in pty-approval-cancel-escape pty-approval-cancel-ctrl-c pty-approval-cancel-continue-held; do
  E2E_OUTPUT="$proof/restored-$case" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
 done
 echo SESSIONS_NEGATIVE_CONTROLS_PASSED
