@@ -58,12 +58,18 @@ fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
         return Err(error.into());
     }
     // A failed direct attempt is no authority to detach a replacement mount.
-    if !mount_table()?.iter().any(|current| same_mount(mount, current)) {
+    if !mount_table()?
+        .iter()
+        .any(|current| same_mount(mount, current))
+    {
         return Ok(());
     }
     let mut command = std::process::Command::new("/usr/sbin/diskutil");
     command
-        .args([std::ffi::OsStr::new("unmount"), std::ffi::OsStr::new("force")])
+        .args([
+            std::ffi::OsStr::new("unmount"),
+            std::ffi::OsStr::new("force"),
+        ])
         .arg(std::ffi::OsStr::from_bytes(destination.to_bytes()))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -132,7 +138,10 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
             continue;
         }
         detach_stale_mount(&mount)?;
-        if mount_table()?.iter().any(|current| same_mount(&mount, current)) {
+        if mount_table()?
+            .iter()
+            .any(|current| same_mount(&mount, current))
+        {
             return Err(std::io::Error::other("stale mount remained after retirement").into());
         }
         // Keep the fence file: other processes may already hold its inode.

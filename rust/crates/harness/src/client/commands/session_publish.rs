@@ -5,6 +5,7 @@ pub(super) const PUBLICATION_ATTEMPTS: usize = 8;
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Recompute a UI edit from the followed file after a competing publication.
     /// Only the pure edit is replayed; execution requests retain their own CAS.
+    #[cfg(any(test, feature = "tui"))]
     pub(crate) async fn update_state(
         &mut self,
         root: CommandFileRoot,

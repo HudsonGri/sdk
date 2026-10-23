@@ -86,22 +86,17 @@ where
     async fn run_model_command(
         &self,
         invocation @ CommandInvocation {
-            context,
             admission,
             fence,
             command: _,
             reconciliation_only,
             io,
+            ..
         }: CommandInvocation<'_>,
         payload: Value,
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
-        let task = admission.task_id();
-        let context = if io.is_none() && context.owned_mailbox.is_none() {
-            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
-        } else {
-            Arc::clone(context)
-        };
+        let context = self.model_task_context(invocation).await?;
         let stock = admission.task.name == "acyclic.stock_turn"
             || super::super::child_agent::is_child(admission);
         let mut command = self.decoded_model_command(payload, io)?;
@@ -110,7 +105,13 @@ where
             .await?;
         let (journal, operation) = self.prepared_model_journal(invocation, &context).await?;
         if self
-            .reconcile_undispatched_model(invocation, &context, journal.as_deref(), operation)
+            .reconcile_undispatched_model(
+                invocation,
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                &context,
+                journal.as_deref(),
+                operation,
+            )
             .await?
         {
             return mail::reconciled(io);
@@ -191,6 +192,22 @@ where
         )
         .await
     }
+
+    async fn model_task_context(
+        &self,
+        invocation: CommandInvocation<'_>,
+    ) -> Result<Arc<TaskContext>> {
+        if invocation.io.is_none() && invocation.context.owned_mailbox.is_none() {
+            Ok(Arc::new(
+                self.runtime
+                    .task_context(invocation.admission.task_id(), invocation.fence.clone())
+                    .await?,
+            ))
+        } else {
+            Ok(Arc::clone(invocation.context))
+        }
+    }
+
     fn decoded_model_command(
         &self,
         payload: Value,
@@ -448,18 +465,15 @@ where
     async fn reconcile_undispatched_model(
         &self,
         invocation: CommandInvocation<'_>,
-        context: &Arc<TaskContext>,
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))] context: &Arc<TaskContext>,
         journal: Option<&FilesystemExecutionJournal<P, A, O>>,
         operation: OperationId,
     ) -> Result<bool> {
         let CommandInvocation {
-            admission,
-            fence,
             reconciliation_only,
             io,
             ..
         } = invocation;
-        let task = admission.task_id();
         if !reconciliation_only {
             return Ok(false);
         }
@@ -472,6 +486,8 @@ where
         if io.is_none()
             && let Some(executor) = &context.harness.workspace_tools
         {
+            let task = invocation.admission.task_id();
+            let fence = invocation.fence;
             // Hook dispatch precedes provider dispatch. Cancellation must
             // retain a claimed hook even when no model request was sent.
             let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
