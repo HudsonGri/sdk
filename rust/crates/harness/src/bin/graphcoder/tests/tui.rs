@@ -271,10 +271,17 @@ async fn conversation(blocked: bool) {
             // A fast turn can settle between frames without ever painting busy.
             // Require the actual answer and idle header in the current terminal,
             // rather than a transient glyph somewhere in the output history.
-            screen.until(ANSWERS[index], |text| {
-                requested.lock().unwrap().len() == (if blocked { 2 } else { index + 1 })
-                    && settled(text, ANSWERS[if blocked { 1 } else { index }])
-            });
+            if blocked {
+                screen.until("blocked goal", |text| {
+                    requested.lock().unwrap().len() == 1
+                        && settled(text, "goal blocked: GOAL.md is blocked.")
+                });
+            } else {
+                screen.until(ANSWERS[index], |text| {
+                    requested.lock().unwrap().len() == index + 1
+                        && settled(text, ANSWERS[index])
+                });
+            }
         }
         screen.input.write_all(b"\x04").unwrap();
         let status = child.exit(&mut screen);
@@ -291,8 +298,7 @@ async fn conversation(blocked: bool) {
     );
     let bodies = bodies.lock().unwrap();
     if blocked {
-        assert_eq!(bodies.len(), 2);
-        assert!(bodies[1].to_string().contains("block_goal"));
+        assert_eq!(bodies.len(), 1, "a blocked goal must stop model dispatch");
         stop.send(()).unwrap();
         drop(bodies);
         server.await.unwrap();

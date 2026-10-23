@@ -562,72 +562,77 @@ impl LocalHarness {
             .await
     }
 
-    pub(super) async fn advance_while<F, Fut>(
-        &self,
+    // Keep the worker state out of the parent's child-coordination frame. On
+    // Windows those frames share the default main-thread stack with storage IO.
+    #[inline(never)]
+    pub(super) fn advance_while<'a, F, Fut>(
+        &'a self,
         task: TaskId,
-        commands: &dyn crate::filesystem::TaskCommandHost,
+        commands: &'a dyn crate::filesystem::TaskCommandHost,
         continue_work: F,
-    ) -> Result<()>
+    ) -> BoxProviderFuture<'a, Result<()>>
     where
-        F: Fn() -> Fut + Send + Sync,
+        F: Fn() -> Fut + Send + Sync + 'a,
         Fut: Future<Output = Result<bool>> + Send,
     {
-        let worker = crate::distributed::Worker {
-            id: format!("local-{}", crate::identity::fresh_uuid()),
-            available: Default::default(),
-            labels: Default::default(),
-        };
-        let mut attempt =
-            match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
-                crate::distributed::WorkPull::Claimed(lease) => Some(
-                    self.runtime
-                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                        .await,
-                ),
-                crate::distributed::WorkPull::Unresolved { error, .. } => {
-                    if self.runtime.task_host().outcome(task).await?.is_none() {
-                        return Err(error);
-                    }
-                    None
-                }
-                crate::distributed::WorkPull::Idle => {
-                    self.runtime
-                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?
-                }
+        Box::pin(async move {
+            let worker = crate::distributed::Worker {
+                id: format!("local-{}", crate::identity::fresh_uuid()),
+                available: Default::default(),
+                labels: Default::default(),
             };
-        loop {
-            match attempt {
-                Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
-                    return Err(error);
-                }
-                Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                    crate::filesystem::TaskWorkerOutcome::Yielded { lease },
-                )) => {
-                    attempt = Some(
+            let mut attempt =
+                match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
+                    crate::distributed::WorkPull::Claimed(lease) => Some(
                         self.runtime
                             .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
                             .await,
-                    );
-                }
-                Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                    crate::filesystem::TaskWorkerOutcome::Suspended { .. },
-                )) => {
-                    if !continue_work().await? {
-                        break;
+                    ),
+                    crate::distributed::WorkPull::Unresolved { error, .. } => {
+                        if self.runtime.task_host().outcome(task).await?.is_none() {
+                            return Err(error);
+                        }
+                        None
                     }
-                    // Only an authenticated wake makes a passive command claimable.
-                    // Without one, run_operation returns None and yields control.
-                    attempt = self
-                        .runtime
-                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?;
+                    crate::distributed::WorkPull::Idle => {
+                        self.runtime
+                            .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                            .await?
+                    }
+                };
+            loop {
+                match attempt {
+                    Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
+                        return Err(error);
+                    }
+                    Some(crate::filesystem::TaskWorkerAttempt::Progress(
+                        crate::filesystem::TaskWorkerOutcome::Yielded { lease },
+                    )) => {
+                        attempt = Some(
+                            self.runtime
+                                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                                .await,
+                        );
+                    }
+                    Some(crate::filesystem::TaskWorkerAttempt::Progress(
+                        crate::filesystem::TaskWorkerOutcome::Suspended { .. },
+                    )) => {
+                        if !continue_work().await? {
+                            break;
+                        }
+                        // Only an authenticated wake makes a passive command claimable.
+                        // Without one, run_operation returns None and yields control.
+                        attempt = self
+                            .runtime
+                            .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                            .await?;
+                    }
+                    _ => break,
                 }
-                _ => break,
             }
-        }
-        self.refresh_command_task(task).await?;
-        Ok(())
+            self.refresh_command_task(task).await?;
+            Ok(())
+        })
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
