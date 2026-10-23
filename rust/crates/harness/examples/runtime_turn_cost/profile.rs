@@ -34,6 +34,7 @@ impl Profile {
             if name.starts_with("acyclic.harness.")
                 || name.starts_with("acyclic.fs.")
                 || name.starts_with("acyclic.stream.")
+                || name.starts_with("acyclic.objects.")
             {
                 println!(
                     "profile ending at turn {step}: {name} {:.3} ms / {polls} polls",

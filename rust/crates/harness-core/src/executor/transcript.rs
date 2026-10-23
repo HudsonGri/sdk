@@ -1,6 +1,7 @@
 //! Immutable message segments shared by projections and dispatched requests.
 use super::*;
 
+mod digests;
 mod projection;
 pub(super) use projection::load_prepared_projection;
 pub(crate) use projection::load_projection;
@@ -322,20 +323,12 @@ async fn stage_messages(
     previous: Option<MessagePrefix>,
     io: Option<&PreparationIo>,
 ) -> Result<MessagePrefix> {
-    let parent = if let Some(previous) = previous {
-        let count = previous.count as usize;
-        if let Some(prefix) = messages.get(..count) {
-            if preparation_digest(&prefix, io)? == previous.content_digest {
-                Some(previous)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let (content_digest, prefix_digest) = digests::messages(
+        messages,
+        previous.as_ref().map(|previous| previous.count as usize),
+        io,
+    )?;
+    let parent = previous.filter(|previous| Some(previous.content_digest) == prefix_digest);
     let count = u32::try_from(messages.len()).map_err(|_| invalid(io))?;
     let messages = match parent {
         Some(parent) if parent.count == count => parent,
@@ -354,7 +347,7 @@ async fn stage_messages(
                 chain_digest: chain_digest(parent.as_ref(), &reference, io)?,
                 reference,
                 count,
-                content_digest: preparation_digest(&messages, io)?,
+                content_digest,
             }
         }
     };
@@ -402,7 +395,7 @@ async fn load_request_inner(
             stock_vec_push(&mut messages, message, io)?;
         }
     }
-    if preparation_digest(&messages, io)? != expected_content {
+    if digests::messages(&messages, None, io)?.0 != expected_content {
         return Err(invalid(io));
     }
     let prepared = crate::model::PreparedModelRequest::prepare(
