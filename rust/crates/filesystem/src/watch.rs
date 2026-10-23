@@ -1266,11 +1266,62 @@ impl std::fmt::Debug for NativeWatch {
 }
 
 struct NativeWatchHeldRoot {
-    root: Option<crate::native_host::HostRoot>,
+    root: Option<WatchRoot>,
     cleanup: Option<crate::materializer::NativeCleanupWrite>,
 }
 
+/// The watched root: held while the watch starts, then named by path and
+/// identity in the process-wide descriptor cache, so that an idle watch
+/// holds no descriptor for it.
+enum WatchRoot {
+    Held(crate::native_host::HostRoot),
+    Cached(crate::native_host::CachedRoot),
+}
+
+/// A held root, borrowed while the watch starts or reopened from the cache.
+enum HeldWatchRoot<'a> {
+    Borrowed(&'a crate::native_host::HostRoot),
+    Leased(crate::native_host::HostRoot),
+}
+
+impl std::ops::Deref for HeldWatchRoot<'_> {
+    type Target = crate::native_host::HostRoot;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(root) => root,
+            Self::Leased(root) => root,
+        }
+    }
+}
+
 impl NativeWatchHeldRoot {
+    /// The root, held until the returned root drops.
+    fn held<W: crate::native_host::NativeHostWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<Option<HeldWatchRoot<'_>>, W::Error> {
+        Ok(match &self.root {
+            None => None,
+            Some(WatchRoot::Held(root)) => Some(HeldWatchRoot::Borrowed(root)),
+            Some(WatchRoot::Cached(root)) => Some(HeldWatchRoot::Leased(root.held(work)?)),
+        })
+    }
+
+    /// Hands the started watch's root to the descriptor cache.
+    fn cache<W: crate::native_host::NativeHostWork>(
+        &mut self,
+        path: &Path,
+        work: &mut W,
+    ) -> Result<(), W::Error> {
+        self.root = match self.root.take() {
+            Some(WatchRoot::Held(root)) => Some(WatchRoot::Cached(
+                crate::native_host::CachedRoot::new(root, path, work)?,
+            )),
+            root => root,
+        };
+        Ok(())
+    }
+
     fn close_with_native_work(
         &mut self,
         work: &crate::NativeMaterializationWork,
@@ -1304,6 +1355,20 @@ impl NativeWatchHeldRoot {
         recorded?;
         Ok(true)
     }
+}
+
+/// Whether reopening a cached root failed because its path no longer names it.
+fn root_replaced(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    let link = error.raw_os_error() == Some(libc::ELOOP);
+    #[cfg(not(unix))]
+    let link = false;
+    link || matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::InvalidData
+    )
 }
 
 impl Drop for NativeWatchHeldRoot {
@@ -1570,14 +1635,13 @@ impl NativeWatch {
             .transpose()?;
         let held =
             crate::native_host::HostRoot::open(root_path, work).map_err(demand_watch_error)?;
-        let held_root = NativeWatchHeldRoot {
-            root: Some(held),
+        let mut held_root = NativeWatchHeldRoot {
+            root: Some(WatchRoot::Held(held)),
             cleanup,
         };
-        let held = held_root
-            .root
-            .as_ref()
-            .ok_or(NativeWatchError::SourceUnavailable)?;
+        let Some(WatchRoot::Held(held)) = held_root.root.as_ref() else {
+            return Err(NativeWatchError::SourceUnavailable);
+        };
         let metadata = held
             .stat(
                 #[cfg(unix)]
@@ -1599,6 +1663,16 @@ impl NativeWatch {
             .map_err(demand_watch_error)?;
         #[cfg(not(windows))]
         let complete = true;
+        // From here the root is reopened from the process-wide descriptor
+        // cache, so the source watch keeps the cached root, not a descriptor.
+        held_root
+            .cache(root_path, work)
+            .map_err(demand_watch_error)?;
+        let held = held_root
+            .held(work)
+            .map_err(demand_watch_error)?
+            .ok_or(NativeWatchError::SourceUnavailable)?;
+        let held = &*held;
         let (root, root_allocation) = Self::copy_startup_path(root_path, work, original)?;
         let capacity = usize::try_from(options.maximum_queued_changes)
             .map_err(|_| NativeWatchError::InvalidOptions)?;
@@ -2082,8 +2156,7 @@ impl NativeWatch {
             let result = (|| {
                 let mut held = self
                     .held_root
-                    .root
-                    .as_ref()
+                    .held(work)?
                     .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
                     .open_dir_held(&[], work)?;
                 let mut component_start = 0;
@@ -2377,8 +2450,7 @@ impl NativeWatch {
         use crate::demand::DemandError;
         let mut held = self
             .held_root
-            .root
-            .as_ref()
+            .held(work)?
             .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
             .open_dir_held(&[], work)?;
         let mut current = None;
@@ -3206,8 +3278,14 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
         work.check()?;
-        let Some(root) = self.held_root.root.as_ref() else {
-            return Ok(false);
+        // A reopen that finds the root gone, replaced or a link refuses it.
+        let root = match self.held_root.held(work) {
+            Ok(Some(root)) => root,
+            Ok(None) => return Ok(false),
+            Err(crate::demand::DemandError::Io(error)) if root_replaced(&error) => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
         };
         let held = root
             .stat(

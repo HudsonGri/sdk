@@ -15,15 +15,24 @@ pub(super) trait Files: Send + Sync + Sized + 'static {
     type Identity: Copy + Eq + std::fmt::Debug + Send + Sync;
 
     /// Opens the existing file at `path`, never creating or truncating it.
-    fn reopen(&self, path: &Path, write: bool) -> io::Result<Self::File>;
+    fn reopen(&self, path: &Path, access: Access) -> io::Result<Self::File>;
     fn identity(&self, file: &Self::File) -> io::Result<Self::Identity>;
     /// Makes every write through `file` durable before it closes.
     fn flush(&self, file: &Self::File) -> io::Result<()>;
 }
 
+/// How a cached file reopens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Access {
+    Read,
+    Write,
+    /// A directory, never through a symbolic link at its last component.
+    Directory,
+}
+
 /// Work a lease does for the cache, charged before the work is done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Cost {
+pub enum Cost {
     /// Reopening a file by path, then reading its identity.
     Reopen,
     /// One allocation of this many bytes, owned by the cache.
@@ -270,7 +279,7 @@ impl<F: Files> Drop for Settle<F> {
 pub(super) struct Entry<F: Files> {
     cache: Arc<Cache<F>>,
     path: PathBuf,
-    write: bool,
+    access: Access,
     /// Whether closing a written descriptor flushes it.
     durable: bool,
     state: Mutex<State<F>>,
@@ -381,7 +390,7 @@ impl<F: Files> Entry<F> {
         cache: &Arc<Cache<F>>,
         file: F::File,
         path: &Path,
-        write: bool,
+        access: Access,
         durable: bool,
         charge: Charge<'_>,
     ) -> io::Result<Arc<Self>> {
@@ -409,7 +418,7 @@ impl<F: Files> Entry<F> {
         let entry = Arc::new(Self {
             cache: Arc::clone(cache),
             path: absolute,
-            write,
+            access,
             durable,
             state: Mutex::new(State {
                 identity,
@@ -448,7 +457,7 @@ impl<F: Files> Entry<F> {
         charge(Cost::Allocation(
             std::mem::size_of::<Handle<F>>() + 2 * std::mem::size_of::<usize>(),
         ))?;
-        let file = self.cache.files.reopen(&self.path, self.write)?;
+        let file = self.cache.files.reopen(&self.path, self.access)?;
         if self.cache.files.identity(&file)? != identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

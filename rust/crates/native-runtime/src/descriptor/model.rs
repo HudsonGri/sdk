@@ -1,7 +1,7 @@
 //! The production descriptor cache under every interleaving of use, eviction
 //! and close, on simulated files whose flushes can fail.
 
-use super::cache::{Cache, Entry, Files};
+use super::cache::{Access, Cache, Entry, Files};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -85,7 +85,7 @@ impl Files for Sim {
     type File = SimFile;
     type Identity = u64;
 
-    fn reopen(&self, path: &Path, _: bool) -> io::Result<SimFile> {
+    fn reopen(&self, path: &Path, _: Access) -> io::Result<SimFile> {
         let identity = self
             .world()
             .names
@@ -158,7 +158,15 @@ fn cache(sim: &Sim, capacity: usize) -> Arc<Cache<Sim>> {
 
 fn entry(cache: &Arc<Cache<Sim>>, sim: &Sim, path: &str) -> Result<Arc<Entry<Sim>>, String> {
     let file = sim.create(path);
-    Entry::new(cache, file, Path::new(path), true, true, &mut |_| Ok(())).map_err(failed)
+    Entry::new(
+        cache,
+        file,
+        Path::new(path),
+        Access::Write,
+        true,
+        &mut |_| Ok(()),
+    )
+    .map_err(failed)
 }
 
 /// Writes once through `entry`, as a store appends.
