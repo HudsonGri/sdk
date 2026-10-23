@@ -153,6 +153,53 @@ fn moved_directories_expand_descendants_and_retire_previous_rows() -> TestResult
 }
 
 #[tokio::test]
+async fn root_metadata_does_not_interrupt_file_diffs_or_replay() -> TestResult {
+    let fixture = Fixture::new().await?;
+    fixture.write(&[("visible", Some("before"))]).await?;
+    let workspace = workspace(&fixture).await?;
+    let cancel = acyclic_fs::CancellationToken::new();
+    let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
+    let mut stream = fixture.source.observe_diff(base.id(), 64).await?;
+    let snapshot = stream.next().await.ok_or("snapshot")??;
+    let mut view = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+    view.apply(&snapshot, fixture.reader.as_ref(), LIMITS)
+        .await?;
+    let mut transaction = begin(&workspace).await?;
+    transaction
+        .set_metadata(
+            "/",
+            acyclic_fs::kernel::FileMetadata {
+                modified_ns: acyclic_fs::kernel::MetadataField::Value(1_700_000_000_000_000_000),
+                ..Default::default()
+            },
+            BOUNDARY_BUDGET,
+            &cancel,
+        )
+        .await?;
+    commit(&mut transaction).await?;
+    let metadata = stream.next().await.ok_or("root metadata")??;
+    assert!(metadata.paths.is_empty());
+    view.apply(&metadata, fixture.reader.as_ref(), LIMITS)
+        .await?;
+    fixture.write(&[("visible", Some("after"))]).await?;
+    view.apply(
+        &stream.next().await.ok_or("file edit")??,
+        fixture.reader.as_ref(),
+        LIMITS,
+    )
+    .await?;
+    assert!(view.files()["visible"].patch.contains("+after"));
+    let mut replay = fixture.source.observe_diff(base.id(), 64).await?;
+    let snapshot = replay.next().await.ok_or("replay")??;
+    let mut reopened = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+    reopened
+        .apply(&snapshot, fixture.reader.as_ref(), LIMITS)
+        .await?;
+    assert_eq!(reopened.files(), view.files());
+    Ok(())
+}
+
+#[tokio::test]
 async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() -> TestResult {
     let fixture = Fixture::new().await?;
     let maximum_changes = u32::try_from(LIMITS.changes)?;

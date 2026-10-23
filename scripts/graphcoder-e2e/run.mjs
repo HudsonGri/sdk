@@ -19,6 +19,7 @@ import { Processes, Events } from "./process.mjs";
 import { pty } from "./pty.mjs";
 import { requests, subset, recordedRequests } from "./assertions.mjs";
 import { seed } from "./fixtures.mjs";
+import { windowsMatrix } from "./windows-matrix.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
@@ -39,9 +40,13 @@ const identities = new Set(scripts.map(test => test.id));
 for (const id of selected) assert.ok(identities.has(id), `unknown case ${id}`);
 const cases = scripts
   .filter(test => !selected.length || selected.includes(test.id))
-  .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })));
+  .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })))
+  .filter(test => !process.env.E2E_CASE_INSTANCE || test.id === process.env.E2E_CASE_INSTANCE);
 assert.ok(cases.length, "no matching cases");
 assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case identities must be unique");
+if (process.platform === "win32" && cases.length > 1) {
+  process.exit(await windowsMatrix(cases, binary, mock, output, fileURLToPath(import.meta.url)));
+}
 const processes = new Processes();
 const contexts = new Map();
 let server, events, port;

@@ -188,10 +188,12 @@ impl CheckoutTools {
         let policy = &self.capture_policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
-        // Initial registration fences watcher delivery; it has not imported the
-        // lazy source into an authored generation yet. Capture that source
-        // before retaining a diff base or publishing the first tool mutation.
-        let baseline = slot.as_ref().is_none_or(|cursor| cursor.initial.is_some());
+        // Registration alone has not imported a new native checkout. An SDK
+        // volume, however, was materialized from its authored generation: a
+        // redundant import would invalidate references pinned to that head.
+        let baseline = slot
+            .as_ref()
+            .is_none_or(|cursor| physical.import_source && cursor.initial.is_some());
         let mut cursor = match slot.take() {
             Some(cursor) => cursor,
             None => Cursor::open(physical, &self.capture_policy)?,

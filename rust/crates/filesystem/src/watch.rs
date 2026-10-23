@@ -604,7 +604,9 @@ impl NativeEventDelivery {
         {
             return Ok(());
         }
-        if relative.as_os_str().is_empty() {
+        // An attribute notification on the held root is metadata, not a
+        // replacement. Fence and capture still verify its native identity.
+        if relative.as_os_str().is_empty() && mask & !(libc::IN_ATTRIB | libc::IN_ISDIR) != 0 {
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
             return Ok(());
         }

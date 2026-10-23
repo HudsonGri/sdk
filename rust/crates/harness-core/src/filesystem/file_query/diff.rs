@@ -110,7 +110,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                 }
                 path.push_str(&name.value);
             }
-            if crate::conversation::is_internal_path(&path) {
+            if path.is_empty() || crate::conversation::is_internal_path(&path) {
                 continue;
             }
             let before = self.endpoint(base, &path, io).await?;
