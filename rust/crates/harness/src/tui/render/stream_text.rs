@@ -10,6 +10,8 @@ use std::sync::Arc;
 #[derive(Default)]
 pub(super) struct StreamText {
     markdown: Markdown,
+    append: Option<(usize, usize, usize)>,
+    append_only: bool,
     stable: Vec<Line<'static>>,
     pending: [u8; 4],
     pending_len: usize,
@@ -28,6 +30,9 @@ pub(super) struct StreamText {
     pub(super) work: usize,
 }
 impl StreamText {
+    pub(super) fn has_text(&self) -> bool {
+        self.first.is_some()
+    }
     fn offset(&self) -> usize {
         self.stable.len()
             + usize::from(
@@ -48,6 +53,23 @@ impl StreamText {
         }
         let before = self.len();
         let changed = self.markdown.push(text);
+        if !text.is_empty() && self.append_only {
+            if let Some((row, span, byte)) = self.markdown.last_append() {
+                let at = (self.offset() + row, span, byte);
+                if self
+                    .append
+                    .is_none_or(|previous| previous.0 == at.0 && previous.1 == at.1)
+                {
+                    self.append.get_or_insert(at);
+                } else {
+                    self.append_only = false;
+                    self.append = None;
+                }
+            } else {
+                self.append_only = false;
+                self.append = None;
+            }
+        }
         before.min(self.offset() + changed)
     }
     fn decode(&mut self, mut bytes: &[u8]) -> usize {
@@ -78,6 +100,10 @@ impl StreamText {
         changed
     }
     pub(super) fn push(&mut self, mut bytes: &[u8]) -> usize {
+        if self.pending_len != 0 || self.provisional_row.is_some() {
+            self.append_only = false;
+            self.append = None;
+        }
         let mut changed = self.provisional_row.take().unwrap_or_else(|| self.len());
         while self.pending_len != 0 && !bytes.is_empty() {
             let mut boundary = [0; 4];
@@ -117,6 +143,8 @@ impl StreamText {
                 ..Self::default()
             };
         }
+        self.append = None;
+        self.append_only = self.provisional_row.is_none() && self.pending_len == 0;
         let mut changed = self.provisional_row.take().unwrap_or_else(|| self.len());
         let from = self.last.clone();
         for text in task
@@ -220,6 +248,8 @@ impl StreamText {
     }
     /// Markdown blocks cannot extend across distinct model turns or outcomes.
     pub(super) fn boundary(&mut self) -> usize {
+        self.append = None;
+        self.append_only = false;
         let changed = self.provisional_row.take().unwrap_or_else(|| self.len());
         if self.pending_len != 0 {
             self.pending_len = 0;
@@ -243,6 +273,39 @@ impl StreamText {
         self.stable.extend(rows);
         changed
     }
+    /// Borrow only the appended display suffix; replacement paths return None.
+    pub(super) fn append_delta(
+        &self,
+    ) -> Option<(usize, usize, std::borrow::Cow<'_, str>, super::Style)> {
+        if !self.append_only || self.pending_len != 0 {
+            return None;
+        }
+        let (row, span, byte) = self.append?;
+        let source = self
+            .markdown
+            .lines()
+            .get(row.checked_sub(self.offset())?)?
+            .spans
+            .get(span)?;
+        let text = super::super::display_text(source.text.get(byte..)?);
+        Some((row, span, text, super::style(source.style)))
+    }
+
+    pub(super) fn apply_rows(&mut self, target: &mut Vec<Line<'static>>, changed: usize) {
+        if let Some((row, span, text, _)) = self.append_delta()
+            && target.len() == self.len()
+            && row + 1 == target.len()
+            && let Some(line) = target.get_mut(row)
+            && span + 1 == line.spans.len()
+            && let Some(last) = line.spans.get_mut(span)
+        {
+            last.content.to_mut().push_str(&text);
+            return;
+        }
+        target.truncate(changed);
+        target.extend(self.rows(changed));
+    }
+
     pub(super) fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
         let mut rows: Vec<_> = self.stable.iter().skip(changed).cloned().collect();
         let offset = self.offset();

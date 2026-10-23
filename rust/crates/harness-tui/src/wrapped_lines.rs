@@ -101,7 +101,9 @@ impl WrappedLines {
         self.source_revision += 1;
         let at = self.text.len() - 1;
         self.text.truncate(at);
-        let Some(source) = self.sources.last_mut() else { return };
+        let Some(source) = self.sources.last_mut() else {
+            return;
+        };
         let normalized = crate::buffer::normalize(text);
         self.text
             .push_str(if source.carriage_return && text.starts_with('\n') {
@@ -134,7 +136,9 @@ impl WrappedLines {
         if self.span.end != self.sources.len() || self.layouts.is_empty() {
             return;
         }
-        let (Some(source), Some(layout)) = (self.sources.last(), self.layouts.back_mut()) else { return };
+        let (Some(source), Some(layout)) = (self.sources.last(), self.layouts.back_mut()) else {
+            return;
+        };
         let changed = layout.append_text(slice(&self.text, source.offset..self.text.len() - 1));
         let start = self
             .origins
@@ -178,10 +182,19 @@ impl WrappedLines {
     /// # Panics
     /// Panics if the projection revision overflows.
     pub fn replace(&mut self, source: &[Line<'_>], changed: usize) {
-        if changed >= source.len() && source.len() == self.sources.len() {
+        self.replace_parts(&[source], changed);
+    }
+
+    /// Ingest a suffix from borrowed transcript parts without joining their rows.
+    ///
+    /// # Panics
+    /// Panics if the projection revision overflows.
+    pub fn replace_parts(&mut self, parts: &[&[Line<'_>]], changed: usize) {
+        let len = parts.iter().map(|part| part.len()).sum::<usize>();
+        if changed >= len && len == self.sources.len() {
             return;
         }
-        let changed = changed.min(source.len()).min(self.sources.len());
+        let changed = changed.min(len).min(self.sources.len());
         assert!(self.revision < u64::MAX, "projection revision overflow");
         self.revision += 1;
         self.source_revision += 1;
@@ -193,7 +206,12 @@ impl WrappedLines {
         self.text.truncate(at);
         self.sources.truncate(changed);
         self.truncate_span(changed);
-        for line in source.get(changed..).unwrap_or_default() {
+        let mut skip = changed;
+        for line in parts.iter().flat_map(|part| {
+            let start = skip.min(part.len());
+            skip -= start;
+            part.get(start..).unwrap_or_default()
+        }) {
             let offset = self.text.len();
             let mut styles = Vec::new();
             let mut carriage_return = false;
