@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 #[derive(Default)]
 #[cfg_attr(acyclic_harness_loom, derive(Clone))]
 pub(super) struct Pending {
-    requests: BTreeMap<(Component, Component), BTreeSet<FileKey>>,
+    tasks: BTreeMap<Component, BTreeMap<Component, BTreeSet<FileKey>>>,
 }
 impl Pending {
     pub(super) fn record(&mut self, files: &FileIndex, key: &FileKey) {
@@ -14,56 +14,74 @@ impl Pending {
         };
         match file {
             TaskFile::ApprovalRequest(request) => {
-                let decision = |principal| FileKey::Task {
+                let query = Query::Approval {
                     task: task.clone(),
-                    file: TaskFile::ApprovalDecision {
-                        request: request.clone(),
-                        principal,
-                    },
+                    request: request.clone(),
                 };
-                if files
-                    .range(
-                        decision(Component(Arc::from("")))
-                            ..=decision(Component(Arc::from("\u{10ffff}"))),
-                    )
-                    .next()
-                    .is_none()
-                {
-                    self.requests
-                        .entry((task.clone(), request.clone()))
+                let settled = query.ranges().into_iter().any(|range| {
+                    files.range(range).any(|(key, _)| {
+                        matches!(
+                            key,
+                            FileKey::Task {
+                                file: TaskFile::ApprovalDecision { .. },
+                                ..
+                            }
+                        )
+                    })
+                });
+                if !settled {
+                    self.tasks
+                        .entry(task.clone())
+                        .or_default()
+                        .entry(request.clone())
                         .or_default()
                         .insert(key.clone());
                 }
             }
             TaskFile::ApprovalReview { request, .. } => {
-                if let Some(keys) = self.requests.get_mut(&(task.clone(), request.clone())) {
+                if let Some(keys) = self
+                    .tasks
+                    .get_mut(task)
+                    .and_then(|requests| requests.get_mut(request))
+                {
                     keys.insert(key.clone());
                 }
             }
             TaskFile::ApprovalDecision { request, .. } => {
-                self.requests.remove(&(task.clone(), request.clone()));
+                if let Some(requests) = self.tasks.get_mut(task) {
+                    requests.remove(request);
+                    if requests.is_empty() {
+                        self.tasks.remove(task);
+                    }
+                }
             }
             _ => {}
         }
     }
     pub(super) fn files(&self, index: &Index, task: &Component) -> Vec<FileValue> {
-        self.requests
-            .range(
-                (task.clone(), Component(Arc::from("")))
-                    ..=(task.clone(), Component(Arc::from("\u{10ffff}"))),
-            )
-            .flat_map(|(_, keys)| keys)
+        self.tasks
+            .get(task)
+            .into_iter()
+            .flat_map(|requests| requests.values())
+            .flatten()
             .filter_map(|key| index.files.get(key))
             .map(|stored| stored.file.clone())
             .collect()
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn native_index_bytes(&self) -> usize {
-        self.requests.len() * std::mem::size_of::<((Component, Component), BTreeSet<FileKey>)>()
+        self.tasks.len()
+            * std::mem::size_of::<(Component, BTreeMap<Component, BTreeSet<FileKey>>)>()
             + self
-                .requests
+                .tasks
                 .values()
-                .map(|keys| keys.len() * std::mem::size_of::<FileKey>())
+                .map(|requests| {
+                    requests.len() * std::mem::size_of::<(Component, BTreeSet<FileKey>)>()
+                        + requests
+                            .values()
+                            .map(|keys| keys.len() * std::mem::size_of::<FileKey>())
+                            .sum::<usize>()
+                })
                 .sum::<usize>()
     }
 }

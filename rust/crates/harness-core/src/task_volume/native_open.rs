@@ -178,7 +178,11 @@ fn replay(
         + std::mem::size_of::<FileKey>()
         + std::mem::size_of::<((Component, u8, u64), FileKey)>()
         + std::mem::size_of::<(Component, FileKey)>()
-        + std::mem::size_of::<((Component, Component), std::collections::BTreeSet<FileKey>)>()
+        + std::mem::size_of::<(
+            Component,
+            BTreeMap<Component, std::collections::BTreeSet<FileKey>>,
+        )>()
+        + std::mem::size_of::<(Component, std::collections::BTreeSet<FileKey>)>()
         + std::mem::size_of::<(Component, Vec<FileKey>)>()
         + std::mem::size_of::<FileKey>();
     let vector = child_capacity(index, &key)
