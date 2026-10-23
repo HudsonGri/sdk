@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::{collections::VecDeque, ops::Range};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! { static WORK: std::cell::Cell<(usize,usize,usize)> = const { std::cell::Cell::new((0,0,0)) }; }
 
 struct Source {
@@ -40,8 +40,8 @@ pub struct RowPosition {
 /// Where a frame's rows start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Top {
-    /// This many rows above the last row's frame (0 follows the tail).
-    Back(usize),
+    /// Follow the tail. Off-tail positions always use a source anchor.
+    Tail,
     /// At this row, or at the tail when fewer rows follow it.
     At(RowPosition),
 }
@@ -80,28 +80,29 @@ pub struct WrappedLines {
 }
 
 impl WrappedLines {
-    /// Follow changed source lines and the width. Wraps nothing: rows are
-    /// wrapped by `view` for the lines a frame shows.
+    /// Return and clear this thread's actual painted rows, cells and layouts.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_work() -> (usize, usize, usize) {
+        WORK.with(|work| work.replace((0, 0, 0)))
+    }
+
+    /// Apply a changed source suffix, then select the wrapping width.
     pub fn update(&mut self, source: &[Line<'_>], changed: usize, width: u16) {
-        let data_changed = changed < source.len() || source.len() != self.sources.len();
-        let reflow = self.width != Some(width);
-        if !reflow && !data_changed {
+        self.replace(source, changed);
+        self.reflow(width);
+    }
+
+    /// Ingest only changed source lines and update the search index. Rendering
+    /// and resize never need the source slice or rebuild this index.
+    pub fn replace(&mut self, source: &[Line<'_>], changed: usize) {
+        if changed >= source.len() && source.len() == self.sources.len() {
             return;
         }
         let changed = changed.min(source.len()).min(self.sources.len());
-        if reflow || changed < source.len() || source.len() < self.sources.len() {
-            self.revision = self
-                .revision
-                .checked_add(1)
-                .expect("projection revision overflow");
-        }
-        if reflow {
-            self.width = Some(width);
-            self.clear_span();
-        }
-        if !data_changed {
-            return;
-        }
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("projection revision overflow");
         let at = self
             .sources
             .get(changed)
@@ -138,8 +139,19 @@ impl WrappedLines {
         self.index.replace_suffix(text, at.min(text.len()));
     }
 
-    /// Wrap the lines a frame of `height` rows at `top` shows (and, for
-    /// `Back`, the rows below it to the tail), and select them as the window.
+    /// Change width without ingesting source text or walking the archive.
+    pub fn reflow(&mut self, width: u16) {
+        if self.width != Some(width) {
+            self.width = Some(width);
+            self.clear_span();
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .expect("projection revision overflow");
+        }
+    }
+
+    /// Wrap only the lines a frame of `height` rows at `top` shows.
     /// Lines more than a frame away are released.
     pub fn view(&mut self, top: Top, height: usize) -> RowWindow {
         self.select(top, height, true)
@@ -174,12 +186,8 @@ impl WrappedLines {
             }
         }
         let (start, end) = window.unwrap_or_else(|| {
-            let back = match top {
-                Top::Back(back) => back,
-                Top::At(_) => 0,
-            };
-            self.wrap_tail(back.saturating_add(height));
-            let end = self.rows.len().saturating_sub(back);
+            self.wrap_tail(height);
+            let end = self.rows.len();
             if end >= height {
                 (end - height, end)
             } else {
@@ -188,7 +196,7 @@ impl WrappedLines {
         });
         // Keep a frame of margin on each side, and every row to the tail
         // when the window is measured from it.
-        let keep_back = matches!(top, Top::Back(_)) || window.is_none();
+        let keep_back = matches!(top, Top::Tail) || window.is_none();
         let released = self.trim(
             start.saturating_sub(height),
             end.saturating_add(height),
@@ -283,7 +291,7 @@ impl WrappedLines {
         rows: isize,
         height: usize,
     ) -> Option<RowPosition> {
-        let top = from.map_or(Top::Back(0), Top::At);
+        let top = from.map_or(Top::Tail, Top::At);
         let from = self.view(top, height).top;
         let (position, _) = self.step(from, rows)?;
         let window = self.view(Top::At(position), height);
@@ -307,7 +315,7 @@ impl WrappedLines {
     /// Wrap every line and show every row: for short projections (reasoning,
     /// side panels) that are always shown whole.
     pub fn wrap_all(&mut self) -> &[Line<'static>] {
-        self.view(Top::Back(0), usize::MAX);
+        self.view(Top::Tail, usize::MAX);
         self.shown()
     }
 
@@ -399,7 +407,7 @@ impl WrappedLines {
     }
 
     fn layout(&self, line: usize) -> Layout {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         WORK.with(|work| {
             let (rows, cells, layouts) = work.get();
             work.set((rows, cells, layouts + 1));
@@ -566,7 +574,7 @@ impl WrappedLines {
         let source = &self.sources[line];
         let cells = &self.layouts[line - self.span.start].rows[index].cells;
         crate::transcript_search::view::charge(cells.len(), false);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         WORK.with(|work| {
             let (rows, count, layouts) = work.get();
             work.set((rows + 1, count + cells.len(), layouts));
@@ -649,7 +657,7 @@ fn visible_rows(layout: &Layout) -> impl Iterator<Item = (usize, &crate::layout:
 // Cache normal display spans once per wrap; search borrows their styles and symbols.
 fn paint(source: &Source, layout: &Layout, output: &mut Vec<Line<'static>>) {
     for (_, row) in visible_rows(layout) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         WORK.with(|work| {
             let (rows, cells, layouts) = work.get();
             work.set((rows + 1, cells + row.cells.len(), layouts));
