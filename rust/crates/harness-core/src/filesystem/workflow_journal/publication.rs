@@ -270,6 +270,57 @@ where
         Ok(Some(existing))
     }
 
+    /// Settles an append: `Some` when this record is committed, `None` when
+    /// the append may be attempted again.
+    async fn settle(
+        &self,
+        appended: Result<bool>,
+        admission: &WorkflowAdmission,
+        record: &WorkflowRecord,
+        expected_revision: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<()>> {
+        match appended {
+            Ok(true) => Ok(Some(())),
+            Ok(false) => {
+                let (revision, existing) =
+                    self.verified_history(admission, record, false, io).await?;
+                if let Some(existing) = existing {
+                    if existing != *record {
+                        return Err(Error::Conflict("workflow operation identity reused".into()));
+                    }
+                    self.verify_command_payloads(&existing, io).await?;
+                    return Ok(Some(()));
+                }
+                // An owner's append is conditioned on its coordinator's event
+                // tail, which other tasks' events advance too. With this
+                // checkpoint unchanged, the next append checks the task's
+                // ownership again.
+                if self.owner.is_some() && revision == expected_revision {
+                    return Ok(None);
+                }
+                Err(Error::Conflict(
+                    "workflow checkpoint or ownership changed".into(),
+                ))
+            }
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => {
+                match self.reconcile(record, io).await {
+                    Ok(Some(_)) => Ok(Some(())),
+                    Ok(None) | Err(Error::Storage(_)) => {
+                        Err(Error::Indeterminate(record.operation_id))
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeStream {
+                        source: StreamError::Unavailable,
+                        ..
+                    }) => Err(Error::Indeterminate(record.operation_id)),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) async fn commit_with_io(
         &self,
         expected_revision: u64,
@@ -366,38 +417,24 @@ where
                 ));
             }
         }
-        let appended = self
-            .append_reference(
-                &self.path,
-                idempotency_key.as_str(),
-                expected_revision,
-                record.operation_id,
-                &reference,
-                io,
-            )
-            .await;
-        match appended {
-            Ok(true) => Ok(()),
-            Ok(false) => match self.reconcile(record, io).await? {
-                Some(_) => Ok(()),
-                None => Err(Error::Conflict(
-                    "workflow checkpoint or ownership changed".into(),
-                )),
-            },
-            Err(Error::Indeterminate(_)) if self.owner.is_none() => match self
-                .reconcile(record, io)
-                .await
+        loop {
+            let appended = self
+                .append_reference(
+                    &self.path,
+                    idempotency_key.as_str(),
+                    expected_revision,
+                    record.operation_id,
+                    &reference,
+                    io,
+                )
+                .await;
+            match self
+                .settle(appended, &admission, record, expected_revision, io)
+                .await?
             {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(record.operation_id)),
-                #[cfg(not(target_arch = "wasm32"))]
-                Err(Error::NativeStream {
-                    source: StreamError::Unavailable,
-                    ..
-                }) => Err(Error::Indeterminate(record.operation_id)),
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
+                Some(()) => return Ok(()),
+                None => continue,
+            }
         }
     }
 }
