@@ -127,8 +127,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn large_path_merge_preserves_boundary_copy_budget()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn large_path_merge_preserves_boundary_copy_budget() -> Result<(), Box<dyn std::error::Error>> {
         let budget = crate::performance::BOUNDARY_BUDGET;
         let cancel = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(budget, &cancel);
@@ -147,9 +146,15 @@ mod tests {
         }
         sort_and_coalesce(&mut paths, &mut accounting)?;
         assert_eq!(paths.0.len(), 2048);
-        assert!(paths.0.iter().zip(paths.0.iter().skip(1)).all(|(left, right)| {
-            left.path.components().cmp(right.path.components()).is_lt()
-        }));
+        assert!(
+            paths
+                .0
+                .iter()
+                .zip(paths.0.iter().skip(1))
+                .all(|(left, right)| {
+                    left.path.components().cmp(right.path.components()).is_lt()
+                })
+        );
         let work = accounting.spent();
         assert!(work.bytes_copied < budget.bytes_copied);
         println!("PATH_MERGE_WORK {work:?}");
