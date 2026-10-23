@@ -6,7 +6,7 @@ cargo test --locked -p acyclic-harness-core --lib --all-features --no-run --mess
 cargo test --locked -p acyclic-harness --lib --all-features --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py local::admission::tests::pre_dispatch:: local::tests::pre_dispatch::
 cargo build --locked -p graphcoder
-binary="${CARGO_TARGET_DIR:-target}/debug/graphcoder"
+binary=$(python3 -c 'import os; print(os.path.abspath(os.path.join(os.environ.get("CARGO_TARGET_DIR", "target"), "debug/graphcoder")))')
 node scripts/qualify-final-answer.mjs "$binary" pre-dispatch prompt
 node scripts/qualify-final-answer.mjs "$binary" pre-dispatch jsonl
 if [ "${1:-}" != --negative ]; then exit 0; fi

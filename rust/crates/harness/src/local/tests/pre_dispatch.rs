@@ -72,4 +72,3 @@ async fn post_dispatch_failure_keeps_the_turn_indeterminate() -> Result<()> {
     harness.disconnect_unfinished().await?;
     Ok(())
 }
-

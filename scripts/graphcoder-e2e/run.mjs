@@ -162,9 +162,14 @@ try {
     ["-C", origin, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"]]) {
     const git = await processes.run("git", args); assert.equal(git.code, 0, git.stderr);
   }
-  // All cases start together. Only the dependent steps inside one conversation
-  // are sequential. There is one mock server for the entire platform run.
-  results = await Promise.all(cases.map(test => execute(test, origin)));
+  // Windows qualification shares one machine-wide runtime slot. Run its cases
+  // sequentially, including the second filesystem root of a selected case.
+  if (process.platform === "win32") {
+    results = [];
+    for (const test of cases) results.push(await execute(test, origin));
+  } else {
+    results = await Promise.all(cases.map(test => execute(test, origin)));
+  }
 } finally {
   clearTimeout(timeout);
   await processes.close();
