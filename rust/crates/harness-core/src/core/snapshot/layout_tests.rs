@@ -1,8 +1,7 @@
 use super::*;
 use crate::conversation::ConversationStateWire;
-use crate::executor::json::{
-    JsonBounds, JsonValueSchema, admit_json_layout, snapshot_json_admission,
-};
+use crate::HeapLayout;
+use crate::executor::json::{JsonBounds, JsonValueSchema, admit_json_layout};
 use serde_json::json;
 use std::collections::BTreeSet;
 
@@ -289,18 +288,26 @@ fn assert_populated(value: &Value, path: &str) {
     }
 }
 
-/// Reserved bytes, undescribed containers, and the measured peak of the decode.
-fn reserve_and_decode(snapshot: &Value) -> (u64, u64, u64) {
-    let bytes = serde_json::to_vec(snapshot).expect("encode");
-    let (_, layout) = admit_json_layout(
-        &bytes,
+/// The checkpoint's own derived layout.
+const LAYOUT: &crate::executor::json::JsonLayout =
+    <Snapshot<ConversationStateWire> as HeapLayout>::LAYOUT;
+
+fn admit(bytes: &[u8]) -> Result<u64> {
+    admit_json_layout(
+        bytes,
         BOUNDS,
-        JsonValueSchema::Snapshot,
-        &SNAPSHOT_LAYOUT,
+        Some(JsonValueSchema::Snapshot),
+        LAYOUT,
+        None,
         &mut |_| Ok(()),
     )
-    .expect("layout");
-    let reserved = snapshot_json_admission(&bytes, BOUNDS, &mut |_| Ok(())).expect("admission");
+    .map(|(_, cost)| cost.bytes())
+}
+
+/// Reserved bytes and the measured peak of the decode.
+fn reserve_and_decode(snapshot: &Value) -> (u64, u64) {
+    let bytes = serde_json::to_vec(snapshot).expect("encode");
+    let reserved = admit(&bytes).expect("a populated checkpoint is admitted");
     let mut decoded = None;
     let measured = acyclic_test_support::measure(|| {
         decoded = Some(serde_json::from_slice::<Snapshot<ConversationStateWire>>(
@@ -310,11 +317,11 @@ fn reserve_and_decode(snapshot: &Value) -> (u64, u64, u64) {
     decoded
         .expect("decoded")
         .expect("a populated checkpoint decodes");
-    (reserved, layout.undescribed, measured.bytes_max)
+    (reserved, measured.bytes_max)
 }
 
 #[test]
-fn every_container_of_a_fully_populated_checkpoint_is_described() {
+fn every_container_of_a_fully_populated_checkpoint_is_reserved() {
     let parts = Parts::new();
     let snapshot = parts.snapshot(1);
     assert_populated(&snapshot, "snapshot");
@@ -324,8 +331,7 @@ fn every_container_of_a_fully_populated_checkpoint_is_described() {
         .map(|payload| payload["kind"].as_str().expect("kind").to_owned())
         .collect();
     assert_eq!(kinds.len(), 15, "one payload of every event variant");
-    let (reserved, undescribed, measured) = reserve_and_decode(&snapshot);
-    assert_eq!(undescribed, 0, "every container has a layout");
+    let (reserved, measured) = reserve_and_decode(&snapshot);
     assert!(
         measured <= reserved,
         "decode peak {measured} exceeds reservation {reserved}"
@@ -336,8 +342,7 @@ fn every_container_of_a_fully_populated_checkpoint_is_described() {
 fn the_reservation_covers_the_decode_as_lists_grow() {
     let parts = Parts::new();
     for copies in [2, 7, 33, 64] {
-        let (reserved, undescribed, measured) = reserve_and_decode(&parts.snapshot(copies));
-        assert_eq!(undescribed, 0);
+        let (reserved, measured) = reserve_and_decode(&parts.snapshot(copies));
         assert!(
             measured <= reserved,
             "{copies} copies: decode peak {measured} exceeds reservation {reserved}"
@@ -352,153 +357,30 @@ fn the_reservation_covers_the_decode_as_lists_grow() {
 }
 
 #[test]
-fn an_undescribed_container_is_charged_as_the_largest_slot() {
+fn a_container_its_layout_cannot_hold_is_refused_before_decoding() {
     let snapshot = Parts::new().snapshot(1);
-    let bytes = serde_json::to_vec(&snapshot).expect("encode");
-    let charge = |layout| {
-        admit_json_layout(
-            &bytes,
-            BOUNDS,
-            JsonValueSchema::Snapshot,
-            layout,
-            &mut |_| Ok(()),
-        )
-        .expect("layout")
-        .1
-    };
-    let described = charge(&SNAPSHOT_LAYOUT);
-    let undescribed = charge(&crate::executor::json::UNDESCRIBED);
-    assert_eq!(described.undescribed, 0);
-    assert!(undescribed.undescribed > 0);
-    assert!(undescribed.bytes() > described.bytes() * 8);
-    // A list nested in a described record but missing from its fields.
-    let mut extra = snapshot;
-    extra["projection"]["lifecycle"] = json!([[1], [2], [3]]);
-    let bytes = serde_json::to_vec(&extra).expect("encode");
-    let (_, layout) = admit_json_layout(
-        &bytes,
-        BOUNDS,
-        JsonValueSchema::Snapshot,
-        &SNAPSHOT_LAYOUT,
-        &mut |_| Ok(()),
-    )
-    .expect("layout");
-    assert_eq!(layout.undescribed, 4);
-    assert!(layout.bytes() >= described.bytes() + 4 * crate::executor::json::FALLBACK_SLOT);
+    let described = admit(&serde_json::to_vec(&snapshot).expect("encode")).expect("admitted");
+    // A list where the type holds a unit enum: the decode rejects it, so
+    // admission refuses it instead of charging a guessed slot.
+    let mut wrong = snapshot.clone();
+    wrong["projection"]["lifecycle"] = json!([[1], [2], [3]]);
+    let bytes = serde_json::to_vec(&wrong).expect("encode");
+    let refused = admit(&bytes).expect_err("an ill-kinded container is refused");
+    assert!(
+        refused.to_string().contains("outside its typed layout"),
+        "{refused}"
+    );
+    assert!(serde_json::from_slice::<Snapshot<ConversationStateWire>>(&bytes).is_err());
+    // An unknown member holds no typed storage: serde skips or rejects it,
+    // so it charges nothing beyond its lexical admission.
+    let mut unknown = snapshot;
+    unknown["projection"]["unknown"] = json!([[1], [2], [3]]);
+    let bytes = serde_json::to_vec(&unknown).expect("encode");
+    assert_eq!(admit(&bytes).expect("admitted"), described);
 }
 
 #[test]
-fn each_list_slot_is_its_element_size() {
-    use std::mem::size_of;
-    let vec = |layout: &JsonLayout, slot: usize| {
-        assert_eq!(
-            layout.alloc(false).expect("list").slots(),
-            [slot as u64, 0, 0]
-        );
-    };
-    vec(&EVENTS, size_of::<Event>());
-    vec(&MESSAGES, size_of::<ConversationMessage>());
-    vec(&FILES, size_of::<FileRef>());
-    vec(&DEPENDENCIES, size_of::<ExtensionDependency>());
-    vec(&CONFIGURATIONS, size_of::<ExtensionConfiguration>());
-    vec(&CAPTURED_RESOURCES, size_of::<CapturedResource>());
-    vec(&OMISSIONS, size_of::<ForkOmission>());
-    vec(&SHARED_GRANTS, size_of::<SharedGrant>());
-    vec(&REFERENCE_GRANTS, size_of::<ReferenceGrant>());
-    vec(&ATTACHMENT_ITEMS, size_of::<Attachment>());
-    vec(&AGENTS, size_of::<AgentId>());
-    vec(&ATTEMPTS, size_of::<EffectAttemptId>());
-    vec(&TERMINAL_EFFECTS, size_of::<EffectId>());
-    vec(&UUIDS, size_of::<uuid::Uuid>());
-    vec(&STRINGS, size_of::<String>());
-    vec(&BYTES, 1);
-    vec(&BINDINGS, size_of::<(ExtensionDependency, [u8; 32])>());
-    let tree = |layout: &JsonLayout, map: bool, slots: [usize; 3]| {
-        assert_eq!(
-            layout.alloc(map).expect("tree").slots(),
-            slots.map(|slot| slot as u64)
-        );
-    };
-    tree(&CAPABILITIES, false, [0, size_of::<String>(), 0]);
-    tree(&OPERATIONS, false, [0, size_of::<VolumeOperation>(), 0]);
-    tree(&MERGES, false, [0, size_of::<(String, Vec<u8>)>(), 0]);
-    tree(
-        &MESSAGE_EXTENSIONS,
-        true,
-        [0, size_of::<(String, FileRef)>(), 0],
-    );
-    tree(
-        &EFFECTS,
-        true,
-        [0, size_of::<EffectId>() + size_of::<EffectState>(), 0],
-    );
-    let state = size_of::<String>() + size_of::<(EventReference, ExtensionRecord)>();
-    tree(&EXTENSION_STATES, true, [0, state, 0]);
-    let interaction =
-        size_of::<uuid::Uuid>() + size_of::<(InteractionTicket, Option<InteractionResolution>)>();
-    tree(&INTERACTIONS, true, [0, interaction, 0]);
-    let configured = size_of::<ExtensionDependency>() + size_of::<ExtensionConfiguration>();
-    tree(
-        &CONFIGURED,
-        false,
-        [
-            size_of::<(ExtensionDependency, ExtensionConfiguration)>(),
-            configured,
-            0,
-        ],
-    );
-    let forks = size_of::<Authority>() + size_of::<ForkSeed>();
-    tree(
-        &FORKS,
-        false,
-        [size_of::<(Authority, ForkSeed)>(), forks, 0],
-    );
-    tree(&BOXED_SEED, true, [0, 0, size_of::<ForkSeed>()]);
-    tree(
-        &BOXED_RECEIPT,
-        true,
-        [0, 0, size_of::<ProjectMergeReceipt>()],
-    );
-    tree(
-        &BOXED_MESSAGE,
-        true,
-        [0, 0, size_of::<ConversationMessage>()],
-    );
-    tree(&BOXED_FILE, true, [0, 0, size_of::<FileRef>()]);
-}
-
-/// The snapshot term this layout replaces: every lexical item charged ten
-/// logical slots three times over, plus a per-item conversation width.
-fn previous_reservation(bytes: &[u8]) -> u64 {
-    use serde::__private229::de::Content;
-    use std::mem::size_of;
-    let (shape, _) = admit_json_layout(
-        bytes,
-        BOUNDS,
-        JsonValueSchema::Snapshot,
-        &crate::executor::json::UNDESCRIBED,
-        &mut |_| Ok(()),
-    )
-    .expect("shape");
-    let (input, items) = (shape.input_bytes(), shape.lexical_items());
-    let content = 4 * size_of::<(Content<'static>, Content<'static>)>() as u64;
-    let value = size_of::<(String, Value)>() as u64;
-    let boxed = size_of::<ForkSeed>() as u64;
-    let uuid_text = 2 * size_of::<uuid::Uuid>() as u64 + 4;
-    let width = 32
-        + 10 * size_of::<usize>() as u64
-        + 2 * size_of::<(uuid::Uuid, usize)>() as u64
-        + 17 * (10 * value + 2 * uuid_text + 4);
-    items * 10 * (content + value)
-        + items * 10 * 3 * Snapshot::LOGICAL_SCHEMA_SLOT_BYTES
-        + items * boxed
-        + input * 6
-        + input * 7
-        + items * width
-}
-
-#[test]
-fn the_previous_estimate_refuses_a_conversation_checkpoint_the_layout_admits() {
+fn a_conversation_checkpoint_reserves_a_fraction_of_the_task_budget() {
     // A Pi conversation checkpoint of the size the context tests write: a
     // lifecycle and a conversation, every other collection empty.
     let parts = Parts::new();
@@ -524,16 +406,10 @@ fn the_previous_estimate_refuses_a_conversation_checkpoint_the_layout_admits() {
         .find(|snapshot| serde_json::to_vec(snapshot).expect("encode").len() >= 11_600)
         .expect("checkpoint");
     let bytes = serde_json::to_vec(&snapshot).expect("encode");
-    let previous = previous_reservation(&bytes);
-    let (reserved, undescribed, measured) = reserve_and_decode(&snapshot);
-    assert_eq!(undescribed, 0);
+    let (reserved, measured) = reserve_and_decode(&snapshot);
     eprintln!(
-        "{} byte checkpoint: previous {previous}, reserved {reserved}, decode peak {measured}",
+        "{} byte checkpoint: reserved {reserved}, decode peak {measured}",
         bytes.len()
-    );
-    assert!(
-        previous > TASK_BYTES,
-        "the previous estimate admitted {previous}"
     );
     assert!(reserved < TASK_BYTES / 8, "reserved {reserved}");
     assert!(

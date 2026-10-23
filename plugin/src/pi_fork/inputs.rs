@@ -81,7 +81,7 @@ impl PiForkCoordinator<'_> {
         Ok(())
     }
 
-    pub(super) fn decode_original_input<T: DeserializeOwned>(
+    pub(super) fn decode_original_input<T: DeserializeOwned + acyclic_harness::HeapLayout>(
         &self,
         bytes: &[u8],
         schema: &'static JsonValueSchema,
@@ -98,7 +98,7 @@ impl PiForkCoordinator<'_> {
         )
     }
 
-    pub(super) fn decode_input_value<T: DeserializeOwned>(
+    pub(super) fn decode_input_value<T: DeserializeOwned + acyclic_harness::HeapLayout>(
         &self,
         value: &impl Serialize,
         schema: &'static JsonValueSchema,

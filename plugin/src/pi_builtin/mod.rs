@@ -10,7 +10,8 @@ pub(crate) const MAXIMUM_BUILTIN_BYTES: u64 = 262_144;
 const BUILTIN_DIAGNOSTIC_LABEL_BYTES: u64 =
     acyclic_harness::preparation_serde_diagnostic_label_bytes() + 187;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PiBuiltinIo {
     Read {
@@ -30,7 +31,8 @@ pub(crate) enum PiBuiltinIo {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiBuiltinRequest {
     pub(crate) caller: TaskId,

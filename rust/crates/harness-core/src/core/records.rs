@@ -1,7 +1,7 @@
 //! Main reducer records and their admission metadata.
 use super::*;
 /// Fixed aggregate lifecycle shared by every durable handle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleState {
     /// Aggregate exists but has not begun work.
@@ -25,7 +25,7 @@ impl LifecycleState {
 }
 
 /// Schema-validated event payload retained in canonical history.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventPayload {
     /// Fixed aggregate lifecycle transition.
@@ -132,7 +132,7 @@ pub enum EventPayload {
 }
 
 /// Reference to an exact event in another aggregate.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct EventReference {
     /// Referenced authority.
@@ -142,7 +142,7 @@ pub struct EventReference {
 }
 
 /// Non-bearer admission metadata retained in durable history.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct RecordedScope {
     pub(in crate::core) id: String,
@@ -190,7 +190,7 @@ impl RecordedScope {
 }
 
 /// One canonical event in an aggregate history.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Event {
     /// Gapless one-based aggregate revision.
@@ -227,7 +227,7 @@ impl Event {
 }
 
 /// Immutable command envelope accepted by the reducer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
     /// Stable identity allocated before admission.
@@ -245,7 +245,7 @@ pub struct Command {
 }
 
 /// Transitions supported by the substrate reducer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// Advances the fixed aggregate lifecycle.
@@ -352,7 +352,7 @@ pub enum Action {
 }
 
 /// Result of applying a command.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ApplyResult {
     /// A new event was committed to reducer state.
