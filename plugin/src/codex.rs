@@ -81,6 +81,21 @@ pub(super) fn program(host: &str) -> Result<&'static str> {
 pub(super) fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<String>> {
     validate(host, args)?;
     let mut flags = args.to_vec();
+    for pair in flags.chunks_exact_mut(2) {
+        let [name, value] = pair else { continue };
+        let inherited_path = match (host, name.as_str()) {
+            (_, "--add-dir") | ("claude-code", "--plugin-dir") | ("pi", "--session-dir") => true,
+            ("claude-code", "--settings") => !value.trim_start().starts_with('{'),
+            _ => false,
+        };
+        if inherited_path && Path::new(value.as_str()).is_relative() {
+            *value = cwd
+                .join(value.as_str())
+                .to_str()
+                .ok_or("non-Unicode native configuration path")?
+                .into();
+        }
+    }
     if matches!(host, "codex" | "claude-code") {
         // The parent already admits its cwd. Preserve that same root when a
         // separate child starts in a descendant view; admit no additional path.

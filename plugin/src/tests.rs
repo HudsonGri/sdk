@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let workspace = fixture.path().join("workspace");
+    let view = workspace.join(".volumes/agents/child");
+    let shared = fixture.path().join("shared");
+    std::fs::create_dir_all(&view)?;
+    std::fs::create_dir(&shared)?;
+    std::fs::write(shared.join("policy.json"), "{}")?;
+    for (host, supplied) in [
+        (
+            "codex",
+            vec![
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
+                "--add-dir",
+                "../shared",
+            ],
+        ),
+        (
+            "claude-code",
+            vec![
+                "--settings",
+                "../shared/policy.json",
+                "--permission-mode",
+                "default",
+                "--plugin-dir",
+                "../shared",
+                "--add-dir",
+                "../shared",
+            ],
+        ),
+        ("pi", vec!["--session-dir", "../shared"]),
+    ] {
+        let supplied = supplied.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let flags = codex::parent_flags(host, &supplied, &workspace)?;
+        let child = codex::child(host, &flags, &view, None)?;
+        let arguments = child
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for (option, expected) in [
+            ("--add-dir", shared.clone()),
+            ("--plugin-dir", shared.clone()),
+            ("--settings", shared.join("policy.json")),
+            ("--session-dir", shared.clone()),
+        ] {
+            if supplied.iter().any(|arg| arg == option) {
+                let actual = arguments
+                    .windows(2)
+                    .find_map(|pair| match pair {
+                        [name, value] if name == option => Some(PathBuf::from(value)),
+                        _ => None,
+                    })
+                    .ok_or("native path option absent")?;
+                assert!(
+                    actual.is_absolute(),
+                    "native path must not change with child cwd"
+                );
+                assert_eq!(view.join(actual).canonicalize()?, expected.canonicalize()?);
+            }
+        }
+    }
+    let inline = [
+        "--settings",
+        " {\"sandbox\":{\"enabled\":true}}",
+        "--permission-mode",
+        "default",
+    ]
+    .map(str::to_owned);
+    let flags = codex::parent_flags("claude-code", &inline, &workspace)?;
+    assert_eq!(
+        flags.first_chunk::<4>().ok_or("inline settings absent")?,
+        &inline
+    );
+    Ok(())
+}
+
+#[test]
 fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result<()> {
     let supplied = [
         "--sandbox",
