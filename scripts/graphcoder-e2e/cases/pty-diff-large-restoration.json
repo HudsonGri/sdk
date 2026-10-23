@@ -15,9 +15,9 @@
         "tools": [
           {
             "id": "change",
-            "name": "bash",
+            "name": "{{shell}}",
             "arguments": {
-              "command": "python3 -c \"from pathlib import Path; f=Path('large.txt').open('r+b'); f.seek(1); f.write(b'y' * 1048574); f.close(); Path('small.txt').write_text('SMALL_DIFF_E2E\\n')\""
+              "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'y'),0,1048574,1); fs.closeSync(f); fs.writeFileSync('small.txt','SMALL_DIFF_E2E'+String.fromCharCode(10))\""
             }
           }
         ]
@@ -31,9 +31,9 @@
         "tools": [
           {
             "id": "restore",
-            "name": "bash",
+            "name": "{{shell}}",
             "arguments": {
-              "command": "python3 -c \"from pathlib import Path; f=Path('large.txt').open('r+b'); f.seek(1); f.write(b'x' * 1048574); f.close()\""
+              "command": "node -e \"const fs=require('node:fs'); const f=fs.openSync('large.txt','r+'); fs.writeSync(f,Buffer.alloc(1048574,'x'),0,1048574,1); fs.closeSync(f)\""
             }
           }
         ]

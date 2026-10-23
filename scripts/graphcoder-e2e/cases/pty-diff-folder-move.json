@@ -34,9 +34,9 @@
         "tools": [
           {
             "id": "move",
-            "name": "bash",
+            "name": "{{shell}}",
             "arguments": {
-              "command": "python3 -c \"from pathlib import Path; Path('folder').rename('moved')\""
+              "command": "node -e \"require('node:fs').renameSync('folder', 'moved')\""
             }
           }
         ]

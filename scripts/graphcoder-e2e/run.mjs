@@ -33,7 +33,8 @@ if (process.platform === "win32") {
   roots.push(mkdtempSync(join(ntfs, "graphcoder-e2e-ntfs-")));
 }
 const scripts = readdirSync(join(directory, "cases")).filter(name => name.endsWith(".json"))
-  .map(name => JSON.parse(readFileSync(join(directory, "cases", name), "utf8")));
+  .map(name => JSON.parse(readFileSync(join(directory, "cases", name), "utf8")
+    .replaceAll("{{shell}}", process.platform === "win32" ? "powershell" : "bash")));
 const identities = new Set(scripts.map(test => test.id));
 for (const id of selected) assert.ok(identities.has(id), `unknown case ${id}`);
 const cases = scripts

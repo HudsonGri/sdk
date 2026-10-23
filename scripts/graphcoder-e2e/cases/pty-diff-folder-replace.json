@@ -34,9 +34,9 @@
         "tools": [
           {
             "id": "replace",
-            "name": "bash",
+            "name": "{{shell}}",
             "arguments": {
-              "command": "python3 -c \"from pathlib import Path; Path('folder/a.txt').unlink(); Path('folder').rmdir(); Path('folder').write_text('REPLACED_E2E\\n')\""
+              "command": "node -e \"const fs=require('node:fs'); fs.unlinkSync('folder/a.txt'); fs.rmdirSync('folder'); fs.writeFileSync('folder', 'REPLACED_E2E'+String.fromCharCode(10))\""
             }
           }
         ]

@@ -10,9 +10,9 @@
         "tools": [
           {
             "id": "large",
-            "name": "bash",
+            "name": "{{shell}}",
             "arguments": {
-              "command": "python3 -c \"from pathlib import Path; Path('large.txt').write_bytes(b'x' * 65537)\""
+              "command": "node -e \"require('node:fs').writeFileSync('large.txt',Buffer.alloc(65537,'x'))\""
             }
           }
         ]
