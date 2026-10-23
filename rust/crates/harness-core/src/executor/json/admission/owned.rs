@@ -122,6 +122,7 @@ fn tree(
             let mut selected = super::document(
                 text.as_bytes(),
                 &ROOT,
+                None,
                 child_depth,
                 true,
                 charge,
