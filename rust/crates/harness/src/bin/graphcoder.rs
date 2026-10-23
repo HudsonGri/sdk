@@ -100,7 +100,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
     let operation = if args.resume {
         phase(|| client::resume_local_identity(&local, operation)).await?
     } else {
-        phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?
+        client::local_identity(operation)
     };
     let command = args
         .prompt
@@ -111,6 +111,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()
     {
+        phase(|| client::select_local_identity(&local, operation)).await?;
         let result = phase(|| {
             client::with_local_commands(
                 local.clone(),

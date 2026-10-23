@@ -213,7 +213,7 @@ pub use local_diff::local_diff;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local_identity;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local_identity::{local_identity, resume_local_identity};
+pub use local_identity::{local_identity, resume_local_identity, select_local_identity};
 
 #[cfg(test)]
 #[cfg(all(feature = "tui", not(acyclic_harness_loom)))]

@@ -347,27 +347,27 @@ async fn disconnect_preserves_an_unfinished_admission_and_releases_its_mounts() 
 }
 
 #[tokio::test]
-async fn workspace_launch_identity_reuses_only_unfinished_requests() -> Result<()> {
+async fn launch_identity_is_fresh_unless_explicitly_resumed() -> Result<()> {
     let (_directory, harness, provider) = local().await?;
     let prompt = "resume private request";
-    let operation = crate::client::local_identity(&harness, Some(prompt), None).await?;
-    assert_eq!(
+    let operation = crate::client::local_identity(None);
+    assert_ne!(
         operation,
-        crate::client::local_identity(&harness, Some(prompt), None).await?
+        crate::client::local_identity(None)
     );
     assert_ne!(
         operation,
-        crate::client::local_identity(&harness, Some("another"), None).await?
+        crate::client::local_identity(None)
     );
-    let interactive = crate::client::local_identity(&harness, None, None).await?;
-    assert_eq!(
+    let interactive = crate::client::local_identity(None);
+    assert_ne!(
         interactive,
-        crate::client::local_identity(&harness, None, None).await?
+        crate::client::local_identity(None)
     );
     let explicit = OperationId::new();
     assert_eq!(
         explicit,
-        crate::client::local_identity(&harness, Some(prompt), Some(explicit)).await?
+        crate::client::local_identity(Some(explicit))
     );
     assert!(
         provider.requests().is_empty(),
@@ -382,7 +382,7 @@ async fn workspace_launch_identity_reuses_only_unfinished_requests() -> Result<(
     drop(client);
     assert_ne!(
         operation,
-        crate::client::local_identity(&harness, Some(prompt), None).await?
+        crate::client::local_identity(None)
     );
     assert_eq!(provider.requests().len(), 1);
     close(harness).await
@@ -397,7 +397,8 @@ async fn explicit_resume_retains_selection_and_clears_only_exit() -> Result<()> 
             .await
             .is_err()
     );
-    let operation = crate::client::local_identity(&harness, None, None).await?;
+    let operation = crate::client::local_identity(None);
+    crate::client::select_local_identity(&harness, operation).await?;
     let key = FileKey::parse(&format!(".ui/session-{operation}/layout.json"))?;
     let retained = serde_json::json!({"selected_task":crate::TaskId::new(),"history_page":7,"exit_requested":true,"view_request":OperationId::new()});
     let files = harness.task_files();

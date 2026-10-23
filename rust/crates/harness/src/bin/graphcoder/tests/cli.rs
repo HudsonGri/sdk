@@ -780,7 +780,7 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() 
         .unwrap()
         .expect_err("the first process must be killed during its tool effect");
     assert!(killed.starts_with("killed"), "{killed}");
-    // Rerunning the same prompt resumes the killed turn. Its unreconcilable
+    // Explicitly reusing the operation resumes the killed turn. Its unreconcilable
     // effect settles as interrupted instead of running again, and replaying
     // the operation reports that same settled result.
     for prompt in [Some("start"), None] {

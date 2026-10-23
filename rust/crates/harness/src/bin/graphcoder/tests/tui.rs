@@ -240,7 +240,7 @@ async fn conversation(blocked: bool) {
         let prompts: &[&str] = if blocked {
             &["Use goal mode"]
         } else {
-            &["first prompt", "second prompt", "third prompt"]
+            &["first prompt", "first prompt", "third prompt"]
         };
         for (index, prompt) in prompts.iter().enumerate() {
             screen
