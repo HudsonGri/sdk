@@ -366,6 +366,7 @@ impl MemoryStream {
             state.paths.get(path).map(|path| path.tail)
         })?;
         reserve_coordinated(state, &request, self.limits)?;
+        self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {

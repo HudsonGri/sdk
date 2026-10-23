@@ -53,6 +53,7 @@ impl MemoryStream {
             return Ok((result, Default::default()));
         }
         reserve_append(&state, &request.path, &request.records, self.limits)?;
+        self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {

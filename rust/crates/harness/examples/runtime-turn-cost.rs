@@ -1,8 +1,12 @@
 //! Credential-free timing of the real local driver between consecutive tools.
 //! Run alone on bb2: cargo run --locked -p acyclic-harness --all-features
 //! --example runtime-turn-cost -- 1000
+#[path = "runtime_turn_cost/intervals.rs"]
+mod intervals;
 #[path = "runtime_turn_cost/profile.rs"]
 mod profile;
+#[path = "runtime_turn_cost/resources.rs"]
+mod resources;
 use acyclic_harness::{
     Error, LocalHarness, Result,
     context::{CompactionPolicy, ModelContextCapacity, ModelTokenCount},
@@ -17,15 +21,16 @@ use std::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 #[derive(Default)]
 struct Timing {
     tool_finished: Option<(Instant, u64)>,
-    intervals: Vec<(Duration, u64)>,
+    intervals: intervals::Intervals,
     stream_flushes: Arc<AtomicU64>,
     profile: profile::Profile,
+    resources: resources::Samples,
 }
 
 struct FlushCounter(Arc<AtomicU64>);
@@ -43,21 +48,18 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FlushCounter {
     }
 }
 impl Timing {
-    fn report_checkpoint(&self) {
+    fn report_checkpoint(&mut self) -> Result<()> {
         let end = self.intervals.len();
         if [1, 10, 14, 100, 1000].contains(&end) {
-            let (total, flushes, count) = self.intervals.iter().rev().take(10).fold(
-                (Duration::ZERO, 0_u64, 0_u32),
-                |(total, flushes, count), (elapsed, step_flushes)| {
-                    (total + *elapsed, flushes + step_flushes, count + 1)
-                },
-            );
+            let (total, flushes, count) = self.intervals.summary();
             println!(
                 "tool-to-model ending at turn {end}: {:.3} ms/turn; {flushes} stream flushes/{count} turns",
                 (total / count).as_secs_f64() * 1000.0,
             );
             self.profile.report(end);
+            self.resources.report(end)?;
         }
+        Ok(())
     }
 }
 struct Provider {
@@ -95,8 +97,12 @@ impl ModelProvider for Provider {
         let mut timing = self.timing.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((finished, flushes)) = timing.tool_finished.take() {
             let step_flushes = timing.stream_flushes.load(Ordering::Relaxed) - flushes;
-            timing.intervals.push((finished.elapsed(), step_flushes));
-            timing.report_checkpoint();
+            if let Err(error) = timing.intervals.push(finished.elapsed(), step_flushes) {
+                return Box::pin(futures::stream::iter([Err(error)]));
+            }
+            if let Err(error) = timing.report_checkpoint() {
+                return Box::pin(futures::stream::iter([Err(error)]));
+            }
         }
         drop(timing);
         let mut events = Vec::new();
@@ -126,6 +132,10 @@ impl ToolExecutor for Noop {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut timing = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let observed = timing.intervals.len();
+            if timing.intervals.is_empty() || [90, 990, 9990, 99990, 999990].contains(&observed) {
+                timing.resources.start(observed)?;
+            }
             timing.tool_finished = Some((
                 Instant::now(),
                 timing.stream_flushes.load(Ordering::Relaxed),
@@ -197,6 +207,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     .tool(tool)
     .compaction(CompactionPolicy::Disabled);
     let harness = LocalHarness::open(config).await?;
+    timing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .resources = resources::Samples::from_arguments()?;
     let output = harness.run("Run the deterministic tool sequence").await?;
     assert_eq!(output.text, "done");
     assert_eq!(

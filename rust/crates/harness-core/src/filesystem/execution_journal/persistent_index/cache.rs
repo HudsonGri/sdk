@@ -7,6 +7,7 @@ struct CachedNode {
     reference: NodeRef,
     bytes: OwnedBytes,
     io: Option<PreparationIo>,
+    referenced: std::sync::atomic::AtomicBool,
 }
 
 impl CachedNode {
@@ -14,6 +15,7 @@ impl CachedNode {
         let mut node = Self {
             reference,
             bytes: OwnedBytes::from_static(b""),
+            referenced: std::sync::atomic::AtomicBool::new(false),
             io: io
                 .filter(|_| bytes.retained_capacity().unwrap_or(0) != 0)
                 .map(PreparationIo::retained_pool)
@@ -87,6 +89,8 @@ impl NodeCache {
         if node.reference != reference {
             return Err(invalid(io, "execution page cache digest differs"));
         }
+        node.referenced
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(node.bytes.clone()))
     }
 
@@ -95,16 +99,28 @@ impl NodeCache {
             return Ok(());
         }
         if self.vacant.is_empty() && self.values.len() == HOT_PAGES {
-            let reference = self
-                .values
-                .get(self.replacement)
-                .and_then(Option::as_ref)
-                .ok_or_else(|| {
-                    invalid(self.io.as_ref(), "execution page eviction slot is missing")
-                })?
-                .reference;
-            self.remove(reference)?;
-            self.replacement = (self.replacement + 1) % HOT_PAGES;
+            // One second chance per observed page keeps hot immutable roots
+            // through unrelated publications. At most HOT_PAGES + 1 probes:
+            // this exclusive borrow prevents another get from resetting a bit.
+            loop {
+                crate::model::charge_items(self.io.as_ref(), 1)?;
+                let node = self
+                    .values
+                    .get(self.replacement)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        invalid(self.io.as_ref(), "execution page eviction slot is missing")
+                    })?;
+                let referenced = node
+                    .referenced
+                    .swap(false, std::sync::atomic::Ordering::Relaxed);
+                let reference = node.reference;
+                self.replacement = (self.replacement + 1) % HOT_PAGES;
+                if !referenced {
+                    self.remove(reference)?;
+                    break;
+                }
+            }
         }
         self.keys.reserve_key(self.io.as_ref())?;
         if self.vacant.is_empty() && self.values.len() == self.values.capacity() {
@@ -372,6 +388,32 @@ mod tests {
                 "page cache or staging retained original native allocations"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn frequently_read_page_survives_unrelated_publication_churn() -> Result<()> {
+        let mut cache = NodeCache::default();
+        let bytes = OwnedBytes::from_static(b"immutable fixture page");
+        let hot = NodeRef {
+            sequence: 0,
+            digest: *blake3::hash(&bytes).as_bytes(),
+        };
+        cache.insert(hot, &bytes)?;
+        let mut misses = 0;
+        for sequence in 1..=1000 {
+            if cache.get(hot, None)?.is_none() {
+                misses += 1;
+            }
+            cache.insert(NodeRef { sequence, ..hot }, &bytes)?;
+            assert!(cache.keys.entries().count() <= HOT_PAGES);
+            assert!(cache.values.capacity() <= HOT_PAGES);
+        }
+        eprintln!("publication churn=1000 hot_page_misses={misses}");
+        assert_eq!(
+            misses, 0,
+            "frequently read page was evicted by publication order"
+        );
         Ok(())
     }
 }

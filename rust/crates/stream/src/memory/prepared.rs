@@ -79,7 +79,8 @@ impl MemoryStream {
             };
         self.reserve_retained(&mut state)?;
         // The tree can grow up to the admitted replay limit while this completion is pending.
-        let probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
+        let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
+        self.reserve_commit_index(&mut probes)?;
         let mut plan = self.plan_commit(&mut state, &request, CommitId::default(), 0)?;
         for value in [&mut plan.result, &mut plan.cached] {
             let append = append_mut(value);
