@@ -82,6 +82,32 @@ impl ClientRenderer {
         Ok(())
     }
 
+    /// First displayed source identity and its distance from a presented row.
+    /// A distant seek has no retained distance and repaints normally.
+    pub fn presented_position(
+        &self,
+        from: Option<TranscriptAnchor>,
+    ) -> (Option<TranscriptAnchor>, Option<isize>) {
+        for (part, source) in [
+            (tui::TranscriptPart::Reasoning, &self.wrapped_reasoning),
+            (tui::TranscriptPart::Answer, &self.wrapped_transcript),
+            (tui::TranscriptPart::Tools, &self.wrapped_tools),
+        ] {
+            if source.shown().is_empty() {
+                continue;
+            }
+            let top = TranscriptAnchor {
+                part,
+                position: source.window().top,
+            };
+            let distance = from
+                .filter(|from| from.part == part)
+                .and_then(|from| source.cached_distance(from.position, top.position));
+            return (Some(top), distance);
+        }
+        (None, None)
+    }
+
     /// Move a source anchor through the current physical layout. Files remain
     /// authoritative; the caller publishes the returned anchor as a file change.
     pub fn move_view(
@@ -157,11 +183,13 @@ impl ClientRenderer {
             }
             let window = source.window();
             if window.end > window.start {
-                let first = &source.ranges()[window.start];
-                let last = &source.ranges()[window.end - 1];
-                let range = visible
-                    .get_or_insert(total + first.start..total + last.end.max(first.start + 1));
-                range.end = total + last.end.max(last.start + 1);
+                let first = source.ranges().get(window.start);
+                let last = source.ranges().get(window.end - 1);
+                if let Some((first, last)) = first.zip(last) {
+                    let range = visible
+                        .get_or_insert(total + first.start..total + last.end.max(first.start + 1));
+                    range.end = total + last.end.max(last.start + 1);
+                }
             }
             total += source.text().len() + 1;
         }

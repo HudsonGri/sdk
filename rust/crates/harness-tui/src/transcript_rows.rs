@@ -87,7 +87,7 @@ impl<'a> TranscriptRows<'a> {
 
     pub(crate) fn folded_row(self, row: usize) -> Option<Range<usize>> {
         let (source, row, offset) = self.part(row)?;
-        let range = source.index.folded_range(&source.ranges()[row]);
+        let range = source.index.folded_range(source.ranges().get(row)?);
         let offset = if offset == 0 { 0 } else { self.folded_offset() };
         Some(offset + range.start..offset + range.end)
     }
@@ -183,8 +183,12 @@ impl<'a> TranscriptRows<'a> {
     }
 
     pub(crate) fn range(self, row: usize) -> Range<usize> {
-        let (source, row, offset) = self.part(row).expect("visible transcript row");
-        let range = &source.ranges()[row];
+        let Some((source, row, offset)) = self.part(row) else {
+            return 0..0;
+        };
+        let Some(range) = source.ranges().get(row) else {
+            return 0..0;
+        };
         offset + range.start..offset + range.end
     }
 
@@ -197,7 +201,9 @@ impl<'a> TranscriptRows<'a> {
         area: Rect,
         buffer: &mut Buffer,
     ) {
-        let (source, row, offset) = self.part(row).expect("visible transcript row");
+        let Some((source, row, offset)) = self.part(row) else {
+            return;
+        };
         source.render_ranges((row, offset), matches, selected, style, area, buffer);
     }
 }
