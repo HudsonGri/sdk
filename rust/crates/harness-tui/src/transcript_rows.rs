@@ -49,8 +49,8 @@ impl<'a> TranscriptRows<'a> {
 
     pub(crate) fn index_revision(self) -> (u64, Option<u64>) {
         (
-            self.answer.index.revision,
-            self.tools.map(|tools| tools.index.revision),
+            self.answer.source_revision(),
+            self.tools.map(|tools| tools.source_revision()),
         )
     }
 
@@ -59,7 +59,7 @@ impl<'a> TranscriptRows<'a> {
     }
 
     fn folded_offset(self) -> usize {
-        self.answer.index.text.len() + usize::from(self.separator())
+        self.answer.search_index().text.len() + usize::from(self.separator())
     }
 
     fn source_offset(self) -> usize {
@@ -67,7 +67,10 @@ impl<'a> TranscriptRows<'a> {
     }
 
     pub(crate) fn folded_len(self) -> usize {
-        self.folded_offset() + self.tools.map_or(0, |tools| tools.index.text.len())
+        self.folded_offset()
+            + self
+                .tools
+                .map_or(0, |tools| tools.search_index().text.len())
     }
 
     pub(crate) fn windows(self) -> (RowWindow, Option<RowWindow>) {
@@ -87,7 +90,9 @@ impl<'a> TranscriptRows<'a> {
 
     pub(crate) fn folded_row(self, row: usize) -> Option<Range<usize>> {
         let (source, row, offset) = self.part(row)?;
-        let range = source.index.folded_range(source.ranges().get(row)?);
+        let range = source
+            .search_index()
+            .folded_range(source.ranges().get(row)?);
         let offset = if offset == 0 { 0 } else { self.folded_offset() };
         Some(offset + range.start..offset + range.end)
     }
@@ -120,20 +125,20 @@ impl<'a> TranscriptRows<'a> {
                     self.folded_offset(),
                 )
             };
-        let range = source.index.folded_range(&source.row_range_at(at));
+        let range = source.search_index().folded_range(&source.row_range_at(at));
         Some(offset + range.start..offset + range.end)
     }
 
     fn origin(self, at: usize) -> Range<usize> {
-        let end = self.answer.index.text.len();
+        let end = self.answer.search_index().text.len();
         if at < end {
-            self.answer.index.source(at, 1)
+            self.answer.search_index().source(at, 1)
         } else if self.separator() && at == end {
             self.answer.text().len()..self.source_offset()
         } else {
             assert!(self.tools.is_some(), "tool source");
             let range = self.tools.map_or(0..0, |tools| {
-                tools.index.source(at - self.folded_offset(), 1)
+                tools.search_index().source(at - self.folded_offset(), 1)
             });
             self.source_offset() + range.start..self.source_offset() + range.end
         }
@@ -144,15 +149,16 @@ impl<'a> TranscriptRows<'a> {
     }
 
     pub(crate) fn slice(self, range: Range<usize>) -> Option<&'a [u8]> {
-        if range.end <= self.answer.index.text.len() {
-            self.answer.index.text.as_bytes().get(range)
+        if range.end <= self.answer.search_index().text.len() {
+            self.answer.search_index().text.as_bytes().get(range)
         } else if range.start >= self.folded_offset() {
             self.tools?
-                .index
+                .search_index()
                 .text
                 .as_bytes()
                 .get(range.start - self.folded_offset()..range.end - self.folded_offset())
-        } else if self.separator() && range == (self.answer.index.text.len()..self.folded_offset())
+        } else if self.separator()
+            && range == (self.answer.search_index().text.len()..self.folded_offset())
         {
             Some(b"\n")
         } else {
@@ -162,13 +168,13 @@ impl<'a> TranscriptRows<'a> {
 
     pub(crate) fn bytes(self, range: Range<usize>) -> impl Iterator<Item = u8> + 'a {
         self.answer
-            .index
+            .search_index()
             .text
             .bytes()
             .chain(self.separator().then_some(b'\n'))
             .chain(
                 self.tools
-                    .map_or("", |tools| tools.index.text.as_str())
+                    .map_or("", |tools| tools.search_index().text.as_str())
                     .bytes(),
             )
             .skip(range.start)

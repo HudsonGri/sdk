@@ -28,9 +28,10 @@ async fn model<const ALWAYS_SCAN: bool>(retained: usize) {
             session: component(session.session.to_string()).unwrap(),
             file: files::TaskFile::Request(component(n.to_string()).unwrap()),
         };
-        session
-            .files
-            .insert(key.clone(), files::FileValue::new(key, b"{}".to_vec()));
+        session.files.insert(
+            key.clone(),
+            StateFile::new(files::FileValue::new(key, b"{}".to_vec())),
+        );
     }
     let before = session.files.len();
     session.settings_visits = 0;

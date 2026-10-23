@@ -24,8 +24,6 @@ pub async fn run(
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let tty = open_tty(inline)?;
     let (tty, output) = tty.split();
-    let terminal_size =
-        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; the read presents one frame.
@@ -44,6 +42,9 @@ pub async fn run(
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
     let mut diff = DiffState::new();
     loop {
+        if client::frame_due(&batch) {
+            renderer.wait_frame().await;
+        }
         follow_selected_task(local.as_ref(), &mut client, &commands, &authority).await?;
         renderer.update_files(&client, &authority);
         let diff_open = diff_is_open(&commands)?;
@@ -190,6 +191,10 @@ fn follow_diff(
     )
 }
 
+fn terminal_size() -> std::io::Result<Size> {
+    crossterm::terminal::size().map(|(width, height)| Size::new(width, height))
+}
+
 /// The presentation boundary shared by the executable and its file-backed Rig.
 /// Only successful device output advances the remembered transcript position.
 pub(super) fn present<P: tui::term::Present>(
@@ -248,6 +253,7 @@ fn render_view<P: tui::term::Present, S: acyclic_stream::StreamProvider + ?Sized
                 areas = screen.render(frame, input, viewport, scroll, now);
             },
         )?;
+        renderer.frame_presented();
     } else {
         // More of this read is queued: route it against the same layout
         // and present once, after the read.
