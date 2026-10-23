@@ -126,7 +126,7 @@ impl Counts {
                         Some(Kind::Follow(follow))
                             if follow.delivery == wire::SessionDelivery::Latest as i32 =>
                         {
-                            if !follow.path.ends_with("/status")
+                            if follow.path != "swarm/status"
                                 || !self.statuses.insert(follow.path.clone())
                             {
                                 return Err(acyclic_stream::StreamError::InvalidArgument);

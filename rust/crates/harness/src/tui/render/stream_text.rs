@@ -4,7 +4,14 @@ use crate::{
     task_volume::{Channel, FileKey, Query},
 };
 use acyclic_markdown::Markdown;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
+
+struct SealedTurn {
+    turn: u64,
+    first: FileKey,
+    prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
+    end: usize,
+}
 
 /// Disposable parsing cache; all source bytes remain in ClientViews.
 #[derive(Default)]
@@ -13,6 +20,10 @@ pub(super) struct StreamText {
     append: Option<(usize, usize, usize)>,
     append_only: bool,
     stable: Vec<Line<'static>>,
+    sealed: VecDeque<SealedTurn>,
+    current_first: Option<FileKey>,
+    current_prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
+    dropped: usize,
     pending: [u8; 4],
     pending_len: usize,
     provisional_row: Option<usize>,
@@ -121,23 +132,72 @@ impl StreamText {
         }
         changed
     }
-    pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
-        if !self
-            .source
+    fn prefix_valid(&self, task: &TaskQueryView<'_>) -> bool {
+        self.first
             .as_ref()
-            .is_some_and(|source| Arc::ptr_eq(source, task.source))
-            || self
-                .first
-                .as_ref()
-                .is_some_and(|key| task.file(key).is_none())
-            || self.prefix.as_ref().is_some_and(|(key, index, bytes)| {
+            .is_none_or(|key| task.file(key).is_some())
+            && self.prefix.as_ref().is_none_or(|(key, index, bytes)| {
                 task.file(key)
                     .and_then(|file| file.segments.get(*index))
-                    .is_none_or(|current| {
-                        current.as_ptr() != bytes.as_ptr() || current.len() != bytes.len()
+                    .is_some_and(|current| {
+                        current.as_ptr() == bytes.as_ptr() && current.len() == bytes.len()
                     })
             })
-        {
+    }
+    // Completed turns have independent Markdown state. Discard their rows and
+    // checkpoints without feeding any retained bytes back through the parser.
+    // A partial turn eviction can change fences, lists or reference definitions
+    // throughout that turn and must be parsed from its new authoritative start.
+    fn discard_turns(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> bool {
+        let mut through = 0;
+        while let Some(front) = self.sealed.front() {
+            let retained = task
+                .text_from(Some(&front.first))
+                .take_while(|text| text.turn == front.turn)
+                .any(|text| text.channel == channel);
+            if retained {
+                break;
+            }
+            if let Some(front) = self.sealed.pop_front() {
+                through = front.end;
+            }
+        }
+        if through == 0 {
+            return false;
+        }
+        self.dropped = self.discard_rows(through);
+        for sealed in &mut self.sealed {
+            sealed.end = sealed.end.saturating_sub(self.dropped);
+        }
+        if let Some(front) = self.sealed.front() {
+            self.first = Some(front.first.clone());
+            self.prefix = front.prefix.clone();
+        } else {
+            self.first = self.current_first.clone();
+            self.prefix = self.current_prefix.clone();
+        }
+        self.prefix_valid(task)
+    }
+    pub(super) fn discard_rows(&mut self, through: usize) -> usize {
+        if through == 0 {
+            return 0;
+        }
+        let separator = usize::from(through < self.len());
+        let removed = through + separator;
+        self.stable.drain(..removed.min(self.stable.len()));
+        self.provisional_row = self.provisional_row.map(|row| row.saturating_sub(removed));
+        removed
+    }
+    pub(super) fn dropped(&self) -> usize {
+        self.dropped
+    }
+    pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
+        self.dropped = 0;
+        let same_source = self
+            .source
+            .as_ref()
+            .is_some_and(|source| Arc::ptr_eq(source, task.source));
+        if !same_source || (!self.prefix_valid(task) && !self.discard_turns(task, channel)) {
             *self = Self {
                 source: Some(task.source.clone()),
                 ..Self::default()
@@ -162,11 +222,24 @@ impl StreamText {
             }
             if self.turn != Some(text.turn) && self.first.is_some() {
                 changed = changed.min(self.boundary());
+                if let (Some(turn), Some(first)) = (self.turn, self.current_first.take()) {
+                    self.sealed.push_back(SealedTurn {
+                        turn,
+                        first,
+                        prefix: self.current_prefix.take(),
+                        end: self.stable.len(),
+                    });
+                }
             }
             self.turn = Some(text.turn);
+            self.current_first
+                .get_or_insert_with(|| text.file.key.clone());
             for (index, segment) in text.file.segments.iter().enumerate().skip(start) {
                 if self.prefix.is_none() && !segment.is_empty() {
                     self.prefix = Some((text.file.key.clone(), index, segment.clone()));
+                }
+                if self.current_prefix.is_none() && !segment.is_empty() {
+                    self.current_prefix = Some((text.file.key.clone(), index, segment.clone()));
                 }
                 changed = changed.min(self.push(segment));
             }
@@ -259,7 +332,22 @@ impl StreamText {
             if !self.stable.is_empty() {
                 self.stable.push(Line::default());
             }
-            self.stable.extend(self.markdown.lines().iter().map(line));
+            let finished = std::mem::take(&mut self.markdown);
+            self.stable
+                .extend(finished.into_lines().into_iter().map(|row| {
+                    Line::from(
+                        row.spans
+                            .into_iter()
+                            .map(|span| {
+                                let text = match super::super::display_text(&span.text) {
+                                    std::borrow::Cow::Borrowed(_) => span.text,
+                                    std::borrow::Cow::Owned(text) => text,
+                                };
+                                super::Span::styled(text, super::style(span.style))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }));
         }
         self.markdown = Markdown::default();
         self.newline = false;
@@ -292,6 +380,7 @@ impl StreamText {
     }
 
     pub(super) fn apply_rows(&mut self, target: &mut Vec<Line<'static>>, changed: usize) {
+        target.drain(..self.dropped.min(target.len()));
         if let Some((row, span, text, _)) = self.append_delta()
             && target.len() == self.len()
             && row + 1 == target.len()

@@ -215,7 +215,7 @@ impl FileViews {
             .map(|file| file.head_key())
             .transpose()?;
         let mut prepared = Prepared::new(self, change, logical)?;
-        prepared.trim(self, change)?;
+        prepared.trim(self)?;
         admit(
             self.limits,
             prepared.next_count,
@@ -333,6 +333,20 @@ impl Prepared {
                 .checked_add(usize::from(before.is_none()))
                 .ok_or(Error::LimitExceeded)?;
         }
+        // Reuse the changed file lookup from admission. Fetching it again in
+        // trim adds work even for selections that never evict a display tail.
+        let mut task_segments = view.task_segments;
+        let mut task_bytes = view.task_bytes;
+        if let Some(file) = change.file.as_ref().filter(|file| disposable(&file.key)) {
+            let replaced = before.filter(|_| {
+                logical
+                    .as_ref()
+                    .is_some_and(|(_, sequence)| sequence.is_none())
+            });
+            task_segments = task_segments - replaced.map_or(0, |head| head.segments.len()) + 1;
+            task_bytes =
+                task_bytes - replaced.map_or(0, |head| head.length) + file.bytes.len() as u64;
+        }
         Ok(Self {
             expected: view.cursor.clone(),
             logical,
@@ -340,14 +354,13 @@ impl Prepared {
             segments,
             next_count,
             length,
-            task_segments: view.task_segments,
-            task_bytes: view.task_bytes,
+            task_segments,
+            task_bytes,
             evictions: Vec::new(),
         })
     }
-    fn trim(&mut self, view: &FileViews, change: &Change) -> Result<()> {
+    fn trim(&mut self, view: &FileViews) -> Result<()> {
         let logical = &self.logical;
-        let before = logical.as_ref().and_then(|(key, _)| view.files.get(key));
         let mut bytes = self.bytes;
         let mut segments = self.segments;
         let mut next_count = self.next_count;
@@ -355,17 +368,11 @@ impl Prepared {
         // a bounded display tail. Session request/claim/result files are never
         // candidates for eviction. Validate sequence ownership before trimming.
         let mut evictions = Vec::new();
-        let mut task_segments = view.task_segments;
-        let mut task_bytes = view.task_bytes;
+        let mut task_segments = self.task_segments;
+        let mut task_bytes = self.task_bytes;
         let replaces = logical
             .as_ref()
             .is_some_and(|(_, sequence)| sequence.is_none());
-        if let Some(file) = change.file.as_ref().filter(|file| disposable(&file.key)) {
-            let replaced = before.filter(|_| replaces);
-            task_segments = task_segments - replaced.map_or(0, |head| head.segments.len()) + 1;
-            task_bytes =
-                task_bytes - replaced.map_or(0, |head| head.length) + file.bytes.len() as u64;
-        }
         if view.window {
             let incoming = logical.as_ref().map(|(key, _)| key);
             for head in view.disposable.iter().filter_map(|key| view.files.get(key)) {
