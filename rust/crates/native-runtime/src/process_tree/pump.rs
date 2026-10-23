@@ -99,6 +99,21 @@ pub(super) enum Turn {
     Wait,
 }
 
+/// Runs one turn with a capture handler, calling one callback at a time.
+pub(super) fn handled_turn<H: CaptureHandler>(
+    pump: &mut Pump<'_>,
+    tree: &mut ProcessTree,
+    handler: &mut H,
+) -> Turn {
+    let shared = std::cell::RefCell::new(handler);
+    pump.turn(
+        tree,
+        &mut || shared.borrow_mut().check(),
+        &mut |chunk| shared.borrow_mut().observe(chunk),
+        None,
+    )
+}
+
 impl<'a> Pump<'a> {
     pub(super) fn new(
         tree: &mut ProcessTree,
