@@ -77,6 +77,22 @@ test("screen conditions require rendered styles and reject literal markdown", as
   screen.dispose();
 });
 
+test("expected interrupted recovery still requires its retained transcript and exact failure", async () => {
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const write = data => new Promise(resolve => screen.write(data, resolve));
+  const expected = { task_failure: "model provider unavailable (co", contains: ["RECOVERED_E2E"] };
+  const failure = "task 00000000-0000-0000-0000-000000000001 failed: ";
+  await write("RECOVERED_E2E");
+  assert.ok(!matches(screen, "", expected), "replayed prefix alone is not settled recovery");
+  await write("\r\n" + failure + "unauthorized");
+  assert.ok(!matches(screen, "", expected), "another error cannot satisfy interrupted recovery");
+  await write("\r\x1b[2K" + failure + "model provider unavailable (connection interrupted)");
+  assert.ok(matches(screen, "", expected));
+  await write("\x1b[H\x1b[2K");
+  assert.ok(!matches(screen, "", expected), "settlement must preserve the partial transcript");
+  screen.dispose();
+});
+
 test("real children are killed and reaped on scope cleanup", { timeout: 5000 }, async () => {
   const processes = new Processes();
   const running = processes.start(process.execPath, ["-e", "process.stdout.write(JSON.stringify({event:'ready'})+'\\n');process.stdin.resume()"]);

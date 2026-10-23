@@ -64,6 +64,15 @@ pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
             |operation, target, resolution| {
                 let settings = &settings;
                 async move {
+                    if matches!(
+                        &resolution,
+                        CommandResolution::Submit {
+                            request: CommandRequest::Rewind
+                        }
+                    ) {
+                        return Box::pin(execute(local, operation, target, resolution, settings))
+                            .await;
+                    }
                     if !matches!(
                         &resolution,
                         CommandResolution::Prompt { .. }

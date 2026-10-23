@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static SELECTION_AFTER_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Consume one immutable command, never repeating an unacknowledged effect.
     pub async fn consume<F, Fut>(
@@ -106,10 +111,40 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }
         let result_key = key(files::TaskFile::ExecutionResult(id.clone()));
         let result_budget = self.publication_byte_limit(result_key.clone())? as u64;
+        // Completion releases the prompt. Its captured selection must already
+        // be visible when any observer sees that completion file.
+        #[cfg(not(test))]
+        let selection_first = true;
+        #[cfg(test)]
+        let selection_first = !SELECTION_AFTER_OUTCOME.with(std::cell::Cell::get);
+        // A failed admitted task still owns the retained transcript. Publish its
+        // identity before releasing the request, just as for successful turns.
+        let failed_selection = match &result {
+            Err(Error::TaskFailed { task, .. }) => Some(json!({"selected_task": task})),
+            _ => None,
+        };
+        let selection = result.as_ref().ok().or(failed_selection.as_ref());
+        if selection_first && let Some(value) = selection {
+            self.apply_outcome(value).await?;
+        }
+        self.publish_execution_result(result_key, &result, result_budget)
+            .await?;
+        self.persist_activity().await?;
+        if !selection_first && let Some(value) = selection {
+            self.apply_outcome(value).await?;
+        }
+        result.map(Some)
+    }
+    async fn publish_execution_result(
+        &mut self,
+        result_key: files::FileKey,
+        result: &Result<Value>,
+        result_budget: u64,
+    ) -> Result<()> {
         loop {
             let previous = self.generation;
             let sequence = self.generation.position;
-            let bytes = archive::output_bytes(sequence, &result, result_budget)?;
+            let bytes = archive::output_bytes(sequence, result, result_budget)?;
             match self.publish(result_key.clone(), bytes, true).await {
                 Ok(()) => break,
                 // The effect has already finished. Only retry its outcome file,
@@ -123,11 +158,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(error) => return Err(error),
             }
         }
-        self.persist_activity().await?;
-        if let Ok(value) = &result {
-            self.apply_outcome(value).await?;
-        }
-        result.map(Some)
+        Ok(())
     }
 }
 

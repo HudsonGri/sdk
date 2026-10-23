@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import socket
@@ -108,6 +109,84 @@ def remove_home(job):
     shutil.rmtree(job)
 
 
+class OwnedCommand:
+    """Keep the command's group leader alive until its custody pipe closes."""
+    def __init__(self, argv, env, register):
+        control_read, self.control = os.pipe()
+        status_read, status_write = os.pipe()
+        self.child = None
+        self.status = None
+        try:
+            self.child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), 'supervise',
+                 str(control_read), str(status_write), *argv],
+                env=env, pass_fds=(control_read, status_write), start_new_session=True)
+            self.status = os.fdopen(status_read, 'rb')
+            status_read = None
+            # Before admission, parent death closes the pipe without allowing
+            # the command to run. After admission, the recorded supervisor
+            # pins the group identity until every cleanup path stops it.
+            register({'pid': self.child.pid, 'identity': identity(self.child.pid)})
+            os.write(self.control, b'S')
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            os.close(control_read)
+            os.close(status_write)
+            if status_read is not None: os.close(status_read)
+
+    def wait(self):
+        line = self.status.readline()
+        if not line:
+            raise RuntimeError('command supervisor exited without an outcome')
+        return int(line)
+
+    def close(self):
+        if self.control is not None:
+            os.close(self.control)
+            self.control = None
+        if self.child is not None: self.child.wait()
+        if self.status is not None: self.status.close()
+
+
+def supervise(control, status, argv):
+    # This supervisor is the session/group leader. Its parent owns the only
+    # custody writer; even SIGKILL before registration or during execution
+    # therefore reaches the same group-retirement path through EOF.
+    def interrupted(number, frame):
+        raise SystemExit(128+number)
+    for number in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
+        signal.signal(number, interrupted)
+    try:
+        if os.read(control, 1) != b'S': return 224
+        child = subprocess.Popen(argv)
+        exited = os.pidfd_open(child.pid)
+        try:
+            ready, _, _ = select.select([control, exited], [], [])
+            if control in ready: return 224
+            os.write(status, (str(child.wait())+'\n').encode())
+            # Preserve the group identity after the command exits, including
+            # when a shell exits before its descendants.
+            os.read(control, 1)
+        finally: os.close(exited)
+    finally:
+        try: os.killpg(os.getpid(), signal.SIGKILL)
+        except ProcessLookupError: pass
+
+
+def stop_command(command):
+    if not command or identity(command['pid']) != command['identity']: return
+    try: descriptor = os.pidfd_open(command['pid'])
+    except ProcessLookupError: return
+    try:
+        if identity(command['pid']) == command['identity']:
+            try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            except ProcessLookupError: pass
+        select.select([descriptor], [], [])
+    finally: os.close(descriptor)
+
+
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
@@ -132,9 +211,7 @@ def run(argv):
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
     server=None; child=None; before=None; rc=224; units=[]
     def interrupted(n,f):
-        if child:
-            try: os.killpg(child.pid,n)
-            except ProcessLookupError: pass
+        for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
         raise SystemExit(128+n)
     for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,interrupted)
     try:
@@ -178,10 +255,12 @@ def run(argv):
             env['RUSTC']='/home/var/bin/bigstack/rustc';env.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
         if not Path(meta+'.exec').exists() and env.get('BUILD_SLOT_EXEC_IN_PAYLOAD')!='1':
             subprocess.run([NODE,str(BIN/'buildbox-receipt.mjs'),'exec',meta],env=env,check=True)
-        # Stay in the admission lease's process group. A killed client causes
-        # the daemon/receipt watcher to terminate the entire leased group.
-        child=subprocess.Popen(argv,env=env)
+        def register_command(command):
+            runtime['command'] = command
+            atomic(runtimefile, runtime)
+        child=OwnedCommand(argv,env,register_command)
         rc=child.wait(); rc=128-rc if rc<0 else rc
+        child.close()
         if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
             try:
                 from job_exports import prepare
@@ -199,10 +278,8 @@ def run(argv):
     finally:
         # A signal does not leave test children running after their home/cache
         # is removed. The independent receipt watcher covers SIGKILL as well.
-        if child and child.poll() is None:
-            try: child.kill()
-            except ProcessLookupError: pass
-            child.wait()
+        for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
+        if child: child.close()
         stop_server(server)
         try:remove_home(job)
         except OSError as error:
@@ -215,6 +292,7 @@ def run(argv):
 
 def cleanup_runtime(file):
     runtime=json.loads(Path(file).read_text())
+    stop_command(runtime.get('command'))
     stop_server(runtime.get('sccache_server'))
     if not runtime.get('hermetic_home'):return
     job=Path(runtime['hermetic_home'])
@@ -250,7 +328,8 @@ def stop_job(file):
 
 
 if __name__=='__main__':
-    if sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
+    if sys.argv[1:2]==['supervise']: raise SystemExit(supervise(int(sys.argv[2]),int(sys.argv[3]),sys.argv[4:]))
+    elif sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
     elif sys.argv[1:2]==['cleanup-outer']:print(json.dumps(cleanup_outer(sys.argv[2])))
     elif sys.argv[1:2]==['stop-job']:stop_job(sys.argv[2])
     else: raise SystemExit(run(sys.argv[1:]))
