@@ -31,6 +31,9 @@ pub struct ProviderCase {
     /// Registered tools beyond the defaults, named like installed MCP tools.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Native settings used by both the LocalHarness and binary tiers.
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
     pub expect: Expectations,
 }
 

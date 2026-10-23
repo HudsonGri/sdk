@@ -42,6 +42,8 @@ mod remote_swarm;
 mod resume;
 mod runtime_tests;
 mod scenario;
+#[path = "../support/scenario_actions.rs"]
+mod scenario_actions;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
 #[path = "../support/scenario_matchers.rs"]

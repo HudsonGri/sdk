@@ -54,6 +54,8 @@ mod portable_projection_tests;
 pub(crate) mod tool_name_tests;
 #[path = "transport_tests.rs"]
 mod transport_tests;
+#[path = "tool_names_pinned_tests.rs"]
+pub(crate) mod tool_names_pinned_tests;
 
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;
@@ -88,7 +90,7 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             assert_eq!(
                 *visible[0],
                 ModelEvent::Content {
-                    delta: "hé".into()
+                    delta: "hÃ©".into()
                 }
             );
             assert_eq!(
@@ -402,7 +404,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                     blocks[0].outcome,
                     acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay
                 );
-                assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hé"}));
+                assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hÃ©"}));
                 blocks[1]
             } else {
                 assert_eq!(blocks.len(), 1);
@@ -543,9 +545,9 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             ),
             (
                 ToolResultContent::Error {
-                    message: "denied é 🦀".into(),
+                    message: "denied Ã© ðŸ¦€".into(),
                 },
-                "denied é 🦀",
+                "denied Ã© ðŸ¦€",
             ),
         ]
         .map(move |(content, expected)| (adapter, content, expected))

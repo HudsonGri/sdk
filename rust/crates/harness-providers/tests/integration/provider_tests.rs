@@ -5,12 +5,13 @@ use std::path::Path;
 
 proptest! {
     #[test]
-    fn recorded_provider_case_codec_and_exact_event_oracle(text in ".{0,48}", position in 0usize..4, protocol in prop::sample::select(vec!["anthropic", "responses", "chat", "gemini"])) {
+    fn recorded_provider_case_codec_and_exact_event_oracle(text in ".{0,48}", position in 0usize..4, settings in prop::collection::btree_map("[a-z]{1,12}", ".{0,64}", 0..4), protocol in prop::sample::select(vec!["anthropic", "responses", "chat", "gemini"])) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
         let mut value = scenario_data::load_value(&root, &root.join(format!("providers/{protocol}/text.json"))).map_err(TestCaseError::fail)?;
         let object = value.as_object_mut().ok_or_else(|| TestCaseError::fail("case"))?;
         object.remove("driver");
         object.insert("prompt".into(), text.clone().into());
+        object.insert("settings".into(), serde_json::to_value(settings)?);
         let case: ProviderCase = serde_json::from_value(value)?;
         let encoded = serde_json::to_vec(&case)?;
         prop_assert_eq!(serde_json::from_slice::<ProviderCase>(&encoded)?, case);
@@ -144,6 +145,7 @@ fn provider_scenario_fuzz_seeds_round_trip() -> TestResult {
     for bytes in [
         include_bytes!("../../../harness-fuzz/corpus/provider_scenario/chat.json").as_slice(),
         include_bytes!("../../../harness-fuzz/corpus/provider_scenario/gemini.json").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/provider_scenario/mcp.json").as_slice(),
     ] {
         let case: ProviderCase = serde_json::from_slice(bytes)?;
         case.validate()?;
