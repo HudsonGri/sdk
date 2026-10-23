@@ -54,8 +54,44 @@ class MergeFence(unittest.TestCase):
         text = self.alerts.read_text()
         self.assertIn('#1 head='+self.head+' merge_rc=1', text)
         self.assertIn('#2 head='+self.head+' merge_rc=0', text)
+        self.assertEqual((self.state/'held-pending.txt').read_text().split(), ['1'])
+        hold = json.loads((self.state/'head-holds.json').read_text())
+        self.assertEqual(hold['1']['kind'], 'merge-failed')
+        self.assertNotIn('2', hold)
         # Negative control: an unfenced call accepts the changed head.
         self.assertEqual(remote(['gh', 'pr', 'merge', '1']).returncode, 0)
+
+    def test_api_failures_are_held_until_changed_head_or_explicit_recovery(self):
+        gate.record(self.repo, self.repo, self.state, [1, 2])
+        real = subprocess.run
+        def refused(args, **kwargs):
+            if args[0] != 'gh': return real(args, **kwargs)
+            return subprocess.CompletedProcess(args, 1, '', 'authentication/API refused')
+        with patch.object(gate.subprocess, 'run', side_effect=refused):
+            gate.merge(self.repo, self.repo, self.state, [1, 2], self.alerts)
+        self.assertEqual((self.state/'held-pending.txt').read_text().split(), ['1', '2'])
+        g = gate.preparation.Gate(self.repo, self.repo, self.state, self.alerts)
+        self.assertFalse(g.eligible(1)); self.assertFalse(g.eligible(2))
+        g.base = 'new-main-does-not-repair-authentication'
+        self.assertFalse(g.eligible(1))
+        (self.repo/'file').write_text('changed')
+        self.git('commit', '-qam', 'new head')
+        self.git('update-ref', 'refs/pr-gate/1', self.git('rev-parse', 'HEAD'))
+        self.assertTrue(g.eligible(1)); self.assertFalse(g.eligible(2))
+        g.release_failed_merges()
+        self.assertTrue(g.eligible(2))
+        # Negative control executes the previous shape: API refusals are logged
+        # but no failed merge is retained as a queue member or held head.
+        negative = self.root/'negative'; negative.mkdir()
+        (negative/'.prepared-heads.json').write_text(json.dumps({'commit':self.git('rev-parse','HEAD'),
+            'heads':{'1':self.git('rev-parse','refs/pr-gate/1')}}))
+        namespace = {'__file__':str(HERE/'gate-merge.py'), '__name__':'merge_negative'}
+        source = (HERE/'gate-merge.py').read_text().replace('if result.returncode:\n            failed.append',
+                                                           'if False:\n            failed.append')
+        exec(compile(source, str(HERE/'gate-merge.py'), 'exec'), namespace)
+        with patch.object(gate.subprocess, 'run', side_effect=refused):
+            namespace['merge'](self.repo,self.repo,negative,[1],self.alerts)
+        self.assertFalse((negative/'held-pending.txt').exists())
 
     def test_missing_malformed_wrong_group_or_changed_tree_never_merges(self):
         target = self.state/'.prepared-heads.json'
@@ -111,7 +147,7 @@ class MergeFence(unittest.TestCase):
                 record = f'python "{HERE}/gate-merge.py" record "$@" --repo "{self.repo}" --worktree "{self.repo}" --state "$GATE_STATE"\n'
                 (tools/'pr-gate.sh').write_text(('if [ "$#" -gt 1 ]; then exit 1; fi\n' if bisect else '')+record)
                 gh = bins/'gh'
-                gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo OPEN; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; fi\n')
+                gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo OPEN; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; [ "$3" != 1 ]; fi\n')
                 gh.chmod(0o755)
                 (bins/'python').symlink_to(sys.executable)
                 env = {**os.environ, 'GATE_LANES':str(tools), 'GATE_STATE':str(state),
@@ -121,6 +157,9 @@ class MergeFence(unittest.TestCase):
                 merged = (state/'merges').read_text().splitlines()
                 self.assertEqual(len(merged), 2)
                 self.assertTrue(all('--match-head-commit '+self.head in line for line in merged))
+                self.assertEqual((state/'held-pending.txt').read_text().split(), ['1'])
+                self.assertEqual(json.loads((state/'head-holds.json').read_text())['1']['kind'], 'merge-failed')
+                self.assertIn('#2 head='+self.head+' merge_rc=0', (state/'alerts').read_text())
                 self.assertFalse((state/'.lock').exists())
 
 

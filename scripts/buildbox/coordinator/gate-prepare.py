@@ -123,7 +123,13 @@ class Gate:
             if skipped.get('protected') and skipped.get('phase')=='skipped' and skipped.get('attempt',{}).get('head')==head:
                 return False  # protected ownership must change its head, not just main
         hold = self.read('head-holds.json', {}).get(str(pr))
+        if hold and hold['kind'] == 'merge-failed':
+            return hold['head'] != head
         return not hold or hold['head'] != head or hold['base'] != self.base
+
+    def release_failed_merges(self):
+        holds = self.read('head-holds.json', {})
+        self.write('head-holds.json', {p: hold for p, hold in holds.items() if hold['kind'] != 'merge-failed'})
 
     def prepare(self, prs):
         self.refresh(prs)
@@ -172,6 +178,7 @@ def main():
                 detail = g.validate()
                 g.refresh([])
                 g.reset()  # checkout AND clean must succeed before releasing hold
+                g.release_failed_merges()
                 # Explicit coordinator command, not an automatic retry loop.
                 (g.state / 'preparation-hold.json').unlink(missing_ok=True)
                 g.write('recovery.json', {'at': datetime.now(timezone.utc).isoformat(), **detail})

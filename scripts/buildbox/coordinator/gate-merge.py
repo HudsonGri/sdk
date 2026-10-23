@@ -5,12 +5,17 @@ The caller owns pr-gate/.lock throughout preparation, execution and merging.
 The pin is local coordinator state, never parsed from a job's stdout.
 """
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+spec = importlib.util.spec_from_file_location('gate_prepare', Path(__file__).resolve().with_name('gate-prepare.py'))
+preparation = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(preparation)
 
 
 def git(repo, *args):
@@ -37,6 +42,7 @@ def merge(repo, worktree, state, prs, alerts):
     # GitHub checks head identity atomically with the merge, so a push after
     # local validation cannot merge untested commits. A stale peer cannot
     # prevent the other independently pinned peers from merging.
+    failed = []
     for pr in prs:
         result = subprocess.run(['gh', 'pr', 'merge', str(pr), '--squash', '--admin',
                                  '--match-head-commit', pin['heads'][str(pr)]],
@@ -44,6 +50,17 @@ def merge(repo, worktree, state, prs, alerts):
         from datetime import datetime, timezone
         with alerts.open('a', encoding='utf-8') as log:
             log.write(f'{datetime.now(timezone.utc).isoformat()} pr-gate MERGE1 #{pr} head={pin["heads"][str(pr)]} merge_rc={result.returncode} {result.stdout}{result.stderr}\n')
+        if result.returncode:
+            failed.append((pr, f'gh pr merge rc={result.returncode}: {result.stdout}{result.stderr}'.strip()))
+    if failed:
+        # Failed merges remain explicit queue members, rather than silently
+        # disappearing or immediately retrying an unchanged refused head.
+        g = preparation.Gate(repo, worktree, state, alerts)
+        for pr, reason in failed:
+            g.park(pr, 'merge-failed', reason)
+            with (state/'held-pending.txt').open('a', encoding='utf-8') as queue:
+                queue.write(str(pr)+'\n'); queue.flush(); os.fsync(queue.fileno())
+            g.alert('GATE_MERGE_HELD', f'#{pr} head={pin["heads"][str(pr)]}: {reason}; held until a changed head or coordinator recovery')
 
 
 def main():
