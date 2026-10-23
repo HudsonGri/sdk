@@ -5,3 +5,5 @@ Search seeds `.codex/search.json` under the selected settings root (`CODEX_HOME/
 `scripts/qualify-graphcoder-lane.sh` runs focused proofs and the full parallel suite. `E2E_WALL` includes seeding, assertions and cleanup, excluding builds and dependency installation. A red matrix remains a failure even below ten seconds. Cargo's target directory defaults to `target` when `CARGO_TARGET_DIR` is unset.
 
 `pty-diff-folder-move` and `pty-diff-folder-replace` keep the live diff open during native shell changes, then explicitly resume and verify the same descendant removals and additions without redispatch.
+
+`pty-diff-large-restoration` restores the interior of a 1 MiB file while a small added file remains visible, then verifies the retained diff after explicit resume. The filesystem content-equality regression separately forces distinct range-write payload layouts under the unchanged item and byte budgets.

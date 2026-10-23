@@ -30,6 +30,19 @@ where
             Err(error) if !reconciliation_only && phase.can_fail(&error) => {
                 let (journal, operation) =
                     self.command_journal(task, fence, turn, context, io).await?;
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                if io.is_none() {
+                    // Prompt hooks claim effects in the private file ledger,
+                    // before ModelStarted exists in the execution journal.
+                    let Some(files) = context.task_files() else {
+                        return Err(error);
+                    };
+                    if crate::hooks::effects::unsettled_prompt(&files.inner, task, operation)
+                        .await?
+                    {
+                        return Err(error);
+                    }
+                }
                 let progress = phase
                     .finish::<TurnOutput>(Err(error), journal.as_ref(), operation, io)
                     .await?;
@@ -218,6 +231,7 @@ where
                     (fence, operation, reconciliation_only, manifest_digest),
                     &command.input,
                     io,
+                    phase,
                 )
             })?
             .await?

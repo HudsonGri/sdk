@@ -432,3 +432,80 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     )));
     Ok(())
 }
+
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay() -> Result<()> {
+    use crate::hooks::{HookEvent, HookOutput, HookSite};
+    use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
+    for event in HookEvent::at(HookSite::Prompt) {
+        let fixture = Fixture::new().await?;
+        let runtime = fixture.runtime(None).await?;
+        let (reference, _) = manifest(&fixture, true, "retained hook").await?;
+        let (task, fence, command, payload) =
+            retained_command(&fixture, &runtime, reference).await?;
+        let context = runtime.task_context(task, fence.clone()).await?;
+        let files = context
+            .task_files()
+            .ok_or_else(|| Error::Invalid("task files absent".into()))?;
+        let operation = super::super::execution_operation(task, command.operation_id, None)?;
+        let failure = crate::hooks::effects::run_once::<_, _, _, _, _, true>(
+            &files.inner,
+            (task, operation, event.name()),
+            4096,
+            true,
+            || std::future::ready(Ok((Vec::new(), None))),
+            || async { Err(Error::Conflict("hook capture acknowledgement lost".into())) },
+        )
+        .await;
+        assert!(matches!(failure, Err(Error::Conflict(_))));
+        // An unbound provider is normally a known preparation failure. The
+        // retained hook claim prevents that error from settling this command.
+        let result = runtime
+            .commands()
+            .execute(
+                runtime.task_context(task, fence.clone()).await?,
+                fence.clone(),
+                command.clone(),
+                payload.clone(),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Unsupported(_))),
+            "unfinished hook settled"
+        );
+        let outcome = FileKey::Task {
+            task: Component::new(task.to_string())?,
+            file: TaskFile::Context(Component::new(format!(
+                "hook-{operation}-{}-outcome",
+                event.name()
+            ))?),
+        };
+        let cut = files
+            .inner
+            .snapshot(&Query::File(outcome.clone()), 1)
+            .await?;
+        files
+            .inner
+            .append(
+                cut.generation,
+                &FileValue::new(
+                    outcome,
+                    serde_json::to_vec(&HookOutput::default())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                ),
+            )
+            .await?;
+        let result = runtime
+            .commands()
+            .execute(
+                runtime.task_context(task, fence.clone()).await?,
+                fence,
+                command,
+                payload,
+            )
+            .await?;
+        assert!(matches!(result, TaskCommandProgress::Ready(_)));
+    }
+    Ok(())
+}

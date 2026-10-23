@@ -1,6 +1,63 @@
 use super::*;
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn megabyte_interior_restoration_uses_byte_work_instead_of_item_work()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("large-interior-restoration"))?;
+    let bytes = vec![b'x'; 1_048_576];
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, write("/large", bytes.clone()))?;
+    let TransactionCommit::Committed(base) = commit(&mut seed).await? else {
+        return Err("seed did not commit".into());
+    };
+    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        transaction.checkout,
+        change_content(
+            NamespacePath::from_portable(
+                &PortablePath::parse("/large", workspace.limits())?,
+                workspace.limits()
+            )?,
+            crate::ContentChange::Write {
+                offset: 1,
+                bytes: OwnedBytes::from(bytes[1..bytes.len() - 1].to_vec())
+            },
+            crate::ContentTimes::Preserve
+        )
+    )?;
+    let TransactionCommit::Committed(current) = commit(&mut transaction).await? else {
+        return Err("range write did not commit".into());
+    };
+    // The former item-per-byte charge fails this production operation under
+    // the unchanged boundary budget, despite ample byte capacity.
+    let receipt = current
+        .matches_content(
+            &base,
+            "/large",
+            crate::performance::BOUNDARY_BUDGET,
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert!(receipt.value);
+    assert!(receipt.work.items_examined < crate::performance::BOUNDARY_BUDGET.items_examined);
+    assert!(receipt.work.source_bytes_read >= 2 * (bytes.len() as u64 - 2));
+    let denied = current
+        .matches_content(
+            &base,
+            "/large",
+            WorkBudget {
+                source_bytes_read: 0,
+                ..crate::performance::BOUNDARY_BUDGET
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(denied.is_err(), "comparison must retain its byte admission");
+    Ok(())
+}
+
 #[test]
 fn native_range_restoration_compares_bytes_across_payload_layouts() -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()

@@ -195,6 +195,13 @@ async fn compare<S: AsyncObjectStore>(
         if length == 0 {
             return Err(FileRangeReadError::InvalidRange.into());
         }
+        accounting.charge(WorkCounters {
+            // Comparing consumes the two admitted byte sources. A span is one
+            // item; its bytes use the byte budget, independently of item count.
+            source_bytes_read: length.checked_mul(2).ok_or(crate::WorkError::Overflow)?,
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
         let range = ByteRange { offset, length };
         let mut read = async |record| {
             read_file_range_with_accounting(
@@ -213,10 +220,6 @@ async fn compare<S: AsyncObjectStore>(
         };
         let a = read(left).await?;
         let b = read(right).await?;
-        accounting.charge(WorkCounters {
-            items_examined: length,
-            ..WorkCounters::UNCHARGED
-        })?;
         let equal = a.bytes == b.bytes;
         let retained = a
             .logical_owned_bytes
