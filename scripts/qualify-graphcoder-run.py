@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 
@@ -21,8 +22,8 @@ def main():
         "seconds": wall, "exit": result.returncode,
     }), encoding="utf-8")
     print("E2E_WALL", wall, flush=True)
-    # Copy-back needs a successful job even when the strict matrix is red.
+    return result.returncode
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -3,7 +3,6 @@
 set -euo pipefail
 features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http
 binary_features=acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/terminal,acyclic-harness/tui,acyclic-harness/test-support,acyclic-harness/grpc,acyclic-harness/search-http
-cargo update --workspace --locked
 cargo test --locked -p acyclic-fs --features test-support --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py workspace::tests::change_sets:: workspace::tests::content_equality:: workspace::read_core::tests::
 cargo test --locked -p acyclic-harness --features "$features" --test main --no-run --message-format=json |

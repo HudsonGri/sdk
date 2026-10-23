@@ -18,7 +18,7 @@ class QualificationPaths(unittest.TestCase):
                     env["CARGO_TARGET_DIR"] = configured
                 with patch.dict(os.environ, env, clear=True), patch("subprocess.run") as run:
                     run.return_value = subprocess.CompletedProcess([], 1)
-                    main()
+                    self.assertEqual(main(), 1)
                     target = Path(configured or "target") / "debug"
                     self.assertEqual(run.call_args.args[0], [
                         "node", "scripts/graphcoder-e2e/run.mjs",
