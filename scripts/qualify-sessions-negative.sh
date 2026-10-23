@@ -28,6 +28,7 @@ paths=[
  'rust/crates/harness-core/src/filesystem/task_runtime/dispatch.rs',
  'rust/crates/harness-core/src/executor/tool_resolution.rs',
  'rust/crates/harness/src/tui/render/task.rs',
+ 'rust/crates/harness/src/tui/render.rs',
 ]
 (root/'paths').write_text('\n'.join(paths))
 for name in paths:
@@ -172,23 +173,35 @@ python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-session
 source .bb-sessions-binaries.env
 node scripts/qualify-final-answer.mjs "$binary" completed-only prompt
 node scripts/qualify-final-answer.mjs "$binary" pre-dispatch jsonl
-# Independently restore the renderer defect: a local unfinished task is pending,
-# so a busy predicate without that state hides its approval before cancellation.
-python3 - <<'PY'
+# Independently restore each presentation defect after testing the shared wait.
+for control in pending-state stale-outcome-notice; do
+python3 - "$control" <<'PY'
 from pathlib import Path
-p=Path('rust/crates/harness/src/tui/render/task.rs')
-s=p.read_text();old='Some("active" | "running" | "pending")'
+import sys
+if sys.argv[1]=='pending-state':
+ p=Path('rust/crates/harness/src/tui/render/task.rs')
+ old='Some("active" | "running" | "pending")';new='Some("active" | "running")'
+else:
+ p=Path('rust/crates/harness/src/tui/render.rs')
+ old='''        if !self.busy {
+            self.composed_notices
+                .extend(self.outcome_notice.iter().cloned());
+        }'''
+ new='''        self.composed_notices
+            .extend(self.outcome_notice.iter().cloned());'''
+s=p.read_text()
 assert s.count(old)==1
-p.write_text(s.replace(old,'Some("active" | "running")'))
+p.write_text(s.replace(old,new))
 PY
 trap 'restore; rm -rf "$proof"' EXIT
 cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
 source .bb-sessions-binaries.env
 for case in pty-approval-cancel-escape pty-approval-cancel-ctrl-c; do
- expect_failure "hidden-$case" env E2E_OUTPUT="$proof/hidden-$case" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
+ expect_failure "$control-$case" env E2E_OUTPUT="$proof/$control-$case" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
 done
 restore
+done
 trap 'rm -rf "$proof"' EXIT
 cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
