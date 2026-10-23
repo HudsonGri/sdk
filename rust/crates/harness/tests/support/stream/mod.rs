@@ -7,7 +7,12 @@ use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, Strea
 mod controls;
 mod hints;
 use controls::COORDINATOR_PATH;
-pub use controls::{CommitPause, ExecutionFaultMode, LostSessionAck};
+pub use controls::{ExecutionFaultMode, LostSessionAck};
+
+pub struct CommitPause {
+    pub entered: tokio::sync::oneshot::Sender<()>,
+    pub release: tokio::sync::oneshot::Receiver<()>,
+}
 mod append;
 mod commit;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

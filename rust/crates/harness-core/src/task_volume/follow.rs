@@ -78,6 +78,17 @@ impl Change {
     pub fn active_approval_view<'a>(&self, keys: impl Iterator<Item = &'a super::FileKey>) -> Self {
         use super::{FileKey, TaskFile};
         let mut change = self.clone();
+        if !self.file.iter().chain(&self.files).any(|file| {
+            matches!(
+                file.key,
+                FileKey::Task {
+                    file: TaskFile::ApprovalDecision { .. } | TaskFile::ApprovalReview { .. },
+                    ..
+                }
+            )
+        }) {
+            return change;
+        }
         let retained: Vec<_> = keys.collect();
         let decisions: Vec<_> = self
             .file

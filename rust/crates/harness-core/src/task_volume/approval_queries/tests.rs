@@ -246,3 +246,66 @@ async fn approval_live_window_matches_snapshot_after_settlement() {
         4
     );
 }
+
+#[tokio::test]
+async fn approval_live_window_refuses_overfull_pending_set_instead_of_eviction() {
+    use futures::StreamExt as _;
+    let task = component("task");
+    let volume = TaskVolume::open(
+        std::sync::Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_stream::StreamPath::new("approval-pending-bound").unwrap(),
+    )
+    .await
+    .unwrap();
+    let query = Query::TaskSession {
+        task: task.clone(),
+        session: component("session"),
+    };
+    let mut generation = volume.snapshot(&Query::Root, 8).await.unwrap().generation;
+    generation = volume
+        .append(
+            generation,
+            &FileValue::new(
+                key(&task, TaskFile::ApprovalRequest(component("first"))),
+                b"first!".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+    let mut follow = volume
+        .observe_files(query.clone(), None, 8, 8)
+        .await
+        .unwrap()
+        .changes;
+    volume
+        .append(
+            generation,
+            &FileValue::new(
+                key(&task, TaskFile::ApprovalRequest(component("second"))),
+                b"second".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(follow.next().await.unwrap(), Err(Error::LimitExceeded)),
+        "a live unanswered request must not be evicted to admit another"
+    );
+    assert!(
+        matches!(
+            volume.observe_files(query, None, 8, 8).await,
+            Err(Error::LimitExceeded)
+        ),
+        "snapshot and follow must enforce the same pending-set bound"
+    );
+    assert_eq!(
+        volume
+            .snapshot(&Query::Approvals(task), 8)
+            .await
+            .unwrap()
+            .files
+            .len(),
+        2,
+        "the refusing view cannot discard either canonical request"
+    );
+}

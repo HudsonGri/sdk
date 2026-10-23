@@ -241,6 +241,17 @@ async fn approval_live_session_retires_settled_bindings_and_pins_unanswered_requ
         old_rejected,
         "the old unretired follow must exhaust the same file bound"
     );
+    // Transcript recency must not evict the older unanswered approval either.
+    for sequence in 0..140 {
+        let mut file = FileValue::new(
+            task_key(TaskFile::Chunk { turn: 0, sequence }),
+            b"x".to_vec(),
+        );
+        file.channel = Some(crate::task_volume::Channel::Text);
+        generation = volume.append(generation, &file).await?;
+        live.publish_next(async |_| Ok(())).await?;
+        assert!(live.file(&old_key).is_some());
+    }
     let canonical = volume
         .snapshot(
             &Query::Approval {

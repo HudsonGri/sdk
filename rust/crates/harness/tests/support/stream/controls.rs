@@ -66,10 +66,6 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub owned_commit_pause: std::sync::Mutex<Option<CommitPause>>,
 }
 
-pub struct CommitPause {
-    pub entered: tokio::sync::oneshot::Sender<()>,
-    pub release: tokio::sync::oneshot::Receiver<()>,
-}
 impl<P> LostSessionAck<P> {
     pub fn reset_io(&self) {
         use std::sync::atomic::Ordering;

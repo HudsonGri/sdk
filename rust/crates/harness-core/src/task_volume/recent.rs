@@ -191,6 +191,9 @@ pub(super) fn observe(
     };
     let snapshot = observation.snapshot.as_mut().ok_or(Error::ResetRequired)?;
     let window = Window::new(&mut snapshot.files, maximum, bytes, recent);
+    if !window.within_limits() {
+        return Err(Error::LimitExceeded);
+    }
     let active_approvals = matches!(query, Query::TaskSession { .. });
     observation.changes = Box::pin(futures::stream::try_unfold(
         (observation.changes, window),
@@ -203,6 +206,9 @@ pub(super) fn observe(
                 change = change.active_approval_view(window.keys());
             }
             window.apply(&mut change);
+            if !window.within_limits() {
+                return Err(Error::LimitExceeded);
+            }
             Ok(Some((change, (changes, window))))
         },
     ));

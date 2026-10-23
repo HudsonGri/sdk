@@ -30,6 +30,10 @@ impl Window {
         self.entries.keys()
     }
 
+    pub(super) fn within_limits(&self) -> bool {
+        self.entries.len() <= self.maximum_files && self.bytes <= self.maximum_bytes
+    }
+
     /// Selects the snapshot's window in place; later duplicates replace earlier ones.
     pub(super) fn new(
         files: &mut Vec<FileValue>,
