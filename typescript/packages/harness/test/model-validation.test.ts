@@ -86,6 +86,17 @@ test("Rust model event admission rejects duplicate tool identities and accepts c
   expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "bad/name", name: "lookup", arguments: {} }, limits)).toThrow("identity");
 });
 
+test("canonical opaque reasoning survives WASM admission and remains bounded private context", () => {
+  const block = { kind: "encrypted" as const, text: null,
+    origin: { provider: "openai-responses", model: "gpt-6.1-sol", credential_scope: Array(32).fill(7) },
+    continuity: [0, 1, 127, 128, 255], outcome: "preserved-opaque" as const };
+  const event = { kind: "reasoning_block" as const, block };
+  expect(contracts.admitModelEvent(event, DEFAULT_LIMITS).event).toEqual(event);
+  expect(() => validateModelContent({ kind: "reasoning", block }, DEFAULT_LIMITS)).not.toThrow();
+  expect(() => validateUserInput({ kind: "reasoning", block } as never)).toThrow();
+  expect(() => contracts.admitModelEvent(event, { ...DEFAULT_LIMITS, render_bytes: 4 })).toThrow("reasoning");
+});
+
 test("model event admission detaches getter-backed provider events", () => {
   let reads = 0;
   const event = {

@@ -237,7 +237,7 @@ export interface ReasoningOrigin {
     /**
      * Nonsecret scope digest; None means ownership is unknown.
      */
-    credential_scope: number[] | undefined;
+    credential_scope: number[] | null;
 }
 
 /**
@@ -256,7 +256,7 @@ export interface ReasoningBlock {
     /**
      * Readable content verified by the origin adapter, when available.
      */
-    text: string | undefined;
+    text: string | null;
     /**
      * Provider family, model and credential ownership of the native payload.
      */

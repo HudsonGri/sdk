@@ -517,6 +517,7 @@ function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
     case "content":
       return event;
     case "reasoning":
+    case "reasoning_block":
       return event;
   }
 }

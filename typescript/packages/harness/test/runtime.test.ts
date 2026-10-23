@@ -1747,6 +1747,38 @@ describe("typed agent runtime", () => {
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
   });
 
+  test("canonical reasoning and parallel calls remain ordered before tool outputs", async () => {
+    const block = (value: number) => ({ kind: "encrypted" as const, text: null,
+      origin: { provider: "openai-responses", model: "gpt-6.1-sol", credential_scope: Array(32).fill(7) },
+      continuity: [value, 0, 255], outcome: "preserved-opaque" as const });
+    let step = 0;
+    let observed: readonly ModelMessage[] = [];
+    const tool = defineTool<number, number>({ name: "echo", revision: "1", description: "echo", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (_context, input) => input);
+    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+      async *generate(request) {
+        if (step++ === 0) {
+          yield { kind: "reasoning_block" as const, block: block(1) };
+          yield { kind: "tool_call" as const, callId: "first", name: "echo", arguments: 1 };
+          yield { kind: "reasoning_block" as const, block: block(2) };
+          yield { kind: "tool_call" as const, callId: "second", name: "echo", arguments: 2 };
+        } else { observed = request.messages; yield { kind: "content" as const, delta: "done" }; }
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    expect((await runtime.run("go")).text).toBe("done");
+    expect(observed.slice(1)).toEqual([
+      { role: "assistant", content: [
+        { kind: "reasoning", block: block(1) },
+        { kind: "tool_call", callId: "first", name: "echo", arguments: 1 },
+        { kind: "reasoning", block: block(2) },
+        { kind: "tool_call", callId: "second", name: "echo", arguments: 2 },
+      ] },
+      { role: "tool", content: { kind: "tool_result", callId: "first", name: "echo", value: 1 } },
+      { role: "tool", content: { kind: "tool_result", callId: "second", name: "echo", value: 2 } },
+    ]);
+  });
+
   test("typed run input carries attachment refs into the model context", async () => {
     let observed: readonly ModelMessage[] = [];
     const file = {
