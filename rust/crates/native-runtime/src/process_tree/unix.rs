@@ -594,54 +594,228 @@ impl Guard {
     }
 }
 
+/// Members a group check lists without allocating; two listings and one
+/// probe per member stay within [`super::ProcessTree::TERMINATION_OBSERVATIONS`].
+#[cfg(target_vendor = "apple")]
+const GROUP_LISTING: usize = 256;
+
+#[cfg(target_vendor = "apple")]
+const _: () = assert!(super::ProcessTree::TERMINATION_OBSERVATIONS == GROUP_LISTING as u64 + 1);
+
+/// Decides whether a group whose kill failed with EPERM has no live member,
+/// from two kernel listings and one probe per member, without waiting.
+///
+/// XNU's group kill skips zombie members and fails with EPERM when it
+/// signalled none, so EPERM means each member was a zombie or a live process
+/// this one may not signal; only a live member makes the EPERM genuine. The
+/// decision rests on these kernel facts (xnu `proc_listpids`, `pinsertchild`,
+/// `proc_exit`, `proc_find`, `forkproc`):
+/// - a listing copies the group under the process-list lock, every process
+///   that has not begun its final exit (`allproc`) ahead of the exited ones
+///   (`zombproc`), so its first entry is live whenever any member is;
+/// - a probe without zombie lookup finds a listed process exactly while it
+///   has not exited: it joins `allproc` already findable, and leaves it
+///   unfindable for good;
+/// - an exited process never runs again and keeps its PID until reaped; the
+///   PID allocator hands that PID out again only after cycling through every
+///   other free PID.
+///
+/// The first listing is probed whole, and any live member decides at once.
+/// Every other member it holds was dead before the second listing, so when
+/// that listing's first entry is one of them, the group held no live process
+/// at that instant, and with no live member nothing can enter it again but an
+/// outsider, just as after a delivered kill. A first entry that no probe saw
+/// dead entered the group after the first listing, which only a live process
+/// can cause, so the EPERM stands.
 #[cfg(target_vendor = "apple")]
 fn group_has_no_live_members(
     group: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<bool> {
-    let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
-    loop {
-        if group_snapshot_has_no_live_members(group, meter)? {
-            return Ok(true);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-            std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
-            Ok(())
-        })?;
-    }
+    group_has_no_live_members_within::<GROUP_LISTING>(group, meter)
 }
 
+/// [`group_has_no_live_members`] with `LISTING` members listed in place.
 #[cfg(target_vendor = "apple")]
-fn group_snapshot_has_no_live_members(
+fn group_has_no_live_members_within<const LISTING: usize>(
     group: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<bool> {
-    let mut members = [0_i32; 2];
-    let bytes = i32::try_from(std::mem::size_of_val(&members)).map_err(io::Error::other)?;
-    let id = u32::try_from(group).map_err(io::Error::other)?;
-    // libproc returns zero both for an empty list and for an errno failure.
-    let read = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-        // SAFETY: thread-local errno and a writable, correctly sized PID array.
-        Ok(unsafe {
-            *libc::__error() = 0;
-            libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
-        })
-    })?;
-    if read <= 0 {
-        let error = io::Error::last_os_error();
-        return if read == 0 && error.raw_os_error() == Some(0) {
-            Ok(true)
+    let mut members = [0; LISTING];
+    let listed = list_group(group, &mut members, meter)?;
+    if listed < LISTING {
+        return decide_group(members.get_mut(..listed).unwrap_or_default(), group, meter);
+    }
+    // A full listing may have left members out. The kernel never lists more
+    // than its process count plus 20, so storage of that size holds the whole
+    // group unless more than 20 processes were created meanwhile; each such
+    // repetition needs that many new processes, which the process limit bounds.
+    loop {
+        let capacity = process_capacity(group, meter)?;
+        let bytes = u64::try_from(capacity.saturating_mul(std::mem::size_of::<libc::pid_t>()))
+            .map_err(io::Error::other)?;
+        if let Some(meter) = meter {
+            meter.allocate(bytes)?;
+        }
+        let mut members = Vec::new();
+        let decided = if members.try_reserve_exact(capacity).is_ok() {
+            members.resize(capacity, 0);
+            list_group(group, &mut members, meter).and_then(|listed| {
+                if listed < capacity {
+                    let members = members.get_mut(..listed).unwrap_or_default();
+                    decide_group(members, group, meter).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
         } else {
-            Err(error)
+            Err(io::ErrorKind::OutOfMemory.into())
         };
+        drop(members);
+        if let Some(meter) = meter {
+            meter.release(bytes);
+        }
+        if let Some(gone) = decided? {
+            return Ok(gone);
+        }
     }
-    if read == i32::try_from(std::mem::size_of::<libc::pid_t>()).map_err(io::Error::other)?
-        && members.first() == Some(&group)
-    {
-        return Ok(observe_exit_id(id, meter)?.is_some());
-    }
-    Ok(false)
 }
+
+/// Probes every member of a complete first listing, then lists the group's
+/// first entry again.
+#[cfg(target_vendor = "apple")]
+fn decide_group(
+    members: &mut [libc::pid_t],
+    group: libc::pid_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<bool> {
+    decide_group_with(
+        members,
+        |member| probe_member(member, group, meter),
+        || {
+            let mut first = [0; 1];
+            let listed = list_group(group, &mut first, meter)?;
+            Ok(first.get(..listed).and_then(<[_]>::first).copied())
+        },
+    )
+}
+
+/// What a probe found under a listed member's PID.
+#[cfg(target_vendor = "apple")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Probe {
+    /// A process that has not exited, still in the group.
+    Live,
+    /// A process that has not exited, now in another group.
+    Elsewhere,
+    /// No process that has not exited: the member exited, or was reaped.
+    Dead,
+}
+
+/// The group decision over a complete first listing, its member probes and
+/// the second listing's first entry.
+#[cfg(target_vendor = "apple")]
+fn decide_group_with(
+    members: &mut [libc::pid_t],
+    mut probe: impl FnMut(libc::pid_t) -> io::Result<Probe>,
+    first: impl FnOnce() -> io::Result<Option<libc::pid_t>>,
+) -> io::Result<bool> {
+    for member in members.iter_mut() {
+        match probe(*member)? {
+            Probe::Live => return Ok(false),
+            // Not seen dead: it may return, so it never confirms the group.
+            Probe::Elsewhere => *member = 0,
+            Probe::Dead => {}
+        }
+    }
+    Ok(first()?.is_none_or(|first| first != 0 && members.contains(&first)))
+}
+
+/// Lists `group`'s members into `members`, returning how many it holds.
+#[cfg(target_vendor = "apple")]
+fn list_group(
+    group: libc::pid_t,
+    members: &mut [libc::pid_t],
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<usize> {
+    let bytes = libc::c_int::try_from(std::mem::size_of_val(members)).map_err(io::Error::other)?;
+    let id = u32::try_from(group).map_err(io::Error::other)?;
+    let (read, errno) =
+        super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: thread-local errno and writable PID storage of the
+            // stated size; 2 is PROC_PGRP_ONLY.
+            let read = unsafe {
+                *libc::__error() = 0;
+                libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
+            };
+            Ok((read, io::Error::last_os_error().raw_os_error()))
+        })?;
+    // libproc returns zero both for an empty list and for an errno failure.
+    match usize::try_from(read) {
+        Ok(read) if read > 0 || errno == Some(0) => Ok(read / std::mem::size_of::<libc::pid_t>()),
+        _ => Err(errno.map_or_else(|| io::ErrorKind::Other.into(), io::Error::from_raw_os_error)),
+    }
+}
+
+/// Entries a listing of all the kernel's processes may need.
+#[cfg(target_vendor = "apple")]
+fn process_capacity(
+    group: libc::pid_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<usize> {
+    let id = u32::try_from(group).map_err(io::Error::other)?;
+    let (bytes, errno) =
+        super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: a null buffer asks only for the size a listing may need.
+            let bytes = unsafe { libc::proc_listpids(2, id, std::ptr::null_mut(), 0) };
+            Ok((bytes, io::Error::last_os_error().raw_os_error()))
+        })?;
+    match usize::try_from(bytes) {
+        Ok(bytes) if bytes > 0 => Ok(bytes / std::mem::size_of::<libc::pid_t>()),
+        _ => Err(errno.map_or_else(|| io::ErrorKind::Other.into(), io::Error::from_raw_os_error)),
+    }
+}
+
+/// Finds whether `member` has not exited, without zombie lookup.
+#[cfg(target_vendor = "apple")]
+fn probe_member(
+    member: libc::pid_t,
+    group: libc::pid_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<Probe> {
+    // SAFETY: plain integer and byte fields; all-zero is a valid value.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = libc::c_int::try_from(std::mem::size_of_val(&info)).map_err(io::Error::other)?;
+    let (read, errno) =
+        super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: thread-local errno and writable storage of the stated
+            // size; argument 0 excludes processes that began their final exit.
+            let read = unsafe {
+                *libc::__error() = 0;
+                libc::proc_pidinfo(
+                    member,
+                    libc::PROC_PIDT_SHORTBSDINFO,
+                    0,
+                    (&raw mut info).cast(),
+                    size,
+                )
+            };
+            Ok((read, io::Error::last_os_error().raw_os_error()))
+        })?;
+    if read == size {
+        return Ok(if i64::from(info.pbsi_pgid) == i64::from(group) {
+            Probe::Live
+        } else {
+            Probe::Elsewhere
+        });
+    }
+    match errno {
+        Some(libc::ESRCH) if read <= 0 => Ok(Probe::Dead),
+        Some(errno) if read <= 0 && errno != 0 => Err(io::Error::from_raw_os_error(errno)),
+        _ => Err(io::ErrorKind::InvalidData.into()),
+    }
+}
+
+#[cfg(all(test, target_vendor = "apple"))]
+#[path = "apple_group_tests.rs"]
+mod apple_group_tests;
