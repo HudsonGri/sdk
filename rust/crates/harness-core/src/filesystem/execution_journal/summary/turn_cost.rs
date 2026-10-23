@@ -47,34 +47,48 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
     } else {
         PreparationIo::from_budget(budget, &cancellation)?
     };
-    for cold in [false, true] {
+    for (cold, eager) in [(false, false), (true, false), (true, true)] {
         if cold {
             *journal.verified.lock().await = SummaryCache::default();
         }
         let before = io.receipt();
         let owned = io.owned_bytes()?;
-        let records = journal.replay(operation, 1, 1, Some(&io))?.await?;
-        let guard = io.guard_owned(io.owned_since(owned)?)?;
-        assert_eq!(records.len(), 1);
+        let count = if eager {
+            // The former replay path consumes every referenced payload.
+            let records = journal
+                .replay_page(operation, 1, 1, true, Some(&io))
+                .await?;
+            let guard = io.guard_owned(io.owned_since(owned)?)?;
+            let count = records.len();
+            drop(records);
+            drop(guard);
+            count
+        } else {
+            let records = journal.replay(operation, 1, 1, Some(&io))?.await?;
+            let guard = io.guard_owned(io.owned_since(owned)?)?;
+            let count = records.len();
+            drop(records);
+            drop(guard);
+            count
+        };
+        assert_eq!(count, 1);
         let after = io.receipt();
         eprintln!(
-            "replay native={native} cold={cold} source_bytes={} authority_bytes={} object_bytes={} hashed_bytes={}",
+            "replay native={native} cold={cold} eager={eager} source_bytes={} authority_bytes={} object_bytes={} hashed_bytes={}",
             after.source_bytes_read - before.source_bytes_read,
             after.authority_bytes_read - before.authority_bytes_read,
             after.object_bytes_read - before.object_bytes_read,
             after.bytes_hashed - before.bytes_hashed,
         );
         let loaded = after.object_bytes_read - before.object_bytes_read;
-        if cold {
+        if eager {
             assert!(
                 loaded >= payload.len() as u64,
-                "clearing the proof must detect the eager replay negative control"
+                "the old replay path must detect the eager payload negative control"
             );
         } else {
             assert_eq!(loaded, 0, "authenticated replay reloaded a payload");
         }
-        drop(records);
-        drop(guard);
     }
     let bytes = journal.load(&reference, Some(&io))?.await?;
     let guard = io.guard_bytes(&bytes)?;
@@ -136,27 +150,33 @@ async fn append_cost_measurements() -> Result<()> {
             );
             elapsed.push(started.elapsed().as_micros());
             let after = io.receipt();
+            // Commit acknowledgments echo the newly written records. Those
+            // bytes are accounted as reads too; only an excess is history IO.
             assert_eq!(
                 after.authority_records_read - before.authority_records_read,
-                0,
+                after.authority_records_appended - before.authority_records_appended,
                 "append replayed an already authenticated observation at step {step}"
             );
             assert_eq!(
                 after.authority_bytes_read - before.authority_bytes_read,
-                0,
+                after.authority_bytes_written - before.authority_bytes_written,
                 "append reloaded an authenticated journal prefix at step {step}"
             );
             assert!(
                 after.bytes_encoded - before.bytes_encoded < 4_096,
-                "append encoded historical events at step {step}"
+                "append encoding exceeded the fixed per-append bound at step {step}: encoded={}",
+                after.bytes_encoded - before.bytes_encoded
             );
             if [0, 9, 99, 999].contains(&step) {
                 eprintln!(
-                    "append native={native} step={} elapsed_us={} records_read={} bytes_read={} bytes_encoded={}",
+                    "append native={native} step={} elapsed_us={} records_received={} bytes_received={} historical_records={} bytes_written={} bytes_encoded={}",
                     step + 1,
                     elapsed[step as usize],
                     after.authority_records_read - before.authority_records_read,
                     after.authority_bytes_read - before.authority_bytes_read,
+                    (after.authority_records_read - before.authority_records_read)
+                        - (after.authority_records_appended - before.authority_records_appended),
+                    after.authority_bytes_written - before.authority_bytes_written,
                     after.bytes_encoded - before.bytes_encoded
                 );
             }
@@ -173,7 +193,7 @@ async fn append_cost_measurements() -> Result<()> {
 }
 
 #[tokio::test]
-async fn resetting_the_summary_is_detected_by_the_flat_append_read_bound() -> Result<()> {
+async fn full_fold_negative_control_is_detected_by_the_flat_append_read_bound() -> Result<()> {
     let journal = journal().await?;
     let operation = OperationId::new();
     let io = PreparationIo::from_budget(
@@ -191,9 +211,26 @@ async fn resetting_the_summary_is_detected_by_the_flat_append_read_bound() -> Re
         )?
         .await?;
     for step in 0..10 {
-        // The old measured append path constructed this empty summary each time.
-        *journal.verified.lock().await = SummaryCache::default();
+        // Explicitly exercise the old measured full-fold path. A cold cache
+        // alone now has a durable checkpoint and must not replay this prefix.
         let before = io.receipt();
+        let owned = io.owned_bytes()?;
+        let mut summary = ExecutionSummary {
+            operation: Some(operation),
+            ..Default::default()
+        };
+        journal
+            .refresh_summary(operation, &mut summary, Some(&io))
+            .await?;
+        let hold = io.guard_owned(io.owned_since(owned)?)?;
+        let replayed = io.receipt().authority_records_read - before.authority_records_read;
+        assert_eq!(replayed, u64::from(step) + 1);
+        assert!(
+            replayed > 0,
+            "flat read oracle failed to detect prefix replay"
+        );
+        drop(summary);
+        drop(hold);
         journal
             .append(
                 operation,
@@ -210,18 +247,12 @@ async fn resetting_the_summary_is_detected_by_the_flat_append_read_bound() -> Re
                 Some(&io),
             )?
             .await?;
-        let replayed = io.receipt().authority_records_read - before.authority_records_read;
-        assert_eq!(replayed, u64::from(step) + 1);
-        assert!(
-            replayed > 0,
-            "flat read oracle failed to detect prefix replay"
-        );
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn a_second_writer_refreshes_only_the_tail_and_preserves_retry_and_compare_semantics()
+async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and_compare_semantics()
 -> Result<()> {
     let first = journal().await?;
     let second = FilesystemExecutionJournal::new(
@@ -282,9 +313,12 @@ async fn a_second_writer_refreshes_only_the_tail_and_preserves_retry_and_compare
             .append_if_tail(operation, 2, "third", &failure(2, "unavailable"), Some(&io))?
             .await?
     );
-    assert_eq!(
-        io.receipt().authority_records_read - before.authority_records_read,
-        1
+    // The checkpoint and anchor are two records. Each of the two validation
+    // keys traverses at most three pages in these three-entry maps.
+    let reads = io.receipt().authority_records_read - before.authority_records_read;
+    assert!(
+        (2..=8).contains(&reads),
+        "writer refreshed beyond the authenticated cut: {reads}"
     );
     assert!(
         first
@@ -353,7 +387,7 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<
         &mut None,
     )?;
     let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
-    let agent = crate::AgentId::new();
+    let agent = crate::AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
         "append-cost".into(),
@@ -367,7 +401,7 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<
         [81; 32],
         crate::core::Authority {
             kind: crate::core::AggregateKind::Conversation,
-            id: crate::ConversationId::new().to_string(),
+            id: crate::ConversationId::from_bytes([82; 16]).to_string(),
         },
     );
     let scope = issuer.issue(

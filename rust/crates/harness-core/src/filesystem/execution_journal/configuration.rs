@@ -334,6 +334,7 @@ where
         })
     }
 
+    #[cfg(test)]
     pub(super) fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
             Arc::clone(&self.stream),

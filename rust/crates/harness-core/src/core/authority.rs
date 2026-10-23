@@ -484,6 +484,40 @@ impl AuthorityVerifier {
         )
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn execution_checkpoint_proof(
+        &self,
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        let domain = b"harness/v1/execution-index-checkpoint\0";
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(crate::core::owned_sum([
+                domain.len() as u64,
+                1,
+                16,
+                self.id.len() as u64,
+                self.audience.id.len() as u64,
+                32,
+            ])?)?;
+        }
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(domain);
+        hasher.update(&[match self.audience.kind {
+            AggregateKind::Agent => 1,
+            AggregateKind::Conversation => 2,
+            AggregateKind::Session => 3,
+            AggregateKind::Turn => 4,
+            AggregateKind::Task => 5,
+        }]);
+        for value in [&self.id, &self.audience.id] {
+            hasher.update(&(value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        }
+        hasher.update(&digest);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     pub(crate) fn verify_event(
         &self,
         event: &Event,

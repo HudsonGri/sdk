@@ -69,6 +69,26 @@ impl<K, V> Default for SummaryMap<K, V> {
 }
 
 impl<K: SummaryKey, V> SummaryMap<K, V> {
+    pub(super) fn entries(&self) -> impl Iterator<Item = Result<([u8; 32], &V)>> + '_ {
+        self.keys.entries().map(|(key, position)| {
+            self.values
+                .get(position)
+                .map(|value| (key, value))
+                .ok_or_else(|| missing(None))
+        })
+    }
+
+    pub(super) fn get_digest(
+        &self,
+        digest: &[u8; 32],
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<&V>> {
+        self.keys
+            .get(0, digest, io)?
+            .map(|position| self.values.get(position).ok_or_else(|| missing(io)))
+            .transpose()
+    }
+
     fn position(&self, key: &K, io: Option<&PreparationIo>) -> Result<Option<usize>> {
         self.keys.get(0, &key.digest(io)?, io)
     }
@@ -95,6 +115,15 @@ impl<K: SummaryKey, V> SummaryMap<K, V> {
 
     pub(super) fn insert(&mut self, key: K, value: V, io: Option<&PreparationIo>) -> Result<()> {
         let digest = key.digest(io)?;
+        self.insert_digest(digest, value, io)
+    }
+
+    pub(super) fn insert_digest(
+        &mut self,
+        digest: [u8; 32],
+        value: V,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         if let Some(position) = self.keys.get(0, &digest, io)? {
             *self.values.get_mut(position).ok_or_else(|| missing(io))? = value;
             return Ok(());

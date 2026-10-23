@@ -122,6 +122,7 @@ where
                     .try_reserve_exact(entries.size_hint().1.unwrap_or(capacity).min(capacity))
                     .map_err(Error::Allocation)?;
             }
+            let mut page_root = None;
             loop {
                 let _record_hold;
                 if let Some(io) = io {
@@ -201,19 +202,22 @@ where
                     // Refreshing the summary already holds its lock and needs decoded
                     // model admissions. Ordinary replay only needs authenticated refs.
                     let authenticated = !retain_models
-                        && self.verified.lock().await.authenticates(
-                            operation_id,
-                            record.sequence.checked_add(1).ok_or_else(|| {
-                                stock_boundary(
-                                    io,
-                                    crate::wire::ErrorCode::Invalid,
-                                    "execution replay sequence overflow",
-                                )
-                            })?,
-                            &observation.retry_digest,
-                            &observation.event,
-                            io,
-                        )?;
+                        && self
+                            .authenticated_metadata(
+                                operation_id,
+                                record.sequence.checked_add(1).ok_or_else(|| {
+                                    stock_boundary(
+                                        io,
+                                        crate::wire::ErrorCode::Invalid,
+                                        "execution replay sequence overflow",
+                                    )
+                                })?,
+                                &observation.retry_digest,
+                                &observation.event,
+                                io,
+                                &mut page_root,
+                            )
+                            .await?;
                     let model = if authenticated {
                         crate::executor::with_history_io(io, |work| {
                             ContentGrant::authorize_volume(

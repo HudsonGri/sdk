@@ -22,8 +22,31 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         cache.bind(operation, io)?;
+        if let Some(recovery) = cache.summary().recovery {
+            let path = self.index_path(operation, "head", io)?;
+            let mut history = io.map(PreparationIo::history_io);
+            let latest = crate::store::operations::tail_optional_with_work(
+                &self.stream,
+                &path,
+                &mut history
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
+            .await?
+            .unwrap_or(0);
+            if latest != recovery.head_tail {
+                cache.reset(operation, io)?;
+            }
+        }
         let mut edit = cache.edit();
         let (summary, retained_io) = edit.parts();
+        if summary.tail == 0
+            && let Some((state, head_tail)) =
+                self.load_index_checkpoint(operation, retained_io).await?
+        {
+            let current = self.execution_tail(operation, retained_io).await? == state.tail;
+            summary.install_checkpoint(state, head_tail, current);
+        }
         self.refresh_summary(operation, summary, retained_io)
             .await?;
         edit.finish();
@@ -98,6 +121,11 @@ where
                 return Ok(());
             }
             for (record, model) in page {
+                if summary.recovery.is_some_and(|recovery| recovery.indexed) {
+                    let retry = crate::model::hash_bytes(record.idempotency_key.as_bytes(), io)?;
+                    self.preload_summary(summary, retry, &record.event, io)
+                        .await?;
+                }
                 summary.accept(&record, model.as_ref(), limits, io)?;
             }
             drop(page_hold);
@@ -271,27 +299,6 @@ where
             }
             encoded.into()
         };
-        let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(32)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: 32,
-                ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.charge(copying)?;
-        }
-        let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() {
-                return Error::NativeStream {
-                    code: crate::wire::ErrorCode::Invalid,
-                    source: error,
-                    custody: None,
-                };
-            }
-            Error::Invalid(error.to_string())
-        })?;
         let retry_hashing = acyclic_fs::WorkCounters {
             bytes_hashed: 64,
             ..Default::default()
@@ -316,6 +323,11 @@ where
         loop {
             self.refresh_cached_summary(operation_id, &mut cache, io)
                 .await?;
+            let mut edit = cache.edit();
+            let (summary, retained_io) = edit.parts();
+            self.preload_summary(summary, retry_key, event, retained_io)
+                .await?;
+            edit.finish();
             let summary = cache.summary();
             if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
@@ -368,34 +380,12 @@ where
                 limits,
                 retained_io,
             )?;
-            let committed = if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .append_execution(
-                        operation_id,
-                        tail,
-                        &key,
-                        bytes.clone(),
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await?
-            } else {
-                self.append_local_with_io(
-                    &observation,
-                    tail,
-                    key.clone(),
-                    bytes.clone(),
-                    io,
-                )
-                .await?
-            };
-            if committed {
+            let committed = self
+                .publish_indexed_observation(summary, retry_key, event, &bytes, retained_io)
+                .await?;
+            if let Some(recovery) = committed {
+                summary.recovery = Some(recovery);
                 edit.finish();
-                drop(key);
-                drop(key_hold);
                 drop(bytes);
                 drop(body_hold);
                 drop(retry_digest);
@@ -403,100 +393,6 @@ where
                 return Ok(true);
             }
             drop(edit);
-        }
-    }
-
-    async fn append_local_with_io(
-        &self,
-        observation: &BorrowedObservation<'_>,
-        tail: u64,
-        key: StreamKey,
-        bytes: acyclic_stream::OwnedBytes,
-        io: Option<&PreparationIo>,
-    ) -> Result<bool> {
-        let BorrowedObservation {
-            operation_id,
-            retry_digest,
-            event,
-            ..
-        } = *observation;
-        let path_hold = io
-            .map(|io| io.reserve_decode(2 * ("harness/v2/execution/".len() + 36) as u64))
-            .transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(("harness/v2/execution/".len() + 36) as u64)?;
-            io.allocation_attempt(("harness/v2/execution/".len() + 36) as u64)?;
-        }
-        let stream = self.path(operation_id)?;
-        let appended = match io {
-            Some(io) => {
-                let mut borrowed = io.history_io();
-                crate::distributed::append(
-                    (&stream, &self.stream),
-                    [bytes],
-                    0,
-                    Some(tail),
-                    key,
-                    operation_id,
-                    &mut Some(&mut borrowed),
-                )
-                .await
-            }
-            None => stream
-                .append_batch(vec![bytes], Some(tail), Some(key))
-                .await
-                .map_err(|error| match error {
-                    StreamError::IdempotencyMismatch => {
-                        Error::Conflict("execution journal retry identity reused".into())
-                    }
-                    _ => Error::Indeterminate(operation_id),
-                }),
-        };
-        drop(stream);
-        drop(path_hold);
-        match appended {
-            Ok(AppendOutcome::Committed(receipt))
-                if receipt.start == tail && Some(receipt.end) == tail.checked_add(1) =>
-            {
-                Ok(true)
-            }
-            Ok(AppendOutcome::Committed(_)) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Storage,
-                        reason: "execution journal append receipt is invalid",
-                    });
-                }
-                Err(Error::Storage(
-                    "execution journal append receipt is invalid".into(),
-                ))
-            }
-            Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
-            Err(error) => {
-                let error = match error {
-                    Error::Indeterminate(_) => Error::Indeterminate(operation_id),
-                    error @ Error::Conflict(_) => error,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    error @ (Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Conflict,
-                        ..
-                    }
-                    | Error::NativeStream {
-                        source: StreamError::IdempotencyMismatch,
-                        ..
-                    }) => error,
-                    error => return Err(error),
-                };
-                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
-                if records.iter().any(|(record, _)| {
-                    record.idempotency_key == retry_digest && &record.event == event
-                }) {
-                    Ok(true)
-                } else {
-                    Err(error)
-                }
-            }
         }
     }
 }

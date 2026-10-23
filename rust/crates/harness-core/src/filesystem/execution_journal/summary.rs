@@ -3,7 +3,7 @@ use super::*;
 
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
-mod tests;
+pub(super) mod tests;
 
 #[derive(Default)]
 pub(super) struct ExecutionSummary {
@@ -14,7 +14,11 @@ pub(super) struct ExecutionSummary {
     pub(super) models:
         SummaryMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     pub(super) tools: SummaryMap<(u32, [u8; 32]), bool>,
-    pending_dispatches: u64,
+    pub(super) pending_dispatches: u64,
+    pub(super) recovery: Option<checkpoint::Recovery>,
+    pub(super) pages: persistent_index::NodeCache,
+    pub(super) scratch: Option<persistent_index::Scratch>,
+    pub(super) partial: bool,
 }
 
 impl ExecutionSummary {

@@ -42,6 +42,15 @@ impl SummaryCache {
         }
     }
 
+    pub(super) fn reset(
+        &mut self,
+        operation: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        self.clear();
+        self.bind(operation, io)
+    }
+
     pub(super) fn summary(&self) -> &ExecutionSummary {
         &self.summary
     }
@@ -66,7 +75,16 @@ impl SummaryCache {
                 work,
             )
         })?;
-        if self.summary.retries.get(&key, io)? == Some(&(sequence, digest)) {
+        let indexed = self.summary.retries.get(&key, io)?;
+        if indexed.is_none()
+            && self
+                .summary
+                .recovery
+                .is_some_and(|recovery| recovery.indexed)
+        {
+            return Ok(false);
+        }
+        if indexed == Some(&(sequence, digest)) {
             Ok(true)
         } else {
             Err(canonical_boundary(

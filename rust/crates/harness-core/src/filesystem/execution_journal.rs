@@ -24,7 +24,10 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider};
+#[cfg(test)]
+use acyclic_stream::{AppendOutcome, IdempotencyKey as StreamKey};
+use acyclic_stream::{StreamError, StreamProvider};
+#[cfg(test)]
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -33,11 +36,15 @@ mod conversation;
 
 mod cancellation;
 mod canonical;
+mod checkpoint;
+mod checkpoint_maps;
 mod chunks;
 mod configuration;
 mod content;
+mod indexed_publication;
 mod interactions;
 mod observations;
+mod persistent_index;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod publication_future_tests;
