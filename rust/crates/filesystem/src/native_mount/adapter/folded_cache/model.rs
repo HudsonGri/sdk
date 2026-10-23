@@ -53,12 +53,6 @@ impl<T> FoldedDirectoryCache<T> {
     }
 }
 
-mod retry;
-mod view;
-
-#[path = "../../src/access/projection.rs"]
-mod projection;
-
 #[test]
 fn immutable_directory_results_are_never_torn_or_lost() {
     admission_model(insert);

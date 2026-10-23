@@ -1,5 +1,5 @@
 use super::{goal_parser_input, goals};
-use acyclic_harness::{
+use crate::{
     model::ModelEvent,
     test_support::{ScriptedEvent, ScriptedTurn},
 };

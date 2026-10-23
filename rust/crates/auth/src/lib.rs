@@ -10,8 +10,7 @@ mod resource;
 pub mod socket;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-#[path = "../tests/common/signed.rs"]
-pub mod testing;
+pub use fuzzing::signed as testing;
 pub mod trust;
 mod validation;
 pub mod verify;
@@ -71,5 +70,5 @@ pub const KEYRING_DOMAIN: &[u8] = b"acyclic.auth.v1/keyring\0";
 pub const VERSION: u32 = 1;
 
 /// Shared property and mutation-fuzz exercises.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
 pub mod fuzzing;
