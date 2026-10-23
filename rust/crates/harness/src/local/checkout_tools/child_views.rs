@@ -12,6 +12,37 @@ use crate::sync::SyncMutex;
 use crate::sync::owned::lock_owned;
 use std::collections::BTreeMap;
 
+/// Views under construction or constructed and not yet physically retired,
+/// across this process, so the scale test can report the task-view mounts
+/// live at its peak.
+#[cfg(test)]
+static LIVE_IN_PROCESS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Child views of every owner in this process that are not yet retired.
+#[cfg(test)]
+pub(in crate::local) fn live_in_process() -> usize {
+    LIVE_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A view's construction, counted live until it completes or is abandoned.
+#[cfg(test)]
+struct Constructing;
+
+#[cfg(test)]
+impl Constructing {
+    fn start() -> Self {
+        LIVE_IN_PROCESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for Constructing {
+    fn drop(&mut self) {
+        LIVE_IN_PROCESS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub(in crate::local) struct ChildViews<T> {
     index: SyncMutex<Index<T>>,
 }
@@ -191,7 +222,13 @@ impl<T> ChildViews<T> {
             }
             return Err(error);
         }
+        // A view counts as live from the start of its construction, while
+        // its mount is being set up, until its retirement completes.
+        #[cfg(test)]
+        let constructing = Constructing::start();
         let view = Arc::new(create().await?);
+        #[cfg(test)]
+        std::mem::forget(constructing);
         let mut index = views.lock();
         #[cfg(test)]
         {
@@ -277,6 +314,10 @@ impl<T> ChildViews<T> {
             view
         };
         let retired = retire(&view).await;
+        #[cfg(test)]
+        if retired.is_ok() {
+            LIVE_IN_PROCESS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut index = views.lock();
         let Index {
             entries, deferred, ..

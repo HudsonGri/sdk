@@ -405,12 +405,48 @@ impl std::fmt::Display for PerAgent {
     }
 }
 
+/// What the run's descriptor peak holds: thread handles (Windows counts each
+/// thread a handle refers to; Unix has none) and the rest, and the task-view
+/// mounts live at that instant.
+#[derive(Clone, Copy, Debug, Default)]
+struct PeakShape {
+    thread_handles: u64,
+    other_handles: u64,
+    live_views: u64,
+}
+
+impl PeakShape {
+    fn now() -> Self {
+        use acyclic_native_runtime::testing::Descriptor;
+        let descriptors = acyclic_native_runtime::testing::descriptors().unwrap_or_default();
+        let thread_handles = descriptors
+            .iter()
+            .filter(|descriptor| matches!(descriptor, Descriptor::Other(kind) if kind == "Thread"))
+            .count() as u64;
+        Self {
+            thread_handles,
+            other_handles: descriptors.len() as u64 - thread_handles,
+            live_views: live_views(),
+        }
+    }
+}
+
+/// Task views of every agent in this process not yet retired.
+fn live_views() -> u64 {
+    #[cfg(feature = "native-execution")]
+    return crate::local::checkout_tools::child_views::live_in_process() as u64;
+    #[cfg(not(feature = "native-execution"))]
+    0
+}
+
 #[derive(Debug)]
 struct Report {
     agents: u64,
     elapsed: Duration,
     baseline: Resources,
+    baseline_shape: PeakShape,
     peak: Resources,
+    peak_shape: PeakShape,
     idle: Resources,
     idle_cpu_ticks: u64,
     disk_bytes: u64,
@@ -452,6 +488,22 @@ impl Report {
             self.turn_p99,
             self.idle_cpu_ticks,
         );
+        let (base, peak) = (self.baseline_shape, self.peak_shape);
+        let threads = peak.thread_handles.saturating_sub(base.thread_handles);
+        let others = peak.other_handles.saturating_sub(base.other_handles);
+        let views = peak.live_views.max(1);
+        println!(
+            "scale peak handles: thread={threads} ({}/agent, {}/live view) other={others} \
+             ({}/agent, {}/live view) live views={}",
+            PerAgent::of(threads, self.agents),
+            PerAgent::of(threads, views),
+            PerAgent::of(others, self.agents),
+            PerAgent::of(others, views),
+            peak.live_views,
+        );
+    }
+    fn idle_fds(&self) -> PerAgent {
+        self.per_agent(|r| r.fds, &self.idle)
     }
 }
 
@@ -466,18 +518,46 @@ async fn open_agent(directory: &Path, provider: Arc<ScaleProvider>) -> Result<Lo
 
 /// One local harness admits one root turn at a time, so each concurrent root
 /// agent is its own harness (session) in this one process.
-async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Report> {
+/// The process before any measured agent: what every run's costs are
+/// counted from.
+#[derive(Clone, Copy)]
+struct Baseline {
+    resources: Resources,
+    shape: PeakShape,
+}
+
+impl Baseline {
+    fn now() -> Result<Self> {
+        Ok(Self {
+            resources: resources()?,
+            shape: PeakShape::now(),
+        })
+    }
+}
+
+async fn run_agents(
+    agents: u64,
+    children: usize,
+    directory: &Path,
+    from: Baseline,
+) -> Result<Report> {
     let provider = Arc::new(ScaleProvider {
         children,
         started: Instant::now(),
         timings: Arc::default(),
         content: None,
     });
-    let baseline = resources()?;
-    let peak = Arc::new(Mutex::new(baseline));
+    let Baseline {
+        resources: baseline,
+        shape: baseline_shape,
+    } = from;
+    let peak = Arc::new(Mutex::new((baseline, baseline_shape)));
     let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
     // Diagnosis samples finely and keeps what the peak's descriptors name.
     let diagnosing = crate::native_environment::variable("ACYCLIC_SCALE_DIAG").is_some();
+    if diagnosing {
+        println!("scale diag baseline fds={:#?}", descriptor_shapes(directory));
+    }
     let sampler = {
         let (peak, sampling) = (peak.clone(), sampling.clone());
         let root = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
@@ -485,15 +565,19 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
             let mut shapes = None;
             while sampling.load(std::sync::atomic::Ordering::Relaxed) {
                 let now = sample()?;
-                let mut peak = peak.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut guard = peak.lock().unwrap_or_else(PoisonError::into_inner);
+                let (peak, shape) = &mut *guard;
                 peak.rss = peak.rss.max(now.rss);
                 peak.threads = peak.threads.max(now.threads);
-                if diagnosing && now.fds > peak.fds {
-                    shapes = Some(descriptor_shapes(&root));
+                if now.fds > peak.fds {
+                    *shape = PeakShape::now();
+                    if diagnosing {
+                        shapes = Some(descriptor_shapes(&root));
+                    }
                 }
                 peak.fds = peak.fds.max(now.fds);
                 peak.mounts = peak.mounts.max(now.mounts);
-                drop(peak);
+                drop(guard);
                 // Fine enough to catch the creation peak the bound checks.
                 std::thread::sleep(Duration::from_millis(if diagnosing { 2 } else { 5 }));
             }
@@ -542,6 +626,9 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
     println!("scale idle begin pid={}", std::process::id());
     tokio::time::sleep(Duration::from_millis(idle_ms)).await;
     let idle = resources()?;
+    if diagnosing {
+        println!("scale diag idle fds={:#?}", descriptor_shapes(directory));
+    }
     let (disk_bytes, disk_files) = disk_bytes(directory);
     let mut timings = std::mem::take(
         &mut *provider
@@ -551,13 +638,15 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
     );
     drop(idle_agents);
     drop(leaked);
-    let mut peak = *peak.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut peak, peak_shape) = *peak.lock().unwrap_or_else(PoisonError::into_inner);
     peak.watches = idle.watches;
     Ok(Report {
         agents: agents * (1 + children as u64),
         elapsed,
         baseline,
+        baseline_shape,
         peak,
+        peak_shape,
         idle,
         idle_cpu_ticks: (idle.cpu_ticks - before_idle.cpu_ticks) * 1000 / idle_ms,
         disk_bytes,
@@ -569,18 +658,41 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
     })
 }
 
-fn measure(agents: u64, children: usize) -> Result<Report> {
-    let directory = tempfile::tempdir().map_err(storage)?;
-    // Idle blocking threads retire quickly so the idle sample counts only
-    // threads that agents keep alive.
-    let report = tokio::runtime::Builder::new_multi_thread()
+/// Idle blocking threads retire quickly so the idle sample counts only
+/// threads that agents keep alive.
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
         .thread_keep_alive(Duration::from_millis(50))
         .enable_all()
         .build()
-        .map_err(storage)?
-        .block_on(run_agents(agents, children, directory.path()))?;
+        .map_err(storage)
+}
+
+async fn measure(agents: u64, children: usize, from: Baseline) -> Result<Report> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let report = run_agents(agents, children, directory.path(), from).await?;
     report.print();
     Ok(report)
+}
+
+/// Starts the process-wide services a run's agents share, once, before the
+/// baseline: one root agent, which spawns one child running one checkout
+/// command when the run has children, starts the native host's I/O pools and
+/// loads the native mount library and its per-process state. Their handles
+/// are a constant per process, not a cost of any measured agent, and this
+/// agent is excluded from the per-agent division.
+async fn warm_up(children: usize) -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let provider = Arc::new(ScaleProvider {
+        children: children.min(1),
+        started: Instant::now(),
+        timings: Arc::default(),
+        content: None,
+    });
+    let harness = open_agent(directory.path(), provider).await?;
+    let output = harness.run("scale agent w").await?;
+    assert!(output.text.starts_with("done "), "{output:?}");
+    Ok(())
 }
 
 /// Per-agent ceilings for the CI-sized run. Each is a ratchet: a fix that
@@ -606,7 +718,9 @@ mod bounds {
     #[cfg(windows)]
     pub(super) const PEAK_FDS: PerAgent = PerAgent::whole(4);
     /// The soft descriptor limit the bounded run starts under: macOS's stock
-    /// limit, which the run must neither raise nor exhaust.
+    /// limit, which the run must neither raise nor exhaust. Windows has no
+    /// per-process descriptor limit.
+    #[cfg(unix)]
     pub(super) const DESCRIPTOR_LIMIT: u64 = 256;
     /// inotify watches retained per idle agent.
     pub(super) const WATCHES: PerAgent = PerAgent::whole(7);
@@ -658,6 +772,9 @@ impl Report {
     }
 }
 
+/// Measure from a baseline taken before the process-wide services start.
+const COLD_BASELINE: &str = "ACYCLIC_SCALE_COLD_BASELINE";
+
 /// Descriptors each idle agent keeps beyond the harness's own: the negative
 /// control's leak.
 const LEAKED_DESCRIPTORS: &str = "ACYCLIC_SCALE_LEAKED_DESCRIPTORS";
@@ -669,6 +786,10 @@ struct Run {
     children: u64,
     leaked_per_agent: u64,
     retain_child_views: bool,
+    /// Take the baseline before the process-wide services start, so their
+    /// constant handles count against the agents: the warm-up's negative
+    /// control.
+    cold_baseline: bool,
 }
 
 impl Run {
@@ -677,6 +798,7 @@ impl Run {
         children: 0,
         leaked_per_agent: 0,
         retain_child_views: false,
+        cold_baseline: false,
     };
     #[cfg(feature = "native-execution")]
     const CHILDREN: Self = Self {
@@ -711,7 +833,11 @@ fn bounded_run(run: &Run) -> Result<std::process::Output> {
             .split_once("::")
             .map_or("", |(_, name)| name)])
         .args(["--exact", "--ignored", "--nocapture", "--test-threads=1"])
-        .env("ACYCLIC_SCALE_AGENTS", run.roots.to_string())
+        // N then 2N roots: the per-agent idle cost must not grow with N.
+        .env(
+            "ACYCLIC_SCALE_AGENTS",
+            format!("{},{}", run.roots / 2, run.roots),
+        )
         .env("ACYCLIC_SCALE_CHILDREN", run.children.to_string())
         .env("ACYCLIC_SCALE_IDLE_MS", "300")
         .env("ACYCLIC_SCALE_BOUNDS", "1")
@@ -721,6 +847,11 @@ fn bounded_run(run: &Run) -> Result<std::process::Output> {
         // no limit to derive it from, bounds the same allowance.
         .env(acyclic_native_runtime::ADMITTED_DESCRIPTORS_VARIABLE, "64")
         .env_remove("ACYCLIC_SCALE_DIAG");
+    if run.cold_baseline {
+        command.env(COLD_BASELINE, "1");
+    } else {
+        command.env_remove(COLD_BASELINE);
+    }
     if run.retain_child_views {
         command.env(crate::local::children::RETAIN_CHILD_VIEWS, "1");
     } else {
@@ -822,6 +953,30 @@ fn retained_child_views_fail_the_bound() -> Result<()> {
     Ok(())
 }
 
+/// Measured from a cold baseline, the process-wide services' constant handles
+/// (the native host's I/O pool threads and the native mount library's state,
+/// which Windows counts as handles) exceed the idle bound, so the warm-up the
+/// bounded runs take before their baseline is what excludes them.
+#[test]
+#[cfg(all(windows, feature = "native-execution"))]
+fn a_cold_baseline_fails_the_idle_bound() -> Result<()> {
+    let output = bounded_run(&Run {
+        cold_baseline: true,
+        ..Run::CHILDREN
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("{stdout}");
+    assert!(
+        !output.status.success()
+            && stdout.contains("scale agents=48 ")
+            && format!("{stdout}{stderr}").contains("idle fds/agent"),
+        "{stdout}
+{stderr}"
+    );
+    Ok(())
+}
+
 /// A numeric run setting from the environment.
 fn setting<T: std::str::FromStr>(name: &str) -> Option<T> {
     crate::native_environment::variable(name)?
@@ -840,12 +995,43 @@ fn ramp() -> Result<()> {
     // Idle stores' journals and logs hold descriptors only within the
     // process-wide bound `ACYCLIC_CACHED_DESCRIPTORS` sets, so it bounds
     // their total at any agent count.
-    for count in agents.split(',') {
-        let children = setting("ACYCLIC_SCALE_CHILDREN").unwrap_or(0);
-        let report = measure(count.trim().parse().map_err(storage)?, children)?;
-        if crate::native_environment::variable("ACYCLIC_SCALE_BOUNDS").is_some() {
-            report.assert_bounds();
+    let children = setting("ACYCLIC_SCALE_CHILDREN").unwrap_or(0);
+    let bounded = crate::native_environment::variable("ACYCLIC_SCALE_BOUNDS").is_some();
+    let counts = agents
+        .split(',')
+        .map(|count| count.trim().parse::<u64>().map_err(storage))
+        .collect::<Result<Vec<_>>>()?;
+    runtime()?.block_on(async {
+        if crate::native_environment::variable(COLD_BASELINE).is_none() {
+            warm_up(children).await?;
         }
-    }
-    Ok(())
+        // One baseline for every count, so each run counts everything but
+        // the warm-up, including what an earlier run left behind.
+        let baseline = Baseline::now()?;
+        let mut previous: Option<Report> = None;
+        for (index, count) in counts.iter().enumerate() {
+            let report = measure(*count, children, baseline).await?;
+            if bounded {
+                // The ceilings hold at the largest count; the smaller ones
+                // show that the per-agent cost does not grow with the count.
+                if index + 1 == counts.len() {
+                    report.assert_bounds();
+                }
+                if let Some(previous) =
+                    previous.filter(|previous| previous.agents < report.agents)
+                {
+                    assert!(
+                        report.idle_fds() <= previous.idle_fds(),
+                        "idle fds/agent grew with the agent count: {} at {} -> {} at {}",
+                        previous.idle_fds(),
+                        previous.agents,
+                        report.idle_fds(),
+                        report.agents,
+                    );
+                }
+            }
+            previous = Some(report);
+        }
+        Ok(())
+    })
 }
