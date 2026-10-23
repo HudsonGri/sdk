@@ -781,6 +781,8 @@ mod checked_commands;
 mod checkout;
 #[cfg(all(feature = "native-execution", windows))]
 mod powershell;
+#[cfg(all(feature = "native-execution", unix))]
+mod reserved_names;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod lazy_volumes;

@@ -380,6 +380,7 @@ pub(super) async fn open(
         .register_root(view.workspace())
         .await
         .map_err(storage)?;
+    crate::workspace::reconcile_reserved_names(&view).await?;
     let mount_authority = attach
         .authority
         .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
@@ -535,6 +536,9 @@ async fn held_source(
     } else {
         Vec::new()
     };
+    for name in crate::workspace::RESERVED_NAMES {
+        exclusions.push(volumes::namespace(&path, config, &path.join(name))?);
+    }
     exclusions.push(volumes::namespace(
         &path,
         config,

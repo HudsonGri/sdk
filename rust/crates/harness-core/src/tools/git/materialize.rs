@@ -161,7 +161,7 @@ where
             operation_id,
             from: from.id(),
             to,
-            excluded_names: &[".git", ".system", ".volumes"],
+            excluded_names: &crate::workspace::RESERVED_NAMES,
             options: &options,
             budget: WorkBudget::UNBOUNDED,
             cancellation: &cancellation,

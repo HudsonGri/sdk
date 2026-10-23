@@ -2,6 +2,7 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
 use acyclic_native_runtime::spawn;
 
+#[cfg(any(target_os = "linux", all(test, unix)))]
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 /// The directory in a checkout holding its incarnation token, outside every
 /// workspace view.
@@ -362,8 +363,8 @@ mod binding_paths {
         // prefix spelling or a nested task's different physical root.
         #[test]
         fn projection_keeps_the_source_binding_root(
-            directories in prop::collection::vec("[a-zA-ZΩα]{1,8}", 0..4),
-            volume in "[a-zA-ZΩα]{1,8}",
+            directories in prop::collection::vec("[a-zA-ZÎ©Î±]{1,8}", 0..4),
+            volume in "[a-zA-ZÎ©Î±]{1,8}",
         ) {
             let mut root=std::env::current_dir().map_err(|error| TestCaseError::fail(error.to_string()))?;
             for directory in directories {root.push(directory);}

@@ -32,9 +32,5 @@ Checksums detect damage; fabricated valid seal bytes can conservatively prevent
 recovery. This format does not authenticate hostile storage. The barrier policy
 retains its existing weaker device-ordering semantics.
 
-V1 journals remain readable with their original fail-closed raw-frame scan. After
-successful replay, startup writes and syncs a snapshot, syncs its installation,
-then restarts the journal at V2 in the next epoch. A migration crash follows the
-same snapshot-before-journal-restart protocol as compaction. A failed semantic
-open preserves existing bytes. Old binaries reject V2; downgrading a migrated
-root is unsupported.
+Only V2 headers are accepted. Unsupported versions fail closed without changing
+the existing journal or creating a migration snapshot.

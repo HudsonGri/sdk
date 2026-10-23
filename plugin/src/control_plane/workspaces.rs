@@ -116,7 +116,7 @@ impl ControlPlane {
             binding.created()?.native_root_identity,
             &binding.path,
         )?;
-        LazyWorkspace::open(
+        let view = LazyWorkspace::open(
             workspace,
             source,
             self.store.clone(),
@@ -128,7 +128,11 @@ impl ControlPlane {
             },
         )
         .await
-        .map_err(display)
+        .map_err(display)?;
+        acyclic_harness::workspace::reconcile_reserved_names(&view)
+            .await
+            .map_err(display)?;
+        Ok(view)
     }
 
     pub(crate) async fn mount_route(&self, route: &Route) -> Result<LocalMount, String> {
