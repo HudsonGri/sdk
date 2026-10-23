@@ -513,7 +513,12 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
             )
             .await;
         if settled {
-            assert!(matches!(result, Ok(TaskCommandProgress::Ready(_))));
+            let Ok(TaskCommandProgress::Ready(value)) = result else {
+                panic!("settled hook did not produce a command result");
+            };
+            let outcome: Outcome<Value> = serde_json::from_value(value)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(matches!(outcome, Outcome::Failed { .. }));
         } else {
             assert!(
                 matches!(result, Err(Error::Indeterminate(id)) if id == operation),
@@ -535,7 +540,8 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
         }
         let outcome = runtime.task_host().outcome(task).await?;
         if settled {
-            assert!(matches!(outcome, Some(Outcome::Failed { .. })));
+            // The fixture machine consumes the failed command and completes.
+            assert_eq!(outcome, Some(Outcome::Succeeded(Value::String("done".into()))));
         } else {
             assert!(matches!(outcome, Some(Outcome::Indeterminate { .. })));
         }
