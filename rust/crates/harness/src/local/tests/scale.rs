@@ -662,9 +662,33 @@ impl Report {
 /// control's leak.
 const LEAKED_DESCRIPTORS: &str = "ACYCLIC_SCALE_LEAKED_DESCRIPTORS";
 
+/// A bounded run's 48 agents: roots, each with `children` children that each
+/// run one checkout command, and the negative controls' faults.
+struct Run {
+    roots: u64,
+    children: u64,
+    leaked_per_agent: u64,
+    retain_child_views: bool,
+}
+
+impl Run {
+    const ROOTS: Self = Self {
+        roots: 48,
+        children: 0,
+        leaked_per_agent: 0,
+        retain_child_views: false,
+    };
+    #[cfg(feature = "native-execution")]
+    const CHILDREN: Self = Self {
+        roots: 16,
+        children: 2,
+        ..Self::ROOTS
+    };
+}
+
 /// The CI-sized run, bounds asserted, in its own process so that concurrently
 /// running tests do not perturb its process-wide counters.
-fn bounded_run(leaked_per_agent: u64) -> Result<std::process::Output> {
+fn bounded_run(run: &Run) -> Result<std::process::Output> {
     let executable = std::env::current_exe().map_err(storage)?;
     // Unix runs it under the stock soft descriptor limit, lowered by the
     // shell before exec; Windows has no per-process descriptor limit.
@@ -687,22 +711,27 @@ fn bounded_run(leaked_per_agent: u64) -> Result<std::process::Output> {
             .split_once("::")
             .map_or("", |(_, name)| name)])
         .args(["--exact", "--ignored", "--nocapture", "--test-threads=1"])
-        .env("ACYCLIC_SCALE_AGENTS", "48")
-        .env("ACYCLIC_SCALE_CHILDREN", "0")
+        .env("ACYCLIC_SCALE_AGENTS", run.roots.to_string())
+        .env("ACYCLIC_SCALE_CHILDREN", run.children.to_string())
         .env("ACYCLIC_SCALE_IDLE_MS", "300")
         .env("ACYCLIC_SCALE_BOUNDS", "1")
-        .env(LEAKED_DESCRIPTORS, leaked_per_agent.to_string())
+        .env(LEAKED_DESCRIPTORS, run.leaked_per_agent.to_string())
         .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "16")
         // The default under the stock limit, set so that Windows, which has
         // no limit to derive it from, bounds the same allowance.
         .env(acyclic_native_runtime::ADMITTED_DESCRIPTORS_VARIABLE, "64")
         .env_remove("ACYCLIC_SCALE_DIAG");
+    if run.retain_child_views {
+        command.env(crate::local::children::RETAIN_CHILD_VIEWS, "1");
+    } else {
+        command.env_remove(crate::local::children::RETAIN_CHILD_VIEWS);
+    }
     command.output().map_err(storage)
 }
 
 #[test]
 fn per_agent_cost_is_bounded() -> Result<()> {
-    let output = bounded_run(0)?;
+    let output = bounded_run(&Run::ROOTS)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("{stdout}");
     assert!(
@@ -718,7 +747,10 @@ fn per_agent_cost_is_bounded() -> Result<()> {
 /// on whichever OS counts them, so the counts it checks are real.
 #[test]
 fn a_descriptor_leaked_per_agent_fails_the_bound() -> Result<()> {
-    let output = bounded_run(bounds::IDLE_FDS.0 / 1000 + 1)?;
+    let output = bounded_run(&Run {
+        leaked_per_agent: bounds::IDLE_FDS.0 / 1000 + 1,
+        ..Run::ROOTS
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -748,6 +780,45 @@ async fn settled_children_keep_no_task_view() -> Result<()> {
     assert!(output.text.starts_with("done "), "{output:?}");
     let views = &harness.workspace.as_ref().unwrap().children;
     assert_eq!((views.constructed(), views.live()), (2, 0));
+    Ok(())
+}
+
+/// Children that ran checkout commands and settled keep no task view, so
+/// their mounts, callback threads and descriptors stay within the per-agent
+/// bounds.
+#[test]
+#[cfg(feature = "native-execution")]
+fn settled_children_cost_is_bounded() -> Result<()> {
+    let output = bounded_run(&Run::CHILDREN)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("{stdout}");
+    assert!(
+        output.status.success() && stdout.contains("scale agents=48 "),
+        "{stdout}
+{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+/// Settled children that keep their task views exceed the bounds, so the
+/// bounds see each retained view.
+#[test]
+#[cfg(feature = "native-execution")]
+fn retained_child_views_fail_the_bound() -> Result<()> {
+    let output = bounded_run(&Run {
+        retain_child_views: true,
+        ..Run::CHILDREN
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success()
+            && stdout.contains("scale agents=48 ")
+            && format!("{stdout}{stderr}").contains("per-agent ceilings exceeded"),
+        "{stdout}
+{stderr}"
+    );
     Ok(())
 }
 
