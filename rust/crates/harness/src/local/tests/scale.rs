@@ -275,8 +275,14 @@ fn sample() -> std::io::Result<Resources> {
 }
 
 fn diagnose(root: &Path) {
-    use acyclic_native_runtime::testing::Descriptor;
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    println!("scale diag fds={:#?}", descriptor_shapes(&root));
+    diagnose_threads_and_files(&root);
+}
+
+/// This process's descriptors, counted by the shape of what each names.
+fn descriptor_shapes(root: &Path) -> std::collections::BTreeMap<String, u64> {
+    use acyclic_native_runtime::testing::Descriptor;
     let mut fds = std::collections::BTreeMap::<String, u64>::new();
     for descriptor in acyclic_native_runtime::testing::descriptors()
         .into_iter()
@@ -291,7 +297,7 @@ fn diagnose(root: &Path) {
             .split(['/', '\\'])
             .map(|part| {
                 if part.chars().all(|c| c.is_ascii_digit())
-                    || part.len() > 24
+                    || part.len() >= 20
                     || part.starts_with('#')
                     || part.contains(":[")
                 {
@@ -304,8 +310,7 @@ fn diagnose(root: &Path) {
             .join("/");
         *fds.entry(shape).or_default() += 1;
     }
-    println!("scale diag fds={fds:#?}");
-    diagnose_threads_and_files(&root);
+    fds
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -463,18 +468,29 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
     let baseline = resources()?;
     let peak = Arc::new(Mutex::new(baseline));
     let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    // Diagnosis samples finely and keeps what the peak's descriptors name.
+    let diagnosing = crate::native_environment::variable("ACYCLIC_SCALE_DIAG").is_some();
     let sampler = {
         let (peak, sampling) = (peak.clone(), sampling.clone());
+        let root = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
         std::thread::spawn(move || -> std::io::Result<()> {
+            let mut shapes = None;
             while sampling.load(std::sync::atomic::Ordering::Relaxed) {
                 let now = sample()?;
                 let mut peak = peak.lock().unwrap_or_else(PoisonError::into_inner);
                 peak.rss = peak.rss.max(now.rss);
                 peak.threads = peak.threads.max(now.threads);
+                if diagnosing && now.fds > peak.fds {
+                    shapes = Some(descriptor_shapes(&root));
+                }
                 peak.fds = peak.fds.max(now.fds);
                 peak.mounts = peak.mounts.max(now.mounts);
                 drop(peak);
-                std::thread::sleep(Duration::from_millis(100));
+                // Fine enough to catch the creation peak the bound checks.
+                std::thread::sleep(Duration::from_millis(if diagnosing { 2 } else { 5 }));
+            }
+            if let Some(shapes) = shapes {
+                println!("scale diag peak fds={shapes:#?}");
             }
             Ok(())
         })
@@ -564,11 +580,26 @@ fn measure(agents: u64, children: usize) -> Result<Report> {
 mod bounds {
     /// Resident memory retained per idle agent.
     pub(super) const IDLE_RSS_BYTES: PerAgent = PerAgent::whole(12 * 1024 * 1024);
-    /// Open descriptors retained per idle agent. Store ownership holds none
-    /// (store claims), and stream and objects journals only within the
-    /// process's descriptor cache; the core-state log and directory handles
-    /// remain.
-    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(6);
+    /// Open descriptors retained per idle agent: none of its own. Store
+    /// ownership holds none (store claims); journals, logs and held roots
+    /// hold one only within the process's descriptor cache, so the 48-agent
+    /// run's total stays under one per agent. Windows also keeps each
+    /// watched root's directory handle, which its change notifications need.
+    #[cfg(not(windows))]
+    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(1);
+    #[cfg(windows)]
+    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(2);
+    /// Open descriptors at the run's peak, while all agents are created and
+    /// run their first turn together. Materializations are admitted against
+    /// one process-wide descriptor allowance and cached files against the
+    /// cache's, so the peak is bounded by those and not by the agent count.
+    #[cfg(not(windows))]
+    pub(super) const PEAK_FDS: PerAgent = PerAgent::whole(3);
+    #[cfg(windows)]
+    pub(super) const PEAK_FDS: PerAgent = PerAgent::whole(4);
+    /// The soft descriptor limit the bounded run starts under: macOS's stock
+    /// limit, which the run must neither raise nor exhaust.
+    pub(super) const DESCRIPTOR_LIMIT: u64 = 256;
     /// inotify watches retained per idle agent.
     pub(super) const WATCHES: PerAgent = PerAgent::whole(7);
     /// Threads retained per idle agent beyond the process-wide pools: none,
@@ -588,6 +619,7 @@ impl Report {
         use bounds::*;
         let idle_rss = self.per_agent(|r| r.rss, &self.idle);
         let idle_fds = self.per_agent(|r| r.fds, &self.idle);
+        let peak_fds = self.per_agent(|r| r.fds, &self.peak);
         let watches = self.per_agent(|r| r.watches, &self.idle);
         let threads = PerAgent::of(
             self.idle
@@ -600,6 +632,7 @@ impl Report {
         let checks = [
             ("idle rss bytes", idle_rss, IDLE_RSS_BYTES),
             ("idle fds", idle_fds, IDLE_FDS),
+            ("peak fds", peak_fds, PEAK_FDS),
             ("inotify watches", watches, WATCHES),
             ("idle threads", threads, IDLE_THREADS),
             ("disk bytes", disk, DISK_BYTES),
@@ -624,7 +657,24 @@ const LEAKED_DESCRIPTORS: &str = "ACYCLIC_SCALE_LEAKED_DESCRIPTORS";
 /// The CI-sized run, bounds asserted, in its own process so that concurrently
 /// running tests do not perturb its process-wide counters.
 fn bounded_run(leaked_per_agent: u64) -> Result<std::process::Output> {
-    std::process::Command::new(std::env::current_exe().map_err(storage)?)
+    let executable = std::env::current_exe().map_err(storage)?;
+    // Unix runs it under the stock soft descriptor limit, lowered by the
+    // shell before exec; Windows has no per-process descriptor limit.
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!(
+                "ulimit -S -n {} && exec \"$0\" \"$@\"",
+                bounds::DESCRIPTOR_LIMIT
+            ))
+            .arg(executable);
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = std::process::Command::new(executable);
+    command
         .args([concat!(module_path!(), "::ramp")
             .split_once("::")
             .map_or("", |(_, name)| name)])
@@ -635,9 +685,11 @@ fn bounded_run(leaked_per_agent: u64) -> Result<std::process::Output> {
         .env("ACYCLIC_SCALE_BOUNDS", "1")
         .env(LEAKED_DESCRIPTORS, leaked_per_agent.to_string())
         .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "16")
-        .env_remove("ACYCLIC_SCALE_DIAG")
-        .output()
-        .map_err(storage)
+        // The default under the stock limit, set so that Windows, which has
+        // no limit to derive it from, bounds the same allowance.
+        .env(acyclic_native_runtime::ADMITTED_DESCRIPTORS_VARIABLE, "64")
+        .env_remove("ACYCLIC_SCALE_DIAG");
+    command.output().map_err(storage)
 }
 
 #[test]
