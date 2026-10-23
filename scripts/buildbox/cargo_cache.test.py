@@ -14,8 +14,10 @@ import bb_cargo_cache as cache
 class LocalTargetLease(unittest.TestCase):
     def test_cold_jobs_bypass_store_reads_and_publication_at_both_entries(self):
         class Executed(Exception):pass
-        for flag in ['BB_CACHE_DISABLED','BB_TARGET_STORE_DISABLED']:
-            with self.subTest(flag=flag), patch.dict(os.environ,{flag:'1','BUILD_SLOT_RECEIPT_META':'unused'},clear=True), \
+        self.assertFalse(cache.store.disabled({}))
+        self.assertFalse(cache.store.disabled({'RUSTC_WRAPPER':'sccache'}))
+        for flag,value in [('BB_CACHE_DISABLED','1'),('BB_TARGET_STORE_DISABLED','1'),('RUSTC_WRAPPER','')]:
+            with self.subTest(flag=flag), patch.dict(os.environ,{flag:value,'BUILD_SLOT_RECEIPT_META':'unused'},clear=True), \
                  patch.object(cache.os,'execv',side_effect=Executed) as execute, \
                  patch.object(cache.store,'private_target',side_effect=AssertionError('store accessed')), \
                  patch.object(cache.store,'Session') as session:

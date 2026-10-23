@@ -232,7 +232,9 @@ class Session:
 
 
 def disabled(env):
-    return env.get('BB_CACHE_DISABLED') == '1' or env.get('BB_TARGET_STORE_DISABLED') == '1'
+    return (env.get('BB_CACHE_DISABLED') == '1'
+            or env.get('BB_TARGET_STORE_DISABLED') == '1'
+            or env.get('RUSTC_WRAPPER') == '')
 
 
 def prepare(meta, env, job):
