@@ -12,9 +12,10 @@ fn map_slack(value: &Value) -> Result<u64> {
 
 fn part_slack(part: &ModelContentPart) -> Result<u64> {
     match part {
-        ModelContentPart::ToolCall(call) => {
-            add(map_slack(&call.arguments)?, map_slack(&call.metadata)?)
-        }
+        ModelContentPart::ToolCall(call) => call
+            .retained_payload_bytes()?
+            .checked_sub(call.payload_bytes()?)
+            .ok_or_else(super::inventory::overflow),
         ModelContentPart::ToolResult {
             content: ToolResultContent::Json { value },
             ..
@@ -22,6 +23,22 @@ fn part_slack(part: &ModelContentPart) -> Result<u64> {
         _ => Ok(0),
     }
 }
+
+#[cfg(feature = "filesystem")]
+impl ToolResultContent {
+    pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
+        add(
+            self.payload_bytes()?,
+            match self {
+                Self::Json { value } => map_slack(value)?,
+                _ => 0,
+            },
+        )
+    }
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod moved_tests;
 
 impl ModelRequest {
     pub(super) fn retained_payload_bytes(&self) -> Result<u64> {
@@ -59,12 +76,9 @@ impl ModelContent {
 mod tests {
     use super::*;
 
-    #[test]
-    fn retained_request_inventory_covers_sparse_maps_in_every_json_slot() -> Result<()> {
+    fn sparse_request() -> Result<ModelRequest> {
         let sparse = serde_json::json!({"outer": [{"inner": "value"}]});
-        let slack = map_slack(&sparse)?;
-        assert!(slack > 0, "logical entry slots omit sparse node capacity");
-        let request = ModelRequest {
+        Ok(ModelRequest {
             model: Model::new(
                 "test".into(),
                 "inventory".into(),
@@ -96,12 +110,54 @@ mod tests {
                 projection_schema: sparse,
             }],
             max_output_tokens: None,
-        };
+        })
+    }
+
+    #[test]
+    fn retained_request_inventory_covers_sparse_maps_in_every_json_slot() -> Result<()> {
+        let request = sparse_request()?;
+        let slack = map_slack(&request.model.options)?;
+        assert!(slack > 0, "logical entry slots omit sparse node capacity");
         // Seven JSON positions; the old logical inventory is the negative control.
         assert_eq!(
             request.retained_payload_bytes()? - request.payload_bytes()?,
             7 * slack
         );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn every_model_json_copy_retains_and_releases_its_original_map_custody() -> Result<()> {
+        let source = sparse_request()?;
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let io = if native {
+                PreparationIo::from_native_work(&work)?
+            } else {
+                PreparationIo::from_budget(budget, &cancellation)?
+            };
+            let copied = clone_request(&source, Some(&io))?;
+            assert_eq!(copied, source);
+            let retained = copied.retained_payload_bytes()?;
+            assert_eq!(
+                io.owned_bytes()?,
+                retained,
+                "a model JSON copy lost map custody"
+            );
+            // The previous logical-only callback omits the unused map slots.
+            assert!(copied.payload_bytes()? < retained);
+            let custody = io.guard_owned(retained)?;
+            drop(copied);
+            drop(custody);
+            assert_eq!(io.owned_bytes()?, 0);
+            drop(io);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
         Ok(())
     }
 }

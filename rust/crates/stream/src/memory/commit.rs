@@ -388,9 +388,10 @@ impl MemoryStream {
         let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
         self.publish(envelope_payload_bytes(&plan.result), || {
             check_deadline()?;
-            let time = state
-                .last_committed_at_micros
-                .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+            let time = crate::preparation::committed_time(
+                state.last_committed_at_micros,
+                self.commit_clock.now_unix_millis(),
+            );
             plan.bind(commit_id, time)?;
             plan.publish(
                 state,
@@ -418,33 +419,9 @@ impl MemoryStream {
     ) -> Result<Option<CommitConflict>, StreamError> {
         let path = condition_path(condition);
         let actual = state.paths.get(path).map(|path| path.tail);
-        Ok(match condition {
-            CommitCondition::Tail { expected, .. } | CommitCondition::Head { expected, .. }
-                if actual != Some(*expected) =>
-            {
-                Some(CommitConflict::Tail {
-                    path: path.clone(),
-                    expected: *expected,
-                    actual,
-                })
-            }
-            CommitCondition::Absent { .. } if actual.is_some() => {
-                Some(CommitConflict::Exists { path: path.clone() })
-            }
-            CommitCondition::Head { commit_id, .. } => {
-                #[cfg(all(acyclic_loom, feature = "local"))]
-                if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
-                    return Ok(None);
-                }
-                let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
-                let actual = self.preceding_commit(stream)?;
-                (actual != *commit_id).then(|| CommitConflict::Head {
-                    path: path.clone(),
-                    expected: *commit_id,
-                    actual,
-                })
-            }
-            _ => None,
+        crate::preparation::condition_conflict(condition, actual, || {
+            let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
+            self.preceding_commit(stream)
         })
     }
 

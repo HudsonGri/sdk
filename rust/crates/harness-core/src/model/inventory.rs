@@ -91,7 +91,7 @@ impl ToolResultContent {
         }
     }
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        add(size_of::<Self>() as u64, self.payload_bytes()?)
+        add(size_of::<Self>() as u64, self.retained_payload_bytes()?)
     }
 }
 #[cfg(feature = "filesystem")]

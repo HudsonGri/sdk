@@ -20,13 +20,19 @@ impl<'a> PreparationScope<'a> {
 
     /// Release scratch and transfer only the inventoried output. Admission
     /// already happened on this ledger; transfer never allocates a second copy.
-    pub(crate) fn finish(self, retained: u64) -> Result<()> {
+    pub(crate) fn finish(&self, retained: u64) -> Result<()> {
         let (Some(original), Some(local)) = (self.original, &self.local) else {
             return Ok(());
         };
-        let mut hold = local.guard_owned(local.owned_bytes()?)?;
-        hold.substitute(retained)?;
-        hold.into_retained()?;
+        // Keep custody in this scope through every fallible check. A detached
+        // temporary guard would release the output too early if cancellation
+        // raced with substitution, before the caller could destroy its value.
+        local.check_cancellation()?;
+        let scratch = local
+            .owned_bytes()?
+            .checked_sub(retained)
+            .ok_or_else(|| local.invalid("audited output exceeds preparation custody"))?;
+        local.release(scratch)?;
         match local {
             PreparationIo::Owned { custody, .. } => {
                 let target = match original {
@@ -61,6 +67,9 @@ impl<'a> PreparationScope<'a> {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 
 impl Drop for PreparationScope<'_> {
     fn drop(&mut self) {

@@ -21,14 +21,6 @@ fn reserve_append(
     reserve_records(state, records.len(), bytes, limits)
 }
 
-fn commit_identity(decision: u64, digest: [u8; 32]) -> CommitId {
-    let mut hash = Sha256::new();
-    hash.update(b"acyclic.stream.commit.v1\0");
-    hash.update(decision.to_le_bytes());
-    hash.update(digest);
-    CommitId::from_bytes(hash.finalize().into())
-}
-
 impl MemoryStream {
     fn replay_outcome<'a>(
         &self,
