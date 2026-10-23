@@ -61,7 +61,7 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
             },
         )
         .unwrap();
-        let task: TaskId = serde_json::from_value(root["task"].clone()).unwrap();
+        let task: TaskId = serde_json::from_value(root.get("task").unwrap().clone()).unwrap();
         let child = host_files::request(
             &checkout,
             HostAction::Fork {
@@ -70,9 +70,9 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
             },
         )
         .unwrap();
-        let view = std::path::PathBuf::from(child["cwd"].as_str().unwrap());
+        let view = std::path::PathBuf::from(child.get("cwd").unwrap().as_str().unwrap());
         std::fs::write(view.join("native-write.txt"), "captured before shutdown").unwrap();
-        let child: TaskId = serde_json::from_value(child["task"].clone()).unwrap();
+        let child: TaskId = serde_json::from_value(child.get("task").unwrap().clone()).unwrap();
         host_files::request(&checkout, HostAction::Capture { task: child }).unwrap();
         assert!(
             Command::new("kill")
