@@ -49,11 +49,11 @@ proptest! {
             anchor = candidate.move_by(anchor, motion, height);
             let top = anchor.map_or(Top::Tail, Top::At);
             let window = candidate.view(top, height);
-            prop_assert_eq!(window.top, positions[expected]);
+            prop_assert_eq!(Some(window.top), positions.get(expected).copied());
             let contents = |rows: &[Line<'_>]| rows.iter().map(|row| {
                 row.spans.iter().map(|span| span.content.as_ref()).collect::<String>()
             }).collect::<Vec<_>>();
-            prop_assert_eq!(contents(candidate.shown()), contents(&old[expected..(expected + height).min(old.len())]));
+            prop_assert_eq!(contents(candidate.shown()), contents(old.get(expected..(expected + height).min(old.len())).unwrap()));
             prop_assert_eq!(anchor.is_none(), expected == maximum);
         }
         if let Some(anchor) = anchor {
@@ -133,8 +133,8 @@ fn assert_equal_frame_costs(eager_control: bool) {
         }
     }
     assert_eq!(
-        &costs[..2],
-        &costs[2..],
+        costs.get(..2).unwrap(),
+        costs.get(2..).unwrap(),
         "frame work and allocations depend on the archive"
     );
 }
@@ -184,7 +184,7 @@ fn an_anchored_wheel_step_wraps_only_the_three_new_rows() {
         assert_eq!(WORK.with(|work| work.get()), (0, 0, 0));
         assert_eq!((unchanged.count_total, unchanged.bytes_total), (0, 0));
     }
-    assert_eq!(costs[0], costs[1]);
+    assert_eq!(costs.first().unwrap(), costs.get(1).unwrap());
 }
 
 #[test]
@@ -295,7 +295,7 @@ fn styled_cells(source: &[Line<'_>], width: u16) -> Vec<(RowPosition, ratatui::b
         let mut row = 0;
         for (index, wrapped) in layout.rows.iter().enumerate() {
             if wrapped.cells.is_empty() && index > 0 {
-                let previous = &layout.rows[index - 1];
+                let previous = layout.rows.get(index - 1).unwrap();
                 if previous.end == wrapped.start
                     && previous
                         .cells
@@ -378,7 +378,7 @@ fn assert_styled_windows(lose_styles: bool) {
             .position(|(position, _)| *position == candidate.window().top)
             .unwrap();
         let area = Rect::new(0, 0, width, 1);
-        for (row, (_, expected)) in candidate.shown().iter().zip(&eager[first..]) {
+        for (row, (_, expected)) in candidate.shown().iter().zip(eager.get(first..).unwrap()) {
             let mut actual = Buffer::empty(area);
             Paragraph::new(row.clone()).render(area, &mut actual);
             assert_eq!(

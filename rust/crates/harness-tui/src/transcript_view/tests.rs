@@ -19,7 +19,7 @@ fn eager(source: &[Vec<Line<'_>>; 3], width: u16) -> (Vec<String>, Vec<Transcrip
             let mut row = 0;
             for (at, wrapped) in layout.rows.iter().enumerate() {
                 if wrapped.cells.is_empty() && at > 0 {
-                    let previous = &layout.rows[at - 1];
+                    let previous = layout.rows.get(at - 1).unwrap();
                     if previous.end == wrapped.start
                         && previous
                             .cells
@@ -103,7 +103,7 @@ proptest! {
             let maximum = (old.len()+usize::from(busy)).saturating_sub(height);
             let expected = if height == 0 { anchor } else {
                 let first = rank(anchor,&positions,maximum).saturating_add_signed(motion).min(maximum);
-                (first < maximum).then(||positions[first])
+                (first < maximum).then(||*positions.get(first).unwrap())
             };
             let before = anchor;
             anchor = move_transcript({ let [a,b,c] = parts.each_mut(); [reasoning_visible.then_some(a),Some(b),Some(c)] },anchor,motion,height,usize::from(busy));
@@ -115,7 +115,7 @@ proptest! {
             } else {
                 let first = rank(anchor,&positions,maximum).min(old.len());
                 let actual = shown(&parts);
-                let expected = &old[first..(first+height).min(old.len())];
+                let expected = old.get(first..(first+height).min(old.len())).unwrap();
                 prop_assert_eq!(actual.as_slice(), expected);
             }
             let changed = source[2].len();
@@ -130,7 +130,7 @@ proptest! {
         let bytes = serde_json::to_vec(&anchor).unwrap();
         prop_assert_eq!(serde_json::from_slice::<TranscriptAnchor>(&bytes).unwrap(),anchor);
         let mut value = serde_json::to_value(anchor).unwrap();
-        value["position"]["unknown"] = serde_json::json!(true);
+        value.get_mut("position").unwrap().as_object_mut().unwrap().insert("unknown".into(), serde_json::json!(true));
         prop_assert!(serde_json::from_value::<TranscriptAnchor>(value).is_err());
     }
 }

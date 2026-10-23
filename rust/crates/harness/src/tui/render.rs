@@ -540,13 +540,14 @@ mod frame_tests;
 #[path = "thinking_frame_tests.rs"]
 mod thinking_frame_tests;
 
+#[cfg(test)]
 #[cfg(all(
-    test,
     feature = "filesystem-local",
     feature = "test-support",
     not(target_arch = "wasm32")
 ))]
 mod viewport_cost;
 
-#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod scrollbar_tests;
