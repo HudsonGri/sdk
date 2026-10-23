@@ -25,6 +25,7 @@ paths=[
  'rust/crates/harness/src/client/input_files.rs',
  'rust/crates/harness/src/local/commands.rs',
  'rust/crates/harness/src/bin/graphcoder/view.rs',
+ 'rust/crates/harness-core/src/filesystem/task_runtime/dispatch.rs',
 ]
 (root/'paths').write_text('\n'.join(paths))
 for name in paths:
@@ -40,6 +41,11 @@ replace(paths[1],'''ExecutionProgress::PreDispatchFailed(failure) => ready(
             ),''','ExecutionProgress::PreDispatchFailed(failure) => Err(Error::Invalid(failure.into_message())),')
 replace(paths[1],'Err(error) if !reconciliation_only && phase.can_fail(&error) => {',
         'Err(error) if false && !reconciliation_only && phase.can_fail(&error) => {')
+# Current main also settles definitive command errors. Remove that overlapping
+# terminal path for model commands so this control restores the old uncertain
+# outcome rather than silently relying on another implementation of the feature.
+replace(paths[7],'Err(error) if error.leaves_outcome_uncertain() => {',
+        'Err(error) if error.leaves_outcome_uncertain() || command.kind == super::super::MODEL_TASK_COMMAND_KIND => {')
 replace(paths[2],'if let Some(provider) = search.provider()? {','if let Some(provider) = Option::<Arc<dyn acyclic_harness::search::SearchProvider>>::None {')
 replace(paths[2],'client::local_identity(operation)','phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?')
 replace(paths[2],'phase(|| client::resume_local_identity(&local, operation)).await?','return Err("retained interactive resume is unavailable".into())')
