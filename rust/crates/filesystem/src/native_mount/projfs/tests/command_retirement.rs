@@ -151,9 +151,12 @@ async fn retire_after_cancellation(
     let mount = workspace
         .mount(
             &destination,
-            crate::MountOptions::read_write()
-                .publication(crate::MountPublication::Manual)
-                .native_context(&work, None, None),
+            fixture_access::options(
+                &workspace,
+                crate::MountOptions::read_write().publication(crate::MountPublication::Manual),
+            )
+            .await?
+            .native_context(&work, None, None),
         )
         .await?;
     mount.sync().await?;
@@ -306,9 +309,12 @@ async fn command_retirement_retries_the_physical_owner_before_live_controls()
     let mount = workspace
         .mount(
             &destination,
-            crate::MountOptions::read_write()
-                .publication(crate::MountPublication::Manual)
-                .native_context(&work, None, None),
+            fixture_access::options(
+                &workspace,
+                crate::MountOptions::read_write().publication(crate::MountPublication::Manual),
+            )
+            .await?
+            .native_context(&work, None, None),
         )
         .await?;
     let authentic_root = {
@@ -345,4 +351,12 @@ async fn command_retirement_retries_the_physical_owner_before_live_controls()
     assert!(!destination.exists());
     mount.complete_command(true).await?;
     Ok(())
+}
+
+mod fixture_access {
+    use crate as acyclic_fs;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/native_access.rs"
+    ));
 }
