@@ -178,7 +178,9 @@ impl LocalFileClient {
         Ok(())
     }
 
-    async fn submit(&mut self, file: &FileValue) -> Result<()> {
+    #[inline(never)]
+    fn submit<'a>(&'a mut self, file: &'a FileValue) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
         validate(file, self.operation)?;
         // Both -p and JSONL enter through this boundary. Already pinned prompt
         // resolutions are data, so template expansion is never parsed twice.
@@ -241,6 +243,7 @@ impl LocalFileClient {
                 Err(error) => return Err(error.into()),
             }
         }
+        })
     }
 
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {

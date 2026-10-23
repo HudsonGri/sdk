@@ -2,6 +2,7 @@ use super::*;
 use std::{collections::VecDeque, future::Future, pin::Pin};
 
 impl LocalHarness {
+    #[inline(never)]
     pub(in crate::local) fn advance_with_children<'a>(
         &'a self,
         task: TaskId,
@@ -101,7 +102,7 @@ impl LocalHarness {
                     .await
                 };
             }
-            let result = async {
+            let result = coordination(|| async {
                 loop {
                     if !inherited_stopped && inherited.as_ref().is_some_and(|token| token.is_cancelled()) {
                         inherited_stopped = true;
@@ -167,7 +168,7 @@ impl LocalHarness {
                         Wake::Inherited => {}
                     }
                 }
-            }.await;
+            }).await;
             if result.is_err() {
                 draining::finish(
                     async {
@@ -186,6 +187,16 @@ impl LocalHarness {
             result
         })
     }
+}
+
+// Keep the coordination loop's storage/follow construction separate from the
+// frame which owns parent cancellation and drains every child on failure.
+#[inline(never)]
+fn coordination<'a, F>(build: impl FnOnce() -> F) -> BoxProviderFuture<'a, Result<()>>
+where
+    F: Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'a,
+{
+    Box::pin(build())
 }
 
 // This queue contains at most one completion per currently driven future. The

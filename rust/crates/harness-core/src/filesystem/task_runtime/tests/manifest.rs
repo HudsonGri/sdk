@@ -442,7 +442,9 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
 async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay() -> Result<()> {
     use crate::hooks::{HookEvent, HookOutput, HookSite};
     use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
-    for event in HookEvent::at(HookSite::Prompt) {
+    for (event, settled) in HookEvent::at(HookSite::Prompt)
+        .flat_map(|event| [(event, false), (event, true)])
+    {
         let fixture = Fixture::new().await?;
         let provider: Arc<dyn StreamProvider> = fixture.stream.clone();
         let files = crate::task_volume::TaskFiles::open(
@@ -475,6 +477,24 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
         )
         .await;
         assert!(matches!(failure, Err(Error::Conflict(_))));
+        if settled {
+            let outcome = FileKey::Task {
+                task: Component::new(task.to_string())?,
+                file: TaskFile::Context(Component::new(format!(
+                    "hook-{operation}-{}-outcome",
+                    event.name()
+                ))?),
+            };
+            let cut = files.inner.snapshot(&Query::File(outcome.clone()), 1).await?;
+            files.inner.append(
+                cut.generation,
+                &FileValue::new(
+                    outcome,
+                    serde_json::to_vec(&HookOutput::default())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                ),
+            ).await?;
+        }
         // An unbound provider is normally a known preparation failure. The
         // retained hook claim prevents that error from settling this command.
         let result = runtime
@@ -486,10 +506,14 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
                 payload.clone(),
             )
             .await;
-        assert!(
-            matches!(result, Err(Error::Indeterminate(id)) if id == operation),
-            "unfinished hook settled"
-        );
+        if settled {
+            assert!(matches!(result, Ok(TaskCommandProgress::Ready(_))));
+        } else {
+            assert!(
+                matches!(result, Err(Error::Indeterminate(id)) if id == operation),
+                "unfinished hook settled"
+            );
+        }
         // Exercise the worker too: a raw Unsupported error is definitive on
         // current main, even if the command adapter declined to return Ready.
         let crate::distributed::WorkPull::Claimed(lease) =
@@ -503,42 +527,12 @@ async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay(
         {
             return Err(error);
         }
-        assert!(matches!(
-            runtime.task_host().outcome(task).await?,
-            Some(Outcome::Indeterminate { .. })
-        ));
-        let outcome = FileKey::Task {
-            task: Component::new(task.to_string())?,
-            file: TaskFile::Context(Component::new(format!(
-                "hook-{operation}-{}-outcome",
-                event.name()
-            ))?),
-        };
-        let cut = files
-            .inner
-            .snapshot(&Query::File(outcome.clone()), 1)
-            .await?;
-        files
-            .inner
-            .append(
-                cut.generation,
-                &FileValue::new(
-                    outcome,
-                    serde_json::to_vec(&HookOutput::default())
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                ),
-            )
-            .await?;
-        let result = runtime
-            .commands()
-            .execute(
-                runtime.task_context(task, fence.clone()).await?,
-                fence,
-                command,
-                payload,
-            )
-            .await?;
-        assert!(matches!(result, TaskCommandProgress::Ready(_)));
+        let outcome = runtime.task_host().outcome(task).await?;
+        if settled {
+            assert!(matches!(outcome, Some(Outcome::Failed { .. })));
+        } else {
+            assert!(matches!(outcome, Some(Outcome::Indeterminate { .. })));
+        }
     }
     Ok(())
 }
