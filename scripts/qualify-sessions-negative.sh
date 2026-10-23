@@ -27,6 +27,7 @@ paths=[
  'rust/crates/harness/src/bin/graphcoder/view.rs',
  'rust/crates/harness-core/src/filesystem/task_runtime/dispatch.rs',
  'rust/crates/harness-core/src/executor/tool_resolution.rs',
+ 'rust/crates/harness/src/tui/render/task.rs',
 ]
 (root/'paths').write_text('\n'.join(paths))
 for name in paths:
@@ -171,4 +172,28 @@ python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-session
 source .bb-sessions-binaries.env
 node scripts/qualify-final-answer.mjs "$binary" completed-only prompt
 node scripts/qualify-final-answer.mjs "$binary" pre-dispatch jsonl
+# Independently restore the renderer defect: a local unfinished task is pending,
+# so a busy predicate without that state hides its approval before cancellation.
+python3 - <<'PY'
+from pathlib import Path
+p=Path('rust/crates/harness/src/tui/render/task.rs')
+s=p.read_text();old='Some("active" | "running" | "pending")'
+assert s.count(old)==1
+p.write_text(s.replace(old,'Some("active" | "running")'))
+PY
+trap 'restore; rm -rf "$proof"' EXIT
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
+for case in pty-approval-cancel-escape pty-approval-cancel-ctrl-c; do
+ expect_failure "hidden-$case" env E2E_OUTPUT="$proof/hidden-$case" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
+done
+restore
+trap 'rm -rf "$proof"' EXIT
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
+source .bb-sessions-binaries.env
+for case in pty-approval-cancel-escape pty-approval-cancel-ctrl-c; do
+ E2E_OUTPUT="$proof/restored-$case" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
+done
 echo SESSIONS_NEGATIVE_CONTROLS_PASSED
