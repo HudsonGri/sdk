@@ -27,7 +27,7 @@ const server = createServer(async (request, response) => {
   for await (const chunk of request) bytes += chunk;
   const body = JSON.parse(bytes);
   response.setHeader("content-type", request.url === "/count" ? "application/json" : "text/event-stream");
-  if (request.url === "/count") { response.end(JSON.stringify({ input_tokens: failed ? 70000 : 64 })); return; }
+  if (request.url === "/count") { response.end(JSON.stringify({ input_tokens: failed && JSON.stringify(body).includes("qualify final answer") ? 70000 : 64 })); return; }
   assert.equal(request.url, "/responses");
   requests++;
   const step = body.input.filter(item => item.type === "function_call_output").length;
@@ -77,6 +77,7 @@ async function run(replay) {
   child.stdin.end(mode === "jsonl" && !replay ? `${JSON.stringify(request)}\n` : "");
   const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
   assert.equal(code, failed ? 1 : 0, stderr);
+  assert.ok(stdout.trim(), `missing event frames: ${stderr}`);
   const frames = stdout.trim().split("\n").map(line => JSON.parse(line));
   const files = [...frames[0][1].files, ...frames.slice(1).flatMap(change => [change.file, ...change.files].filter(Boolean))];
   const results = files.filter(file => file.key.Session?.file.ExecutionResult === operation)
@@ -84,7 +85,7 @@ async function run(replay) {
   assert.equal(results.length, 1, "one authoritative result");
   assert.equal(results[0].completion, failed ? "failed" : "completed");
   if (failed) {
-    assert.match(JSON.stringify(results[0]), /mandatory content leaves no compaction source/);
+    assert.match(JSON.stringify(results[0]), /no older source fits the compaction policy/);
   } else {
     assert.equal(results[0].ok.steps, 3);
     assert.equal(results[0].ok.text, answer);
