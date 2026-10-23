@@ -239,7 +239,7 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         };
         assert!(source.is_stopped());
         #[cfg(windows)]
-        assert!(watch.windows_directories.is_empty());
+        assert_eq!(watch.windows_registered(), 0);
         assert!(birth.receipt().backend_write_operations > before.backend_write_operations);
         // Only the held root close belongs to the fresh invocation. Platform
         // watch retirement consumes credits accepted before those watches began.
