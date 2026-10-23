@@ -267,6 +267,12 @@ impl Markdown {
         self.lines.get(..self.visible_lines).unwrap_or_default()
     }
 
+    /// Consume this completed Markdown entry without copying its rendered text.
+    pub fn into_lines(mut self) -> Vec<Line> {
+        self.lines.truncate(self.visible_lines);
+        self.lines
+    }
+
     fn visible_end(&self, start: usize, end: usize, fallback: usize) -> usize {
         self.lines
             .get(start..end)
