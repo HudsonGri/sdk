@@ -278,12 +278,11 @@ struct SharedState {
     /// Host subtrees whose events are never hints, in fence preference order.
     excluded: Vec<PathBuf>,
     excluded_allocation: Option<crate::NativeAllocation>,
-    /// Directories a non-recursive Windows watch observes, keyed by their
-    /// root-relative wide path. The single recursive root handle reports the
-    /// whole tree; only children of these directories become hints. `None`
-    /// observes everything.
+    /// Directories a non-recursive Windows watch observes. The single
+    /// recursive root handle reports the whole tree; only children of these
+    /// directories become hints. `None` observes everything.
     #[cfg(windows)]
-    registered: Option<std::collections::BTreeMap<Vec<u16>, WindowsRegistration>>,
+    registered: Option<WindowsRegistrations>,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -766,13 +765,97 @@ fn wide_hint_names(
         .map(|name| Ok(HintName::Wide(name)))
 }
 
+/// The directories a non-recursive Windows watch observes, keyed by their
+/// canonical root-relative path: the long names the held handles resolve
+/// to, folded for case. A change reported in another case or through an 8.3
+/// short name therefore finds the same key.
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsRegistrations {
+    /// The root handle's final path, under which reported short names resolve.
+    root: Vec<u16>,
+    _root_allocation: Option<crate::materializer::NativeAllocation>,
+    entries: std::collections::BTreeMap<Vec<u16>, WindowsRegistration>,
+    /// Negative control: key the requested path as given and match reported
+    /// paths exactly, as the per-directory design did.
+    #[cfg(test)]
+    exact: bool,
+}
+
 /// One directory a non-recursive Windows watch observes through the root
-/// handle: the identity bound when it was admitted, and its retained bytes.
+/// handle: its actual root-relative path and the identity bound when it was
+/// admitted, and its retained bytes.
 #[cfg(windows)]
 #[derive(Debug)]
 struct WindowsRegistration {
+    path: Vec<u16>,
     identity: NativeRootIdentity,
     _allocation: Option<crate::materializer::NativeAllocation>,
+}
+
+#[cfg(windows)]
+impl WindowsRegistrations {
+    /// The relative part of a full path beneath the root, if it is beneath it.
+    fn relative<'a>(&self, full: &'a [u16]) -> Option<&'a [u16]> {
+        full.get(self.root.len()..)
+            .and_then(|rest| rest.split_first())
+            .filter(|(separator, _)| matches!(**separator, 47 | 92))
+            .map(|(_, relative)| relative)
+    }
+
+    fn contains_folded<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        relative: &[u16],
+        work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        let (key, bytes) = crate::native_host::fold_case_wide(relative, work)?;
+        let found = self.entries.contains_key(key.as_slice());
+        drop(key);
+        work.release(bytes)?;
+        Ok(found)
+    }
+
+    /// Whether a reported directory is observed. Folding may only over-report;
+    /// a short name the host can no longer resolve is delivered, not dropped.
+    fn observes<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        directory: &[u16],
+        work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        #[cfg(test)]
+        if self.exact {
+            return Ok(self.entries.contains_key(directory));
+        }
+        if self.contains_folded(directory, work)? {
+            return Ok(true);
+        }
+        if !directory.contains(&u16::from(b'~')) {
+            return Ok(false);
+        }
+        let length = self
+            .root
+            .len()
+            .checked_add(1)
+            .and_then(|length| length.checked_add(directory.len()))
+            .ok_or(WorkError::Overflow)?;
+        let (mut full, bytes) = crate::native_host::buffer::<u16, W>(length, work)?;
+        full.extend_from_slice(&self.root);
+        full.push(u16::from(b'\\'));
+        full.extend_from_slice(directory);
+        let resolved = crate::native_host::long_path_wide(&full, work);
+        drop(full);
+        work.release(bytes)?;
+        let Some((long, bytes)) = resolved? else {
+            return Ok(true);
+        };
+        let observed = match self.relative(&long) {
+            Some(relative) => self.contains_folded(relative, work),
+            None => Ok(true),
+        };
+        drop(long);
+        work.release(bytes)?;
+        observed
+    }
 }
 
 /// The one sink of a Windows watch's recursive root handle.
@@ -890,7 +973,7 @@ impl WindowsRootSink {
                             .rposition(|unit| matches!(*unit, 47 | 92))
                             .and_then(|at| path.get(..at))
                             .unwrap_or_default();
-                        if !parent.is_empty() && !registered.contains_key(parent) {
+                        if !parent.is_empty() && !registered.observes(parent, work)? {
                             // A rename out of the observed directories is
                             // that directory's departure.
                             if action == 5
@@ -1652,11 +1735,6 @@ impl NativeWatch {
         let queued = Arc::new(AtomicU32::new(0));
         Self::startup_control(work)?;
         let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
-        #[cfg(windows)]
-        let state = SharedState {
-            registered: (!options.recursive).then(std::collections::BTreeMap::new),
-            ..state
-        };
         let shared = Arc::new(Mutex::new(state));
         Self::startup_control(work)?;
         let fenced = Arc::new(Condvar::new());
@@ -1769,6 +1847,13 @@ impl NativeWatch {
             // One recursive handle observes the whole root. A non-recursive
             // watch filters it to its registered directories, so its cost
             // does not grow with the directories it observes.
+            if !options.recursive {
+                let registrations = Self::windows_registrations(held, work)?;
+                shared
+                    .lock()
+                    .map_err(|_| NativeWatchError::StatePoisoned)?
+                    .registered = Some(registrations);
+            }
             let sink = Arc::new(WindowsRootSink {
                 delivery: Arc::clone(&windows_delivery),
             });
@@ -2143,7 +2228,9 @@ impl NativeWatch {
                     held = next;
                     component_start = index + 1;
                     retained_bytes = retained_bytes
-                        .checked_add(self.register_windows_directory(prefix, identity, work)?)
+                        .checked_add(
+                            self.register_windows_directory(&held, prefix, identity, work)?,
+                        )
                         .ok_or(WorkError::Overflow)?;
                 }
                 Ok(())
@@ -2158,54 +2245,128 @@ impl NativeWatch {
         result
     }
 
-    /// Registers one directory with the root handle's filter, or rebinds a
-    /// replaced directory's path to the identity admitted now. Returns the
-    /// bytes claimed without a retained allocation.
+    /// The empty registration set of a non-recursive Windows watch, with the
+    /// root handle's final path its canonical keys are relative to.
+    #[cfg(windows)]
+    fn windows_registrations<W: crate::demand::SourceDemandReadWork>(
+        held: &crate::native_host::HostRoot,
+        work: &mut W,
+    ) -> Result<WindowsRegistrations, NativeWatchError> {
+        let (root, bytes) = crate::native_host::canonical_directory_wide(&held.directory, work)
+            .map_err(demand_watch_error)?;
+        // Ordinary work keeps the claim for the watch, as its root path does.
+        let allocation = if work.is_native_original() {
+            work.release(bytes).map_err(demand_watch_error)?;
+            watch_claim_allocation(bytes, work).map_err(demand_watch_error)?
+        } else {
+            None
+        };
+        Ok(WindowsRegistrations {
+            root,
+            _root_allocation: allocation,
+            entries: std::collections::BTreeMap::new(),
+            #[cfg(test)]
+            exact: false,
+        })
+    }
+
+    /// Registers one held directory with the root handle's filter under its
+    /// canonical key, or rebinds a replaced directory's path to the identity
+    /// admitted now. Returns the bytes claimed without a retained allocation.
     #[cfg(windows)]
     fn register_windows_directory<W: crate::demand::SourceDemandReadWork>(
         &self,
-        path: &[u16],
+        directory: &cap_std::fs::Dir,
+        requested: &[u16],
         identity: NativeRootIdentity,
         work: &mut W,
     ) -> Result<u64, crate::demand::DemandError> {
-        let mut state = self
-            .shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        let registered = state
-            .registered
-            .as_mut()
-            .ok_or(crate::demand::DemandError::InvalidRequest)?;
-        work.started_io(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::default()
-        })?;
-        if let Some(current) = registered.get_mut(path) {
-            current.identity = identity;
-            return Ok(0);
+        let (full, full_bytes) = crate::native_host::canonical_directory_wide(directory, work)?;
+        let result = (|| {
+            let mut state = self
+                .shared
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
+            let registered = state
+                .registered
+                .as_mut()
+                .ok_or(crate::demand::DemandError::InvalidRequest)?;
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::default()
+            })?;
+            #[cfg(test)]
+            let exact = registered.exact;
+            #[cfg(not(test))]
+            let exact = false;
+            let (path, (key, key_bytes)) = if exact {
+                (requested, (requested.to_vec(), 0))
+            } else {
+                let path = registered
+                    .relative(&full)
+                    .ok_or(crate::demand::DemandError::InvalidRequest)?;
+                (path, crate::native_host::fold_case_wide(path, work)?)
+            };
+            let result = (|| {
+                if let Some(current) = registered.entries.get_mut(key.as_slice()) {
+                    current.identity = identity;
+                    return Ok((0, None));
+                }
+                let path_bytes = (path.len() as u64)
+                    .checked_mul(2)
+                    .ok_or(WorkError::Overflow)?;
+                let entry_bytes = path_bytes
+                    .checked_mul(2)
+                    .and_then(|bytes| {
+                        bytes.checked_add(size_of::<(Vec<u16>, WindowsRegistration)>() as u64)
+                    })
+                    .ok_or(WorkError::Overflow)?;
+                let copied = WorkCounters {
+                    bytes_copied: path_bytes,
+                    ..WorkCounters::default()
+                };
+                work.admit(copied)?;
+                let allocation = watch_claim_allocation(entry_bytes, work)?;
+                let unretained = if allocation.is_none() { entry_bytes } else { 0 };
+                let registration = WindowsRegistration {
+                    path: path.to_vec(),
+                    identity,
+                    _allocation: allocation,
+                };
+                work.record(copied)?;
+                Ok((unretained, Some(registration)))
+            })();
+            let unretained = match result {
+                Ok((unretained, Some(registration))) => {
+                    registered.entries.insert(key, registration);
+                    Ok(unretained)
+                }
+                Ok((unretained, None)) => {
+                    drop(key);
+                    Ok(unretained)
+                }
+                Err(error) => {
+                    drop(key);
+                    Err(error)
+                }
+            };
+            work.release(key_bytes)?;
+            unretained
+        })();
+        drop(full);
+        work.release(full_bytes)?;
+        result
+    }
+
+    /// Negative control: key registrations as requested and match reported
+    /// paths exactly.
+    #[cfg(all(test, windows))]
+    pub(crate) fn windows_match_exactly(&self) {
+        if let Ok(mut state) = self.shared.lock()
+            && let Some(registered) = &mut state.registered
+        {
+            registered.exact = true;
         }
-        let key_bytes = (path.len() as u64)
-            .checked_mul(2)
-            .ok_or(WorkError::Overflow)?;
-        let entry_bytes = key_bytes
-            .checked_add(size_of::<(Vec<u16>, WindowsRegistration)>() as u64)
-            .ok_or(WorkError::Overflow)?;
-        let copied = WorkCounters {
-            bytes_copied: key_bytes,
-            ..WorkCounters::default()
-        };
-        work.admit(copied)?;
-        let allocation = watch_claim_allocation(entry_bytes, work)?;
-        let unretained = if allocation.is_none() { entry_bytes } else { 0 };
-        registered.insert(
-            path.to_vec(),
-            WindowsRegistration {
-                identity,
-                _allocation: allocation,
-            },
-        );
-        work.record(copied)?;
-        Ok(unretained)
     }
 
     /// Directories a non-recursive Windows watch currently observes.
@@ -2218,7 +2379,7 @@ impl NativeWatch {
                 state
                     .registered
                     .as_ref()
-                    .map(std::collections::BTreeMap::len)
+                    .map(|registered| registered.entries.len())
             })
             .unwrap_or_default()
     }
@@ -2238,7 +2399,7 @@ impl NativeWatch {
                 items_examined: 1,
                 ..WorkCounters::default()
             })?;
-            registered.clear();
+            registered.entries.clear();
         }
         Ok(())
     }
@@ -2322,6 +2483,25 @@ impl NativeWatch {
         let removed_allocation =
             watch_claim_allocation(removed_bytes, work).map_err(demand_watch_error)?;
         let removed = relative.as_os_str().encode_wide().collect::<Vec<_>>();
+        #[cfg(test)]
+        let exact = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .registered
+            .as_ref()
+            .is_some_and(|registered| registered.exact);
+        #[cfg(not(test))]
+        let exact = false;
+        // Keys are folded for case; the removed path is folded to match.
+        let (removed, folded_bytes) = if exact {
+            (removed, 0)
+        } else {
+            let folded =
+                crate::native_host::fold_case_wide(&removed, work).map_err(demand_watch_error)?;
+            drop(removed);
+            folded
+        };
         let result = (|| {
             let mut cursor: Option<Vec<u16>> = None;
             loop {
@@ -2339,27 +2519,34 @@ impl NativeWatch {
                         .as_deref()
                         .map_or(Bound::Included(removed.as_slice()), Bound::Excluded);
                     registered
+                        .entries
                         .range::<[u16], _>((bound, Bound::Unbounded))
                         .take_while(|(key, _)| key.starts_with(&removed))
                         .find(|(key, _)| {
                             key.get(removed.len())
                                 .is_none_or(|unit| matches!(*unit, 47 | 92))
                         })
-                        .map(|(key, registration)| (key.clone(), registration.identity))
+                        .map(|(key, registration)| {
+                            (
+                                key.clone(),
+                                registration.identity,
+                                registration.path.clone(),
+                            )
+                        })
                 };
-                let Some((key, identity)) = candidate else {
+                let Some((key, identity, path)) = candidate else {
                     return Ok(());
                 };
                 work.started_io(WorkCounters {
                     items_examined: 1,
-                    bytes_copied: (key.len() as u64)
+                    bytes_copied: ((key.len() + path.len()) as u64)
                         .checked_mul(2)
                         .ok_or(WorkError::Overflow)?,
                     ..WorkCounters::UNCHARGED
                 })
                 .map_err(demand_watch_error)?;
                 if !self
-                    .windows_registration_is_current(&key, identity, work)
+                    .windows_registration_is_current(&path, identity, work)
                     .map_err(demand_watch_error)?
                 {
                     let mut state = self
@@ -2368,16 +2555,18 @@ impl NativeWatch {
                         .map_err(|_| NativeWatchError::StatePoisoned)?;
                     if let Some(registered) = &mut state.registered
                         && registered
+                            .entries
                             .get(key.as_slice())
                             .is_some_and(|current| current.identity == identity)
                     {
-                        drop(registered.remove(key.as_slice()));
+                        drop(registered.entries.remove(key.as_slice()));
                     }
                 }
                 cursor = Some(key);
             }
         })();
         drop(removed);
+        work.release(folded_bytes).map_err(demand_watch_error)?;
         if removed_allocation.is_none() {
             work.release(removed_bytes).map_err(demand_watch_error)?;
         }
@@ -4116,8 +4305,9 @@ mod demand_admission_tests {
             &watch,
             &namespace("/a/b")?,
             WorkBudget {
-                // The whole path reads five times: one short stops at /a/b.
-                backend_read_operations: 4,
+                // The whole path reads seven times, two of them resolving each
+                // component's final path: one short stops at /a/b.
+                backend_read_operations: 6,
                 ..windows_budget()
             },
             &CancellationToken::new(),
@@ -4326,6 +4516,99 @@ mod demand_admission_tests {
             "{seen:?}"
         );
         assert!(!mentions(&seen, &namespace("/b/h")?), "{seen:?}");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn changes_through_marker(
+        watch: &Mutex<NativeWatch>,
+        root: &Path,
+        marker: &str,
+    ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
+        // The marker's parent is the root, which every watch observes; the
+        // change before it in the same handle has been filtered by then.
+        std::fs::write(root.join(marker), b"marker")?;
+        changes_until(watch, &namespace(&format!("/{marker}"))?)
+    }
+
+    #[cfg(windows)]
+    fn observed_watch(
+        root: &Path,
+        directory: &str,
+        exact: bool,
+    ) -> Result<Mutex<NativeWatch>, Box<dyn std::error::Error>> {
+        let watch = watcher(root)?;
+        {
+            let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            if exact {
+                held.windows_match_exactly();
+            }
+            held.accept_lazy_baseline()?;
+        }
+        observed(
+            &watch,
+            &namespace(directory)?,
+            windows_budget(),
+            &CancellationToken::new(),
+        )?;
+        Ok(watch)
+    }
+
+    /// A directory registered through another letter case is keyed by its
+    /// actual name folded for case, so its changes arrive. Exact matching,
+    /// the negative control, drops them.
+    #[cfg(windows)]
+    #[test]
+    fn windows_registration_through_another_case_observes_the_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for exact in [false, true] {
+            let root = tempfile::tempdir()?;
+            std::fs::create_dir(root.path().join("Alpha"))?;
+            let watch = observed_watch(root.path(), "/ALPHA", exact)?;
+            std::fs::write(root.path().join("Alpha/f"), b"f")?;
+            let seen = changes_through_marker(&watch, root.path(), "marker")?;
+            let delivered = mentions(&seen, &namespace("/Alpha/f")?)
+                || mentions(&seen, &namespace("/ALPHA/f")?);
+            assert_eq!(delivered, !exact, "exact={exact}: {seen:?}");
+        }
+        Ok(())
+    }
+
+    /// A directory registered through its 8.3 short name is keyed by its
+    /// long name, and a change reported through the short name resolves to
+    /// it. Exact matching, the negative control, drops the first.
+    #[cfg(windows)]
+    #[test]
+    fn windows_short_names_reach_their_registered_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for exact in [false, true] {
+            let root = tempfile::tempdir()?;
+            let long = "longdirectoryname-beta";
+            std::fs::create_dir(root.path().join(long))?;
+            let short = crate::native_host::short_path(&root.path().join(long))?;
+            let short = short
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("short name")?
+                .to_owned();
+            assert_ne!(short, long, "8.3 names are disabled on the temp volume");
+            let watch = observed_watch(root.path(), &format!("/{short}"), exact)?;
+            std::fs::write(root.path().join(long).join("f"), b"f")?;
+            let seen = changes_through_marker(&watch, root.path(), "marker-long")?;
+            let delivered = mentions(&seen, &namespace(&format!("/{long}/f"))?)
+                || mentions(&seen, &namespace(&format!("/{short}/f"))?);
+            assert_eq!(delivered, !exact, "exact={exact}: {seen:?}");
+            if exact {
+                continue;
+            }
+            std::fs::write(root.path().join(&short).join("g"), b"g")?;
+            let seen = changes_through_marker(&watch, root.path(), "marker-short")?;
+            assert!(
+                mentions(&seen, &namespace(&format!("/{long}/g"))?)
+                    || mentions(&seen, &namespace(&format!("/{short}/g"))?),
+                "{seen:?}"
+            );
+        }
         Ok(())
     }
 
