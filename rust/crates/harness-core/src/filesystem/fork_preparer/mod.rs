@@ -324,6 +324,7 @@ where
     }
 
     fn prepare<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<ForkReport>> {
+        // Unbudgeted: the preparation's budget is made inside this frame.
         Box::pin(async move {
             let io = self.preparation_io(self.task_preparation.as_ref())?;
             let attempt = PreparationAttempt {
@@ -344,6 +345,7 @@ where
     }
 
     fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>> {
+        // Unbudgeted: the preparation's budget is made inside this frame.
         Box::pin(async move {
             let io = self.preparation_io(self.task_preparation.as_ref())?;
             let this = PreparationAttempt {

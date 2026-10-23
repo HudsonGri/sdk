@@ -54,7 +54,10 @@ impl StockExecution<'_> {
                 // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(reason) =
-                    Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
+                    crate::conversation::BoundedOperationFuture::new(self.io, || {
+                        self.stop_hook(input.operation_id, step, stop_active)
+                    })?
+                    .await?
                 {
                     // Every denial continues. At the final step, falling out
                     // of the loop reports the same budget exhaustion as tools.

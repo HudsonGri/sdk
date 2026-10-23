@@ -9,6 +9,7 @@ impl LocalHarness {
         files: Arc<Files>,
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
+        // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
         Box::pin(async move {
             let snapshot = acyclic_fs::in_heap(|| files.inner.child_lifecycle(None))
                 .await
@@ -25,6 +26,7 @@ impl LocalHarness {
             let mut jobs = FuturesUnordered::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
+            // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
             for reference in acyclic_fs::in_heap(|| files.inner.child_references())
                 .await
                 .map_err(storage)?
@@ -33,11 +35,13 @@ impl LocalHarness {
                     &reference,
                     &values,
                     false,
+                    // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
                     acyclic_fs::in_heap(|| files.inner.child_input_count(&reference))
                         .await
                         .map_err(storage)?,
                 )? {
                     active.insert(reference.clone());
+                    // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
                     let request = acyclic_fs::in_heap(|| files.inner.child_request(&reference))
                         .await
                         .map_err(storage)?;
@@ -58,6 +62,7 @@ impl LocalHarness {
                 drained: drained.clone(),
             };
             let parent = async {
+                // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
                 acyclic_fs::in_heap(|| {
                     self.advance_while(task, &scoped, || async {
                         if cancellation.is_cancelled()
@@ -94,6 +99,7 @@ impl LocalHarness {
             let mut pending = std::collections::VecDeque::new();
             macro_rules! observed {
                 ($work:expr) => {{
+                    // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
                     let work = acyclic_fs::in_heap(|| $work);
                     during(
                         work,
@@ -126,6 +132,7 @@ impl LocalHarness {
                         Some(event) => event,
                         None => tokio::select! {
                             biased;
+                            // Unbudgeted: the child controller runs on the parent runtime, which holds no budget.
                             change = acyclic_fs::in_heap(|| follow::next(files.as_ref(), Query::Children, &mut cursor)) => Wake::File(change),
                             result = jobs.next(), if !jobs.is_empty() => Wake::child(result),
                             _ = async { inherited.as_ref().unwrap().cancelled().await },

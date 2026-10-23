@@ -652,6 +652,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .read(&path, maximum_bytes, original, io.cancellation())
                     .await
                     .map_err(|source| Error::NativeWorkspace {
+                        // Unbudgeted: an error source, boxed only as the work fails, to report it.
                         source: Box::new(source),
                         custody: None,
                     })?;

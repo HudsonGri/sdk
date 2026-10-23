@@ -69,41 +69,16 @@ fn native_box_holds_its_claim_until_freed() -> crate::Result<()> {
     Ok(())
 }
 
-/// Files on paths that hold an allocation budget where this branch moved
-/// values or frames to the heap.
+/// Every source in this crate that names a live allocation budget charges
+/// each heap move, or states why it needs no charge. The files are found by
+/// what they name, so a new budgeted file is scanned with no list to update.
 #[test]
 fn budget_paths_make_no_unpaid_box() {
-    acyclic_test_support::boxes::assert_all_paid(&[
-        (
-            "attempt.rs",
-            include_str!("filesystem/fork_preparer/attempt.rs"),
-        ),
-        (
-            "authentication.rs",
-            include_str!("filesystem/fork_preparer/created_access/authentication.rs"),
-        ),
-        (
-            "provider.rs",
-            include_str!("filesystem/fork_preparer/created_access/provider.rs"),
-        ),
-        (
-            "journal.rs",
-            include_str!("filesystem/fork_preparer/journal.rs"),
-        ),
-        (
-            "preparation.rs",
-            include_str!("filesystem/fork_preparer/preparation.rs"),
-        ),
-        (
-            "execution.rs",
-            include_str!("filesystem/task_runtime/execution.rs"),
-        ),
-        (
-            "journals.rs",
-            include_str!("filesystem/task_runtime/journals.rs"),
-        ),
-        ("history/mod.rs", include_str!("store/history/mod.rs")),
-        ("materialize.rs", include_str!("tools/git/materialize.rs")),
-        ("lifecycle.rs", include_str!("durable_host/lifecycle.rs")),
-    ]);
+    let sources: Vec<(String, String)> = acyclic_test_support::boxes::sources(
+        &std::path::Path::new(crate::build_metadata::MANIFEST_DIR).join("src"),
+    )
+    .into_iter()
+    .filter(|(_, source)| acyclic_test_support::boxes::budgeted(source))
+    .collect();
+    acyclic_test_support::boxes::assert_sources_paid(&sources, 300);
 }

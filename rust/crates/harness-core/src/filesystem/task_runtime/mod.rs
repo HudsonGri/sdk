@@ -68,6 +68,7 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
         _command: WorkflowCommand,
         _payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async {
             Err(Error::Unsupported(
                 "task command reconciliation is not bound".into(),
@@ -385,6 +386,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         dispatch: crate::model::ModelDispatch,
         fence: &'a LeaseFence,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.host.claim_model_from_context(context, dispatch, fence))
     }
     fn verify_owner<'a>(
@@ -406,6 +408,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn file_publication_condition(
         &self,
     ) -> BoxFuture<'_, Result<(acyclic_stream::CommitCondition, Option<u64>)>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             #[cfg(not(target_arch = "wasm32"))]
             if self.native_custody.is_some() {
@@ -429,6 +432,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         operation: OperationId,
         payload: crate::conversation::FileRef,
     ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             let (task, fence) = self.owner.as_ref().task_binding();
             self.host
@@ -441,6 +445,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         after: u64,
         maximum: usize,
     ) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(async move {
             self.owner.as_ref().verify(true, &mut None).await?;
             let (task, _) = self.owner.as_ref().task_binding();
@@ -560,6 +565,7 @@ where
         task: TaskId,
         fence: LeaseFence,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<TaskContext>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         acyclic_fs::in_heap(|| self.task_context_with_cancellation(task, fence, None))
     }
 

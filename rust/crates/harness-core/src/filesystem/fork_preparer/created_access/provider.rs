@@ -36,6 +36,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
 }
 
 #[inline(never)]
+// Unbudgeted: this box holds the budget it creates; none is live before it.
 fn boxed_io(request: &ResourcePreparationRequest) -> Result<Box<PreparationIo>> {
     // Unbudgeted: this box holds the budget it creates; none is live before it.
     PreparationIo::new(request, &CancellationToken::new()).map(Box::new)

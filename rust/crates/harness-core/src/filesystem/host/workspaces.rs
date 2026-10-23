@@ -219,11 +219,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<Generation<A, O>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
         let workspace = acyclic_fs::in_heap(|| self.open(workspace, None)).await?;
         let key = filesystem_key(idempotency_key);
         let mut transaction = match expected_generation {
             Some(reference) => {
                 let generation =
+                    // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                     acyclic_fs::in_heap(|| self.generation(&workspace, reference, None)).await?;
                 acyclic_fs::in_heap(|| {
                     workspace.begin_transaction_at(&generation, key, budget, &cancellation)
@@ -233,6 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(|failure| failure.error)
                 .map_err(map_error)?
             }
+            // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
             None => acyclic_fs::in_heap(|| workspace.begin_transaction(key, budget, &cancellation))
                 .await
                 .map(|receipt| receipt.value)
@@ -262,6 +265,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
             acyclic_fs::in_heap(|| {
                 transaction.write_batch(&directories, &files, budget, &cancellation)
             })
@@ -277,6 +281,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             for mutation in mutations {
                 match mutation {
                     WorkspaceMutation::CreateDirectory { path } => {
+                        // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                         acyclic_fs::in_heap(|| {
                             transaction.create_dir_all(path, budget, &cancellation)
                         })
@@ -287,11 +292,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     }
                     WorkspaceMutation::PutFile { path, bytes } => {
                         match publication {
+                            // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                             FilePublication::Replace(_) => acyclic_fs::in_heap(|| {
                                 transaction.write(path, bytes.clone(), budget, &cancellation)
                             })
                             .await
                             .map_err(|failure| map_error(failure.error))?,
+                            // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                             FilePublication::CreateOnly => acyclic_fs::in_heap(|| {
                                 transaction.create_file(
                                     path,
@@ -306,6 +313,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         };
                     }
                     WorkspaceMutation::Remove { path } => {
+                        // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                         acyclic_fs::in_heap(|| transaction.remove(path, budget, &cancellation))
                             .await
                             .map(|receipt| receipt.value)
@@ -322,6 +330,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 {
                     let metadata =
                         content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                    // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                     match acyclic_fs::in_heap(|| {
                         transaction.remove(&metadata, budget, &cancellation)
                     })
@@ -335,6 +344,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         loop {
+            // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
             let committed = acyclic_fs::in_heap(|| {
                 transaction.commit(
                     None,
@@ -358,6 +368,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 TransactionCommit::Conflict { .. } if expected_generation.is_none() => {
                     // Reuse the original candidate only when the SDK proves its
                     // exact observations and mutation dependencies still hold.
+                    // Unbudgeted: this publication runs on `WorkBudget::UNBOUNDED` with no `io`.
                     match acyclic_fs::in_heap(|| transaction.rebase(1, budget, &cancellation))
                         .await
                         .map(|receipt| receipt.value)

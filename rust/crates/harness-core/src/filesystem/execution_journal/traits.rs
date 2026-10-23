@@ -12,6 +12,7 @@ where
         operation: OperationId,
         digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.verify_tool_approval_with_io(id, operation, digest, None))
     }
 }
@@ -41,6 +42,7 @@ where
     }
 
     fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.follow_cancellation())
     }
 
@@ -135,6 +137,7 @@ where
                     rev = after,
                     items = crate::obs::Empty
                 );
+                // Unbudgeted: `io` is none on this path.
                 return traced(span, || async move {
                     let records = self.records(operation, after, maximum, io).await?;
                     crate::obs::obs_record!("items" = records.len());
@@ -175,6 +178,7 @@ where
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if io.is_none() {
                 let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
+                // Unbudgeted: `io` is none on this path.
                 return traced(span, || async move {
                     let bytes = self.load_content(reference, io).await?;
                     crate::obs::obs_record!("bytes" = bytes.len());
@@ -220,7 +224,7 @@ where
                 return result.map(|_| ());
             }
             let span = obs_span!("acyclic.harness.journal.append");
-            traced(span, || async move {
+            crate::obs::traced_on(io, span, || async move {
                 self.append_validated(operation, None, key, event, io)
                     .await?;
                 if io.is_some() {
@@ -268,7 +272,7 @@ where
                 "acyclic.harness.journal.append_if_tail",
                 rev = expected_tail
             );
-            traced(span, || {
+            crate::obs::traced_on(io, span, || {
                 self.append_with_chunks(operation, Some(expected_tail), key, event, io)
             })
             .await
@@ -343,7 +347,7 @@ where
                 return Ok(file);
             }
             let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-            traced(span, || {
+            crate::obs::traced_on(io, span, || {
                 self.stage_with_io(operation, key, bytes, media, io)
             })
             .await

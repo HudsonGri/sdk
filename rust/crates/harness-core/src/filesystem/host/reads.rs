@@ -148,6 +148,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await
                 .map_err(|error| (error, None))
                 .map_err(|(source, custody)| Error::NativeWorkspace {
+                    // Unbudgeted: an error source, boxed only as the work fails, to report it.
                     source: Box::new(source),
                     custody,
                 })?
@@ -168,6 +169,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 maximum_entries
                     .checked_add(u32::from(path.is_empty()))
                     .ok_or_else(|| Error::NativeWorkspace {
+                        // Unbudgeted: an error source, boxed only as the work fails, to report it.
                         source: Box::new(acyclic_fs::WorkspaceError::Work(
                             acyclic_fs::WorkError::Overflow,
                         )),
@@ -178,6 +180,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await
             .map_err(|source| Error::NativeWorkspace {
+                // Unbudgeted: an error source, boxed only as the work fails, to report it.
                 source: Box::new(source),
                 custody: None,
             })?;
@@ -269,14 +272,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 self.materialize_skill(&sources, volume, path, source_generation, maximum_bytes, io)
                     .await?
             };
-            return Box::pin(self.read_private_path_indexed(
-                volume,
-                grant,
-                path,
-                Some(&generation),
-                maximum_bytes,
-                io,
-            ))
+            return crate::charged_box::pinned_frame(io, || {
+                self.read_private_path_indexed(
+                    volume,
+                    grant,
+                    path,
+                    Some(&generation),
+                    maximum_bytes,
+                    io,
+                )
+            })?
             .await;
         }
         self.read_private_generation(volume, grant, path, expected_generation, maximum_bytes, io)

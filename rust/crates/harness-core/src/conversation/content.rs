@@ -95,6 +95,7 @@ impl<'a, T> BoundedOperationFuture<'a, T> {
             });
         }
         Ok(Self {
+            // Charged above: `charge` holds this frame.
             future: acyclic_fs::in_heap(build),
             _charge: charge,
         })

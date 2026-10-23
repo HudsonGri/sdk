@@ -116,6 +116,44 @@ where
     }))
 }
 
+/// [`charged_frame`] for a future awaited in place, which need not be a
+/// provider task: a recursive call, whose `Send` cannot be proven inside its
+/// own body.
+#[cfg(feature = "filesystem")]
+pub(crate) fn pinned_frame<F: std::future::Future>(
+    io: Option<&crate::filesystem::PreparationIo>,
+    build: impl FnOnce() -> F,
+) -> crate::Result<std::pin::Pin<Box<ChargedFrame<F>>>> {
+    let charge = BoxCharge::on(io, std::mem::size_of::<ChargedFrame<F>>() as u64)?;
+    // Charged above: the whole frame, future and charge alike.
+    Ok(Box::pin(ChargedFrame {
+        future: build(),
+        charge,
+    }))
+}
+
+/// [`charged_frame`] on history work: the whole frame is charged on `work`
+/// when it is live, then `build` borrows `work` to make the future.
+#[cfg(feature = "filesystem")]
+pub(crate) fn history_frame<'w, 'h, F>(
+    work: &'w mut Option<&'h mut dyn crate::store::history::HistoryIo>,
+    build: impl FnOnce(&'w mut Option<&'h mut dyn crate::store::history::HistoryIo>) -> F,
+) -> crate::Result<std::pin::Pin<Box<ChargedFrame<F>>>>
+where
+    F: std::future::Future,
+{
+    let bytes = std::mem::size_of::<ChargedFrame<F>>() as u64;
+    let charge = match work.as_deref_mut() {
+        Some(io) => io.charge_box(bytes)?,
+        None => BoxCharge::unbudgeted(),
+    };
+    // Charged above: the whole frame, future and charge alike.
+    Ok(Box::pin(ChargedFrame {
+        future: build(work),
+        charge,
+    }))
+}
+
 /// A box whose bytes and allocation were paid for before it was made.
 pub struct ChargedBox<T> {
     // Declared first: the box is freed before its charge is returned.
@@ -129,6 +167,7 @@ impl<T> ChargedBox<T> {
     pub fn new(io: Option<&crate::filesystem::PreparationIo>, value: T) -> crate::Result<Self> {
         let charge = BoxCharge::on(io, std::mem::size_of::<T>() as u64)?;
         Ok(Self {
+            // Charged above: the box's bytes and attempt.
             value: Box::new(value),
             _charge: charge,
         })
@@ -145,6 +184,7 @@ impl<T> ChargedBox<T> {
             None => BoxCharge::unbudgeted(),
         };
         Ok(Self {
+            // Charged above: the box's bytes and attempt.
             value: Box::new(value),
             _charge: charge,
         })
@@ -156,6 +196,7 @@ impl<T> ChargedBox<T> {
     #[cfg(feature = "filesystem")]
     pub(crate) fn unbudgeted(value: T) -> Self {
         Self {
+            // Unbudgeted: each caller states why at its call.
             value: Box::new(value),
             _charge: BoxCharge::unbudgeted(),
         }
@@ -177,6 +218,7 @@ impl<T> ChargedBox<T> {
     ///
     /// Bind the charge first (`let (_charge, boxed) = ...`): locals drop in
     /// reverse order, so the box is then freed before the charge returns.
+    // Charged above: hands back the box its charge already pays for.
     pub fn into_box(self) -> (BoxCharge, Box<T>) {
         let Self { value, _charge } = self;
         (_charge, value)
@@ -221,6 +263,7 @@ impl<T> BoxReservation<T> {
     /// Makes the box this reservation paid for.
     pub fn fill(self, value: T) -> ChargedBox<T> {
         ChargedBox {
+            // Charged above: the reservation paid for this box.
             value: Box::new(value),
             _charge: self.charge,
         }

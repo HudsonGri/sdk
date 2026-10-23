@@ -28,6 +28,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    // Charged above: `Self` is retained and attempted on `io` before it is boxed.
     pub(super) async fn open(
         host: Arc<FilesystemHost<A, O>>,
         owner: Arc<TaskJournalOwner<P>>,
@@ -55,6 +56,7 @@ where
         Self::verify_owner(&owner, &io).await?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        // Charged above: `Self` is retained and attempted on `io` before it is boxed.
         Ok(Box::new(Self {
             host,
             owner,

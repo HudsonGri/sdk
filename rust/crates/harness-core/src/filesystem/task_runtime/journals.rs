@@ -120,6 +120,7 @@ where
         Ok((journal.into_native_shared(work)?, operation))
     }
 
+    // Unbudgeted: the journal is opened and bound with no `io`.
     pub(super) async fn open_execution_journal(
         &self,
         task: TaskId,
@@ -134,6 +135,7 @@ where
 
     // Synchronous binding stays out of the async frame that awaits the owner.
     #[inline(never)]
+    // Unbudgeted: the journal is opened and bound with no `io`.
     fn bind_execution_journal(
         &self,
         owner: crate::durable_host::TaskJournalOwner<P>,

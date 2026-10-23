@@ -95,7 +95,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 })?
                 .await;
             }
-            Box::pin(self.created_access_body(admission, visited, work)).await
+            crate::charged_box::history_frame(work, |work| {
+                self.created_access_body(admission, visited, work)
+            })?
+            .await
         }
     }
 

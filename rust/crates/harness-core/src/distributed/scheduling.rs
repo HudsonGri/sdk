@@ -325,6 +325,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if let Some(work) = lease_custody.work().as_deref_mut() {
                 work.admit_allocation(box_bytes)?;
             }
+            // Charged above: `admit_allocation` holds the box's bytes and attempt.
             let mut lease = Box::new(WorkLease {
                 operation,
                 reservation: Reservation {

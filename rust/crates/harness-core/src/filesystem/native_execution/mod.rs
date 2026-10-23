@@ -266,6 +266,7 @@ where
                                         cause,
                                         accounting_failure: None,
                                         source_acknowledged: true,
+                                        // Unbudgeted: an error source, boxed only as the work fails, to report it.
                                         publication: Some(Box::new(snapshot)),
                                     },
                                 )?;
@@ -323,6 +324,7 @@ where
         match result {
             Ok(()) => Ok((published, custody)),
             Err(cause) => Err(Error::NativePublication {
+                // Unbudgeted: an error source, boxed only as the work fails, to report it.
                 failure: Box::new(NativeViewPublicationError {
                     cause,
                     published,

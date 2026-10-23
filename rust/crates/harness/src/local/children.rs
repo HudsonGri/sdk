@@ -15,18 +15,17 @@ mod lazy;
 #[cfg(feature = "native-execution")]
 mod preparation;
 
-/// Admission's budget is live across these frames; each is charged or says why not.
+/// Every source under `local/children`, and every other source in this
+/// crate that names a live allocation budget, charges each heap move or
+/// states why it needs no charge.
 #[cfg(all(test, feature = "native-execution"))]
 #[test]
 fn admission_makes_no_unpaid_box() {
-    acyclic_test_support::boxes::assert_all_paid(&[
-        (
-            "children/admission.rs",
-            include_str!("children/admission.rs"),
-        ),
-        (
-            "children/preparation.rs",
-            include_str!("children/preparation.rs"),
-        ),
-    ]);
+    use acyclic_test_support::boxes;
+    let root = std::path::Path::new(crate::build_metadata::MANIFEST_DIR).join("src");
+    let mut sources = boxes::sources(&root.join("local/children"));
+    sources.extend(boxes::sources(&root).into_iter().filter(|(name, source)| {
+        boxes::budgeted(source) && !std::path::Path::new(name).starts_with("local/children")
+    }));
+    boxes::assert_sources_paid(&sources, 20);
 }

@@ -94,6 +94,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootProjec
         context: RootProjectSourceContext<'a>,
         snapshot: &'a ProjectSourceSnapshot,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.verify_source(context, snapshot, None))
     }
 

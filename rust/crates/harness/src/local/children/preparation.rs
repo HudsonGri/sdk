@@ -88,7 +88,7 @@ impl Commands<'_> {
         input: &Value,
         command: &WorkflowCommand,
         payload: Value,
-    ) -> Result<Box<crate::fork::ForkRequest>> {
+    ) -> Result<crate::charged_box::ChargedBox<crate::fork::ForkRequest>> {
         if *input != serde_json::to_value(self.request).map_err(storage)?
             || self.request.command.as_ref() != Some(command)
             || payload != self.request.payload
@@ -97,7 +97,10 @@ impl Commands<'_> {
                 "child preparation differs from its admitted command".into(),
             ));
         }
-        serde_json::from_value(payload).map_err(storage)
+        // The request lives through preparation and its retries, so its box
+        // is paid for on the preparation's budget.
+        let fork = serde_json::from_value(payload).map_err(storage)?;
+        crate::charged_box::ChargedBox::new(Some(self.io), fork)
     }
 }
 

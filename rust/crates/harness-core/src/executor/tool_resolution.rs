@@ -202,6 +202,6 @@ impl StockExecution<'_> {
         if self.native_work().is_some() {
             return span.scope(call).await;
         }
-        traced(span, || call).await
+        crate::obs::traced_on(self.io, span, || call).await
     }
 }

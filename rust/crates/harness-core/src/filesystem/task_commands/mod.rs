@@ -340,6 +340,7 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.execute_observed(Arc::new(context), fence, command, payload, false, None))
     }
 
@@ -350,6 +351,7 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+        // Unbudgeted: this method takes no budget, and none is live at its call.
         Box::pin(self.execute_observed(Arc::new(context), fence, command, payload, true, None))
     }
 

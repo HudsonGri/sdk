@@ -57,6 +57,29 @@ pub(crate) use obs_span;
 #[derive(Clone, Copy)]
 pub(crate) struct OperationSpan;
 
+/// Runs `future` inside `span` and records its outcome there.
+#[cfg(not(target_arch = "wasm32"))]
+fn traced_frame<T, F: Future<Output = crate::Result<T>>>(
+    span: OperationSpan,
+    future: F,
+) -> impl Future<Output = crate::Result<T>> {
+    let context = span.clone();
+    context.scope(async move {
+        let result = future.await;
+        span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+        if let Err(error) = &result {
+            span.record("error.kind", error.kind());
+        }
+        result
+    })
+}
+
+/// Spans are not recorded on wasm32, so the frame is the future itself.
+#[cfg(target_arch = "wasm32")]
+fn traced_frame<T, F: Future<Output = crate::Result<T>>>(_: OperationSpan, future: F) -> F {
+    future
+}
+
 /// Boxes a trait method's future inside `span` and records its outcome there.
 ///
 /// `create` builds the future inside the heap allocation's own short frame,
@@ -69,26 +92,42 @@ pub(crate) fn traced<'a, T: 'a, F>(
 where
     F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let context = span.clone();
-        acyclic_fs::in_heap(move || {
-            let future = create();
-            context.scope(async move {
-                let result = future.await;
-                span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-                if let Err(error) = &result {
-                    span.record("error.kind", error.kind());
-                }
-                result
-            })
-        })
+    // Unbudgeted: a caller that holds a live budget uses `traced_on`.
+    acyclic_fs::in_heap(move || traced_frame(span, create()))
+}
+
+/// [`traced`] where an allocation budget is live: the whole frame is charged
+/// on `io` before it is made, and a refused frame is never built.
+#[cfg(feature = "filesystem")]
+#[inline(never)]
+pub(crate) fn traced_on<'a, T: 'a, F>(
+    io: Option<&crate::executor::PreparationIo>,
+    span: OperationSpan,
+    create: impl FnOnce() -> F,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
+where
+    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
+    match crate::charged_box::charged_frame(io, move || traced_frame(span, create())) {
+        Ok(frame) => frame,
+        // Unbudgeted: a refused frame holds only its error.
+        Err(error) => Box::pin(async move { Err(error) }),
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let OperationSpan = span;
-        acyclic_fs::in_heap(create)
-    }
+}
+
+/// [`traced`] where no allocation budget can exist: without the filesystem
+/// there is no budget to charge.
+#[cfg(not(feature = "filesystem"))]
+pub(crate) fn traced_on<'a, T: 'a, F>(
+    _: Option<&crate::executor::PreparationIo>,
+    span: OperationSpan,
+    create: impl FnOnce() -> F,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
+where
+    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
+    // Unbudgeted: no budget exists without the filesystem.
+    traced(span, create)
 }
 
 #[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]

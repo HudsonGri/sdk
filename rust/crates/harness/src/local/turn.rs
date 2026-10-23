@@ -116,12 +116,14 @@ impl LocalHarness {
             async |route| match route {
                 // Each admission path is deep; it runs from its own allocation.
                 super::routing::Route::Continue { history } => {
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
                     acyclic_fs::in_heap(|| {
                         self.continue_conversation(operation, task, parent, history, prompt)
                     })
                     .await
                 }
                 super::routing::Route::Child => {
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
                     acyclic_fs::in_heap(|| self.prepare_inheritance(task, Some(parent))).await?;
                     acyclic_fs::in_heap(|| async {
                         let (receive, model) = self.stage_question(operation, task, prompt).await?;
@@ -250,6 +252,7 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
         acyclic_fs::in_heap(|| async move {
             Ok(
                 acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt))
@@ -288,6 +291,7 @@ impl LocalHarness {
             },
         )
         .await?;
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
         acyclic_fs::in_heap(|| self.submit_turn(operation, prompt)).await
     }
 
@@ -556,9 +560,11 @@ impl LocalHarness {
         // The admission's claim is carried into driving, so cancelling this
         // future at any await leaves the head to the next prompt.
         let (admission, claim) =
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt)).await?;
         match admission {
             Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
+                // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
                 acyclic_fs::in_heap(|| self.resume_claimed(task_id, claim)).await
             }
             Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Invalid(
@@ -673,6 +679,7 @@ impl LocalHarness {
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
     pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
         acyclic_fs::in_heap(|| async move {
             // Claimed before any read, under the gate that serializes
             // supersession, and released by any drop of this future.
@@ -681,6 +688,7 @@ impl LocalHarness {
                 self.drivers.drive(operation)
             })
             .await;
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             acyclic_fs::in_heap(|| self.resume_claimed(task, Some(claim))).await
         })
     }
@@ -692,13 +700,16 @@ impl LocalHarness {
         task: TaskId,
         mut claim: Option<super::orphans::Driving<'_>>,
     ) -> Result<TurnOutput> {
+        // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
         let root = acyclic_fs::in_heap(|| self.loop_root(task)).await?;
         let mut current = task;
         loop {
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             let output = acyclic_fs::in_heap(|| self.drive_turn(current, claim.take())).await;
             if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
                 return output;
             }
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             match acyclic_fs::in_heap(|| self.continue_goal(current, root)).await? {
                 Some((next, next_claim)) => {
                     current = next;
@@ -733,31 +744,37 @@ impl LocalHarness {
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
         let handle =
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             match acyclic_fs::in_heap(|| self.runtime.harness().attach(task, &definition)).await {
                 Ok(handle) => handle,
                 Err(Error::NotFound(_)) => {
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
                     acyclic_fs::in_heap(|| self.recover_unadmitted_turn(task)).await?
                 }
                 Err(error) => return Err(error),
             };
         if !super::orphans::settled(
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
                 .await?
                 .as_ref(),
         ) {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             acyclic_fs::in_heap(|| {
                 self.advance_with_children(task, &commands, self.task_files.clone(), None)
             })
             .await?;
             #[cfg(not(feature = "native-execution"))]
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             acyclic_fs::in_heap(|| self.advance(task, &commands)).await?;
             if acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
                 .await?
                 .is_none()
             {
                 let admission =
+                    // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
                     acyclic_fs::in_heap(|| self.runtime.task_host().observe_admission(task))
                         .await?;
                 return Err(Error::Indeterminate(admission.operation_id));
@@ -766,12 +783,14 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             {
                 let commands = self.commands()?;
+                // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
                 acyclic_fs::in_heap(|| {
                     self.advance_with_children(task, &commands, self.task_files.clone(), None)
                 })
                 .await?;
             }
             // Advance already refreshes projections; terminal recovery must repair them.
+            // Unbudgeted: the turn driver holds no budget; each task makes its own inside.
             acyclic_fs::in_heap(|| self.refresh_command_task(task)).await?;
         }
         match acyclic_fs::in_heap(|| handle.result()).await? {
