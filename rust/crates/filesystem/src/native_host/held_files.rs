@@ -13,6 +13,43 @@ pub(crate) mod models;
 mod record;
 
 impl HostRoot {
+    /// Reads two immutable publications and settles their shared namespace
+    /// before either record escapes. Publishers flush each file before its
+    /// rename, so one directory barrier settles both names, including names
+    /// left by a publisher that died immediately after renaming.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub(crate) fn read_published_pair<const A: usize, const B: usize, W>(
+        &self,
+        first: &Path,
+        second: &Path,
+        work: &mut W,
+    ) -> Result<Option<([u8; A], [u8; B])>, DemandError>
+    where
+        W: NativeHostWork<Error = DemandError>,
+    {
+        let read = (|| -> Result<_, DemandError> {
+            Ok((
+                read_record(&self.directory, first, work)?,
+                read_record(&self.directory, second, work)?,
+            ))
+        })();
+        let records = match read {
+            Ok(records) => records,
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        #[cfg(test)]
+        let sync = !publish_probe::skip_reader_sync();
+        #[cfg(not(test))]
+        let sync = true;
+        if sync {
+            sync_directory_held(&self.directory, work)?;
+        }
+        Ok(Some(records))
+    }
+
     pub(crate) fn open_directory<W: NativeHostWork>(
         &self,
         relative: &Path,
@@ -165,6 +202,9 @@ impl HostRoot {
     }
 }
 
+#[cfg(test)]
+mod pair_tests;
+
 #[cfg(any(test, feature = "native-mount"))]
 fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
     directory: &Dir,
@@ -306,7 +346,6 @@ pub(crate) mod publish_probe {
         SKIP_PARENT_SYNC.set(omit);
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn omit_reader_sync(omit: bool) {
         SKIP_READER_SYNC.set(omit);
     }
@@ -330,7 +369,6 @@ pub(crate) mod publish_probe {
     }
 
     /// Kills the next publication on this thread after `step`.
-    #[cfg(target_os = "linux")]
     pub(crate) fn kill_at(step: Option<usize>) {
         KILL_AT.set(step);
     }
