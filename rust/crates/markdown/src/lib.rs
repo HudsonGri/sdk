@@ -30,6 +30,7 @@ pub use style::{Color, Line, Span, Style};
 /// Completed leaves and fence lines remain behind a parser checkpoint, including
 /// leaves inside containers. Reference changes parse only dependent blocks.
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub struct Markdown {
     source: String,
     append: Option<(usize, usize, usize)>,
@@ -73,6 +74,7 @@ struct Container {
     continuation: String,
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct Cached {
     template: Template,
     state: render::Renderer,
@@ -135,6 +137,7 @@ impl Cached {
     }
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct Fence {
     indented: bool,
     pending: String,
