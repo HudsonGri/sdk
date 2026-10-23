@@ -1,6 +1,56 @@
 use super::*;
 
 #[tokio::test]
+async fn pi_native_cwd_preserves_tool_inputs_and_rejects_a_wrong_view() -> Result<()> {
+    let mut fixture = Fixture::open().await?;
+    let root = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Open {
+                host: "pi".into(),
+                session: "native-root".into(),
+            },
+        )
+        .await?;
+    let parent = serde_json::from_value(root["task"].clone()).map_err(storage)?;
+    let child = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Fork {
+                parent,
+                reference: "native-pi".into(),
+            },
+        )
+        .await?;
+    let task = serde_json::from_value(child["task"].clone()).map_err(storage)?;
+    let shell = json!({"command":format!("printf '{}'", fixture.checkout.path().display())});
+    assert!(matches!(
+        fixture
+            .event_for(
+                "pi",
+                "PreToolUse",
+                json!({"task":task,"tool_name":"bash","tool_use_id":"wrong-cwd","tool_input":shell})
+            )
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert_eq!(fixture.event_for("pi", "PreToolUse",
+        json!({"task":task,"cwd":child["cwd"],"tool_name":"bash","tool_use_id":"native-write","tool_input":shell})).await?, json!({}));
+    assert!(fixture.owner.quiescent(task).await.is_err());
+    fixture
+        .event_for(
+            "pi",
+            "PostToolUse",
+            json!({"task":task,"cwd":child["cwd"],"tool_name":"bash","tool_use_id":"native-write"}),
+        )
+        .await?;
+    fixture.owner.quiescent(task).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn pi_session_references_survive_owner_recreation_without_reading_transcripts() -> Result<()>
 {
     let mut fixture = Fixture::open().await?;
@@ -385,7 +435,16 @@ async fn claude_worktree_hook_returns_the_admitted_view_without_permission_overr
             json!({"agent_id":"claude-child","cwd":path}),
         )
         .await?;
+    let shell = json!({"command":format!("printf '{}'", fixture.checkout.path().display())});
+    assert!(matches!(fixture.event_for("claude-code", "PreToolUse",
+        json!({"agent_id":"claude-child","cwd":fixture.checkout.path(),"tool_name":"Bash","tool_use_id":"wrong-cwd","tool_input":shell})).await,
+        Err(Error::Unauthorized(_))));
+    assert_eq!(fixture.event_for("claude-code", "PreToolUse",
+        json!({"agent_id":"claude-child","cwd":path,"tool_name":"Bash","tool_use_id":"native-write","tool_input":shell})).await?, json!({}),
+        "a native worktree command retains its exact arguments and permission checks");
     std::fs::write(path.join("native.txt"), b"native").map_err(storage)?;
+    fixture.event_for("claude-code", "PostToolUse",
+        json!({"agent_id":"claude-child","cwd":path,"tool_name":"Bash","tool_use_id":"native-write"})).await?;
     fixture
         .event_for(
             "claude-code",

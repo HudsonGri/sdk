@@ -57,14 +57,6 @@ pub fn route_tool(name: &str, mut input: Value, root: &Path, view: &Path) -> Res
         .ok_or_else(|| Error::Invalid("native tool input must be an object".into()))?;
     match name {
         "exec_command" | "shell_command" => {
-            let field = if name == "exec_command" {
-                "cmd"
-            } else {
-                "command"
-            };
-            if let Some(text) = object.get(field).and_then(Value::as_str) {
-                object.insert(field.into(), Value::String(map(text)));
-            }
             let cwd = object
                 .get("workdir")
                 .and_then(Value::as_str)
@@ -76,7 +68,7 @@ pub fn route_tool(name: &str, mut input: Value, root: &Path, view: &Path) -> Res
                 .get("command")
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::Invalid("native shell input has no command".into()))?;
-            let command = map(text);
+            let command = text;
             let command = if name == "PowerShell" {
                 format!(
                     "Set-Location -LiteralPath '{}'; {command}",
@@ -182,6 +174,18 @@ mod tests {
             view.display()
         );
         let result = route_tool("exec_command", json!({"cmd":shell}), &root, &view)?;
+        assert_eq!(
+            result.get("cmd"),
+            Some(&json!(shell)),
+            "shell literals are content, not path arguments"
+        );
+        let bash = route_tool("Bash", json!({"command":shell}), &root, &view)?;
+        assert!(
+            bash["command"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with(&shell)
+        );
         assert_eq!(
             result.get("workdir").unwrap_or(&Value::Null),
             view.to_string_lossy().as_ref()

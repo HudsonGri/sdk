@@ -328,12 +328,22 @@ impl HostWorkspaceOwner {
             .ok_or_else(|| Error::Invalid("native tool has no input".into()))?;
         let original = updated.clone();
         if task != root {
-            updated = crate::host_hooks::route_tool(
-                tool,
-                updated,
-                self.attached(root)?.workspace.path(),
-                self.attached(task)?.workspace.path(),
-            )?;
+            let cwd = std::fs::canonicalize(text(input, "cwd")?).map_err(storage)?;
+            let view =
+                std::fs::canonicalize(self.attached(task)?.workspace.path()).map_err(storage)?;
+            if !cwd.starts_with(&view) {
+                if host != "codex" {
+                    return Err(Error::Unauthorized(
+                        "native child cwd does not select its task view".into(),
+                    ));
+                }
+                updated = crate::host_hooks::route_tool(
+                    tool,
+                    updated,
+                    self.attached(root)?.workspace.path(),
+                    &view,
+                )?;
+            }
         }
         if writes(tool) && !coordination_command(&original) {
             self.tool_file(task, call, ToolFile::Request, json!({"native_tool":tool}))
