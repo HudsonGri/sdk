@@ -9,6 +9,8 @@ use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
 
 mod archive;
+#[cfg(not(target_arch = "wasm32"))]
+mod pacing;
 mod selection;
 mod stream_text;
 mod task;
@@ -20,6 +22,8 @@ use stream_text::StreamText;
 /// and the followed files; this cache is never serialized or written back.
 #[derive(Default)]
 pub struct ClientRenderer {
+    #[cfg(not(target_arch = "wasm32"))]
+    pacing: pacing::Pacer,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     file_cut: Option<(u64, wire::Authority)>,
     #[cfg(test)]
@@ -96,6 +100,8 @@ impl ClientRenderer {
             *self = Self {
                 key,
                 tool_details: self.tool_details,
+                #[cfg(not(target_arch = "wasm32"))]
+                pacing: std::mem::take(&mut self.pacing),
                 ..Self::default()
             };
         }
@@ -239,7 +245,7 @@ impl ClientRenderer {
         authority: &wire::Authority,
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<()> {
-        let settings = files.state(crate::client::CommandFileRoot::Config, "settings.json")?;
+        let settings = files.state_ref(crate::client::CommandFileRoot::Config, "settings.json")?;
         let details = settings
             .as_ref()
             .and_then(|value| value.get("tool_details"))
@@ -252,7 +258,7 @@ impl ClientRenderer {
             .unwrap_or(false);
         // Layout is followed by CommandSession, outside the answer selection.
         let after = files
-            .state(crate::client::CommandFileRoot::Session, "layout.json")?
+            .state_ref(crate::client::CommandFileRoot::Session, "layout.json")?
             .and_then(|layout| layout["history_after"].as_u64())
             .unwrap_or(0);
         if self.tool_details != details || self.archive.after() != after {
@@ -350,7 +356,7 @@ impl ClientRenderer {
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<Screen<'_>> {
         use crate::client::CommandFileRoot;
-        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let layout = files.state_ref(CommandFileRoot::Session, "layout.json")?;
         let cut = (
             files.output_sequence(),
             layout
@@ -388,7 +394,7 @@ impl ClientRenderer {
         if view == Some("shortcuts") {
             self.help.refresh(files)?;
         }
-        let settings = files.state(CommandFileRoot::Config, "settings.json")?;
+        let settings = files.state_ref(CommandFileRoot::Config, "settings.json")?;
         let reasoning = settings
             .as_ref()
             .and_then(|value| value.get("reasoning"))

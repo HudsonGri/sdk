@@ -4,7 +4,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use std::{collections::VecDeque, ops::Range};
+use std::{collections::VecDeque, ops::Range, sync::OnceLock};
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static WORK: std::cell::Cell<(usize,usize,usize)> = const { std::cell::Cell::new((0,0,0)) }; }
 
@@ -13,6 +13,7 @@ struct Source {
     styles: Vec<(usize, Style)>,
     style: Style,
     alignment: Option<Alignment>,
+    carriage_return: bool,
 }
 
 /// A displayed row: the `row`th wrapped row of source line `line`.
@@ -58,8 +59,8 @@ pub struct RowWindow {
 }
 
 /// One wrapping projection for ordinary and highlighted transcript rows,
-/// wrapped only where a frame looks: source text, styles and the search index
-/// follow every change, but rows exist only for a span of lines around the
+/// wrapped only where a frame looks: source text and styles follow every change,
+/// search storage is created on demand, and rows exist only around the
 /// shown window, so a resize or first frame wraps what is shown, not the
 /// transcript.
 #[derive(Default)]
@@ -68,7 +69,8 @@ pub struct WrappedLines {
     sources: Vec<Source>,
     text: String,
     revision: u64,
-    pub(crate) index: crate::transcript_search::index::Index,
+    source_revision: u64,
+    index: OnceLock<crate::transcript_search::index::Index>,
     /// Source lines wrapped at `width`, and their rows in order.
     span: Range<usize>,
     layouts: VecDeque<Layout>,
@@ -77,9 +79,84 @@ pub struct WrappedLines {
     ranges: Vec<Range<usize>>,
     origins: Vec<(usize, usize)>,
     window: RowWindow,
+    pending_append: bool,
 }
 
 impl WrappedLines {
+    /// Append styled text to the final logical line, retaining its completed
+    /// layout rows. Callers must use replacement when earlier text changes.
+    ///
+    /// # Panics
+    /// Panics if the projection revision overflows.
+    pub fn append_line(&mut self, text: &str, style: Style) {
+        if text.is_empty() {
+            return;
+        }
+        if self.sources.is_empty() {
+            self.replace(&[Line::from(Span::styled(text, style))], 0);
+            return;
+        }
+        assert!(self.revision < u64::MAX, "projection revision overflow");
+        self.revision += 1;
+        self.source_revision += 1;
+        let at = self.text.len() - 1;
+        self.text.truncate(at);
+        let Some(source) = self.sources.last_mut() else { return };
+        let normalized = crate::buffer::normalize(text);
+        self.text
+            .push_str(if source.carriage_return && text.starts_with('\n') {
+                normalized.strip_prefix('\n').unwrap_or_default()
+            } else {
+                &normalized
+            });
+        source.carriage_return = text.ends_with('\r');
+        let end = self.text.len() - source.offset;
+        match source.styles.last_mut() {
+            Some((previous, previous_style)) if *previous_style == style => *previous = end,
+            _ => source.styles.push((end, style)),
+        }
+        self.text.push('\n');
+        let text = slice(&self.text, ..self.text.len() - 1);
+        if let Some(index) = self.index.get_mut() {
+            index.replace_suffix(text, at);
+        }
+        self.pending_append = true;
+        if self.window.end > self.window.start {
+            self.append_layout();
+        }
+    }
+
+    fn append_layout(&mut self) {
+        if !std::mem::take(&mut self.pending_append) {
+            return;
+        }
+        let line = self.sources.len() - 1;
+        if self.span.end != self.sources.len() || self.layouts.is_empty() {
+            return;
+        }
+        let (Some(source), Some(layout)) = (self.sources.last(), self.layouts.back_mut()) else { return };
+        let changed = layout.append_text(slice(&self.text, source.offset..self.text.len() - 1));
+        let start = self
+            .origins
+            .partition_point(|&(at, row)| at < line || row < changed);
+        self.rows.truncate(start);
+        self.ranges.truncate(start);
+        self.origins.truncate(start);
+        #[cfg(any(test, feature = "test-support"))]
+        WORK.with(|work| {
+            let (rows, cells, layouts) = work.get();
+            work.set((rows, cells, layouts + 1));
+        });
+        paint_from(source, layout, changed, &mut self.rows);
+        self.ranges.extend(
+            visible_rows_from(layout, changed)
+                .map(|(_, row)| source.offset + row.start..source.offset + row.end),
+        );
+        self.origins
+            .extend(visible_rows_from(layout, changed).map(|(row, _)| (line, row)));
+        self.window = RowWindow::default();
+    }
+
     /// Return and clear this thread's actual painted rows, cells and layouts.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_work() -> (usize, usize, usize) {
@@ -107,6 +184,8 @@ impl WrappedLines {
         let changed = changed.min(source.len()).min(self.sources.len());
         assert!(self.revision < u64::MAX, "projection revision overflow");
         self.revision += 1;
+        self.source_revision += 1;
+        self.pending_append = false;
         let at = self
             .sources
             .get(changed)
@@ -137,10 +216,13 @@ impl WrappedLines {
                 styles,
                 style: line.style,
                 alignment: line.alignment,
+                carriage_return,
             });
         }
         let text = slice(&self.text, ..self.text.len().saturating_sub(1));
-        self.index.replace_suffix(text, at.min(text.len()));
+        if let Some(index) = self.index.get_mut() {
+            index.replace_suffix(text, at.min(text.len()));
+        }
     }
 
     /// Change width without ingesting source text or walking the archive.
@@ -169,6 +251,11 @@ impl WrappedLines {
     }
 
     fn select(&mut self, top: Top, height: usize, clamp: bool) -> RowWindow {
+        if height == 0 {
+            self.hide();
+            return self.window;
+        }
+        self.append_layout();
         let len = self.sources.len();
         let mut window = None;
         if let Top::At(position) = top
@@ -218,6 +305,9 @@ impl WrappedLines {
 
     /// Distance between two retained source rows; never wraps outside the cache.
     pub fn cached_distance(&self, from: RowPosition, to: RowPosition) -> Option<isize> {
+        if self.pending_append {
+            return None;
+        }
         let rank = |position: RowPosition| {
             if !self.span.contains(&position.line) {
                 return None;
@@ -318,6 +408,7 @@ impl WrappedLines {
     }
 
     fn row_count(&mut self, line: usize) -> usize {
+        self.append_layout();
         if !self.span.contains(&line) {
             if line.checked_add(1) == Some(self.span.start) {
                 self.extend_front();
@@ -356,7 +447,7 @@ impl WrappedLines {
         let Some(source) = self.sources.get(line) else {
             return (RowPosition::default(), 0..0);
         };
-        if self.span.contains(&line) {
+        if self.span.contains(&line) && !(self.pending_append && line + 1 == self.sources.len()) {
             let index = line - self.span.start;
             let rows = self.line_rows(index);
             let ranges = self.ranges.get(rows).unwrap_or_default();
@@ -384,6 +475,23 @@ impl WrappedLines {
     /// Normalized logical text, shared by wrapping and Unicode search.
     pub fn text(&self) -> &str {
         slice(&self.text, ..self.text.len().saturating_sub(1))
+    }
+
+    /// Release the optional folded text and byte-origin map when Find closes.
+    pub fn clear_search_index(&mut self) {
+        self.index.take();
+    }
+
+    pub(crate) fn search_index(&self) -> &crate::transcript_search::index::Index {
+        self.index.get_or_init(|| {
+            let mut index = crate::transcript_search::index::Index::default();
+            index.replace_suffix(self.text(), 0);
+            index
+        })
+    }
+
+    pub(crate) fn source_revision(&self) -> u64 {
+        self.source_revision
     }
 
     /// Changes only when source rows or wrapping change, never on frame ticks.
@@ -457,6 +565,7 @@ impl WrappedLines {
     }
 
     fn reset_span(&mut self, line: usize) {
+        self.pending_append = false;
         self.span = line..line;
         self.layouts.clear();
         self.starts.clear();
@@ -687,24 +796,42 @@ impl WrappedLines {
 }
 
 fn visible_rows(layout: &Layout) -> impl Iterator<Item = (usize, &crate::layout::Row)> {
-    layout.rows.iter().enumerate().filter(|(index, row)| {
-        !row.cells.is_empty()
-            || index
-                .checked_sub(1)
-                .and_then(|previous| layout.rows.get(previous))
-                .is_none_or(|previous| {
-                    previous.end != row.start
-                        || previous
-                            .cells
-                            .last()
-                            .is_none_or(|cell| cell.column + cell.width != layout.width)
-                })
-    })
+    visible_rows_from(layout, 0)
+}
+
+fn visible_rows_from(
+    layout: &Layout,
+    from: usize,
+) -> impl Iterator<Item = (usize, &crate::layout::Row)> {
+    layout
+        .rows
+        .get(from..)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(move |(index, row)| (from + index, row))
+        .filter(|(index, row)| {
+            !row.cells.is_empty()
+                || index
+                    .checked_sub(1)
+                    .and_then(|previous| layout.rows.get(previous))
+                    .is_none_or(|previous| {
+                        previous.end != row.start
+                            || previous
+                                .cells
+                                .last()
+                                .is_none_or(|cell| cell.column + cell.width != layout.width)
+                    })
+        })
 }
 
 // Cache normal display spans once; search borrows their styles and symbols.
 fn paint(source: &Source, layout: &Layout, output: &mut Vec<Line<'static>>) {
-    for (_, row) in visible_rows(layout) {
+    paint_from(source, layout, 0, output);
+}
+
+fn paint_from(source: &Source, layout: &Layout, from: usize, output: &mut Vec<Line<'static>>) {
+    for (_, row) in visible_rows_from(layout, from) {
         #[cfg(any(test, feature = "test-support"))]
         WORK.with(|work| {
             let (rows, cells, layouts) = work.get();
@@ -754,3 +881,11 @@ mod tests;
 #[cfg(test)]
 #[path = "wrapped_lines/viewport_tests.rs"]
 mod viewport_tests;
+
+#[cfg(test)]
+#[path = "wrapped_lines/append_tests.rs"]
+mod append_tests;
+
+#[cfg(test)]
+#[path = "wrapped_lines/search_storage_tests.rs"]
+mod search_storage_tests;

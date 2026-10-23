@@ -84,7 +84,7 @@ proptest! {
         search.prepare(&projection,0,1);
         WORK.with(|work|work.set((0,0)));
         while search.pending() {search.advance(&projection,budget);}
-        prop_assert!(WORK.with(|work|work.get().1)<=10*(projection.index.text.len()+search.needle.len()));
+        prop_assert!(WORK.with(|work|work.get().1)<=10*(projection.search_index().text.len()+search.needle.len()));
         prop_assert_eq!(&search.matches,&crate::transcript_matches(&text,&query));
         let refined=format!("{query}s");
         search.update(&projection,&refined,0,Style::default());
@@ -195,7 +195,7 @@ fn background_prefix_rescan_negative_control() {
         scan((&projection).into(), "b", &[0], 0..end, true, |_| {});
     }
     assert!(
-        WORK.with(|work| work.get().1) <= 10 * projection.index.text.len(),
+        WORK.with(|work| work.get().1) <= 10 * projection.search_index().text.len(),
         "background must not rescan prefixes"
     );
 }
@@ -226,7 +226,7 @@ fn appended_sources_index_the_preceding_separator() {
     let mut projection = projection("first");
     projection.update(&[Line::raw("first"), Line::raw("second")], 1, 80);
     projection.wrap_all();
-    assert_eq!(projection.index.text, "first\nsecond");
+    assert_eq!(projection.search_index().text, "first\nsecond");
     let mut search = TranscriptSearch::default();
     search.update(&projection, "first\nsecond", 0, Style::default());
     finish(&mut search, &projection);
