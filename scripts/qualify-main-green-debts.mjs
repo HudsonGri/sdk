@@ -35,24 +35,81 @@ export function verify(entry, status, output) {
   return { regression: entry.regression, tests: actual, seconds: Number(seconds) };
 }
 
+export function testExecutable(entry, output) {
+  cargoArguments(entry);
+  const kind = entry.target === 'lib' ? 'lib' : 'test';
+  const name = entry.target === 'lib' ? entry.package.replaceAll('-', '_') : entry.target;
+  const artifacts = output.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+    .filter(message => message.reason === 'compiler-artifact' && message.profile?.test
+      && message.target?.name === name && message.target.kind.includes(kind) && message.executable);
+  if (artifacts.length !== 1 || typeof artifacts[0].executable !== 'string') {
+    throw new Error('exactly one selected test executable required');
+  }
+  return artifacts[0].executable;
+}
+
+// Compilation owns no test budget. Once a binary starts, its process group and
+// output pipes belong to this invocation, including when the test never exits.
+export function executeTest(executable, args, {
+  launch = spawn, arm = setTimeout, disarm = clearTimeout,
+  terminate = child => process.kill(-child.pid, 'SIGKILL'),
+} = {}) {
+  return new Promise((accept, reject) => {
+    const child = launch(executable, args, {
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, RUST_TEST_THREADS: '4' },
+    });
+    let output = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => { output += chunk; process.stdout.write(chunk); });
+    child.stderr.pipe(process.stderr);
+    const timer = arm(() => {
+      // Reject independently of close: an inherited pipe cannot stall the
+      // debt queue after its owning test has exceeded the execution budget.
+      try {
+        terminate(child);
+      } catch (error) {
+        if (error.code !== 'ESRCH') {
+          reject(error);
+          return;
+        }
+      } finally {
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+      reject(new Error('test execution exceeded the fixed 10-second budget; debt remains unqualified'));
+    }, 10_000);
+    child.on('error', error => { disarm(timer); reject(error); });
+    child.on('close', status => { disarm(timer); accept({ status, output }); });
+  });
+}
+
 async function run(entry) {
   const args = cargoArguments(entry);
-  console.log(`MAIN_GREEN_COMMAND cargo ${args.join(' ')}`);
-  const child = spawn('cargo', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, RUST_TEST_THREADS: '4' } });
+  const separator = args.indexOf('--');
+  const build = [...args.slice(0, separator), '--no-run', '--message-format=json-render-diagnostics'];
+  console.log(`MAIN_GREEN_BUILD cargo ${build.join(' ')}`);
+  const child = spawn('cargo', build, { stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data', chunk => { output += chunk; process.stdout.write(chunk); });
+  child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.pipe(process.stderr);
   const status = await new Promise((accept, reject) => {
     child.on('error', reject);
     child.on('close', accept);
   });
-  const result = verify(entry, status, output);
+  if (status !== 0) throw new Error(`Cargo build failed: ${status}`);
+  const executable = testExecutable(entry, output);
+  const testArgs = args.slice(separator + 1);
+  console.log(`MAIN_GREEN_EXECUTE ${executable} ${testArgs.join(' ')}`);
+  const execution = await executeTest(executable, testArgs);
+  const result = verify(entry, execution.status, execution.output);
   console.log(`MAIN_GREEN_QUALIFIED ${JSON.stringify(result)}`);
   return result;
 }
 
 export async function main(selected = process.argv.slice(2)) {
+  if (process.platform !== 'linux') throw new Error('run main debt qualification on bb2 Linux');
   process.chdir(fileURLToPath(new URL('../', import.meta.url)));
   const entries = JSON.parse(await readFile(new URL('./main-green-debts.json', import.meta.url), 'utf8'));
   const names = new Set(entries.map(entry => entry.regression));

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { cargoArguments, verify } from './qualify-main-green-debts.mjs';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { cargoArguments, verify, testExecutable, executeTest } from './qualify-main-green-debts.mjs';
 
 const entry = { package: 'acyclic-harness', target: 'lib', regression: 'module::regression', controls: ['module::negative'] };
 const success = 'test module::regression ... ok\ntest module::negative - should panic ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.12s\n';
@@ -58,5 +61,72 @@ test('a debt requires a regression, a negative control and literal test names', 
     { ...entry, controls: ['--skip'] }, { ...entry, package: '--workspace' }, { ...entry, target: '--all-targets' },
     { ...entry, target: undefined }, { ...entry, controls: 'module::negative' }]) {
     assert.throws(() => cargoArguments(invalid));
+  }
+});
+
+test('only the selected Cargo test artifact can start execution', () => {
+  const artifact = { reason: 'compiler-artifact', profile: { test: true },
+    target: { name: 'acyclic_harness', kind: ['lib'] }, executable: '/fixture/test' };
+  const output = JSON.stringify(artifact) + '\n';
+  assert.equal(testExecutable(entry, output), artifact.executable);
+  for (const invalid of ['', output + output,
+    JSON.stringify({ ...artifact, profile: { test: false } }),
+    JSON.stringify({ ...artifact, target: { name: 'other', kind: ['lib'] } }),
+    JSON.stringify({ ...artifact, target: { name: 'acyclic_harness', kind: ['bin'] } })]) {
+    assert.throws(() => testExecutable(entry, invalid), /selected test executable/);
+  }
+});
+
+test('a completed executable preserves its output and failure status', async () => {
+  const result = await executeTest(process.execPath, ['-e', 'console.log("fixture output");process.exit(3)']);
+  assert.equal(result.status, 3);
+  assert.equal(result.output.trim(), 'fixture output');
+});
+
+test('the execution budget fails the debt without waiting for inherited pipes to close', async () => {
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), pid: 123,
+  });
+  let expire;
+  let stopped = false;
+  const execution = executeTest('/fixture/test', [], {
+    launch: () => child,
+    arm(callback, milliseconds) { assert.equal(milliseconds, 10_000); expire = callback; return 1; },
+    disarm() {},
+    terminate(actual) { assert.equal(actual, child); stopped = true; },
+  });
+  assert.equal(typeof expire, 'function', 'watchdog must own every test execution');
+  const rejected = assert.rejects(execution, /debt remains unqualified/);
+  expire();
+  await rejected;
+  assert.ok(stopped);
+  assert.ok(child.stdout.destroyed && child.stderr.destroyed);
+  // No close event was emitted. A failed debt still leaves the queue able to
+  // start its successor rather than waiting on a test-owned pipe forever.
+  assert.equal((await executeTest(process.execPath, ['-e', 'process.exit(0)'])).status, 0);
+});
+
+test('the watchdog terminates a real non-exiting test process group', async () => {
+  let expire;
+  let child;
+  const execution = executeTest(process.execPath, ['-e',
+    'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], {
+    launch(executable, args, options) { child = spawn(executable, args, options); return child; },
+    arm(callback, milliseconds) { assert.equal(milliseconds, 10_000); expire = callback; return 1; },
+    disarm() {},
+  });
+  try {
+    assert.equal(typeof expire, 'function', 'watchdog must own every test execution');
+    const rejected = assert.rejects(execution, /debt remains unqualified/);
+    await once(child.stdout, 'data');
+    const exited = once(child, 'exit');
+    expire();
+    await rejected;
+    const [, signal] = await exited;
+    assert.equal(signal, 'SIGKILL');
+  } finally {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
   }
 });
