@@ -4,6 +4,8 @@ mod capture;
 mod digest;
 pub(in crate::core) use capture::admit_copy;
 mod entries;
+mod layout;
+pub(crate) use layout::SNAPSHOT_LAYOUT;
 mod restoration;
 #[cfg(test)]
 mod tests;
