@@ -160,6 +160,7 @@ fn classify(error: crate::task_volume::Error) -> Result<Rejected> {
         | Volume::SequenceConflict(_)
         | Volume::Conflict(_)
         | Volume::FenceConflict
+        | Volume::AwaitingDurability
         | Volume::ResetRequired => Err(storage(error)),
     }
 }

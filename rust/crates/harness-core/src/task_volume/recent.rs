@@ -59,6 +59,12 @@ pub(super) struct Display {
     key: FileKey,
 }
 impl Views {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(super) fn native_index_bytes(&self) -> usize {
+        self.order.len() * std::mem::size_of::<((Component, u8, u64), FileKey)>()
+            + self.overviews.len() * std::mem::size_of::<(Component, FileKey)>()
+    }
+
     pub(super) fn prepare(file: &FileValue, position: u64) -> Option<Display> {
         let (FileKey::Task { task, .. }, Some(kind)) = (&file.key, file_kind(file)) else {
             return None;
