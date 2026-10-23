@@ -287,8 +287,17 @@ impl StockExecution<'_> {
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                self.compact_response(journal, input, step, projection, accounting, source)
-                    .await
+                self.compact_response(
+                    journal,
+                    input,
+                    step,
+                    projection,
+                    accounting,
+                    source,
+                    policy,
+                    &mut DispatchPhase::new(),
+                )
+                .await
             }
             _ => Err(stock_boundary(
                 self.io,

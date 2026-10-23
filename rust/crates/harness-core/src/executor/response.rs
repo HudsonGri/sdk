@@ -116,6 +116,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (tail, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -201,6 +202,7 @@ impl StockExecution<'_> {
             accounting,
             prepared,
             &records,
+            phase,
         )
         .await
     }
@@ -304,6 +306,7 @@ impl StockExecution<'_> {
         accounting: Option<ContextAccounting>,
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
+        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step) = turn;
         match (self.compaction_policy()?, accounting) {
@@ -347,8 +350,10 @@ impl StockExecution<'_> {
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                self.compact_response(journal, input, step, projection, accounting, source)
-                    .await
+                self.compact_response(
+                    journal, input, step, projection, accounting, source, policy, phase,
+                )
+                .await
             }
             _ => Err(stock_boundary(
                 self.io,

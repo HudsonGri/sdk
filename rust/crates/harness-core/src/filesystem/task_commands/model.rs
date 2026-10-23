@@ -13,6 +13,34 @@ where
 {
     pub(super) async fn model_command(
         &self,
+        invocation: CommandInvocation<'_>,
+        payload: Value,
+    ) -> Result<TaskCommandProgress> {
+        let task = invocation.admission.task_id();
+        let turn = invocation.command.operation_id;
+        let context = invocation.context;
+        let fence = invocation.fence;
+        let io = invocation.io;
+        let reconciliation_only = invocation.reconciliation_only;
+        let mut phase = crate::executor::DispatchPhase::new();
+        match self
+            .run_model_command(invocation, payload, &mut phase)
+            .await
+        {
+            Err(error) if !reconciliation_only && phase.can_fail(&error) => {
+                let (journal, operation) =
+                    self.command_journal(task, fence, turn, context, io).await?;
+                let progress = phase
+                    .finish::<TurnOutput>(Err(error), journal.as_ref(), operation, io)
+                    .await?;
+                Self::model_progress(progress, io)
+            }
+            result => result,
+        }
+    }
+
+    async fn run_model_command(
+        &self,
         CommandInvocation {
             context,
             admission,
@@ -22,6 +50,7 @@ where
             io,
         }: CommandInvocation<'_>,
         payload: Value,
+        phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
         let context = if io.is_none() && context.owned_mailbox.is_none() {
@@ -244,6 +273,7 @@ where
                 } else {
                     executor
                 };
+                phase.delegate();
                 let result = executor
                     .execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?
                     .await;
@@ -286,6 +316,7 @@ where
                 return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
                     .await;
             }
+            phase.delegate();
             Self::model_progress(execution.execute_progress(input).await?, io)
         })?
         .await
@@ -296,6 +327,12 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         match progress {
+            ExecutionProgress::PreDispatchFailed(failure) => ready(
+                Outcome::<TurnOutput>::Failed {
+                    message: failure.into_message(),
+                },
+                io,
+            ),
             ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             ExecutionProgress::Rejected(reason) => rejected(reason, io),

@@ -35,6 +35,7 @@ mod input;
 mod input_user;
 #[cfg(all(feature = "native-execution", unix))]
 mod tool_hooks;
+mod pre_dispatch;
 use std::{
     path::Path,
     sync::{Arc, Mutex},

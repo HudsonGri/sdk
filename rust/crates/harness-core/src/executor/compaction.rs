@@ -17,14 +17,9 @@ impl StockExecution<'_> {
         projection: ResponseProjection,
         accounting: ContextAccounting,
         context: crate::context::Context,
+        policy: &crate::context::ThresholdCompaction,
+        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()? else {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "automatic compaction is disabled",
-            ));
-        };
         let canonical_request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(&context)?,
             self.stock.limits,
@@ -78,6 +73,7 @@ impl StockExecution<'_> {
                 step,
                 source,
                 instruction,
+                phase,
             )
         })?
         .await?;

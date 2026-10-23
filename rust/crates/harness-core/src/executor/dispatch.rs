@@ -12,10 +12,12 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
         purpose: ModelPurpose,
+        phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let cancellation = journal.model_cancellation();
-        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
-            Box::pin(self.dispatch_model_step(journal, input, step, prior_messages, purpose));
+        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> = Box::pin(
+            self.dispatch_model_step(journal, input, step, prior_messages, purpose, phase),
+        );
         match futures::future::select(cancellation, execution).await {
             Either::Left((result, _)) => {
                 result?;
@@ -35,6 +37,7 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
         purpose: ModelPurpose,
+        phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
         self.require_model_producer().await?;
@@ -49,6 +52,9 @@ impl StockExecution<'_> {
             retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
         )?;
         let started = retained_request.is_some();
+        if started {
+            phase.start();
+        }
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
@@ -58,6 +64,7 @@ impl StockExecution<'_> {
                 input,
                 (step, prior_messages, purpose),
                 retained_request,
+                phase,
             )
             .await?;
         let request_digest = request.request_digest();
@@ -102,15 +109,16 @@ impl StockExecution<'_> {
             {
                 _continuation_hold = None;
             }
-            if !started {
+            let attempt = if !started {
                 self.claim_model_dispatch(
                     journal,
                     input,
                     (step, purpose, purpose_key),
                     &request,
                     dispatch,
+                    phase,
                 )
-                .await?;
+                .await?
             } else if replayed.is_empty()
                 && !self.stock.reconciliation_only
                 && !super::unsettled_resume::enabled()
@@ -122,6 +130,7 @@ impl StockExecution<'_> {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
                 self.claim_task_model(dispatch).await?;
+                phase.start()
             } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
                 // An incomplete response has not dispatched any of its tool calls.
                 // When the provider cannot recover its prefix, fail definitively
@@ -133,21 +142,20 @@ impl StockExecution<'_> {
                 });
             } else {
                 return Err(Error::Indeterminate(input.operation_id));
-            }
+            };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
                 Either::Right(
-                    self.stock
-                        .provider
-                        .generate_with_native_work(&request, dispatch, work)?
+                    attempt
+                        .generate_native(self.stock.provider.as_ref(), &request, dispatch, work)?
                         .await?
                         .map(|result| self.admit_model_event(result)),
                 )
             } else {
-                Either::Left(self.stock.provider.generate(request, dispatch))
+                Either::Left(attempt.generate(self.stock.provider.as_ref(), request, dispatch))
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let generated = self.stock.provider.generate(request, dispatch);
+            let generated = attempt.generate(self.stock.provider.as_ref(), request, dispatch);
             Either::Right(generated)
         };
         let observed = self
@@ -170,6 +178,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         turn: (u32, &[ModelMessage], ModelPurpose),
         retained_request: Option<crate::model::PreparedModelRequest>,
+        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (step, prior_messages, purpose) = turn;
         let request = match retained_request {
@@ -188,7 +197,7 @@ impl StockExecution<'_> {
                 recorded
             }
             None if purpose == ModelPurpose::Response => {
-                self.prepared_response(journal, input, step, prior_messages)
+                self.prepared_response(journal, input, step, prior_messages, phase)
                     .await?
             }
             None => self.prepare_request(input, step, prior_messages).await?,
@@ -235,7 +244,8 @@ impl StockExecution<'_> {
         turn: (u32, ModelPurpose, &str),
         request: &crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
-    ) -> Result<()> {
+        phase: &mut DispatchPhase,
+    ) -> Result<phase::ProviderAttempt> {
         let (step, purpose, purpose_key) = turn;
         let io = self.io;
         let request_digest = request.request_digest();
@@ -278,6 +288,7 @@ impl StockExecution<'_> {
             io,
         )
         .await?;
+        let attempt = phase.start();
         self.claim_task_model(dispatch).await?;
         match journal
             .append_if_tail(
@@ -301,7 +312,7 @@ impl StockExecution<'_> {
                 return Err(Error::Indeterminate(input.operation_id));
             }
         }
-        Ok(())
+        Ok(attempt)
     }
 
     async fn claim_task_model(&self, dispatch: crate::model::ModelDispatch) -> Result<()> {

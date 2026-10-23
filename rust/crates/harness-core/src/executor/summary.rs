@@ -9,6 +9,7 @@ impl StockExecution<'_> {
         step: u32,
         source: crate::context::Context,
         instruction: ModelContent,
+        phase: &mut DispatchPhase,
     ) -> Result<(crate::context::ContextSummary, String)> {
         // A summary session disables recursive compaction. Resolve its writer
         // before admission, independently of that session's compaction policy.
@@ -122,7 +123,7 @@ impl StockExecution<'_> {
             .await?;
         }
         let events = executor
-            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)?
+            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary, phase)?
             .await?;
         let text = self.collect_summary_text(events)?;
         self.publish_summary(
