@@ -337,11 +337,3 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
-
-[[bin]]
-name = "transcript_anchor"
-path = "fuzz_targets/transcript_anchor.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
