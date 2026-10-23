@@ -37,8 +37,8 @@ class RuntimeTests(unittest.TestCase):
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
-        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False):
+        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
         env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
@@ -171,6 +171,13 @@ sys.stdout.buffer.write(bytes(range(256)))
         env={'CARGO_INCREMENTAL':'1'}
         self.assertNotEqual(env['CARGO_INCREMENTAL'],'0') # former inherited override
         job.compiler_policy(env);self.assertEqual(env['CARGO_INCREMENTAL'],'0')
+    def test_gate_shell_selects_compiler_policy_without_overriding_other_tools(self):
+        for gate in [False,True]:
+            result,_=self.run_job([sys.executable,'-c','import os,json;print(json.dumps({"rustc":os.environ.get("RUSTC"),"wrapper":os.environ.get("RUSTC_WRAPPER")}))'],extra={'RUSTC':'fixture-capture-tool'},gate=gate)
+            self.assertEqual(result.returncode,0,result.stderr.decode())
+            self.assertEqual(json.loads(result.stdout)['rustc'],'/home/var/bin/bigstack/rustc' if gate else 'fixture-capture-tool')
+            self.assertEqual(json.loads(result.stdout)['wrapper'],'') # explicit cold/disabled policy remains
+
     def test_exited_cache_cpu_is_incomplete_never_zero(self):
         server={'pid':123,'identity':'fixture'}
         with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=None),patch.object(job.subprocess,'run') as stats:

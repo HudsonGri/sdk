@@ -14,14 +14,15 @@ test('remote wrappers parse, retain isolation and archive outputs before cleanup
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
 process.env.BUILD_SLOT_REMOTE_FETCH='/work/target/debug/tool';process.env.BUILD_SLOT_GLIBC='2.35';
-for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
+for(const gate of [false,true])for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
 const argv=pinGlibc(input);
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
-const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv});
+const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv,gate_log:gate?'Q:/lanes/pr-gate/fixture.log':null});
 const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted)\b/g)].map(m=>Buffer.from(m[1],'base64').toString())];
 if(bodies.length!==4)throw Error('missing generated shell');
 for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);}
 const inner=bodies[1];
+if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
@@ -32,6 +33,10 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
   const file=path.join(cwd,'probe.mjs');fs.writeFileSync(file,probe);
   const result=spawnSync(process.execPath,[file],{encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
+  const generator=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(generator,fs.readFileSync(generator,'utf8').replace('cargoJob || Boolean(receipt?.gate_log)','cargoJob'));
+  const negative=spawnSync(process.execPath,[file],{encoding:'utf8'});
+  assert.notEqual(negative.status,0);assert.match(negative.stderr,/gate dropped compiler cache/);
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 

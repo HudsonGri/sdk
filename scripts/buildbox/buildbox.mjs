@@ -567,16 +567,17 @@ const NPM_ENSURE = "if [ -z \"${BUILD_SLOT_NO_NPM:-}\" ]; then (cd /work/src && 
 const JOBS_ENV = "bbn=0; for w in /mnt/bb/jobs/*.wpid; do [ -e \"${w%.wpid}.rc\" ] || ! kill -0 \"$(cat \"$w\" 2>/dev/null)\" 2>/dev/null || bbn=$((bbn + 1)); done\nbbc=$(nproc); bbj=$(( bbc * 2 / (bbn > 0 ? bbn : 1) )); [ $bbj -ge 16 ] || bbj=16; [ $bbj -le $bbc ] || bbj=$bbc\nexport CARGO_BUILD_JOBS=$bbj; echo >&2 \"[buildbox] CARGO_BUILD_JOBS=$bbj ($bbn live jobs on $bbc CPUs)\"\n";
 let jobTdir = '';  // the target dir the job actually used (its wrapper writes $J.tdir), for copy-back
 function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', base = '', id, maxSec = jobMaxSec(), idleOk = process.env.BUILD_SLOT_IDLE_OK === '1', receipt) {
-  // Cargo jobs get the sccache wrapper + big-stack rustc. Node/bash jobs keep a plain toolchain env: tools they run set
+  // Cargo and explicit gate jobs get the owned compiler cache. Other Node/bash jobs keep a plain toolchain env: tools they run set
   // their own (the SDK's build:wasm puts a rustc capture wrapper on PATH with RUSTC_WORKSPACE_WRAPPER, which a global
   // RUSTC/RUSTC_WRAPPER breaks: "sccache: Compiler not supported ... spawnSync -E ENOENT").
   const cargoJob = path.basename(argv[0]) === 'cargo';
+  const compilerJob = cargoJob || Boolean(receipt?.gate_log);
   const flavor = ''; const TD = `${J}.targets`; const SH = '';
   const jobHostTarget = `${TD}/.host-targets/${path.basename(hostTarget(src))}`;
   const exportSpec = { prefix: J, cwd: `/work/src/${rel}`, paths: (process.env.BUILD_SLOT_REMOTE_FETCH || '').split(/\s+/).filter(Boolean), build: cargoJob,
     targetMapping: glibcPin ? { triple: GLIBC_TRIPLE, profiles: [...glibcPin.dirs] } : null };
   const leaseFile = `/mnt/bb/locks/wt-sdk/${path.basename(src).replace(/\.prep$/, '')}.lock`;
-  const rustEnv = cargoJob && COLD ? 'export RUSTC=/home/var/bin/bigstack/rustc; export RUSTC_WRAPPER=' : cargoJob ? `export RUSTC=/home/var/bin/bigstack/rustc
+  const rustEnv = compilerJob && COLD ? 'export RUSTC=/home/var/bin/bigstack/rustc; export RUSTC_WRAPPER=' : compilerJob ? `export RUSTC=/home/var/bin/bigstack/rustc
 if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RUSTC_WRAPPER=/home/var/bin/sccache-rustc; fi` : `unset RUSTC RUSTC_WRAPPER; export CARGO_TARGET_DIR="$BB_JOB_TARGET"`;
   // /home/var/bin/bbnpm/npm: \`npm ci\` is skipped when node_modules was installed from the same lockfile hash (node_modules
   // persists per copy and seeds new copies; rsync never carries it).

@@ -224,6 +224,7 @@ def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
+    compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
     # Nested build-slot reuses the enclosing job's home/admission/server, rather
     # than consuming a second tenant slot or changing the tested environment.
     if os.environ.get('BB_JOB_ACTIVE')=='1':
@@ -235,7 +236,7 @@ def run(argv):
             return 224
         os.environ['CARGO_HOME']='/mnt/bb/toolchains/cargo'
         compiler_policy(os.environ)
-        if Path(argv[0]).name=='cargo':
+        if compiler_job:
             os.environ['RUSTC']='/home/var/bin/bigstack/rustc'
             if os.environ.get('BB_CACHE_DISABLED')=='1':os.environ['RUSTC_WRAPPER']=''
             else:os.environ.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
@@ -300,10 +301,11 @@ def run(argv):
         else:server,runtime['cache']=start_cache(job,env)
         runtime['sccache_server']=server
         atomic(runtimefile,runtime)
+        if compiler_job:env['RUSTC']='/home/var/bin/bigstack/rustc'
         if server is None:
             env['RUSTC_WRAPPER']=''; env['BB_CACHE_DISABLED']='1'
             print('[buildbox] '+runtime['cache']+'; building uncached',file=sys.stderr,flush=True)
-        elif Path(argv[0]).name=='cargo':
+        elif compiler_job:
             env['RUSTC']='/home/var/bin/bigstack/rustc';env.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
         if not Path(meta+'.exec').exists() and env.get('BUILD_SLOT_EXEC_IN_PAYLOAD')!='1':
             subprocess.run([NODE,str(BIN/'buildbox-receipt.mjs'),'exec',meta],env=env,check=True)
