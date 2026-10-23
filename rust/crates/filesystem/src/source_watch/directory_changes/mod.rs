@@ -236,9 +236,6 @@ impl Shared {
     }
 }
 impl NativeSourceWatch {
-    pub(super) fn read_authority(&self) -> Arc<Delivery> {
-        Arc::clone(&self.shared.delivery)
-    }
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
