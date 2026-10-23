@@ -145,6 +145,12 @@ fn same_allocation(left: &PiRootAllocation, right: &PiRootAllocation) -> bool {
             })
 }
 
+/// What a provider retains of a fully observed allocation: its canonical digest.
+pub(crate) type ObservedAllocation = [u8; 32];
+// A provider's retained memo must own no heap: anything it kept beyond plain data
+// would be held outside every allocation ledger.
+const _: () = assert!(!std::mem::needs_drop::<ObservedAllocation>());
+
 struct ProviderState {
     dispatched: bool,
     handles: BTreeMap<String, PiRootHandle>,
@@ -161,10 +167,9 @@ pub(crate) struct PiRootProvider {
     journal_owner: Option<Arc<TaskJournalOwner<LocalStream>>>,
     original: NativeMaterializationWork,
     state: Mutex<ProviderState>,
-    /// The allocation this provider last observed in full from its durable effect.
-    /// Its result, attachments and creations are immutable once recorded, so a
-    /// later source check re-proves only the live root binding and identity.
-    observed: std::sync::OnceLock<(PiRootAllocation, NativeAllocation)>,
+    /// The digest of the allocation this provider last observed in full. Retained
+    /// memo state is plain data: it owns no heap, so it needs no ledger of its own.
+    observed: std::sync::OnceLock<ObservedAllocation>,
     #[cfg(test)]
     fault: std::sync::atomic::AtomicU8,
     _custody: NativeAllocation,
