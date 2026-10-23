@@ -116,7 +116,7 @@ replace(paths[4],'return files.cancel_active().await;','return Ok(());')
 replace(paths[5],'} => self.rewind_checkpoint(operation, required(target)?).await,','} => Err(Error::Unsupported("rewind is unavailable".into())),')
 replace(paths[6],'        if diff_open {','        if false && diff_open {')
 PY
-cargo build --locked -p graphcoder
+cargo build --locked -p graphcoder -p harness-mock-model
 binary="$CARGO_TARGET_DIR/debug/graphcoder"
 mock="$CARGO_TARGET_DIR/debug/harness-mock-model"
 expect_failure() {
@@ -144,7 +144,7 @@ for case in web-search pty-quit-resume pty-checkpoint-rewind pty-cancel-escape p
 done
 restore
 trap 'rm -rf "$proof"' EXIT
-cargo build --locked -p graphcoder
+cargo build --locked -p graphcoder -p harness-mock-model
 node scripts/qualify-final-answer.mjs "$binary" completed-only prompt
 node scripts/qualify-final-answer.mjs "$binary" pre-dispatch jsonl
 echo SESSIONS_NEGATIVE_CONTROLS_PASSED
