@@ -27,7 +27,7 @@ children. Spawn cannot override them. Codex requires explicit `--sandbox` and
 `--permission-mode`. For Codex and Claude, the launcher records its already
 writable workspace with native `--add-dir` on both parent and child. Changing
 the child's cwd therefore retains the parent's workspace boundary, including
-the coordination mailbox; it admits no path outside the parent's workspace.
+the coordination mailbox; this adds no path outside the parent's workspace.
 Launch Claude with its native plugin directory enabled:
 
 ```sh
