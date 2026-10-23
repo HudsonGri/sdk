@@ -15,7 +15,7 @@ PY
 trap 'restore; rm -rf "$proof"' EXIT
 python3 - <<'PY'
 from pathlib import Path
-import os, subprocess
+import os
 root=Path(os.environ['SESSIONS_NEGATIVE_PROOF'])
 paths=[
  'rust/crates/harness-providers/src/stream/mod.rs',
@@ -42,8 +42,75 @@ replace(paths[2],'if let Some(provider) = search.provider()? {','if let Some(pro
 replace(paths[2],'client::local_identity(operation)','phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?')
 replace(paths[2],'phase(|| client::resume_local_identity(&local, operation)).await?','return Err("retained interactive resume is unavailable".into())')
 p=Path(paths[3]);s=p.read_text();start=s.index('/// Allocate a fresh submission');end=s.index('/// Keep the selected interactive',start)
-old=subprocess.check_output(['git','show','5a6827c20:rust/crates/harness/src/client/local_identity.rs']).decode()
-old=old[old.index('/// Reopen an unfinished'):]
+# Preserve the exact pre-fix implementation so archive-only OS runners can mutate it.
+old=r'''/// Reopen an unfinished launch; completed prompts allocate a fresh request.
+/// The private volume supplies the workspace identity. Prompt bytes supply the
+/// remaining input identity; argv identities are only explicit overrides.
+pub async fn local_identity(
+    local: &LocalHarness,
+    prompt: Option<&str>,
+    explicit: Option<OperationId>,
+) -> Result<OperationId> {
+    if let Some(operation) = explicit {
+        return Ok(operation);
+    }
+    let name = prompt.map_or_else(
+        || "interactive.json".to_owned(),
+        |text| format!("prompt-{}.json", blake3::hash(text.as_bytes()).to_hex()),
+    );
+    let key = FileKey::Ui {
+        directory: Component::new("workspace")?,
+        name: Component::new(name)?,
+    };
+    let files = local.task_files();
+    loop {
+        let snapshot = files.snapshot(&Query::File(key.clone()), 1).await?;
+        if let Some(file) = snapshot.files.first() {
+            let operation: OperationId = serde_json::from_slice(&file.bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let session = Component::new(operation.to_string())?;
+            let completed = if prompt.is_some() {
+                let result = FileKey::Session {
+                    session,
+                    file: TaskFile::ExecutionResult(Component::new(operation.to_string())?),
+                };
+                !files
+                    .snapshot(&Query::File(result), 1)
+                    .await?
+                    .files
+                    .is_empty()
+            } else {
+                let layout = FileKey::Ui {
+                    directory: Component::new(format!("session-{operation}"))?,
+                    name: Component::new("layout.json")?,
+                };
+                files
+                    .snapshot(&Query::File(layout), 1)
+                    .await?
+                    .files
+                    .first()
+                    .map(|file| serde_json::from_slice::<serde_json::Value>(&file.bytes))
+                    .transpose()
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .is_some_and(|layout| layout["exit_requested"] == true)
+            };
+            if !completed {
+                return Ok(operation);
+            }
+        }
+        let operation = OperationId::new();
+        let value = FileValue::new(
+            key.clone(),
+            serde_json::to_vec(&operation).map_err(|error| Error::Invalid(error.to_string()))?,
+        );
+        match files.write(snapshot.generation, &value).await {
+            Ok(_) => return Ok(operation),
+            Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+'''
 s=s[:start]+old+'\n'+s[end:];s=s.replace('{FileKey, FileValue, Query}','{Component, FileKey, FileValue, Query, TaskFile}');p.write_text(s)
 replace(paths[4],'return files.cancel_active().await;','return Ok(());')
 replace(paths[5],'} => self.rewind_checkpoint(operation, required(target)?).await,','} => Err(Error::Unsupported("rewind is unavailable".into())),')
@@ -54,12 +121,18 @@ binary="$CARGO_TARGET_DIR/debug/graphcoder"
 mock="$CARGO_TARGET_DIR/debug/harness-mock-model"
 expect_failure() {
  local name=$1; shift
- if "$@" > "$proof/$name.log" 2>&1; then
-  cat "$proof/$name.log"; echo "negative control unexpectedly passed: $name" >&2; exit 1
- fi
- cat "$proof/$name.log"
- grep -Eq 'AssertionError|AbortError|"status": "fail"' "$proof/$name.log"
- echo "NEGATIVE_PASS $name"
+ python3 - "$proof/$name.log" "$name" "$@" <<'PY'
+import pathlib,re,subprocess,sys,time
+started=time.monotonic()
+result=subprocess.run(sys.argv[3:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=9)
+elapsed=time.monotonic()-started
+pathlib.Path(sys.argv[1]).write_text(result.stdout)
+print(result.stdout,end='')
+assert result.returncode!=0, f'negative control unexpectedly passed: {sys.argv[2]}'
+assert re.search(r'AssertionError|AbortError|"status": "fail"',result.stdout), 'negative failed outside the intended oracle'
+assert elapsed<10, f'negative control exceeded ten seconds: {elapsed}'
+print('NEGATIVE_PASS',sys.argv[2],'seconds',elapsed,flush=True)
+PY
 }
 expect_failure final-prompt node scripts/qualify-final-answer.mjs "$binary" completed-only prompt
 expect_failure final-jsonl node scripts/qualify-final-answer.mjs "$binary" completed-only jsonl
