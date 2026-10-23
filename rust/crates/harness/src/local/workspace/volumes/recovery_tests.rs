@@ -7,6 +7,13 @@ type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const OWNER_ROOT: &str = "ACYCLIC_SCRATCH_RECOVERY_TEST_ROOT";
 const OWNER_TEST: &str = "local::workspace::volumes::recovery_tests::scratch_mount_owner";
 
+mod fixture_access {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../filesystem/tests/support/native_access.rs"
+    ));
+}
+
 // Own the real provider process through every assertion, including failures.
 struct Owner(Child, PathBuf);
 impl Drop for Owner {
@@ -43,12 +50,25 @@ fn scratch_mount_owner() -> TestResult {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let cancellation = CancellationToken::new();
         let fs = acyclic_fs::Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+        let workspace = fs
+            .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+                "scratch-recovery",
+                acyclic_fs::VolumeInitialization::new(
+                    config,
+                    Some(acyclic_fs::access::INITIAL_POLICY),
+                ),
+                acyclic_fs::OperationId::new(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                None,
+            )
             .await
             .map_err(|failure| failure.error)?
-            .value;
-        let checkout = volume
+            .value
+            .workspace();
+        let options =
+            fixture_access::options(&workspace, acyclic_fs::MountOptions::read_write()).await?;
+        let checkout = workspace
             .checkout(
                 GenerationSelector::Head,
                 CheckoutMode {
@@ -62,10 +82,13 @@ fn scratch_mount_owner() -> TestResult {
             .await
             .map_err(|failure| failure.error)?
             .value;
-        let source = Arc::new(acyclic_fs::CheckoutMountSource::new(
-            Arc::new(acyclic_fs::SharedCheckout::new(checkout)),
-            config,
-        )?);
+        let source = Arc::new(
+            acyclic_fs::CheckoutMountSource::new(
+                Arc::new(acyclic_fs::SharedCheckout::new(checkout)),
+                config,
+            )?
+            .with_access_view(Arc::clone(options.require_access_view()?))?,
+        );
         let _mount = acyclic_fs::mount_native_over_existing(
             acyclic_fs::NativeMountRequest {
                 mount_id: acyclic_fs::MountId::new(),
