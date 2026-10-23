@@ -128,15 +128,18 @@ if [ -f scripts/check-feature-matrix.mjs ]; then
   features=$!
 fi
 run_tests(){
-  local phase=$1; shift
+  local phase=$1 phase_started=$SECONDS status=(0 0); shift
   if [ "$phase" = targets ]; then
     bash "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" --build .gate-pr-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
-      cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" || return $?
+      cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" 2>&1 | tee -a .gate-tests.out
+    status=("${PIPESTATUS[@]}")
   fi
-  cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a .gate-tests.out
-  local status=("${PIPESTATUS[@]}")
-  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo test output'; return 2; fi
-  echo "GATE_TEST_PHASE phase=$phase rc=${status[0]}"
+  if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
+    cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a .gate-tests.out
+    status=("${PIPESTATUS[@]}")
+  fi
+  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo test output'; status[0]=2; fi
+  echo "GATE_TEST_PHASE phase=$phase rc=${status[0]} seconds=$((SECONDS-phase_started))"
   return "${status[0]}"
 }
 harness=("$@")

@@ -68,3 +68,16 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
   }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
+test('isolation and artifact-dispatch INFRA cannot become a source verdict',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'isolation-verdict-'));
+ try{
+  fs.mkdirSync(path.join(cwd,'.codex-fleet'));
+  const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
+  const block=source.slice(source.indexOf('# Executor isolation failures'),source.indexOf('# A successful payload'));
+  for(const diagnostic of ['[buildbox] HOME guard INFRA: unsupported','error: GATE_RUNNER_INFRA missing manifest','[buildbox] cleanup INFRA: refused','[buildbox] export INFRA: refused']){
+   const log=path.join(cwd,'gate.log');fs.writeFileSync(log,diagnostic+'\nGATE_DONE rc=101\n');
+   const result=spawnSync('bash',['-c',`log=${log};n=1\n${block}\nexit 0\n`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
+   assert.equal(result.status,4,result.stdout+result.stderr);assert.match(result.stdout,/GATE INFRA/);
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});

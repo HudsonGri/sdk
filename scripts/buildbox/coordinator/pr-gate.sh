@@ -60,8 +60,9 @@ if grep -aq '^BB_DISK_LOW ' "$log"; then
   exit 4
 fi
 # Executor isolation failures must not inherit PASS from a green Cargo footer.
-if grep -aq '^error: GATE_HOME_LEAK ' "$log"; then
-  v="INFRA #$n: $(grep -am1 '^error: GATE_HOME_LEAK ' "$log") log=$log"
+isolation_errors='^error: GATE_(HOME_LEAK|RUNNER_INFRA) |^\[buildbox\] (HOME guard|cleanup|export) INFRA:'
+if grep -aqE "$isolation_errors" "$log"; then
+  v="INFRA #$n: $(grep -am1 -E "$isolation_errors" "$log") log=$log"
   echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 4
 fi

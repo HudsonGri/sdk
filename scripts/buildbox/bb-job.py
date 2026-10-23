@@ -6,6 +6,7 @@ import hashlib
 import fcntl
 import json
 import os
+import resource
 from pathlib import Path
 import shutil
 import signal
@@ -87,6 +88,12 @@ def protect_home(real_home):
     finally:os.close(rules)
     return {'mechanism':'landlock','abi':abi,'real_home':str(real_home),'writable':False}
 
+def git_base(source):
+    for ref in ['refs/remotes/origin/main','refs/heads/main']:
+        result=subprocess.run(['git','-C',str(source),'rev-parse','--verify',ref],capture_output=True,text=True)
+        if result.returncode==0:return result.stdout.strip()
+    return None
+
 def private_git(job,real_home,source):
     """Keep mutable Git state outside HOME without changing the shared copy.
 
@@ -109,13 +116,13 @@ def private_git(job,real_home,source):
     host_ns=subprocess.check_output(['sudo','-n','readlink','/proc/1/ns/mnt'],text=True).strip()
     if own_ns==host_ns:raise RuntimeError('refusing private Git mount in the host namespace')
     head=git('rev-parse','HEAD')
-    base=subprocess.run(['git','-C',str(source),'rev-parse','refs/remotes/origin/main'],capture_output=True,text=True)
+    base=git_base(source)
     private=job/'git';subprocess.run(['git','init','--bare','--quiet',str(private)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     (private/'objects/info/alternates').write_text(str(common/'objects')+'\n')
     def local(*args):subprocess.run(['git','--git-dir='+str(private),*args],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     local('config','core.bare','false');local('config','core.worktree',str(source))
     local('update-ref','--no-deref','HEAD',head);local('read-tree',head)
-    if base.returncode==0:local('update-ref','refs/remotes/origin/main',base.stdout.strip())
+    if base:local('update-ref','refs/remotes/origin/main',base)
     pointer=job/'git-pointer';pointer.write_text('gitdir: '+str(private)+'\n')
     subprocess.run(['sudo','-n','mount','--bind',str(pointer),str(source/'.git')],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     return {'private_gitdir':str(private),'read_only_objects':str(common/'objects'),'mount_namespace':own_ns}
@@ -168,6 +175,45 @@ def remove_home(job):
     shutil.rmtree(job)
 
 
+def compiler_policy(env):
+    # Every target is deleted at job exit. Incremental rustc output cannot be
+    # reused there, and its -C incremental argument bypasses sccache entirely.
+    # Cargo's global setting also wins over inherited per-profile overrides.
+    env['CARGO_INCREMENTAL']='0'
+
+
+def child_cpu():
+    usage=resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime+usage.ru_stime
+
+
+def cache_cpu(server):
+    if not server or identity(server['pid'])!=server['identity']:return None
+    try:
+        fields=Path(f'/proc/{server["pid"]}/stat').read_text().split(') ')[-1].split()
+        return sum(float(fields[i]) for i in [11,12,13,14])/os.sysconf('SC_CLK_TCK')
+    except (OSError,ValueError,IndexError):return None
+
+
+def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
+    own=max(0,child_cpu()-started_cpu)
+    now=cache_cpu(server)
+    cache=max(0,now-started_cache_cpu) if now is not None and started_cache_cpu is not None else None
+    out={'payload_wall_seconds':max(0,time.monotonic()-started_wall),
+         'waited_children_cpu_seconds':own,'owned_cache_cpu_seconds':cache,
+         'attributed_cpu_seconds':own+(cache or 0),
+         'cpu_coverage':'waited-child-tree+owned-sccache; excludes unawaited descendants',
+         'compiler_policy':'ephemeral-target-no-incremental-v1'}
+    if server:
+        try:
+            result=subprocess.run([SCCACHE,'--show-stats','--stats-format','json'],env=env,capture_output=True,text=True,timeout=5)
+            if result.returncode==0:out['sccache']=json.loads(result.stdout)
+            else:out['sccache_stats_error']='exit='+str(result.returncode)
+        except (OSError,ValueError,subprocess.TimeoutExpired) as error:
+            out['sccache_stats_error']=type(error).__name__
+    return out
+
+
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
@@ -181,6 +227,7 @@ def run(argv):
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True)
             return 224
         os.environ['CARGO_HOME']='/mnt/bb/toolchains/cargo'
+        compiler_policy(os.environ)
         if Path(argv[0]).name=='cargo':
             os.environ['RUSTC']='/home/var/bin/bigstack/rustc'
             if os.environ.get('BB_CACHE_DISABLED')=='1':os.environ['RUSTC_WRAPPER']=''
@@ -189,6 +236,7 @@ def run(argv):
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
     env=dict(os.environ); real_home=Path('/home/var')
+    compiler_policy(env)
     # sudo/runuser may strip admission env across the mount-namespace boundary.
     # The admitted wrapper persists it before privilege changes.
     admission_file=Path(meta+'.admission')
@@ -254,8 +302,11 @@ def run(argv):
             subprocess.run([NODE,str(BIN/'buildbox-receipt.mjs'),'exec',meta],env=env,check=True)
         # Stay in the admission lease's process group. A killed client causes
         # the daemon/receipt watcher to terminate the entire leased group.
+        started_cpu=child_cpu(); started_cache_cpu=cache_cpu(server); started_wall=time.monotonic()
         child=subprocess.Popen(argv,env=env)
         rc=child.wait(); rc=128-rc if rc<0 else rc
+        runtime['compute']=cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall)
+        atomic(runtimefile,runtime)
         if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
             try:
                 from job_exports import prepare

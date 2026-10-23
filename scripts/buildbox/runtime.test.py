@@ -145,6 +145,32 @@ sys.stdout.buffer.write(bytes(range(256)))
         with self.assertRaisesRegex(RuntimeError,'private buildbox worktree namespace'):
             job.private_git(self.d,Path('/home/var'),str(repo))
         self.assertEqual((repo/'.git/HEAD').read_bytes(),before)
+
+    def test_private_git_base_preserves_local_main_fallback(self):
+        repo=self.d/'repo';repo.mkdir()
+        def git(*args):return subprocess.check_output(['git','-C',str(repo),*args],text=True).strip()
+        git('init','--quiet');git('config','user.name','fixture');git('config','user.email','fixture@example.invalid')
+        git('-c','commit.gpgsign=false','commit','--quiet','--allow-empty','-m','base')
+        head=git('rev-parse','HEAD');git('update-ref','refs/heads/main',head)
+        missing=subprocess.run(['git','-C',str(repo),'rev-parse','--verify','refs/remotes/origin/main'],capture_output=True)
+        self.assertNotEqual(missing.returncode,0) # former remote-only lookup loses main
+        self.assertEqual(job.git_base(repo),head)
+        git('-c','commit.gpgsign=false','commit','--quiet','--allow-empty','-m','remote')
+        newer=git('rev-parse','HEAD');git('update-ref','refs/remotes/origin/main',newer)
+        self.assertEqual(job.git_base(repo),newer)
+        git('update-ref','-d','refs/remotes/origin/main');git('update-ref','-d','refs/heads/main')
+        self.assertIsNone(job.git_base(repo))
+
+    def test_ephemeral_targets_disable_incremental_and_retain_compute_receipt(self):
+        # Preserve the coordinator's live compiler-policy/compute additions.
+        result,runtime=self.run_job([sys.executable,'-c','import os;assert os.environ["CARGO_INCREMENTAL"]=="0"'],extra={'CARGO_INCREMENTAL':'1','CARGO_PROFILE_DEV_INCREMENTAL':'true'})
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(runtime['compute']['compiler_policy'],'ephemeral-target-no-incremental-v1')
+        self.assertGreaterEqual(runtime['compute']['attributed_cpu_seconds'],0)
+        self.assertGreaterEqual(runtime['compute']['payload_wall_seconds'],0)
+        env={'CARGO_INCREMENTAL':'1'}
+        self.assertNotEqual(env['CARGO_INCREMENTAL'],'0') # former inherited override
+        job.compiler_policy(env);self.assertEqual(env['CARGO_INCREMENTAL'],'0')
     def test_unreadable_directories_cleanup_negative_control(self):
         p=self.d/'job';(p/'moved/deep').mkdir(parents=True);(p/'moved/deep/data').write_bytes(b'x')
         (p/'moved').chmod(0)

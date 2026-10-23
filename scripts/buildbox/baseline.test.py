@@ -77,6 +77,10 @@ esac
    for executor in [-9,224,1 if payload==101 else 101]:
     self.assertFalse(module.baseline_complete(footer+f'GATE_TEST_BASELINE_EXECUTOR rc={executor}\n'))
    self.assertTrue(module.baseline_complete(footer+f'GATE_TEST_BASELINE_EXECUTOR rc={payload}\n'))
+  for status in [1,2,224,-9]:
+   self.assertFalse(module.baseline_complete(f'test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc={status}\nGATE_TEST_BASELINE_EXECUTOR rc={status}\n'))
+  for error in ['[buildbox] HOME guard INFRA: unavailable','error: GATE_RUNNER_INFRA missing manifest']:
+   self.assertFalse(module.baseline_complete(error+'\ntest result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=101\nGATE_TEST_BASELINE_EXECUTOR rc=101\n'))
  def test_actual_verdict_qualifies_non_libtest_targets_without_hiding_new_failures(self):
   root=self.d;(root/'.codex-fleet').mkdir();(root/'flakes').write_text('')
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()

@@ -44,6 +44,8 @@ esac
       assert.match(calls.at(-1),/--doc/);assert.ok(calls.filter(c=>!c.includes('--no-run')).every(c=>c.includes('--skip known-flake')));
       assert.match(result.stdout,new RegExp('GATE_DONE rc='+expected));
       if(expected)assert.match(result.stdout,/error\[E0425\]: cannot find type Capabilities/);
+      assert.match(result.stdout,new RegExp('GATE_TEST_PHASE phase=targets rc='+expected+' seconds=\\d+'));
+      assert.match(result.stdout,/GATE_TEST_PHASE phase=docs rc=0 seconds=\d+/);
       if(!expected)assert.equal(readFileSync(join(cwd,'.gate-fuzz-executables'),'utf8'),'');
     }
     // A preparation error must not launch unobserved background Cargo jobs.

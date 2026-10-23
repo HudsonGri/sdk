@@ -330,14 +330,18 @@ features=$!
 run_tests(){
   local phase=$1 status phase_started=$SECONDS; shift
   echo "GATE_TEST_START phase=$phase packages=$members"
+  status=(0 0)
   if [ "$phase" = targets ]; then
     CARGO_TARGET_DIR="$target" bash "$test_runner" --build .gate-main-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
-      cargo test --locked --workspace --all-features --no-fail-fast "${cargo_args[@]}" "$@" || return $?
+      cargo test --locked --workspace --all-features --no-fail-fast "${cargo_args[@]}" "$@" 2>&1 | tee ".gate-$phase.out"
+    status=("${PIPESTATUS[@]}")
   fi
-  CARGO_TARGET_DIR="$target" cargo test --locked --workspace --all-features --no-fail-fast \
-    "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee ".gate-$phase.out"
-  status=("${PIPESTATUS[@]}")
-  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo output'; return 2; fi
+  if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
+    CARGO_TARGET_DIR="$target" cargo test --locked --workspace --all-features --no-fail-fast \
+      "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee -a ".gate-$phase.out"
+    status=("${PIPESTATUS[@]}")
+  fi
+  if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo output'; status[0]=2; fi
   echo "GATE_TEST_WALL phase=$phase seconds=$((SECONDS-phase_started)) rc=${status[0]}"
   if [ "${status[0]}" = 0 ]; then
     echo "GATE_TEST_COVERAGE phase=$phase packages=$members"

@@ -23,10 +23,10 @@ def baseline_complete(output):
     if len(payloads) != 1 or len(executors) != 1:
         return False
     payload, executor = int(payloads[0]), int(executors[0])
-    if payload < 0 or payload != executor:
+    if payload not in (0, 101) or payload != executor:
         return False
     build_failed = re.search(r'^error: (?:could not compile|failed to |the lock file|no matching|package ID)', output, re.M)
-    isolation_failed = re.search(r'^error: GATE_HOME_LEAK |^BB_DISK_LOW |^\[buildbox\] (?:cleanup|export) INFRA:', output, re.M)
+    isolation_failed = re.search(r'^error: GATE_(?:HOME_LEAK|RUNNER_INFRA) |^BB_DISK_LOW |^\[buildbox\] (?:cleanup|export|HOME guard) INFRA:', output, re.M)
     return bool(not build_failed and not isolation_failed and (payload == 0 or re.search(r'^test result:|^error: test failed, to rerun pass ', output, re.M)))
 
 

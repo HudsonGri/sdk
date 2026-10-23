@@ -594,8 +594,8 @@ export HOME="$BB_JOB_HOME" CARGO_HOME=/mnt/bb/toolchains/cargo RUSTUP_HOME=/home
 case "$(cat /proc/self/cgroup)" in 0::/bbjobs.slice/run-*.scope/job) export BB_CGROUP=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup) PATH=/home/var/bin/bbcg:$PATH;; esac
 # Host paths behind this job's binds of /tmp, /work/src and /work/target (docker -v resolves on the host).
 export BB_HOST_TMP=${J}.tmp BB_HOST_SRC=${src} BB_HOST_TARGET=$(cat ${J}.tdir 2>/dev/null || echo ${TD})
-unset CARGO_INCREMENTAL  # the env var overrides the profile and sccache refuses it
-export TMPDIR="$BB_JOB_TMP" CARGO_TARGET_DIR="$BB_JOB_TARGET" CARGO_PROFILE_DEV_INCREMENTAL=true CARGO_PROFILE_TEST_INCREMENTAL=true CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \\
+export CARGO_INCREMENTAL=0  # job-owned targets are deleted; use shared sccache instead
+export TMPDIR="$BB_JOB_TMP" CARGO_TARGET_DIR="$BB_JOB_TARGET" CARGO_PROFILE_DEV_INCREMENTAL=false CARGO_PROFILE_TEST_INCREMENTAL=false CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \\
   SCCACHE_DIR=/mnt/bb/sccache SCCACHE_CACHE_SIZE=400G SCCACHE_IDLE_TIMEOUT=120 CARGO_NET_RETRY=5 CARGO_TERM_COLOR=\${CARGO_TERM_COLOR:-never}
 printf '[profile.default]\\nslow-timeout = { period = "60s", terminate-after = 10 }\\n' > /tmp/bb-nextest.toml  # = NEXTEST_TOOL, literal: bb-swap smokes this block verbatim
 ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)"
