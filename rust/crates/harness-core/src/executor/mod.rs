@@ -586,6 +586,8 @@ pub struct ModelEventAdmission {
     pub calls: Vec<String>,
     #[doc(hidden)]
     pub completed: bool,
+    #[doc(hidden)]
+    pub text_bytes: u64,
 }
 
 #[cfg(test)]
