@@ -135,6 +135,11 @@ fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
 /// Entries a driver requests from the source per directory page.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const DIRECTORY_PAGE_SIZE: u32 = 256;
+/// Callback threads one mount runs, whatever the host's core count: enough
+/// that callbacks proceed while others block in the source, and a constant
+/// cost per live mount.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CALLBACK_THREADS: u32 = 8;
 /// Named attributes a driver requests from the source per page.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;

@@ -199,7 +199,7 @@ impl FuseSession {
             if !request.writable {
                 config.mount_options.push(fuser::MountOption::RO);
             }
-            config.n_threads = Some(8);
+            config.n_threads = Some(crate::native_mount::CALLBACK_THREADS as usize);
             config.clone_fd = false;
             work.charge(WriteOperations.delta(2))?;
             let filesystem = FuseProjection {
