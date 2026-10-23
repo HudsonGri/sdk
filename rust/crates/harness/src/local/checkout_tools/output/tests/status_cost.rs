@@ -29,18 +29,7 @@ impl StatusFixture {
         let workspace = harness
             .workspace()
             .ok_or_else(|| Error::NotFound("checkout".into()))?;
-        let task = if child {
-            child_task(
-                &harness,
-                context
-                    .task()
-                    .durable_task_id()
-                    .ok_or_else(|| Error::Invalid("fixture task is not durable".into()))?,
-            )
-            .await?
-        } else {
-            Arc::new(context.task().clone())
-        };
+        let task = Arc::new(context.task().clone());
         let root = Arc::new(
             CheckoutTools::new(
                 Arc::clone(workspace),
@@ -53,13 +42,64 @@ impl StatusFixture {
         let selecting =
             ToolContext::new(Arc::clone(&task), OperationId::new(), "status-select", None)?;
         let tools = root.select(&selecting).await?.unwrap_or(root);
-        Ok(Self {
+        let mut case = Self {
             harness,
             tools,
             task,
             _directory: directory,
             state,
-        })
+        };
+        // Commit the shared preimage before creating a sparse child view.
+        // The measured child then inherits that immutable committed cut.
+        case.seed().await?;
+        if child {
+            case.task = child_task(
+                &case.harness,
+                context
+                    .task()
+                    .durable_task_id()
+                    .ok_or_else(|| Error::Invalid("fixture task is not durable".into()))?,
+            )
+            .await?;
+            let selecting = ToolContext::new(
+                Arc::clone(&case.task),
+                OperationId::new(),
+                "status-child-select",
+                None,
+            )?;
+            case.tools =
+                case.tools.select(&selecting).await?.ok_or_else(|| {
+                    Error::Invalid("child status did not select a child view".into())
+                })?;
+            // The sparse view inherits file content, while its own Git
+            // repository starts unborn. Commit that inherited content too.
+            case.command(110, "git commit -m status-child-baseline")
+                .await?;
+        }
+        Ok(case)
+    }
+
+    async fn seed(&self) -> Result<()> {
+        use crate::conversation::ContentPublisher as _;
+        super::super::super::publisher::CheckoutPublisher::new(
+            Arc::clone(&self.tools),
+            Arc::clone(&self.harness.files),
+            &self.harness.project,
+            &self.harness.verifier,
+            &self.harness.signed,
+            self.harness.limits.file_bytes,
+        )
+        .stage_once(
+            OperationId::new(),
+            "status-baseline",
+            b"committed bytes\n",
+            "text/plain",
+            "status-baseline",
+            None,
+        )?
+        .await?;
+        self.command(100, "git commit -m status-baseline").await?;
+        Ok(())
     }
 
     async fn command(&self, index: u32, command: &str) -> Result<ToolResult> {
@@ -154,10 +194,6 @@ fn decode(result: &ToolResult) -> Result<acyclic_fs::GitCommandOutput> {
 
 async fn status_cost(child: bool) -> Result<()> {
     let case = StatusFixture::open(child).await?;
-    let workspace = &case.tools.workspace;
-    std::fs::write(workspace.path.join("status-baseline"), b"committed bytes\n")
-        .map_err(storage)?;
-    case.command(100, "git commit -m status-baseline").await?;
     let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
     let driver = tokio::spawn(async move {
         while let Some(boundary) = events.recv().await {
@@ -196,6 +232,13 @@ async fn status_reads(case: &StatusFixture, child: bool) -> Result<()> {
     let before = read_log(&log)?;
     let before_files = durable_files(case.state.path())?;
     let first = status(0).await?;
+    let acyclic_fs::GitCommandOutput::Status(initial) = decode(&first)? else {
+        return Err(Error::Invalid("expected initial status result".into()));
+    };
+    assert!(
+        initial.head.is_some(),
+        "the fixture must establish committed HEAD"
+    );
     assert_diff(&case.command(101, "git diff").await?, 0)?;
     let before_frames = before.iter().filter(|byte| **byte == b'\n').count();
     let started = std::time::Instant::now();
