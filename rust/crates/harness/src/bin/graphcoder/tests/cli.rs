@@ -173,9 +173,9 @@ fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Resul
         .get("input")
         .and_then(Value::as_array)
         .ok_or("input array missing")?;
-    let (first, rest) = input.split_first().ok_or("environment message missing")?;
+    let first = input.get(3).ok_or("environment message missing")?;
     assert_eq!(first.get("type"), Some(&json!("message")));
-    assert_eq!(first.get("role"), Some(&json!("system")));
+    assert_eq!(first.get("role"), Some(&json!("user")));
     let content = first
         .get("content")
         .and_then(Value::as_array)
@@ -195,11 +195,18 @@ fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Resul
     }
     // A one-shot prompt without GOAL.md carries no goal guidance.
     assert_eq!(
-        Value::Array(rest.to_vec()),
+        Value::Array(
+            input
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != 3)
+                .map(|(_, message)| message.clone())
+                .collect()
+        ),
         json!([
-            {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
             {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
             {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
             {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
         ])
     );

@@ -275,7 +275,33 @@ impl ContextStage for ManifestStage {
             if self.late.messages.is_empty() {
                 Ok(context)
             } else {
-                selection::place_snapshot(context, &self.late, ContextPlacement::Append, limits, io)
+                // Late facts belong immediately before the active input. Appending
+                // them after it also moves them past tool results on later steps.
+                // Prepend pays for the complete composition and updated input
+                // marker, then rotate the admitted messages without allocating.
+                let index = context
+                    .current_input_index
+                    .map_or(context.messages.len(), |i| i as usize);
+                let count = self.late.messages.len();
+                let mut context = selection::place_snapshot(
+                    context,
+                    &self.late,
+                    ContextPlacement::Prepend,
+                    limits,
+                    io,
+                )?;
+                crate::executor::with_history_io(io, |work| {
+                    let bytes = (index + count) as u64 * std::mem::size_of::<ModelMessage>() as u64;
+                    if let Some(work) = work.as_deref_mut() {
+                        work.admit_copy(bytes)?;
+                    }
+                    context.messages[..index + count].rotate_left(count);
+                    if let Some(work) = work.as_deref_mut() {
+                        work.copy_bytes(bytes)?;
+                    }
+                    Ok::<(), Error>(())
+                })?;
+                Ok(context)
             }
         })
     }

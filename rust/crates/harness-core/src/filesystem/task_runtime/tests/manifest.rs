@@ -241,7 +241,12 @@ fn command_requests_use_manifest_not_live_catalog() {
                             Ok::<_, Error>((requests.into_iter().next().unwrap(), tools))
                         })?;
                         prop_assert_eq!(request.tools, tools);
+                        prop_assert_eq!(request.messages[0].role, crate::model::ModelRole::User);
                         prop_assert_eq!(&request.messages[0].content, &ModelContent::Text(text));
+                        prop_assert_eq!(
+                            &request.messages.last().unwrap().content,
+                            &ModelContent::Text("use pinned context".into())
+                        );
                         Ok(())
                     })
                     .unwrap();
@@ -298,6 +303,7 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].tools, tools);
+    assert_eq!(requests[0].messages[0].role, crate::model::ModelRole::User);
     assert_eq!(
         requests[0].messages[0].content,
         ModelContent::Text("retained instructions".into())
