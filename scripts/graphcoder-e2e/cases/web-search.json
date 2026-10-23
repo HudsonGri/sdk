@@ -47,12 +47,18 @@
       "mode": "headless",
       "text": "search fixture query",
       "answer": "done"
+    },
+    {
+      "mode": "headless",
+      "text": "search fixture query",
+      "answer": "done"
     }
   ],
   "assert": {
     "requests": 2,
     "tool_contains": [
-      "SEARCH_E2E_RESULT"
+      "SEARCH_E2E_RESULT",
+      "https://example.invalid/e2e"
     ],
     "model_contains": [
       "\"name\":\"web_search\""
