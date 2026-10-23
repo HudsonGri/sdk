@@ -322,13 +322,14 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
     let mut files = CommandSession::open(volume, uuid::Uuid::from_bytes([71; 16]), 65_536, 128)
         .await
         .unwrap();
-    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"history_after":3000})).await.unwrap();
+    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"transcript_top":{"part":"answer","position":{"line":3000,"row":0}}})).await.unwrap();
     let mut input = PromptInput::default();
     PromptFiles::default().refresh(&files, &mut input).unwrap();
     let mut renderer = ClientRenderer::default();
     renderer.transcript = (0..6000)
         .map(|row| Line::raw(format!("row {row} needle")))
         .collect();
+    renderer.wrapped_transcript.replace(&renderer.transcript, 0);
     paint_frame(&mut renderer, &files, &input, 80);
     assert!(renderer.search.pending());
     let initial = renderer

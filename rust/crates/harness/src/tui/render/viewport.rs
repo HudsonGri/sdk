@@ -5,15 +5,17 @@ use crate::{
 };
 use acyclic_stream::StreamProvider;
 
+fn find(layout: &serde_json::Value) -> bool {
+    layout.get("open_view").and_then(serde_json::Value::as_str) == Some("find")
+        && layout.get("view_input").and_then(serde_json::Value::as_str) == Some("find")
+}
+
 pub(super) fn reasoning<P: StreamProvider + ?Sized>(
     files: &CommandSession<P>,
 ) -> crate::Result<bool> {
     let settings = files.state(CommandFileRoot::Config, "settings.json")?;
     let layout = files.state(CommandFileRoot::Session, "layout.json")?;
-    if layout
-        .as_ref()
-        .is_some_and(|layout| layout["open_view"] == "find" && layout["view_input"] == "find")
-    {
+    if layout.as_ref().is_some_and(find) {
         return Ok(false);
     }
     settings
@@ -47,15 +49,21 @@ impl ClientRenderer {
         let layout = files
             .state(CommandFileRoot::Session, "layout.json")?
             .unwrap_or_default();
-        self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
+        self.search_open = find(&layout);
         let rows = tui::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
         self.search.project(rows, self.search_open);
         let mut top = crate::client::tui_anchor(files)?;
         if self.search_open {
-            let index = layout["search_index"].as_i64().unwrap_or(0);
+            let index = layout
+                .get("search_index")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
             self.search.update(
                 rows,
-                layout["search_query"].as_str().unwrap_or(""),
+                layout
+                    .get("search_query")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
                 index,
                 input.theme.style(tui::config::ThemeRole::Selection),
             );
