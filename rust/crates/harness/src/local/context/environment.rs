@@ -51,17 +51,47 @@ pub(super) async fn gather(
 
 /// One-line summary of `git status`, or `None` outside a work tree.
 async fn git_status(cwd: &Path) -> Option<String> {
-    let command = tokio::process::Command::new(which::which("git").ok()?);
-    git_status_from(cwd, command).await
+    git_status_from(cwd, || {
+        Some(tokio::process::Command::new(which::which("git").ok()?))
+    })
+    .await
 }
 
-async fn git_status_from(cwd: &Path, mut command: tokio::process::Command) -> Option<String> {
+// Git's launcher can be expensive even when there is no repository to inspect.
+// Discover markers without starting it; Git still validates any marker found.
+struct WorktreeDirectory(std::path::PathBuf);
+
+impl WorktreeDirectory {
+    fn discover(cwd: &Path) -> std::io::Result<Option<Self>> {
+        let cwd = cwd.canonicalize()?;
+        for ancestor in cwd.ancestors() {
+            match std::fs::symlink_metadata(ancestor.join(".git")) {
+                Ok(_) => return Ok(Some(Self(cwd))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+}
+
+async fn git_status_from(
+    cwd: &Path,
+    command: impl FnOnce() -> Option<tokio::process::Command>,
+) -> Option<String> {
     use tokio::io::AsyncReadExt as _;
+    let cwd = cwd.to_owned();
+    let directory =
+        acyclic_native_runtime::spawn_blocking(move || WorktreeDirectory::discover(&cwd))
+            .await
+            .ok()?
+            .ok()??;
+    let mut command = command()?;
     for name in REPOSITORY_ENVIRONMENT {
         command.env_remove(name);
     }
     let mut child = command
-        .current_dir(cwd)
+        .current_dir(directory.0)
         .args([
             "status",
             "--porcelain=v1",
@@ -104,6 +134,41 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn git_environment_outside_worktree_never_starts_a_command() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let started = std::cell::Cell::new(false);
+        let status = git_status_from(root.path(), || {
+            started.set(true);
+            None
+        })
+        .await;
+        assert!(status.is_none());
+        assert!(
+            !started.get(),
+            "non-repository context started a Git command"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn git_environment_admission_requires_a_worktree_marker() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested)?;
+        assert!(WorktreeDirectory::discover(&nested)?.is_none());
+        let marker = root.path().join(".git");
+        std::fs::create_dir(&marker)?;
+        let directory = WorktreeDirectory::discover(&nested)?;
+        assert_eq!(directory.map(|value| value.0), Some(nested.canonicalize()?));
+        std::fs::remove_dir(&marker)?;
+        std::fs::write(&marker, "gitdir: /fixture/worktree\n")?;
+        assert!(WorktreeDirectory::discover(&nested)?.is_some());
+        std::fs::remove_file(marker)?;
+        assert!(WorktreeDirectory::discover(&nested)?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn inherited_repository_selection_cannot_replace_the_bound_checkout() {
         let bound = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
@@ -133,7 +198,9 @@ mod tests {
             .env("GIT_COMMON_DIR", other.path().join(".git"))
             .env("GIT_INDEX_FILE", other.path().join(".git/index"));
         assert_eq!(
-            git_status_from(bound.path(), command).await.as_deref(),
+            git_status_from(bound.path(), || Some(command))
+                .await
+                .as_deref(),
             Some("branch No commits yet on bound-fixture; 1 untracked")
         );
     }
