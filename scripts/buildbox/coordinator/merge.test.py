@@ -80,6 +80,10 @@ class MergeFence(unittest.TestCase):
         self.assertFalse((self.state/'.prepared-heads.json').exists())
 
     def test_direct_and_bisect_dispatch_merge_only_pinned_groups(self):
+        # Verdict evaluation must retain the tree whose generation was pinned.
+        # Resetting it before merge would make every valid pin stale.
+        source = (HERE/'pr-gate.sh').read_text()
+        self.assertNotIn('git -C $W checkout', source)
         for bisect in [False, True]:
             with self.subTest(bisect=bisect):
                 root = self.root/str(bisect)

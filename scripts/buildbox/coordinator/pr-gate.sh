@@ -111,7 +111,8 @@ if { [ "$rc" != 0 ] || grep -aqE '^GATE_CLIPPY rc=[1-9]' "$log"; } && [ "$rc" !=
   fi
   [ -z "$test_base_log" ] || echo "GATE_TEST_BASELINE log=$test_base_log" >> "$log"
 fi
-git -C $W checkout -q --detach -f origin/main
+# Keep the prepared tree until gate-drain verifies its head pins and merges.
+# The next preparation owns resetting this checkout.
 pr_fails=$(bash Q:/lanes/failed-tests.sh $log)
 base_fails=$( { bash Q:/lanes/failed-tests.sh "$base_log" 2>/dev/null; [ -z "$test_base_log" ] || bash Q:/lanes/failed-tests.sh "$test_base_log"; cat Q:/lanes/flakes.txt; } | sort -u)  # known flakes (owned, being fixed) never block a PR
 new=$(comm -23 <(printf '%s\n' "$pr_fails" | grep .) <(printf '%s\n' "$base_fails" | grep .))
