@@ -287,11 +287,7 @@ where
                 let staging = crate::conversation::BoundedContentFuture::new(None, || {
                     self.stage_with_io(operation, key, bytes, media, None)
                 })?;
-                crate::obs::traced_future(
-                    span,
-                    staging,
-                )
-                .await
+                crate::obs::traced_future(span, staging).await
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
