@@ -36,6 +36,14 @@ impl ClientRenderer {
         height: usize,
     ) -> crate::Result<()> {
         self.view_height = height;
+        if height == 0 {
+            self.search_open = false;
+            self.wrapped_reasoning.hide();
+            self.wrapped_transcript.hide();
+            self.wrapped_tools.hide();
+            self.top = crate::client::tui_anchor(files)?;
+            return Ok(());
+        }
         let layout = files
             .state(CommandFileRoot::Session, "layout.json")?
             .unwrap_or_default();
