@@ -93,7 +93,7 @@ impl CheckoutTools {
             bool,
         )>,
     ) -> Result<()> {
-        let (physical, _) = selected;
+        let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
             mount
                 .sync_with_permit(permit, &mount.native_work()?, move |_| {
