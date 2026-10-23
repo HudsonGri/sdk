@@ -89,6 +89,7 @@ impl LocalHarness {
             volume,
             config.clock.clone(),
             &task_files,
+            signed,
         )
         .await?;
         #[cfg(feature = "native-execution")]
@@ -152,16 +153,17 @@ async fn bound_workspace(
                 workspace::open(
                     filesystem,
                     volume,
-                    volume,
                     checkout,
-                    &directory,
                     Some(identity.to_bytes()),
-                    operation,
                     true,
-                    false,
-                    workspace::OwnerState {
+                    workspace::OpenOptions {
+                        scratch: volume,
+                        directory: &directory,
+                        operation,
+                        native_mounts: false,
                         store: acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
                             .with_ownership_anchor(state_owner),
+                        authority: None,
                         processes: None,
                     },
                 )
@@ -287,6 +289,7 @@ async fn checkout_runtime(
     volume: &VolumeRef,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     task_files: &Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    signed: &Scope,
 ) -> Result<LocalTaskRuntime> {
     Ok(if let Some(workspace) = workspace {
         runtime.with_workspace_tools(Arc::new(
@@ -294,6 +297,7 @@ async fn checkout_runtime(
                 Arc::clone(workspace),
                 volume,
                 clock,
+                signed,
                 Arc::clone(task_files),
             )
             .await?,
