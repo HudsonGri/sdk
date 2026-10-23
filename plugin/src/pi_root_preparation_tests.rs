@@ -282,7 +282,7 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
                 protected.policy.maximum_payload_bytes,
                 &IdempotencyKey::new("constructor-fixture").unwrap(),
                 None,
-                None,
+                acyclic_harness::conversation::ContentAccess::default(),
             )
             .await
             .unwrap(),

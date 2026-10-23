@@ -145,8 +145,7 @@ async fn owner_scope(fixture: &Fixture) -> Result<Scope> {
             fixture.owner(TASK).await?,
             OperationId::from_bytes([TASK; 16]),
         )?
-        .scope
-        .clone())
+        .scope)
 }
 
 fn tool_subject() -> ApprovalSubject {

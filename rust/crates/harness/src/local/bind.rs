@@ -21,13 +21,7 @@ impl LocalHarness {
         authority: (&AuthorityVerifier, &Scope),
         checkout: Option<&Path>,
     ) -> Result<Self> {
-        config.limits.validate(&mut None)?;
-        use crate::runtime::ToolPolicy as _;
-        if runtime.approval_policy_identity() != Some(config.approval_policy.bind()?.identity()) {
-            return Err(Error::Conflict(
-                "bound runtime and local approval policy differ".into(),
-            ));
-        }
+        validate_policy_binding(&config, &runtime)?;
         #[cfg(feature = "native-execution")]
         if checkout.is_some() {
             config = config.prepare_state()?;
@@ -74,12 +68,9 @@ impl LocalHarness {
             verifier,
             signed,
             config.limits.file_bytes,
+            config.approval_issuer.take(),
         )
         .await?;
-        let runtime = match config.approval_issuer.take() {
-            Some(issuer) => runtime.with_approval_authority(&issuer)?,
-            None => runtime,
-        };
         #[cfg(feature = "native-execution")]
         let workspace =
             bound_workspace(checkout, checkout_state, &filesystem, volume, state_owner).await?;
@@ -285,6 +276,7 @@ async fn bind_task_files(
     verifier: &AuthorityVerifier,
     signed: &Scope,
     maximum: u64,
+    approval_issuer: Option<AuthorityIssuer>,
 ) -> Result<(
     LocalTaskRuntime,
     Arc<crate::task_volume::TaskFiles<LocalStream>>,
@@ -295,6 +287,10 @@ async fn bind_task_files(
     let erased_files = Arc::new(task_files.reopen_erased().await?);
     let mut runtime = runtime.with_task_files(erased_files.clone())?;
     runtime.bind_task_files(Some(task_files.clone()));
+    let runtime = match approval_issuer {
+        Some(issuer) => runtime.with_approval_authority(&issuer)?,
+        None => runtime,
+    };
     Ok((runtime, task_files))
 }
 
@@ -321,4 +317,15 @@ async fn checkout_runtime(
     } else {
         runtime
     })
+}
+
+fn validate_policy_binding(config: &LocalHarnessConfig, runtime: &LocalTaskRuntime) -> Result<()> {
+    use crate::runtime::ToolPolicy as _;
+    config.limits.validate(&mut None)?;
+    if runtime.approval_policy_identity() != Some(config.approval_policy.bind()?.identity()) {
+        return Err(Error::Conflict(
+            "bound runtime and local approval policy differ".into(),
+        ));
+    }
+    Ok(())
 }

@@ -2,10 +2,20 @@ use super::*;
 use acyclic_test_support::differential;
 use proptest::prelude::*;
 
-async fn initialized(
-    reason: &str,
-    io: Option<&PreparationIo>,
-) -> Result<(Journal, InteractionId, OperationId, Vec<u8>, u64)> {
+// A verifier can replay history after teardown, but admissions still require
+// the runtime that owns its signing custody. Keep both runtimes alive through
+// setup and the measured journal operations.
+struct Initialized {
+    journal: Journal,
+    id: InteractionId,
+    operation: OperationId,
+    encoded: Vec<u8>,
+    request_bytes: u64,
+    _fixture: Fixture,
+    _conversation: AuthorityIssuer,
+}
+
+async fn initialized(reason: &str, io: Option<&PreparationIo>) -> Result<Initialized> {
     let fixture = Fixture::new(
         Arc::new(MemoryStream::default()),
         acyclic_fs::Fs::memory(),
@@ -49,13 +59,15 @@ async fn initialized(
     } else {
         journal
     };
-    Ok((
+    Ok(Initialized {
         journal,
         id,
         operation,
-        decision.bytes.to_vec(),
-        request.len() as u64,
-    ))
+        encoded: decision.bytes.to_vec(),
+        request_bytes: request.len() as u64,
+        _fixture: fixture,
+        _conversation: conversation,
+    })
 }
 
 proptest! {
@@ -65,27 +77,33 @@ proptest! {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         for native in [false, true] {
             for pending in [false, true] {
+                let (initialized, id, work) = runtime.block_on(async {
+                    let cancellation = acyclic_fs::CancellationToken::new();
+                    let work = acyclic_fs::NativeMaterializationWork::new(
+                        acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
+                    ).unwrap();
+                    let io = native.then(|| PreparationIo::from_native_work(&work).unwrap());
+                    let initialized = initialized(&reason, io.as_ref()).await.unwrap();
+                    let journal = &initialized.journal;
+                    let operation = initialized.operation;
+                    let id = if pending {
+                        let id = InteractionId::from_bytes([87;16]);
+                        journal.open_interaction(id, &Interaction::approval(
+                            "Pending".into(), operation, [5;32], crate::interaction::ApprovalSubject::Opaque {},
+                        ).unwrap(), io.as_ref()).unwrap().await.unwrap();
+                        id
+                    } else { initialized.id };
+                    drop(io);
+                    (initialized, id, work)
+                });
+                // The paired reads share immutable history, while every read
+                // still reconstructs and proves its own outcome.
                 for duplicate in [false, true] {
                     let (outcome, trace) = differential::observe::<_,_,(&'static str,u64)>(
-                        || runtime.block_on(async {
-                            let cancellation = acyclic_fs::CancellationToken::new();
-                            let work = acyclic_fs::NativeMaterializationWork::new(
-                                acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
-                            ).unwrap();
-                            let io = native.then(|| PreparationIo::from_native_work(&work).unwrap());
-                            let (journal, approved, operation, _, _) = initialized(&reason, io.as_ref()).await.unwrap();
-                            let id = if pending {
-                                let id = InteractionId::from_bytes([87;16]);
-                                journal.open_interaction(id, &Interaction::approval(
-                                    "Pending".into(), operation, [5;32], crate::interaction::ApprovalSubject::Opaque {},
-                                ).unwrap(), io.as_ref()).unwrap().await.unwrap();
-                                id
-                            } else { approved };
-                            drop(io);
-                            (journal, id, work)
-                        }),
-                        |(journal, id, work)| {
-                            let io = native.then(|| PreparationIo::from_native_work(&work).unwrap());
+                        || (&initialized, id, &work),
+                        |(initialized, id, original_work)| {
+                            let journal = &initialized.journal;
+                            let io = native.then(|| PreparationIo::from_native_work(original_work).unwrap());
                             if duplicate {
                                 // Restore the removed, real history reconstruction
                                 // before the ordinary verdict/proof path.
@@ -124,29 +142,35 @@ proptest! {
     #[test]
     fn installation_reads_and_allocates_one_decision(reason in ".{0,1024}") {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (ordinary, native, work) = runtime.block_on(async {
+            let ordinary = initialized(&reason, None).await.unwrap();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
+            ).unwrap();
+            let io = PreparationIo::from_native_work(&work).unwrap();
+            let native = initialized(&reason, Some(&io)).await.unwrap();
+            drop(io);
+            (ordinary, native, work)
+        });
         for duplicate in [false, true] {
-            // Each run owns fresh conversation, decoder and task-file state.
             let ((result, rejected, expected, request, decision), trace) = differential::observe::<_,_,(&'static str,u64)>(
-                || runtime.block_on(async {
-                    let ordinary = initialized(&reason, None).await.unwrap();
-                    let cancellation = acyclic_fs::CancellationToken::new();
-                    let work = acyclic_fs::NativeMaterializationWork::new(
-                        acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
-                    ).unwrap();
-                    let io = PreparationIo::from_native_work(&work).unwrap();
-                    let native = initialized(&reason, Some(&io)).await.unwrap();
-                    drop(io);
-                    (ordinary, native.0, work)
-                }),
-                |((journal, id, operation, encoded, request), native_journal, work)| {
+                || (&ordinary, &native, &work),
+                |(ordinary, native, original_work)| {
+                    let journal = &ordinary.journal;
+                    let id = ordinary.id;
+                    let operation = ordinary.operation;
+                    let encoded = &ordinary.encoded;
+                    let request = ordinary.request_bytes;
+                    let native_journal = &native.journal;
                     let expected = acyclic_test_support::measure(|| {
-                        drop(crate::contract::json_from_slice::<ApprovalDecisionFile>(&encoded).unwrap());
+                        drop(crate::contract::json_from_slice::<ApprovalDecisionFile>(encoded).unwrap());
                     });
                     let rejected = matches!(runtime.block_on(
                         journal.verify_tool_approval_with_io(id, operation, [6;32], None)),
                         Err(Error::Unauthorized(ref reason)) if reason == "approval does not authorize this definition");
-                    let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
-                    let held = work.live_allocation_bytes();
+                    let io = crate::filesystem::PreparationIo::from_native_work(original_work).unwrap();
+                    let held = original_work.live_allocation_bytes();
                     let owned = io.owned_bytes().unwrap();
                     let native = runtime.block_on(native_journal.verify_tool_approval_with_io(
                         id, operation, [6;32], Some(&io),
@@ -155,7 +179,7 @@ proptest! {
                         code: crate::wire::ErrorCode::Unauthorized,
                         reason: "approval does not authorize this definition",
                     }))
-                        && io.owned_bytes().unwrap() == owned && work.live_allocation_bytes() == held;
+                        && io.owned_bytes().unwrap() == owned && original_work.live_allocation_bytes() == held;
                     drop(io);
                     // Negative control restores the redundant verification on
                     // the real path, including its read, decode and allocation.

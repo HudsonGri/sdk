@@ -87,7 +87,7 @@ impl StreamProvider for Journal {
         let mut hash = blake3::Hasher::new();
         hash.update(retained.last().unwrap().commit_id.as_bytes());
         for body in bodies {
-            hash.update(body);
+            hash.update(&body.value);
         }
         let commit_id = CommitId::from_bytes(*hash.finalize().as_bytes());
         let start = retained.len() as u64;
@@ -96,7 +96,8 @@ impl StreamProvider for Journal {
             .enumerate()
             .map(|(offset, body)| Record {
                 sequence: start + offset as u64,
-                value: body.clone(),
+                value: body.value.clone(),
+                headers: body.headers.clone(),
                 commit_id,
                 committed_at_micros: 1,
             })

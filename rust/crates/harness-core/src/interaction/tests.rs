@@ -428,10 +428,12 @@ fn approval_subject_names_the_exact_tool_call() -> Result<()> {
         )
     };
     let request = approval(tool("bash", "call-1"))?;
-    let value = serde_json::to_value(&request).unwrap();
+    let value =
+        serde_json::to_value(&request).map_err(|error| Error::Storage(error.to_string()))?;
     assert_eq!(value["subject"]["arguments"]["command"], "rm -rf build");
     assert_eq!(
-        serde_json::from_value::<Interaction>(value.clone()).unwrap(),
+        serde_json::from_value::<Interaction>(value.clone())
+            .map_err(|error| Error::Storage(error.to_string()))?,
         request
     );
     // The exact arguments are retained, and accounted, by the request.
@@ -465,19 +467,19 @@ proptest::proptest! {
         let arguments = json!({"strings": strings, "number": number, "flag": flag,
             "$serde_json::private::RawValue": ["literal", false]});
         let request = Interaction::approval("Run?".into(), OperationId::from_bytes([1;16]), [2;32],
-            ApprovalSubject::Tool { tool: "tool".into(), call_id: "call".into(), arguments: arguments.clone() }).unwrap();
+            ApprovalSubject::Tool { tool: "tool".into(), call_id: "call".into(), arguments }).unwrap();
         let bytes = serde_json::to_vec(&request).unwrap();
         let ticket = InteractionTicket { id: Uuid::from_bytes([3;16]), kind: InteractionKind::Approval,
             request: file("approval.json", &bytes).unwrap(), deadline_unix_ms: None,
             approval: Some(ApprovalBinding { operation_id: OperationId::from_bytes([1;16]), action_digest: [2;32] }) };
-        proptest::prop_assert_eq!(ticket.validate_request_bytes(&bytes, &mut None).unwrap().0, request.clone());
+        proptest::prop_assert_eq!(&ticket.validate_request_bytes(&bytes, &mut None).unwrap().0, &request);
         let native = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<Interaction>, &bytes,
             crate::executor::json::JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 },
             bytes.len() as u64, Some(crate::wire::ErrorCode::Invalid),
             Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
         ).unwrap();
-        proptest::prop_assert_eq!(native, request.clone());
+        proptest::prop_assert_eq!(&native, &request);
         let mut substituted = serde_json::to_value(&request).unwrap();
         substituted["subject"]["arguments"] = serde_json::Value::Null;
         let altered = serde_json::to_vec(&substituted).unwrap();

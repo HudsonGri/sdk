@@ -61,15 +61,14 @@ pub async fn publish_durable<P: StreamProvider + ?Sized>(
     write: &Write,
     work: NativeWork<'_>,
 ) -> Result<DurableFile> {
-    let receipt = match volume.file_receipt(write).await? {
-        Some(receipt) => receipt,
-        None => {
-            commit_acknowledged(volume, volume.head().await?, write, work).await?;
-            volume
-                .file_receipt(write)
-                .await?
-                .ok_or(Error::AwaitingDurability)?
-        }
+    let receipt = if let Some(receipt) = volume.file_receipt(write).await? {
+        receipt
+    } else {
+        commit_acknowledged(volume, volume.head().await?, write, work).await?;
+        volume
+            .file_receipt(write)
+            .await?
+            .ok_or(Error::AwaitingDurability)?
     };
     Ok(DurableFile {
         key: write.key.clone(),

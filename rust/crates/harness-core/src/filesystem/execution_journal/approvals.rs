@@ -209,10 +209,8 @@ where
         io: Option<&'io PreparationIo>,
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
-        let _read;
-        let (read, receipt, hold) = host.read_durable(&aggregate.0, id, binding, io).await?;
+        let (read, receipt, _read) = host.read_durable(&aggregate.0, id, binding, io).await?;
         drop(aggregate);
-        _read = hold;
         let (ticket, resolution) = admitted(read, io)?;
         let (Some(resolution), InteractionKind::Approval) = (&resolution, ticket.kind) else {
             return Err(canonical_boundary(
@@ -278,9 +276,28 @@ where
                 _file: None,
             });
         };
+        let proof = self
+            .publish_decision_files(task_id, id, &principal, request_bytes, bytes, io)
+            .await?;
+        Ok(PublishedDecision {
+            approved,
+            _resolution: resolution,
+            _file: Some(proof),
+        })
+    }
+
+    async fn publish_decision_files(
+        &self,
+        task_id: crate::TaskId,
+        id: InteractionId,
+        principal: &[u8; 16],
+        request_bytes: Option<acyclic_stream::OwnedBytes>,
+        bytes: acyclic_stream::OwnedBytes,
+        io: Option<&PreparationIo>,
+    ) -> Result<DurableFile> {
         let files = self.approval_files()?;
         let task = Component::new(task_id.to_string())?;
-        let request = Component::new(ticket.id.to_string())?;
+        let request = Component::new(id.to_string())?;
         let request_bytes = request_bytes.ok_or_else(|| {
             canonical_boundary(
                 io,
@@ -305,7 +322,7 @@ where
             task,
             file: TaskFile::ApprovalDecision {
                 request,
-                principal: Component::new(principal_hex(&principal))?,
+                principal: Component::new(principal_hex(principal))?,
             },
         };
         let proof = files
@@ -314,11 +331,7 @@ where
         if proof.key() != &key {
             return Err(Error::Storage("durable proof names another file".into()));
         }
-        Ok(PublishedDecision {
-            approved,
-            _resolution: resolution,
-            _file: Some(proof),
-        })
+        Ok(proof)
     }
 
     fn approval_task_id(&self) -> Option<crate::TaskId> {

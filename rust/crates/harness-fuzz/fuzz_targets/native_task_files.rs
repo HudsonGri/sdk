@@ -75,6 +75,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             Ok(files) => {
                 let record = Record {
                     sequence: 1,
+                    headers: Default::default(),
                     value: bytes.to_vec().into(),
                     commit_id: acyclic_stream::CommitId::from_bytes([0; 32]),
                     committed_at_micros: 0,

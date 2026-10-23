@@ -35,7 +35,7 @@ proptest! {
         ).unwrap();
         let unmetered = copy_approval_subject(&invocation, None).unwrap();
         prop_assert_eq!(&unmetered.0, &ApprovalSubject::Tool {
-            tool: invocation.name.clone(), call_id: invocation.call_id.clone(), arguments: invocation.arguments.clone(),
+            tool: invocation.name, call_id: invocation.call_id, arguments: invocation.arguments,
         });
         prop_assert_ne!((control.receipt().bytes_copied, unmetered.1.is_some()), (expected, true));
     }

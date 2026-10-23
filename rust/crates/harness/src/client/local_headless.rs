@@ -208,10 +208,10 @@ impl LocalFileClient {
                 }
                 futures::future::Either::Right((_, cancel)) => {
                     self.host_done = true;
-                    if let Err(error) = cancel.await {
-                        if !matches!(error, Error::NotFound(_)) {
-                            return Err(error);
-                        }
+                    if let Err(error) = cancel.await
+                        && !matches!(error, Error::NotFound(_))
+                    {
+                        return Err(error);
                     }
                 }
             }

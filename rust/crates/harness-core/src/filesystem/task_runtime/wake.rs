@@ -288,14 +288,10 @@ where
                 )
                 .await?;
         } else {
-            self.host
-                .wake_command(task, &slot, &mut None)
-                .await?;
+            self.host.wake_command(task, &slot, &mut None).await?;
         }
         #[cfg(target_arch = "wasm32")]
-        self.host
-            .wake_command(task, &slot, &mut None)
-            .await?;
+        self.host.wake_command(task, &slot, &mut None).await?;
         Ok(true)
     }
 }

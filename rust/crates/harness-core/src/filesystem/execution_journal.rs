@@ -32,7 +32,8 @@ use std::{collections::BTreeMap, sync::Arc};
 mod conversation;
 
 mod approvals;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod approvals_tests;
 mod cancellation;
 mod canonical;

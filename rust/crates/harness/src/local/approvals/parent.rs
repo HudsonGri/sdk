@@ -34,19 +34,13 @@ impl LocalHarness {
         let inbox = inbox.ok_or_else(|| {
             Error::Unauthorized("parent approval requires the retained child inbox".into())
         })?;
-        let Inbox { files, reference, .. } = inbox;
+        let Inbox {
+            files, reference, ..
+        } = inbox;
         let attention_key = FileKey::Child {
             reference: reference.clone(),
             file: ChildFile::ApprovalAttention,
         };
-        if inbox.parent_done.is_cancelled() {
-            self.settle_approval(
-                task, request, &format!("parent:{parent}"), false,
-                Some("parent completed without deciding this request".into()),
-            ).await?;
-            publish_attention(files, FileValue::new(attention_key, b"null".to_vec())).await?;
-            return Ok(true);
-        }
         let mirror = FileValue::new(
             FileKey::Child {
                 reference: reference.clone(),
@@ -66,9 +60,16 @@ impl LocalHarness {
             ),
         )
         .await?;
-        let snapshot = files
-            .snapshot(&Query::Child(reference.clone()), self.limits.attachments)
-            .await?;
+        // Observing completion before taking the inbox snapshot fences the
+        // denial behind every message the parent committed before completing.
+        // If completion races this read, the next service pass takes a new
+        // snapshot instead of denying from the older cut.
+        let (parent_done, snapshot) = completed_snapshot(
+            &inbox.parent_done,
+            files.snapshot(&Query::Child(reference.clone()), self.limits.attachments),
+        )
+        .await;
+        let snapshot = snapshot?;
         for message in snapshot.files {
             if !matches!(
                 message.key,
@@ -112,6 +113,65 @@ impl LocalHarness {
             publish_attention(files, FileValue::new(attention_key, b"null".to_vec())).await?;
             return Ok(true);
         }
+        // A completed parent can already have sent its authenticated decision.
+        // Consume that retained inbox first; completion only refuses requests
+        // for which no such decision exists.
+        if parent_done {
+            self.settle_approval(
+                task,
+                request,
+                &format!("parent:{parent}"),
+                false,
+                Some("parent completed without deciding this request".into()),
+            )
+            .await?;
+            publish_attention(files, FileValue::new(attention_key, b"null".to_vec())).await?;
+            return Ok(true);
+        }
         Ok(false)
+    }
+}
+
+// The completion observation must precede the provider's snapshot cut.
+async fn completed_snapshot<T>(
+    done: &acyclic_fs::CancellationToken,
+    snapshot: impl std::future::Future<Output = T>,
+) -> (bool, T) {
+    let completed = done.is_cancelled();
+    (completed, snapshot.await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_snapshot_cannot_deny_a_committed_parent_decision() {
+        futures::executor::block_on(async {
+            for stale_completion in [false, true] {
+                let done = acyclic_fs::CancellationToken::new();
+                let inbox = std::cell::Cell::new(None);
+                let read = async {
+                    let snapshot = inbox.get();
+                    // The parent commits its decision after this snapshot cut,
+                    // then completes before the reader observes the result.
+                    inbox.set(Some(true));
+                    done.cancel();
+                    snapshot
+                };
+                let (completed, decision) = if stale_completion {
+                    // Negative control restores the old read-before-fence order.
+                    let decision = read.await;
+                    (done.is_cancelled(), decision)
+                } else {
+                    completed_snapshot(&done, read).await
+                };
+                assert_eq!(completed && decision.is_none(), stale_completion);
+                // A service pass that saw a racing completion must requery.
+                let (completed, decision) = completed_snapshot(&done, async { inbox.get() }).await;
+                assert!(completed);
+                assert_eq!(decision, Some(true));
+            }
+        });
     }
 }

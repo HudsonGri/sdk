@@ -67,7 +67,7 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
             operation_id: operation(30),
         },
         detail: None,
-        ..resolution.clone()
+        ..resolution
     };
     assert!(reducer.plan(&resolve(24, 2, unknown.clone())?).is_err());
     unknown.outcome = InteractionOutcome::Indeterminate {

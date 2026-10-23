@@ -295,11 +295,22 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             );
             // A fresh retry key cannot let a stale observer wake a later
             // suspension of the same command and workflow revision.
-            assert!(first.resume_workflow(
-                &owner, &signed, &verifier, task, 1, input.clone(),
-                IdempotencyKey::new("stale-lease-new-key")?,
-                Some((selected, &fence)), &mut None,
-            ).await.is_err());
+            assert!(
+                first
+                    .resume_workflow(
+                        &owner,
+                        &signed,
+                        &verifier,
+                        task,
+                        1,
+                        input.clone(),
+                        IdempotencyKey::new("stale-lease-new-key")?,
+                        Some((selected, &fence)),
+                        &mut None,
+                    )
+                    .await
+                    .is_err()
+            );
             assert!(
                 first
                     .resume_workflow(

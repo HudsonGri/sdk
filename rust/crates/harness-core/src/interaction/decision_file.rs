@@ -125,15 +125,13 @@ fn sha256_hex(bytes: &[u8; 32]) -> String {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let digit = |value: u8| match value {
+        0..=9 => b'0' + value,
+        _ => b'a' + value - 10,
+    };
     bytes
         .iter()
-        .flat_map(|byte| {
-            [
-                DIGITS[usize::from(byte >> 4)],
-                DIGITS[usize::from(byte & 15)],
-            ]
-        })
+        .flat_map(|byte| [digit(byte >> 4), digit(byte & 15)])
         .map(char::from)
         .collect()
 }

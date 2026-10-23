@@ -22,7 +22,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             &provider,
             &path,
             0,
-            tail.max(1).min(acyclic_stream::MAX_ITEMS as u64) as u32,
+            u32::try_from(tail.max(1).min(acyclic_stream::MAX_ITEMS as u64))
+                .map_err(|_| Error::InvalidSegment)?,
             &mut history,
         )
         .await?
@@ -67,7 +68,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     &provider,
                     &path,
                     index.next - 1,
-                    (tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64) as u32,
+                    u32::try_from((tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64))
+                        .map_err(|_| Error::InvalidSegment)?,
                     &mut history,
                 )
                 .await?

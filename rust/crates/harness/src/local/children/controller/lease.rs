@@ -15,8 +15,7 @@ impl LocalHarness {
                     if let Some(slot) = host.workflow_suspension(child, &mut None).await?
                         && slot.waiting_command.is_some()
                     {
-                        host.wake_command(child, &slot, &mut None)
-                            .await?;
+                        host.wake_command(child, &slot, &mut None).await?;
                     }
                 }
                 let worker = Worker {

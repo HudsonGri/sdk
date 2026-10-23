@@ -189,7 +189,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    let verifier = issuer.verifier(&mut None).expect("verifier copy");
+    let verifier = issuer.verifier(&mut None)?;
     let files = acyclic_harness::task_volume::TaskFiles::open(
         stream.clone(),
         volume,
@@ -200,7 +200,7 @@ where
     .await?;
     runtime.bind_task_files(Some(Arc::new(files)));
     runtime.with_interaction_owner(
-        conversation.verifier(&mut None).expect("verifier copy"),
+        conversation.verifier(&mut None)?,
         SchemaRegistry::new(),
         scope.clone(),
         volume.clone(),

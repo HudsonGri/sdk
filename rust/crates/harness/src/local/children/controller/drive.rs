@@ -45,7 +45,10 @@ impl LocalHarness {
                         files.clone(),
                         reference.clone(),
                         request.clone(),
-                        Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone() }),
+                        Some(ChildSignals {
+                            inherited: inherited.clone(),
+                            parent_done: approver_done.clone(),
+                        }),
                     ));
                 }
             }
@@ -68,7 +71,9 @@ impl LocalHarness {
                     }
                     match &control {
                         None => Ok(true),
-                        Some(crate::local::approvals::Inbox { files, reference, .. }) => Ok(super::super::commands::state(
+                        Some(crate::local::approvals::Inbox {
+                            files, reference, ..
+                        }) => Ok(super::super::commands::state(
                             files,
                             reference,
                             usize::try_from(self.limits.render_bytes).map_err(storage)?,
@@ -79,7 +84,10 @@ impl LocalHarness {
                 })
                 .await?;
                 match self.runtime.task_host().terminal_status(task).await? {
-                    Some(crate::Outcome::Indeterminate { operation_id, cause }) => {
+                    Some(crate::Outcome::Indeterminate {
+                        operation_id,
+                        cause,
+                    }) => {
                         return Err(cause.into_error(operation_id));
                     }
                     Some(_) => approver_done.cancel(),

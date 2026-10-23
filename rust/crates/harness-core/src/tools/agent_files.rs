@@ -285,7 +285,10 @@ pub(super) fn status_at(
     let mut value = json!({"reference":reference,"state":state,"settled":settled,
         "execution":execution,"result":latest.map(|(_, result)| result)});
     if !settled && state == ChildState::Running && !approvals.is_null() {
-        value["approval"] = approvals;
+        value
+            .as_object_mut()
+            .ok_or_else(|| Error::Storage("child status is not an object".into()))?
+            .insert("approval".into(), approvals);
     }
     if serde_json::to_vec(&value).map_err(storage)?.len() > maximum_bytes {
         if let Some(result) = value.get_mut("result").and_then(Value::as_object_mut) {

@@ -12,8 +12,8 @@ use std::sync::Arc;
 mod created;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
+#[cfg(test)]
 #[cfg(all(
-    test,
     feature = "filesystem",
     not(target_arch = "wasm32"),
     not(acyclic_harness_loom)

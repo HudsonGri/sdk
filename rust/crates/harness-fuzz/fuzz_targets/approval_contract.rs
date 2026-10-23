@@ -12,11 +12,11 @@ fuzz_target!(|bytes: &[u8]| {
     if bytes.len() > 4096 {
         return;
     }
-    if let Ok(request @ Interaction::Approval { .. }) = request(bytes) {
-        if request.validate(&mut None).is_ok() {
-            let encoded = serde_json::to_vec(&request).unwrap();
-            assert_eq!(self::request(&encoded).unwrap(), request);
-        }
+    if let Ok(request @ Interaction::Approval { .. }) = request(bytes)
+        && request.validate(&mut None).is_ok()
+    {
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(self::request(&encoded).unwrap(), request);
     }
     let Ok(decision) = ApprovalDecisionFile::decode(bytes, 4096) else {
         return;

@@ -79,7 +79,10 @@ inbox. The parent sees the mirrored request and pending approval in the normal
 child status/wait view. It sends an ordinary message whose JSON body is
 `{"approval_decision": <FileValue>}`. The expected principal is
 `parent:<parent-task-id>`. The child verifies the inbox's authenticated sender;
-the message body cannot claim parent authority. A root task skips a parent
+the message body cannot claim parent authority. If the parent completes or
+fails, retained authenticated decisions are consumed first; an unanswered
+request is denied so child cleanup does not await a departed approver.
+A root task skips a parent
 stage, and therefore needs a later stage if it should permit the action.
 
 Embedded compositions must bind the same policy identity on their runtime and

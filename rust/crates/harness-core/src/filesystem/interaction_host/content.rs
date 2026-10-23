@@ -124,10 +124,9 @@ where
         }
         // Invalid bindings cannot force a device flush merely by asking to
         // install an unrelated tool.
-        let hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let read = Self::admitted(aggregate, id, io)?;
-        hold = io
+        let hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         #[cfg(test)]

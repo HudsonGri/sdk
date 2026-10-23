@@ -465,7 +465,10 @@ impl LocalHarness {
                 if cancelled {
                     return Ok(false);
                 }
-                let mut inbox_changes = if let Some(Inbox { files, reference, .. }) = inbox {
+                let mut inbox_changes = if let Some(Inbox {
+                    files, reference, ..
+                }) = inbox
+                {
                     #[cfg(feature = "native-execution")]
                     if super::children::commands::state(
                         files,

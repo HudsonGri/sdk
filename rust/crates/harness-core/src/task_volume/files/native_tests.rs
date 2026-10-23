@@ -27,7 +27,7 @@ proptest! {
                 let file = FileValue::new(key, payload.clone());
                 original.inner.append(original.inner.head().await.unwrap(), &file).await.unwrap();
                 // Mutable replacement histories must not retain every old body.
-                original.inner.append(original.inner.head().await.unwrap(), &FileValue::new(FileKey::Goal, vec![i as u8])).await.unwrap();
+                original.inner.append(original.inner.head().await.unwrap(), &FileValue::new(FileKey::Goal, vec![u8::try_from(i).unwrap()])).await.unwrap();
             }
             let expected = original.inner.snapshot(&Query::Root, 64).await.unwrap();
             let native = work(acyclic_fs::performance::BOUNDARY_BUDGET);

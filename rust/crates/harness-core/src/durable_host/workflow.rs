@@ -230,10 +230,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let waiting = slot.waiting_command.ok_or_else(|| {
-            crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "wake has no command")
+            crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "wake has no command",
+            )
         })?;
         let released = slot.released.as_ref().ok_or_else(|| {
-            crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "wake has no released reservation")
+            crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "wake has no released reservation",
+            )
         })?;
         // One model command can suspend at several approval stages without
         // advancing its workflow revision. Each released lease is a distinct

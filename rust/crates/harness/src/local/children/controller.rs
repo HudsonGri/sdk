@@ -325,7 +325,8 @@ impl LocalHarness {
                         &child_commands,
                         child_files,
                         Some(crate::local::approvals::Inbox {
-                            files: files.clone(), reference: reference.clone(),
+                            files: files.clone(),
+                            reference: reference.clone(),
                             parent_done: parent_done.clone(),
                         }),
                     );

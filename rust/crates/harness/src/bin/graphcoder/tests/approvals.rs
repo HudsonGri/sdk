@@ -29,7 +29,11 @@ impl Case {
     fn parent(self) -> bool {
         matches!(
             self,
-            Self::ParentAllow | Self::ParentDeny | Self::ParentForged | Self::ParentCompletes | Self::ParentError
+            Self::ParentAllow
+                | Self::ParentDeny
+                | Self::ParentForged
+                | Self::ParentCompletes
+                | Self::ParentError
         )
     }
     fn human(self) -> bool {
@@ -74,7 +78,11 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
         Case::Chain => vec![rule("ask"), llm, human],
-        Case::ParentAllow | Case::ParentDeny | Case::ParentForged | Case::ParentCompletes | Case::ParentError => vec![
+        Case::ParentAllow
+        | Case::ParentDeny
+        | Case::ParentForged
+        | Case::ParentCompletes
+        | Case::ParentError => vec![
             json!({"kind":"rules","principal":"rules","rules":[{"tool":"url_fetch","arguments":null,"verdict":"ask"}],"fallback":"allow"}),
             json!({"kind":"parent"}),
             human,
@@ -89,7 +97,7 @@ fn response_text(text: &str) -> String {
         "data: {event}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n"
     )
 }
-fn call(name: &str, arguments: Value, sequence: usize) -> String {
+fn call(name: &str, arguments: &Value, sequence: usize) -> String {
     let event = json!({"type":"response.output_item.done","output_index":0,
         "item":{"type":"function_call","call_id":format!("approval-{sequence}"),"name":name,"arguments":arguments.to_string()}});
     format!(
@@ -182,7 +190,7 @@ impl Fixture {
         response_text(&json!({"verdict":verdict,"reason":"independent review"}).to_string())
     }
     fn model(&self, body: &Value) -> String {
-        if body["model"] == "reviewer" {
+        if body.get("model").unwrap() == "reviewer" {
             return self.review(body);
         }
         let child = body["input"].as_array().unwrap().iter().any(|item| {
@@ -200,7 +208,7 @@ impl Fixture {
         if step == 0 {
             call(
                 "url_fetch",
-                json!({"url":format!("http://{}/effect",self.address)}),
+                &json!({"url":format!("http://{}/effect",self.address)}),
                 step,
             )
         } else {
@@ -211,17 +219,23 @@ impl Fixture {
         match step {
             0 => call(
                 "spawn",
-                json!({"task":"CHILD_APPROVAL_FIXTURE","name":"worker","grants":null}),
+                &json!({"task":"CHILD_APPROVAL_FIXTURE","name":"worker","grants":null}),
                 step,
             ),
             1 => {
                 let result = tool_result(body);
-                let reference = result["agent"].as_str().unwrap();
-                call("wait", json!({"agents":[reference],"mode":"all"}), step)
+                let reference = result.get("agent").unwrap().as_str().unwrap();
+                call("wait", &json!({"agents":[reference],"mode":"all"}), step)
             }
             2 => {
                 let result = tool_result(body);
-                let agent = &result["agents"][0];
+                let agent = result
+                    .get("agents")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .first()
+                    .unwrap();
                 let approval = &agent["approval"];
                 assert!(
                     !approval.is_null(),
@@ -246,11 +260,11 @@ impl Fixture {
                         "verdict":if matches!(self.case,Case::ParentDeny) {"deny"} else {"approve"},"reason":null})).unwrap());
                 call(
                     "send",
-                    json!({"agent":agent["reference"],"message":json!({"approval_decision":file}).to_string()}),
+                    &json!({"agent":agent["reference"],"message":json!({"approval_decision":file}).to_string()}),
                     step,
                 )
             }
-            3 => call("wait", json!({"agents":["worker"],"mode":"all"}), step),
+            3 => call("wait", &json!({"agents":["worker"],"mode":"all"}), step),
             _ => ANSWER.to_owned(),
         }
     }
@@ -276,7 +290,7 @@ impl Fixture {
                 post(move |Json(body): Json<Value>| {
                     let fixture = self.clone();
                     async move {
-                        if body["model"] == "reviewer"
+                        if body.get("model").unwrap() == "reviewer"
                             && let Some(started) = &fixture.review_started
                         {
                             fixture.reviews.fetch_add(1, Ordering::SeqCst);
@@ -336,8 +350,13 @@ impl Files {
         std::fs::write(settings.join(".codex/config.toml"), "").unwrap();
         let catalog = catalog(directory.path(), address);
         let mut data: Value = serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
-        data["graphcoder-qual"]["models"]["reviewer"] =
-            data["graphcoder-qual"]["models"]["tiny"].clone();
+        let models = data
+            .pointer_mut("/graphcoder-qual/models")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        let reviewer = models.get("tiny").unwrap().clone();
+        models.insert("reviewer".into(), reviewer);
         std::fs::write(&catalog, serde_json::to_vec(&data).unwrap()).unwrap();
         let policy_path = directory.path().join("policy.json");
         std::fs::write(&policy_path, policy(case, address).to_string()).unwrap();
@@ -452,7 +471,7 @@ impl Followed {
                     );
                     if matches!(case, Case::ForgedSubject) {
                         let mut data: Value = serde_json::from_slice(&decision.bytes).unwrap();
-                        data["request_sha256"] = json!("11".repeat(32));
+                        *data.get_mut("request_sha256").unwrap() = json!("11".repeat(32));
                         decision.bytes = serde_json::to_vec(&data).unwrap().into();
                     }
                     writeln!(stdin, "{}", jsonl::request(&decision).unwrap()).unwrap();

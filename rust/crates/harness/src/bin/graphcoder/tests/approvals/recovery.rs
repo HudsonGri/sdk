@@ -22,12 +22,10 @@ fn defer(mut command: Command, operation: OperationId) -> FileValue {
                     FileKey::Task {
                         file: TaskFile::ApprovalReview { .. },
                         ..
-                    } => {
-                        if String::from_utf8_lossy(&file.bytes)
-                            .contains("awaiting authenticated decision")
-                        {
-                            input.take();
-                        }
+                    } if String::from_utf8_lossy(&file.bytes)
+                        .contains("awaiting authenticated decision") =>
+                    {
+                        input.take();
                     }
                     _ => {}
                 }
