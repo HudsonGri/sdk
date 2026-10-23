@@ -72,6 +72,7 @@ impl ExecutionEvent {
             | Self::ContextCompacted { step, .. }
             | Self::ModelStarted { step, .. }
             | Self::Model { step, .. }
+            | Self::ModelInline { step, .. }
             | Self::ModelStopped { step, .. }
             | Self::ToolStarted { step, .. }
             | Self::ToolCompleted { step, .. }
@@ -126,6 +127,15 @@ impl ExecutionEvent {
                 step: *step,
                 purpose: *purpose,
                 event: file(event)?,
+            },
+            ModelInline {
+                step,
+                purpose,
+                event,
+            } => ModelInline {
+                step: *step,
+                purpose: *purpose,
+                event: text(event)?,
             },
             ModelStopped { step, purpose } => ModelStopped {
                 step: *step,

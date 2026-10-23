@@ -191,6 +191,33 @@ where
             .await
     }
 
+    pub(super) fn authorize_inline_event(
+        &self,
+        event: &str,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if event.len() as u64 > self.inline_model_event_bytes() {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "inline model observation exceeds its bound",
+            ));
+        }
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::authorize_volume(
+                &self.verifier,
+                &self.scope,
+                &self.volume,
+                operation,
+                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
+                work,
+            )
+        })
+    }
+
     pub(super) async fn verify_event_refs_with_io(
         &self,
         event: &ExecutionEvent,
@@ -226,10 +253,22 @@ where
                     result, projection, ..
                 } => [Some(result), Some(projection), None],
                 ExecutionEvent::Started { .. }
+                | ExecutionEvent::ModelInline { .. }
                 | ExecutionEvent::ModelStopped { .. }
                 | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };
-            let mut model = None;
+            let mut model = match event {
+                ExecutionEvent::ModelInline { event, .. } => {
+                    self.authorize_inline_event(event, VolumeOperation::Read, io)?;
+                    Some(crate::executor::retain_preparation(decode_json::<
+                        ModelEvent,
+                    >(
+                        event.as_bytes(),
+                        io,
+                    )?)?)
+                }
+                _ => None,
+            };
             for reference in refs.into_iter().flatten() {
                 let _bytes_hold;
                 crate::model::charge_items(io, 1)?;

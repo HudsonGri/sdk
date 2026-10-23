@@ -259,6 +259,9 @@ where
             ));
         }
         let owner = self.owner.as_ref().map(|(owner, _)| owner);
+        if let ExecutionEvent::ModelInline { event, .. } = event {
+            self.authorize_inline_event(event, VolumeOperation::Write, io)?;
+        }
         let model = self.verify_event_refs_with_io(event, io).await?;
         let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)

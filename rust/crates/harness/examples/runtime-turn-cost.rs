@@ -11,30 +11,47 @@ use acyclic_harness::{
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use serde_json::{Value, json};
 use std::{
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 #[derive(Default)]
 struct Timing {
-    tool_finished: Option<Instant>,
-    intervals: Vec<Duration>,
+    tool_finished: Option<(Instant, u64)>,
+    intervals: Vec<(Duration, u64)>,
+    stream_flushes: Arc<AtomicU64>,
+}
+
+struct FlushCounter(Arc<AtomicU64>);
+impl tracing::field::Visit for FlushCounter {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "fsyncs" {
+            self.0.fetch_add(value, Ordering::Relaxed);
+        }
+    }
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+}
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FlushCounter {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        event.record(&mut Self(self.0.clone()));
+    }
 }
 impl Timing {
     fn report_checkpoint(&self) {
         let end = self.intervals.len();
         if [1, 10, 14, 100, 1000].contains(&end) {
-            let (total, count) = self
-                .intervals
-                .iter()
-                .rev()
-                .take(10)
-                .fold((Duration::ZERO, 0_u32), |(total, count), elapsed| {
-                    (total + *elapsed, count + 1)
-                });
+            let (total, flushes, count) = self.intervals.iter().rev().take(10).fold(
+                (Duration::ZERO, 0_u64, 0_u32),
+                |(total, flushes, count), (elapsed, step_flushes)| {
+                    (total + *elapsed, flushes + step_flushes, count + 1)
+                },
+            );
             println!(
-                "tool-to-model ending at turn {end}: {:.3} ms/turn",
-                (total / count).as_secs_f64() * 1000.0
+                "tool-to-model ending at turn {end}: {:.3} ms/turn; {flushes} stream flushes/{count} turns",
+                (total / count).as_secs_f64() * 1000.0,
             );
         }
     }
@@ -72,8 +89,9 @@ impl ModelProvider for Provider {
         // this fixture retains neither earlier requests nor their full messages.
         drop(request);
         let mut timing = self.timing.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(finished) = timing.tool_finished.take() {
-            timing.intervals.push(finished.elapsed());
+        if let Some((finished, flushes)) = timing.tool_finished.take() {
+            let step_flushes = timing.stream_flushes.load(Ordering::Relaxed) - flushes;
+            timing.intervals.push((finished.elapsed(), step_flushes));
             timing.report_checkpoint();
         }
         drop(timing);
@@ -103,10 +121,11 @@ impl ToolExecutor for Noop {
         _: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .tool_finished = Some(Instant::now());
+            let mut timing = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            timing.tool_finished = Some((
+                Instant::now(),
+                timing.stream_flushes.load(Ordering::Relaxed),
+            ));
             Ok(ToolResult { value: json!({}) })
         })
     }
@@ -128,6 +147,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let checkout = root.path().join("checkout");
     std::fs::create_dir(&checkout)?;
     let timing = Arc::new(Mutex::new(Timing::default()));
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(FlushCounter(
+            timing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stream_flushes
+                .clone(),
+        ))
+        .try_init()?;
     let provider = Arc::new(Provider {
         turns,
         timing: timing.clone(),

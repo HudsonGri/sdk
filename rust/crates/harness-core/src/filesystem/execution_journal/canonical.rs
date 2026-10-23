@@ -312,6 +312,11 @@ where
                                 purpose: ModelPurpose::Summary,
                                 ..
                             }
+                            | ExecutionEvent::ModelInline {
+                                step: 0,
+                                purpose: ModelPurpose::Summary,
+                                ..
+                            }
                     )
                 },
                 io,
@@ -339,11 +344,20 @@ where
                                 .await?,
                         );
                     }
-                    ExecutionEvent::Model { event, .. } => {
+                    ExecutionEvent::Model { .. } | ExecutionEvent::ModelInline { .. } => {
+                        let scratch = crate::filesystem::PreparationScope::new(io)?;
                         let event =
-                            crate::executor::load_json::<ModelEvent>(self, event, io).await?;
-                        admission.observe(&event.0, limits, io)?;
-                        match &event.0 {
+                            crate::executor::load_model_event(self, &record.event, scratch.io())
+                                .await?
+                                .ok_or_else(|| {
+                                    canonical_boundary(
+                                        io,
+                                        crate::wire::ErrorCode::Storage,
+                                        "canonical model event is missing",
+                                    )
+                                })?;
+                        admission.observe(&event, limits, io)?;
+                        match &event {
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }

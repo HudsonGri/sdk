@@ -77,6 +77,7 @@ impl ExecutionSummary {
                     && !self.models.contains_key(&(*step, *purpose), io)?
             }
             ExecutionEvent::Model { step, purpose, .. }
+            | ExecutionEvent::ModelInline { step, purpose, .. }
             | ExecutionEvent::ModelStopped { step, purpose } => self
                 .models
                 .get(&(*step, *purpose), io)?
@@ -139,7 +140,9 @@ impl ExecutionSummary {
             io.check_cancellation()?;
         }
         self.require_next(event, io)?;
-        if let ExecutionEvent::Model { step, purpose, .. } = event {
+        if let ExecutionEvent::Model { step, purpose, .. }
+        | ExecutionEvent::ModelInline { step, purpose, .. } = event
+        {
             self.models
                 .get(&(*step, *purpose), io)?
                 .and_then(Option::as_ref)
@@ -237,7 +240,8 @@ impl ExecutionSummary {
                 self.models
                     .insert((*step, *purpose), Some(ModelEventAdmission::default()), io)?;
             }
-            ExecutionEvent::Model { step, purpose, .. } => {
+            ExecutionEvent::Model { step, purpose, .. }
+            | ExecutionEvent::ModelInline { step, purpose, .. } => {
                 let state = self
                     .models
                     .get_mut(&(*step, *purpose), io)?
@@ -437,6 +441,7 @@ impl PreparationRecord for Observation {
                 "model_started",
                 "model_stopped",
                 "model",
+                "model_inline",
                 "tool_started",
                 "tool_completed",
                 "tool_failed",

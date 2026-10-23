@@ -52,6 +52,12 @@ impl ExecutionRecordQuery<'_> {
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Maximum canonical model-event bytes accepted inline; zero uses files.
+    /// Inline payloads must retain the journal's original private-volume grants.
+    fn inline_model_event_bytes(&self) -> u64 {
+        0
+    }
+
     /// Excludes live attempts before replay can mistake them for crashed work.
     /// All aliases of an operation must use the same ownership registry.
     fn claim_execution<'a>(

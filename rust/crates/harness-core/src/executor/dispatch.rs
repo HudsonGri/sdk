@@ -445,19 +445,15 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                let reference = stage_json(journal, operation_id, &key, event, io).await?;
-                journal
-                    .append(
-                        operation_id,
-                        &key,
-                        &ExecutionEvent::Model {
-                            step,
-                            purpose,
-                            event: reference,
-                        },
-                        io,
-                    )?
-                    .await?;
+                super::model_observation::append(
+                    journal,
+                    operation_id,
+                    &key,
+                    (step, purpose),
+                    event,
+                    io,
+                )
+                .await?;
             }
         }
         Ok(observed)

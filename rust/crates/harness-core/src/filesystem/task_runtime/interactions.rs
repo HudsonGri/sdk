@@ -260,7 +260,8 @@ where
         let select = |event: &ExecutionEvent| {
             matches!(event,
             ExecutionEvent::ModelStarted { step: recorded, purpose: ModelPurpose::Response, .. }
-            | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step)
+            | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. }
+            | ExecutionEvent::ModelInline { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step)
         };
         let (_, records, hold) = crate::executor::replay_execution(
             journal.as_ref(),

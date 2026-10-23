@@ -50,6 +50,10 @@ mod compaction;
 mod composition;
 mod content;
 mod dispatch;
+mod model_observation;
+#[cfg(test)]
+pub(crate) use model_observation::append as append_model_event;
+pub(crate) use model_observation::load as load_model_event;
 mod prefix;
 mod record_index;
 mod records;
@@ -291,6 +295,15 @@ pub enum ExecutionEvent {
         /// Pinned, private JSON file containing one observed model event.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
+    },
+    /// One small canonical model event stored directly in the journal frame.
+    ModelInline {
+        /// Zero-based executor step.
+        step: u32,
+        /// Must match the corresponding admitted request.
+        purpose: ModelPurpose,
+        /// Exact canonical model-event JSON, bounded by the journal provider.
+        event: String,
     },
     /// The local model producer stopped after invocation cancellation.
     ModelStopped {

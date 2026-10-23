@@ -42,6 +42,8 @@ mod chunks;
 mod configuration;
 mod content;
 mod indexed_publication;
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod inline_tests;
 mod interactions;
 mod observations;
 mod persistent_index;
@@ -72,7 +74,7 @@ use selected::JournalSelectedResolver;
 use summary::*;
 use summary_cache::SummaryCache;
 
-/// Durable, ref-only journal for one exact agent-private volume.
+/// Durable observations and private payload references for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
