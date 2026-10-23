@@ -1,74 +1,80 @@
 use super::*;
 use crate::lock_order::{Mutex as OrderedMutex, OPERATION};
-use std::sync::{OnceLock, Weak};
+use crate::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
-type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>)>, OPERATION>;
-
-// Registry -> OS namespace lock. Neither the record log nor provider/view locks
-// are acquired while holding this registry. The constructor uses try-lock only.
-fn join<T, const FENCE: bool>(
-    owners: &Owners<T>,
-    root: PathBuf,
-    identity: [u8; 16],
-    create: impl FnOnce() -> Result<Arc<T>, LocalCoreStateStoreError>,
-) -> Result<Arc<T>, LocalCoreStateStoreError> {
-    let mut guard = Some(owners.lock().unwrap_or_else(PoisonError::into_inner));
-    if let Some((original, owner)) = guard.as_ref().unwrap().get(&root)
-        && let Some(owner) = owner.upgrade()
-    {
-        return if *original == identity {
-            Ok(owner)
-        } else {
-            Err(LocalCoreStateStoreError::OwnershipConflict(root))
-        };
-    }
-    // FENCE=false is the deliberately broken initialization race.
-    if !FENCE {
-        guard.take();
-    }
-    let owner = create()?;
-    let mut guard = guard.unwrap_or_else(|| owners.lock().unwrap_or_else(PoisonError::into_inner));
-    guard.insert(root, (identity, Arc::downgrade(&owner)));
-    // Weak entries never keep an owner, its file lock, or its WAL alive.
-    guard.retain(|_, (_, owner)| owner.strong_count() != 0);
-    Ok(owner)
+#[derive(Debug, PartialEq)]
+enum Sharing {
+    Exclusive,
+    Shared([u8; 16]),
 }
 
-impl LocalCoreStateStore {
-    /// Joins this process's existing owner of a canonical private namespace.
-    /// Other processes remain excluded until the last owned handle drops.
-    pub fn open_shared_owner(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
-        let root = root.into();
-        std::fs::create_dir_all(&root)?;
-        let root = std::fs::canonicalize(root)?;
-        let held =
-            crate::native_host::HostRoot::open(&root, &mut crate::native_host::ordinary_work())
-                .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
-        static OWNERS: OnceLock<Owners<Owner>> = OnceLock::new();
-        let owner = join::<_, true>(
-            OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new())),
-            root.clone(),
-            held.identity().to_bytes(),
-            || {
-                let store = Self::open_owned(&root)?;
-                let Ownership::Owned(mut owner) = store.ownership else {
-                    unreachable!()
-                };
-                Arc::get_mut(&mut owner).expect("new owner").cache_limit =
-                    Some(super::contexts::OWNED_CHECKPOINT as usize);
-                Ok(owner)
-            },
-        )?;
-        Ok(Self {
-            root: Arc::new(root),
-            ownership: Ownership::Owned(owner),
-            deferral: None,
-            journal_work: None,
-            ownership_anchor: None,
-        })
+type Owners<T> = OrderedMutex<BTreeMap<PathBuf, Arc<Lifecycle<T>>>, OPERATION>;
+
+#[derive(Debug)]
+struct Lifecycle<T> {
+    current: OrderedMutex<Option<(Sharing, Arc<T>)>, OPERATION>,
+    references: AtomicUsize,
+    #[cfg(test)]
+    locks: AtomicUsize,
+    #[cfg(test)]
+    registry_locks: AtomicUsize,
+}
+
+impl<T> Lifecycle<T> {
+    fn new() -> Self {
+        Self {
+            current: OrderedMutex::new(None),
+            references: AtomicUsize::new(0),
+            #[cfg(test)]
+            locks: AtomicUsize::new(0),
+            #[cfg(test)]
+            registry_locks: AtomicUsize::new(0),
+        }
+    }
+
+    fn lock(&self) -> crate::lock_order::MutexGuard<'_, Option<(Sharing, Arc<T>)>> {
+        #[cfg(test)]
+        self.locks.fetch_add(1, Ordering::Relaxed);
+        self.current.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
+fn registry() -> &'static Owners<Owner> {
+    static OWNERS: OnceLock<Owners<Owner>> = OnceLock::new();
+    OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new()))
+}
+
+#[derive(Debug)]
+pub(super) struct OwnerRef<T = Owner>(Option<Arc<T>>, Arc<Lifecycle<T>>);
+
+impl<T> Clone for OwnerRef<T> {
+    fn clone(&self) -> Self {
+        self.1.references.fetch_add(1, Ordering::Relaxed);
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+
+impl<T> std::ops::Deref for OwnerRef<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_deref().expect("live owner")
+    }
+}
+
+impl<T> Drop for OwnerRef<T> {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            release::<_, true, ATOMIC>(&self.1, &mut self.0);
+        }
+    }
+}
+
+// Release strategies. Production always uses `ATOMIC`; every other mode is a
+// loom mutation whose model control must fail (owners/models.rs).
+const ATOMIC: u8 = 0;
+/// Control: every release, final or not, takes the namespace gate.
 #[cfg(test)]
 #[cfg(acyclic_fs_loom)]
 mod models;
@@ -77,6 +83,41 @@ mod models;
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[tokio::test]
+    async fn owned_transactions_and_clones_acquire_no_lifecycle_locks() {
+        for shared in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = if shared {
+                LocalCoreStateStore::open_shared_owner(directory.path())
+            } else {
+                LocalCoreStateStore::open_owned(directory.path())
+            }
+            .unwrap();
+            let Ownership::Owned(owner) = &store.ownership else {
+                unreachable!()
+            };
+            let namespace_before = owner.1.locks.load(Ordering::Relaxed);
+            let registry_before = owner.1.registry_locks.load(Ordering::Relaxed);
+            drop(store.clone());
+            let value = super::super::tests::crash_lineage();
+            assert!(
+                WorkspaceLineageStore::compare_and_swap(&store, value.workspace_id, 0, value)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                owner.1.locks.load(Ordering::Relaxed) - namespace_before,
+                0,
+                "nonfinal release acquired a namespace lock"
+            );
+            assert_eq!(
+                owner.1.registry_locks.load(Ordering::Relaxed) - registry_before,
+                0,
+                "nonfinal release acquired a registry lock"
+            );
+        }
+    }
 
     fn bounded_cache(peak: usize) -> proptest::test_runner::TestCaseResult {
         prop_assert!(peak <= super::super::contexts::OWNED_CHECKPOINT as usize);
@@ -148,7 +189,7 @@ mod tests {
         else {
             panic!("joined store is not owned")
         };
-        assert!(Arc::ptr_eq(a, b));
+        assert!(Arc::ptr_eq(a.0.as_ref().unwrap(), b.0.as_ref().unwrap()));
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
         drop(first);
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
@@ -196,7 +237,7 @@ mod tests {
             else {
                 panic!("joined store is not owned")
             };
-            assert!(Arc::ptr_eq(a, b));
+            assert!(Arc::ptr_eq(a.0.as_ref().unwrap(), b.0.as_ref().unwrap()));
             drop(joined);
             drop(first);
         }
