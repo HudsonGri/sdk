@@ -121,6 +121,40 @@ os.waitpid(child,0)
     def test_missing_owned_group_allows_side_effects_after_cleanup(self):
         for interrupted in [None,signal.SIGTERM,signal.SIGKILL]:
             with self.subTest(signal=interrupted):self.custody_case(interrupted,negative=True)
+
+    def test_command_cleanup_never_waits_for_a_reused_pid(self):
+        def probe(module, before, after):
+            with (patch.object(module,'identity',side_effect=[before,after]),
+                  patch.object(module.os,'pidfd_open',return_value=71) as opened,
+                  patch.object(module.os,'close') as closed,
+                  patch.object(module.signal,'pidfd_send_signal') as sent,
+                  patch.object(module.select,'select') as waited):
+                module.stop_command({'pid':123,'identity':'owned'})
+                if before!='owned':
+                    opened.assert_not_called();closed.assert_not_called()
+                else:
+                    closed.assert_called_once_with(71)
+                if before==after=='owned':
+                    sent.assert_called_once_with(71,signal.SIGTERM)
+                    waited.assert_called_once_with([71],[],[])
+                else:
+                    sent.assert_not_called();waited.assert_not_called()
+        for before in ['owned','replacement',None]:
+            for after in ['owned','replacement',None]:
+                with self.subTest(before=before,after=after):probe(job,before,after)
+        source=(HERE/'bb-job.py').read_text()
+        fixed='''        if identity(command['pid']) != command['identity']: return
+        try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        except ProcessLookupError: pass'''
+        former='''        if identity(command['pid']) == command['identity']:
+            try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            except ProcessLookupError: pass'''
+        self.assertEqual(source.count(fixed),1)
+        path=self.d/'reused-pid-negative.py';path.write_text(source.replace(fixed,former))
+        spec=importlib.util.spec_from_file_location('reused_pid_negative',path)
+        negative=importlib.util.module_from_spec(spec);spec.loader.exec_module(negative)
+        with self.assertRaises(AssertionError):probe(negative,'owned','replacement')
+
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')

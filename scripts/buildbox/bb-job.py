@@ -180,9 +180,9 @@ def stop_command(command):
     try: descriptor = os.pidfd_open(command['pid'])
     except ProcessLookupError: return
     try:
-        if identity(command['pid']) == command['identity']:
-            try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-            except ProcessLookupError: pass
+        if identity(command['pid']) != command['identity']: return
+        try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        except ProcessLookupError: pass
         select.select([descriptor], [], [])
     finally: os.close(descriptor)
 
