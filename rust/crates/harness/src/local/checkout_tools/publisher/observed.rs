@@ -23,11 +23,20 @@ impl CheckoutPublisher {
         let key = acyclic_fs::IdempotencyKey::from_bytes(
             capture::capture_operation(write_capture(operation, file.path()), 1).into_bytes(),
         );
-        let Some(capture) = view.workspace()
+        let Some(capture) = view
+            .workspace()
             .operation_generation(key, budget, &cancellation)
-            .await.map_err(storage)?.value else { return Ok(file) };
-        let parents = capture.parents(budget, &cancellation)
-            .await.map_err(storage)?.value;
+            .await
+            .map_err(storage)?
+            .value
+        else {
+            return Ok(file);
+        };
+        let parents = capture
+            .parents(budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
         if parents != [self.staged_generation(&file)?] {
             return Ok(file);
         }
@@ -38,9 +47,12 @@ impl CheckoutPublisher {
         }
         crate::filesystem::retain_published_generation(&capture).await?;
         FileRef::new(
-            file.volume().clone(), file.path().to_owned(),
+            file.volume().clone(),
+            file.path().to_owned(),
             hex::encode(capture.id().digest().into_bytes()),
-            file.descriptor().clone(), file.display_name().to_owned(), &mut None,
+            file.descriptor().clone(),
+            file.display_name().to_owned(),
+            &mut None,
         )
     }
 
@@ -56,32 +68,54 @@ impl CheckoutPublisher {
         budget: acyclic_fs::WorkBudget,
     ) -> Result<bool> {
         #[cfg(test)]
-        if tests::REREAD_MATCHING_PAYLOAD.get() { return Ok(false) }
+        if tests::REREAD_MATCHING_PAYLOAD.get() {
+            return Ok(false);
+        }
         use acyclic_fs::kernel::FilePayload;
         let cancellation = acyclic_fs::CancellationToken::new();
         let config = view.workspace().volume_config();
-        let portable = acyclic_fs::path::PortablePath::parse(
-            &format!("/{}", file.path()), config.limits,
-        ).map_err(storage)?;
+        let portable =
+            acyclic_fs::path::PortablePath::parse(&format!("/{}", file.path()), config.limits)
+                .map_err(storage)?;
         let path = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
-            &portable, config.profile, config.limits,
-        ).map_err(storage)?;
-        let captured = capture.lookup_paths(std::slice::from_ref(&path), budget, &cancellation)
-            .await.map_err(storage)?.value;
-        let Some(payload) = captured.first().and_then(Option::as_ref).map(|record| record.payload)
-            else { return Ok(false) };
+            &portable,
+            config.profile,
+            config.limits,
+        )
+        .map_err(storage)?;
+        let captured = capture
+            .lookup_paths(std::slice::from_ref(&path), budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        let Some(payload) = captured
+            .first()
+            .and_then(Option::as_ref)
+            .map(|record| record.payload)
+        else {
+            return Ok(false);
+        };
         match payload {
             FilePayload::InlineRegular(bytes) => Ok(matches_descriptor(bytes.as_bytes(), file)),
             FilePayload::Regular { logical_bytes, .. }
-                if logical_bytes == file.descriptor().byte_length() => {
-                    let staged = view.workspace()
-                        .generation(self.staged_generation(file)?, budget, &cancellation)
-                        .await.map_err(storage)?.value;
-                    let records = staged.lookup_paths(std::slice::from_ref(&path), budget, &cancellation)
-                        .await.map_err(storage)?.value;
-                    Ok(records.first().and_then(Option::as_ref)
-                        .is_some_and(|record| record.payload == payload))
-                }
+                if logical_bytes == file.descriptor().byte_length() =>
+            {
+                let staged = view
+                    .workspace()
+                    .generation(self.staged_generation(file)?, budget, &cancellation)
+                    .await
+                    .map_err(storage)?
+                    .value;
+                let records = staged
+                    .lookup_paths(std::slice::from_ref(&path), budget, &cancellation)
+                    .await
+                    .map_err(storage)?
+                    .value;
+                Ok(records
+                    .first()
+                    .and_then(Option::as_ref)
+                    .is_some_and(|record| record.payload == payload))
+            }
             _ => Ok(false),
         }
     }
@@ -95,10 +129,15 @@ impl CheckoutPublisher {
         budget: acyclic_fs::WorkBudget,
     ) -> Result<bool> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        match capture.read(
-            &format!("/{}", file.path()),
-            file.descriptor().byte_length().saturating_add(1), budget, &cancellation,
-        ).await {
+        match capture
+            .read(
+                &format!("/{}", file.path()),
+                file.descriptor().byte_length().saturating_add(1),
+                budget,
+                &cancellation,
+            )
+            .await
+        {
             Ok(read) => Ok(matches_descriptor(read.value.as_ref(), file)),
             Err(failure) => match failure.error {
                 acyclic_fs::WorkspaceError::NotFound
@@ -113,6 +152,5 @@ impl CheckoutPublisher {
 
 fn matches_descriptor(bytes: &[u8], file: &FileRef) -> bool {
     bytes.len() as u64 == file.descriptor().byte_length()
-        && <sha2::Sha256 as sha2::Digest>::digest(bytes).as_slice()
-            == file.descriptor().sha256()
+        && <sha2::Sha256 as sha2::Digest>::digest(bytes).as_slice() == file.descriptor().sha256()
 }

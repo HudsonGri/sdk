@@ -12,6 +12,8 @@ struct Subscribers {
     next: u64,
     by_operation: BTreeMap<OperationId, BTreeMap<u64, Arc<Notify>>>,
     failed: Option<String>,
+    deadlines: BTreeMap<u64, BTreeMap<u64, Arc<Notify>>>,
+    deadline_changed: Arc<Notify>,
 }
 
 pub(super) struct OwnerChangeHub {
@@ -26,22 +28,53 @@ fn locked(subscribers: &Mutex<Subscribers>) -> MutexGuard<'_, Subscribers> {
 }
 
 impl OwnerChangeHub {
-    async fn open<P: StreamProvider + 'static>(stream: &Arc<P>, after: u64) -> Result<Self> {
+    async fn open<P: StreamProvider + 'static>(
+        stream: &Arc<P>,
+        after: u64,
+        clock: Arc<dyn UnixMillisClock>,
+    ) -> Result<Self> {
         let mut changes = DistributedCoordinator::event_changes(stream, after).await?;
         let subscribers = Arc::new(Mutex::new(Subscribers::default()));
         let active = Arc::clone(&subscribers);
+        let deadline_changed = Arc::clone(&locked(&active).deadline_changed);
         let driver = tokio::spawn(async move {
             loop {
-                match changes.try_next().await {
-                    Ok(Some(event)) => locked(&active).publish(&event),
-                    result => {
-                        let cause = match result {
-                            Err(cause) => cause.to_string(),
-                            _ => "coordinator ownership follow ended".into(),
-                        };
-                        locked(&active).fail(cause);
-                        return;
+                let first = locked(&active)
+                    .deadlines
+                    .first_key_value()
+                    .map(|(time, _)| *time);
+                let delay = first.map(|first| {
+                    let now = clock.now_unix_millis();
+                    locked(&active).notify_deadlines(now);
+                    // Preserve the former 25 ms wall-clock reaction bound with
+                    // one sampler per host, only while deadlines are registered.
+                    // Quiet commands never reauthenticate on this timer.
+                    std::time::Duration::from_millis(if first > now {
+                        (first - now).min(25)
+                    } else {
+                        25
+                    })
+                });
+                let deadline = async {
+                    match delay {
+                        Some(delay) => tokio::time::sleep(delay).await,
+                        None => std::future::pending().await,
                     }
+                };
+                tokio::select! {
+                    result = changes.try_next() => match result {
+                        Ok(Some(event)) => locked(&active).publish(&event),
+                        result => {
+                            let cause = match result {
+                                Err(cause) => cause.to_string(),
+                                _ => "coordinator ownership follow ended".into(),
+                            };
+                            locked(&active).fail(cause);
+                            return;
+                        }
+                    },
+                    () = deadline_changed.notified() => {},
+                    () = deadline => {},
                 }
             }
         });
@@ -51,7 +84,11 @@ impl OwnerChangeHub {
         })
     }
 
-    fn subscribe(&self, operations: Vec<OperationId>) -> Result<Registration> {
+    fn subscribe(
+        &self,
+        operations: Vec<OperationId>,
+        deadline: Option<u64>,
+    ) -> Result<Registration> {
         let ready = Arc::new(Notify::new());
         let mut subscribers = locked(&self.subscribers);
         subscribers.check()?;
@@ -66,10 +103,19 @@ impl OwnerChangeHub {
                 .or_default()
                 .insert(id, Arc::clone(&ready));
         }
+        if let Some(deadline) = deadline {
+            subscribers
+                .deadlines
+                .entry(deadline)
+                .or_default()
+                .insert(id, Arc::clone(&ready));
+            subscribers.deadline_changed.notify_one();
+        }
         Ok(Registration {
             subscribers: Arc::clone(&self.subscribers),
             id,
             operations,
+            deadline,
             ready,
         })
     }
@@ -83,6 +129,16 @@ impl Drop for OwnerChangeHub {
 }
 
 impl Subscribers {
+    fn notify_deadlines(&self, now: u64) {
+        // Keep the route until its owner drops it: verification can race a
+        // backward clock jump, in which case a later expiry must wake it again.
+        for entries in self.deadlines.range(..=now).map(|(_, entries)| entries) {
+            for ready in entries.values() {
+                ready.notify_one();
+            }
+        }
+    }
+
     fn check(&self) -> Result<()> {
         match &self.failed {
             Some(cause) => Err(Error::Storage(cause.clone())),
@@ -129,6 +185,7 @@ struct Registration {
     subscribers: Arc<Mutex<Subscribers>>,
     id: u64,
     operations: Vec<OperationId>,
+    deadline: Option<u64>,
     ready: Arc<Notify>,
 }
 
@@ -142,6 +199,15 @@ impl Drop for Registration {
                     subscribers.by_operation.remove(operation);
                 }
             }
+        }
+        if let Some(deadline) = self.deadline {
+            if let Some(entries) = subscribers.deadlines.get_mut(&deadline) {
+                entries.remove(&self.id);
+                if entries.is_empty() {
+                    subscribers.deadlines.remove(&deadline);
+                }
+            }
+            subscribers.deadline_changed.notify_one();
         }
     }
 }
@@ -192,21 +258,9 @@ impl OwnerChanges {
                 None => std::future::pending().await,
             }
         };
-        let deadline = async {
-            match self.deadline {
-                Some(deadline) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        deadline.saturating_sub(self.clock.now_unix_millis()),
-                    ))
-                    .await;
-                }
-                None => std::future::pending().await,
-            }
-        };
         tokio::select! {
             () = self.registration.ready.notified() => {},
             () = cancelled => {},
-            () = deadline => {},
         }
         locked(&self.registration.subscribers).check()
     }
@@ -222,7 +276,13 @@ impl<P: StreamProvider + 'static> TaskJournalOwner<P> {
         let hub = self
             .host
             .owner_changes
-            .get_or_try_init(|| OwnerChangeHub::open(&self.host.stream, coordinator.revision()))
+            .get_or_try_init(|| {
+                OwnerChangeHub::open(
+                    &self.host.stream,
+                    coordinator.revision(),
+                    Arc::clone(&self.host.clock),
+                )
+            })
             .await?;
         let mut operations = Vec::new();
         let mut operation = Some(self.operation_id());
@@ -237,7 +297,8 @@ impl<P: StreamProvider + 'static> TaskJournalOwner<P> {
                 .as_ref()
                 .map(|parent| parent.operation_id);
         }
-        let registration = hub.subscribe(operations)?;
+        let registration =
+            hub.subscribe(operations, self.admission.run_limits.deadline_epoch_ms)?;
         Ok(OwnerChanges {
             registration,
             cancellation: self.invocation_cancellation.clone(),

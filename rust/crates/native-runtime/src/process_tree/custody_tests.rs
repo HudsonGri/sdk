@@ -453,23 +453,34 @@ fn sequential_jobs_reuse_one_host_custodian() {
             let custodian = custodian_of(&processes);
             let before = handle_count(custodian);
             for failed in 0..32 {
-                let custody = ProcessCustody::acquire(&root.path().join(format!("aborted-{failed}"))).expect("custody");
+                let custody =
+                    ProcessCustody::acquire(&root.path().join(format!("aborted-{failed}")))
+                        .expect("custody");
                 let mut command = Command::new(root.path().join("missing-program.exe"));
                 let error = ProcessTree::spawn_in_custody(&mut command, &custody)
-                    .err().expect("missing program must fail admission");
+                    .err()
+                    .expect("missing program must fail admission");
                 assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
             }
             let after = handle_count(custodian);
-            assert!(after <= before + 16,
-                "aborted Jobs must retire from the shared custodian: {before} -> {after}");
-            assert!(!Watch::new(tree_pid(&tree)).expect("first tree remains pinned").exited(),
-                "a failed admission must not kill an unrelated live Job");
+            assert!(
+                after <= before + 16,
+                "aborted Jobs must retire from the shared custodian: {before} -> {after}"
+            );
+            assert!(
+                !Watch::new(tree_pid(&tree))
+                    .expect("first tree remains pinned")
+                    .exited(),
+                "a failed admission must not kill an unrelated live Job"
+            );
         }
         tree.terminate(None).expect("terminate");
     }
     eprintln!("CUSTODIAN_STARTUP calls=4 pids={custodians:?} elapsed_us={micros:?}");
     assert!(
-        custodians.first().is_some_and(|first| custodians.iter().all(|pid| pid == first)),
+        custodians
+            .first()
+            .is_some_and(|first| custodians.iter().all(|pid| pid == first)),
         "sequential jobs must retain one custodian for their host"
     );
 }

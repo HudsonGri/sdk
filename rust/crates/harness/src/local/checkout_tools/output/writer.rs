@@ -135,7 +135,9 @@ impl Writer {
             if pending.len() == maximum {
                 let runtime = self.runtime.clone();
                 await_fence(&runtime, || async {
-                    self.flush(stderr, false).await.map_err(std::io::Error::other)
+                    self.flush(stderr, false)
+                        .await
+                        .map_err(std::io::Error::other)
                 })?;
             }
         }

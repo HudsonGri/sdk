@@ -7,7 +7,10 @@ use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::System::IO::*;
 use windows_sys::Win32::System::JobObjects::*;
@@ -28,13 +31,19 @@ static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 static ENTRY: extern "C" fn() = entry;
 
 extern "C" fn entry() {
-    if std::env::var_os(SWITCH).is_none() { return; }
+    if std::env::var_os(SWITCH).is_none() {
+        return;
+    }
     let code = u32::from(server::serve().is_err());
     // SAFETY: the daemon must not return into its host executable's main.
     unsafe { ExitProcess(code) }
 }
 
-struct Host { child: Child, output: BufReader<ChildStdout>, identity: String }
+struct Host {
+    child: Child,
+    output: BufReader<ChildStdout>,
+    identity: String,
+}
 struct Starting(Option<Child>);
 impl Drop for Starting {
     fn drop(&mut self) {
@@ -54,19 +63,38 @@ impl Host {
     fn start() -> io::Result<Self> {
         std::hint::black_box(&ENTRY);
         let child = Command::new(std::env::current_exe()?)
-            .env(SWITCH, "1").stdin(Stdio::piped()).stdout(Stdio::piped())
-            .stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW).spawn()?;
+            .env(SWITCH, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
         let mut starting = Starting(Some(child));
         let admitted = (|| {
             let child = starting.0.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
             // SAFETY: this process and the fresh daemon are live; synchronize
             // access lets that single daemon watch the host for its lifetime.
-            let owner = unsafe { duplicate(GetCurrentProcess(), child.as_raw_handle(), PROCESS_SYNCHRONIZE, 0) }?;
-            writeln!(child.stdin.as_mut().ok_or(io::ErrorKind::BrokenPipe)?, "{}", owner.expose_provenance())?;
+            let owner = unsafe {
+                duplicate(
+                    GetCurrentProcess(),
+                    child.as_raw_handle(),
+                    PROCESS_SYNCHRONIZE,
+                    0,
+                )
+            }?;
+            writeln!(
+                child.stdin.as_mut().ok_or(io::ErrorKind::BrokenPipe)?,
+                "{}",
+                owner.expose_provenance()
+            )?;
             let output = BufReader::new(child.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?);
             let identity = identity(child.as_raw_handle())?;
             let child = starting.0.take().ok_or(io::ErrorKind::BrokenPipe)?;
-            let mut host = Self { child, output, identity };
+            let mut host = Self {
+                child,
+                output,
+                identity,
+            };
             host.ready()?;
             Ok(host)
         })();
@@ -77,8 +105,13 @@ impl Host {
     fn ready(&mut self) -> io::Result<()> {
         let mut line = String::new();
         self.output.read_line(&mut line)?;
-        if line.trim_end() == READY { Ok(()) }
-        else { Err(io::Error::other("the process custodian did not acknowledge admission")) }
+        if line.trim_end() == READY {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "the process custodian did not acknowledge admission",
+            ))
+        }
     }
     fn send(&mut self, message: &str) -> io::Result<()> {
         let input = self.child.stdin.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
@@ -96,7 +129,9 @@ impl Completion {
         let name = completion_name(name);
         // SAFETY: a fresh named manual-reset event, owned on success.
         let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
-        if event.is_null() { return Err(io::Error::last_os_error()); }
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
         let error = io::Error::last_os_error();
         // SAFETY: CreateEventW transferred this handle.
         let event = Self(unsafe { OwnedHandle::from_raw_handle(event) });
@@ -111,7 +146,11 @@ impl Completion {
         let event = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, name.as_ptr()) };
         if event.is_null() {
             let error = io::Error::last_os_error();
-            return if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND.cast_signed()) { Ok(None) } else { Err(error) };
+            return if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND.cast_signed()) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
         }
         // SAFETY: OpenEventW transferred this handle.
         Ok(Some(Self(unsafe { OwnedHandle::from_raw_handle(event) })))
@@ -119,47 +158,89 @@ impl Completion {
 }
 
 fn completion_name(name: &[u16]) -> Vec<u16> {
-    name.iter().copied().take_while(|unit| *unit != 0)
-        .chain(".complete".encode_utf16()).chain(std::iter::once(0)).collect()
+    name.iter()
+        .copied()
+        .take_while(|unit| *unit != 0)
+        .chain(".complete".encode_utf16())
+        .chain(std::iter::once(0))
+        .collect()
 }
 
-pub(super) struct Registration { key: usize, host: String, completion: Option<Completion>, activated: bool }
+pub(super) struct Registration {
+    key: usize,
+    host: String,
+    completion: Option<Completion>,
+    activated: bool,
+}
 impl Registration {
     fn activate_inner(&mut self) -> io::Result<()> {
-        if self.activated { return Ok(()); }
-        let mut slot = HOST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let host = slot.as_mut().filter(|host| host.identity == self.host).ok_or(io::ErrorKind::BrokenPipe)?;
+        if self.activated {
+            return Ok(());
+        }
+        let mut slot = HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let host = slot
+            .as_mut()
+            .filter(|host| host.identity == self.host)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
         host.send(&format!("A {}", self.key))?;
         self.activated = true;
         Ok(())
     }
     pub(super) fn activate(mut self) -> io::Result<Completion> {
         self.activate_inner()?;
-        self.completion.take().ok_or_else(|| io::ErrorKind::BrokenPipe.into())
+        self.completion
+            .take()
+            .ok_or_else(|| io::ErrorKind::BrokenPipe.into())
     }
 }
-impl Drop for Registration { fn drop(&mut self) { let _ = self.activate_inner(); } }
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let _ = self.activate_inner();
+    }
+}
 
 /// Registers an empty Job before any member can start. A separate activation
 /// after the spawn attempt lets the daemon retire even an aborted empty Job.
-pub(super) fn launch(name: &[u16], record: &mut super::custody::Record) -> io::Result<Registration> {
+pub(super) fn launch(
+    name: &[u16],
+    record: &mut super::custody::Record,
+) -> io::Result<Registration> {
     let completion = Completion::create(name)?;
-    let key = SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
-        |key| key.checked_add(1).filter(|next| *next < COMMAND))
+    let key = SEQUENCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |key| {
+            key.checked_add(1).filter(|next| *next < COMMAND)
+        })
         .map_err(|_| io::ErrorKind::OutOfMemory)?;
-    let name = String::from_utf16(name.strip_suffix(&[0]).unwrap_or(name)).map_err(io::Error::other)?;
-    if name.chars().any(char::is_whitespace) { return Err(io::ErrorKind::InvalidInput.into()); }
-    let mut slot = HOST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let name =
+        String::from_utf16(name.strip_suffix(&[0]).unwrap_or(name)).map_err(io::Error::other)?;
+    if name.chars().any(char::is_whitespace) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let mut slot = HOST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(host) = slot.as_mut()
-        && host.child.try_wait()?.is_some() { *slot = None; }
-    if slot.is_none() { *slot = Some(Host::start()?); }
+        && host.child.try_wait()?.is_some()
+    {
+        *slot = None;
+    }
+    if slot.is_none() {
+        *slot = Some(Host::start()?);
+    }
     let host = slot.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
     let identity = host.identity.clone();
     let registered = host.send(&format!("R {key} {name}"));
     drop(slot);
     // An uncertain acknowledgement still activates the empty registration
     // during rollback, so it cannot retain one Job forever in a live daemon.
-    let registration = Registration { key, host: identity.clone(), completion: Some(completion), activated: false };
+    let registration = Registration {
+        key,
+        host: identity.clone(),
+        completion: Some(completion),
+        activated: false,
+    };
     registered?;
     record.name_custodian(&identity)?;
     Ok(registration)
@@ -169,12 +250,18 @@ pub(super) fn launch(name: &[u16], record: &mut super::custody::Record) -> io::R
 /// kill-on-close recovery path after the fence's direct member wait, without
 /// ever waiting for the lifetime of an unrelated shared daemon.
 pub(super) fn await_completion(completion: Option<&Completion>, identity: &str) -> io::Result<()> {
-    let Some(process) = recorded_process(identity)? else { return Ok(()); };
+    let Some(process) = recorded_process(identity)? else {
+        return Ok(());
+    };
     let Some(completion) = completion else {
         // SAFETY: the pinned recorded daemon process.
         return if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
             Ok(())
-        } else { Err(io::Error::other("live custodian has no Job completion event")) };
+        } else {
+            Err(io::Error::other(
+                "live custodian has no Job completion event",
+            ))
+        };
     };
     let handles = [completion.0.as_raw_handle(), process.as_raw_handle()];
     // SAFETY: these two owned handles remain live throughout the wait.
@@ -186,16 +273,30 @@ pub(super) fn await_completion(completion: Option<&Completion>, identity: &str) 
 }
 
 fn recorded_process(identity: &str) -> io::Result<Option<OwnedHandle>> {
-    let Some((pid, created)) = identity.split_once('-').and_then(|(pid, created)|
-        Some((pid.parse::<u32>().ok()?, created.parse::<u64>().ok()?))) else {
+    let Some((pid, created)) = identity
+        .split_once('-')
+        .and_then(|(pid, created)| Some((pid.parse::<u32>().ok()?, created.parse::<u64>().ok()?)))
+    else {
         return Err(io::ErrorKind::InvalidData.into());
     };
     // SAFETY: open then verify the full recorded identity before waiting.
-    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() { return Ok(None); }
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if process.is_null() {
+        return Ok(None);
+    }
     // SAFETY: OpenProcess transferred this handle.
     let process = unsafe { OwnedHandle::from_raw_handle(process) };
-    if creation_time(process.as_raw_handle())? == created { Ok(Some(process)) } else { Ok(None) }
+    if creation_time(process.as_raw_handle())? == created {
+        Ok(Some(process))
+    } else {
+        Ok(None)
+    }
 }
 
 /// A process's PID and creation time, which no later process shares.

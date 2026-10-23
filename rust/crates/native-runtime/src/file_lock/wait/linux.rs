@@ -172,8 +172,41 @@ pub(super) fn acquire(
     };
     let parent = std::process::id();
     let spawned = attempt(meter, NativeOperationKind::Write, || {
-        // SAFETY: the child uses only raw async-signal-safe syscalls and _exit;
-        // raw fork bypasses inherited libc and third-party atfork handlers.
+        // Raw clone with SIGCHLD and no sharing flags has fork semantics:
+        // the child has its own copy-on-write stack and address space. The
+        // optional TID/TLS arguments are all null, including on architectures
+        // that reverse their order. These ABIs include Linux targets with no
+        // fork syscall. Neither path runs inherited libc atfork handlers.
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "x86",
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "riscv32",
+            target_arch = "loongarch64"
+        ))]
+        // SAFETY: after the syscall the child runs only async-signal-safe
+        // operations and _exit; it never runs inherited Rust destructors.
+        let pid = unsafe {
+            libc::syscall(
+                libc::SYS_clone,
+                libc::SIGCHLD,
+                0_usize,
+                0_usize,
+                0_usize,
+                0_usize,
+            )
+        };
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            target_arch = "x86",
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "riscv32",
+            target_arch = "loongarch64"
+        )))]
+        // SAFETY: the remaining Linux ABIs expose fork directly; the child
+        // follows the same restricted path with its private copied stack.
         let pid = unsafe { libc::syscall(libc::SYS_fork) };
         if pid < 0 {
             return Err(io::Error::last_os_error());

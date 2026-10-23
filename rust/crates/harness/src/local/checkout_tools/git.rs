@@ -103,26 +103,66 @@ impl CheckoutTools {
             )
             .await;
         }
-        let lease = self.begin_git_mutation(workspace, view, context, source.is_some(), native).await?;
-        let result = self.execute_git_mutation(
-            workspace,
-            source.is_none().then_some((checkout, watcher)),
-            self.git_mutation_workspace(workspace, view, source.as_deref(), &reserved, lease.clone()),
-            context,
-            &parsed.arguments,
-        ).await;
-        let publication = self.finish_git_mutation(
-            workspace, view, context, source.is_some(), &lease,
-            result.as_ref().is_ok_and(|output| output.switched.is_some()),
-        ).await?;
+        let lease = self
+            .begin_git_mutation(workspace, view, context, source.is_some(), native)
+            .await?;
+        let result = self
+            .execute_git_mutation(
+                workspace,
+                source.is_none().then_some((checkout, watcher)),
+                self.git_mutation_workspace(
+                    workspace,
+                    view,
+                    source.as_deref(),
+                    &reserved,
+                    lease.clone(),
+                ),
+                context,
+                &parsed.arguments,
+            )
+            .await;
+        let publication = self
+            .finish_git_mutation(
+                workspace,
+                view,
+                context,
+                source.is_some(),
+                &lease,
+                result
+                    .as_ref()
+                    .is_ok_and(|output| output.switched.is_some()),
+            )
+            .await?;
         // In-place actions publish directly to the workspace, including conflict
         // projections. Refresh its clean mount before another command can enter
         // this checkout. Switched actions select their destination mount below.
-        let advanced = self.advance_git_mutation(
-            workspace, context, source.is_some(), native,
-            (result.as_ref().is_ok_and(|output| output.switched.is_some()), publication.is_ok()),
-        ).await;
+        let advanced = self
+            .advance_git_mutation(
+                workspace,
+                context,
+                source.is_some(),
+                native,
+                (
+                    result
+                        .as_ref()
+                        .is_ok_and(|output| output.switched.is_some()),
+                    publication.is_ok(),
+                ),
+            )
+            .await;
         owner.verify_owner(None)?.await?;
+        self.complete_git_mutation(state, owner.as_ref(), result, publication, advanced)
+            .await
+    }
+
+    async fn complete_git_mutation(
+        &self,
+        state: &mut State,
+        owner: &dyn crate::runtime::OwnedTaskMailbox,
+        result: Result<crate::tools::git::Output>,
+        publication: Result<()>,
+        advanced: Result<()>,
+    ) -> Result<ToolResult> {
         let output = match result {
             Ok(output) => output,
             Err(
@@ -138,8 +178,8 @@ impl CheckoutTools {
             Err(error) => return Err(error),
         };
         if let Some(switched) = output.switched {
-            *active = Some(switched.into_checkout()?);
-            self.selected_workspace(state, owner.as_ref()).await?;
+            state.active = Some(switched.into_checkout()?);
+            self.selected_workspace(state, owner).await?;
         }
         // Persist the selected view in memory even when a recovered transition
         // has no command result or closing the old workspace failed.
@@ -161,21 +201,33 @@ impl CheckoutTools {
         context: &ToolContext,
         arguments: &[String],
     ) -> Result<crate::tools::git::Output> {
-        let owner = context.task().owned_mailbox.as_ref()
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         owner.verify_owner(None)?.await?;
         if let Some((checkout, watcher)) = capture {
-            let lease = selected.lease.as_ref()
-                .ok_or_else(|| Error::Unauthorized("git mutation has no publication lease".into()))?;
+            let lease = selected.lease.as_ref().ok_or_else(|| {
+                Error::Unauthorized("git mutation has no publication lease".into())
+            })?;
             self.capture(
-                (workspace, checkout), watcher, context.operation_id(), 0,
+                (workspace, checkout),
+                watcher,
+                context.operation_id(),
+                0,
                 lease.publication_permit(),
-                Some((context.task().ordinary_journal_owner::<LocalStream>()?, false)),
-            ).await?;
+                Some((
+                    context.task().ordinary_journal_owner::<LocalStream>()?,
+                    false,
+                )),
+            )
+            .await?;
         }
-        crate::tools::git::run_with_guard(
-            selected, arguments, || async { owner.verify_owner(None)?.await },
-        ).await
+        crate::tools::git::run_with_guard(selected, arguments, || async {
+            owner.verify_owner(None)?.await
+        })
+        .await
     }
 
     // Preparation errors stop immediately; a close error is retained until
@@ -194,8 +246,7 @@ impl CheckoutTools {
         );
         let volume = view.workspace();
         let before_close = head(view).await?;
-        if !source && !switched
-        {
+        if !source && !switched {
             self.prepare_reconciliation(workspace, context, b"close", &before_close)
                 .await?;
         }
@@ -231,7 +282,10 @@ impl CheckoutTools {
         source: bool,
         native: Option<&workspace::projection::Native>,
     ) -> Result<acyclic_fs::OperationWindowLease> {
-        let owner = context.task().owned_mailbox.as_ref()
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         let (task, fence) = owner.task_binding();
         let lease_id = lease_identity(task, context.operation_id(), fence);
@@ -291,16 +345,17 @@ impl CheckoutTools {
         native: Option<&workspace::projection::Native>,
         outcome: (bool, bool),
     ) -> Result<()> {
-        let owner = context.task().owned_mailbox.as_ref()
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         let (switched, published) = outcome;
         if let Some(native) = native {
             owner.verify_owner(None)?.await?;
             native.advance_to_head().await?;
             owner.verify_owner(None)?.await?;
-        } else if !source
-            && !switched
-        {
+        } else if !source && !switched {
             if published {
                 self.publish_reconciliation(workspace, context, true)
                     .await?;

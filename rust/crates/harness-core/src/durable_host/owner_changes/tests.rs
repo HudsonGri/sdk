@@ -1,6 +1,43 @@
 use super::*;
 use crate::durable_host::tests::fixture::fixture;
+use crate::runtime::TaskSpawner as _;
 use std::time::Duration;
+
+#[tokio::test]
+async fn deadline_clock_jump_wakes_a_quiet_owner() -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Clock(AtomicU64);
+    impl UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let mut fixture = fixture().await?;
+    let clock = Arc::new(Clock(AtomicU64::new(0)));
+    Arc::get_mut(&mut fixture.host)
+        .ok_or_else(|| Error::Storage("fixture host is shared".into()))?
+        .clock = clock.clone();
+    let mut admission = fixture.admission(1, serde_json::json!(0));
+    admission.run_limits.deadline_epoch_ms = Some(10_000);
+    fixture.host.admit(admission).await?;
+    fixture.claim(1, "deadline-jump").await?;
+    let owner = fixture.owner(1).await?;
+    let mut changes = owner.owner_changes().await?;
+    owner.verify(false, &mut None).await?;
+    let mut changed = std::pin::pin!(changes.changed());
+    assert!(futures::poll!(changed.as_mut()).is_pending());
+    let started = std::time::Instant::now();
+    clock.0.store(10_001, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_millis(200), changed)
+        .await
+        .map_err(|_| Error::Storage("wall deadline jump did not wake a quiet owner".into()))??;
+    assert!(owner.verify(false, &mut None).await.is_err());
+    eprintln!(
+        "OWNER_DEADLINE_JUMP wake_us={}",
+        started.elapsed().as_micros()
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn external_cancellation_after_registration_cannot_be_lost() -> Result<()> {

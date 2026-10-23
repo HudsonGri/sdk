@@ -43,29 +43,40 @@ fn fresh_runspace_disposal_does_not_fence_background_dotnet_io() -> io::Result<(
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("after-command.bin");
     let mut command = Command::new("pwsh.exe");
-    command.args(["-NoProfile", "-NonInteractive", "-Command", RUNSPACE_PROBE])
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", RUNSPACE_PROBE])
         .env("ACYCLIC_RUNSPACE_PROBE_FILE", &file)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let mut input = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
     let output = tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?;
     let (sent, received) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         for line in std::io::BufReader::new(output).lines() {
-            if sent.send(line).is_err() { break; }
+            if sent.send(line).is_err() {
+                break;
+            }
         }
     });
-    let first = received.recv_timeout(Duration::from_secs(3)).map_err(io::Error::other)??;
+    let first = received
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(io::Error::other)??;
     assert_eq!(first, "runspace-disposed");
     assert_eq!(std::fs::metadata(&file)?.len(), 0);
     input.write_all(b"continue\n")?;
     input.flush()?;
-    let second = received.recv_timeout(Duration::from_secs(3)).map_err(io::Error::other)??;
+    let second = received
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(io::Error::other)??;
     assert_eq!(second, "background-write-completed");
     let bytes = std::fs::metadata(&file)?.len();
     drop(input);
     tree.terminate(None)?;
-    reader.join().map_err(|_| io::Error::other("probe output reader panicked"))?;
+    reader
+        .join()
+        .map_err(|_| io::Error::other("probe output reader panicked"))?;
     eprintln!("PWSH_RUNSPACE_BACKGROUND bytes_after_disposal={bytes}");
     assert_eq!(bytes, 131072);
     Ok(())

@@ -50,7 +50,8 @@ async fn repeated_shell_calls_reuse_the_agent_interpreter() -> Result<()> {
     eprintln!("SHELL_STARTUP calls=4 pids={pids:?} elapsed_us={micros:?}");
     harness.disconnect_unfinished().await?;
     assert!(
-        pids.first().is_some_and(|first| pids.iter().all(|pid| pid == first)),
+        pids.first()
+            .is_some_and(|first| pids.iter().all(|pid| pid == first)),
         "repeated calls must retain the agent interpreter instead of starting another shell"
     );
     Ok(())
