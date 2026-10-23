@@ -483,9 +483,12 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
     let mut checks = 0;
+    // The readiness marker is a file, which raises no capture event, so the
+    // owner check runs on its own schedule too.
     let error = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            crate::CaptureSchedule::new(Duration::from_secs(5))
+                .checking_every(Duration::from_millis(5)),
             4096,
             None,
             || {
@@ -629,9 +632,11 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     });
     let input = vec![b'i'; BULK_BYTES];
     let mut checks = 0;
+    // A stalled reader raises no event, so intent is rechecked on schedule.
     let failure = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            crate::CaptureSchedule::new(Duration::from_secs(5))
+                .checking_every(Duration::from_millis(5)),
             4096,
             Some(crate::CaptureInput::Literal(&input)),
             || {

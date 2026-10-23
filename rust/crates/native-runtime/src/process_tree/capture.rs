@@ -140,7 +140,7 @@ impl<'a> PendingStdin<'a> {
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::BrokenPipe, "no owned process stdin")
                 })?;
-            let transfer = platform::write_pipe(pipe, suffix, meter);
+            let transfer = platform::write_pipe(pipe, &mut tree.writer, suffix, meter);
             let actual = transfer
                 .as_ref()
                 .ok()
@@ -177,6 +177,36 @@ impl<'a> PendingStdin<'a> {
             progressed = true;
         }
         Ok(progressed)
+    }
+
+    /// Owned input for a capture that outlives its caller; unmetered.
+    pub(super) fn owned(input: super::OwnedCaptureInput) -> io::Result<PendingStdin<'static>> {
+        let (bytes, maximum, terminate_on_completion) = match input {
+            super::OwnedCaptureInput::Exchange { initial, maximum } => (initial, maximum, true),
+            super::OwnedCaptureInput::Literal(bytes) => {
+                let maximum = bytes.len();
+                (bytes, maximum, false)
+            }
+        };
+        if (terminate_on_completion && maximum == 0) || bytes.len() > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid process input allowance",
+            ));
+        }
+        Ok(PendingStdin {
+            bytes: std::borrow::Cow::Owned(bytes),
+            written: 0,
+            maximum,
+            complete: !terminate_on_completion,
+            stopped: false,
+            terminate_on_completion,
+        })
+    }
+
+    /// Whether queued input still waits for room in the pipe.
+    pub(super) fn writing(&self) -> bool {
+        self.written < self.bytes.len()
     }
 
     /// Whether an exchange still holds input the child never took.

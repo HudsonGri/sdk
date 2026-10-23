@@ -115,8 +115,13 @@ pub(super) fn read_pipe(
     }
 }
 
+/// Unix stdin writes are plain nonblocking writes; they own no state.
+#[derive(Default)]
+pub(super) struct Writer;
+
 pub(super) fn write_pipe(
     pipe: &mut (impl Write + Pipe),
+    _writer: &mut Writer,
     bytes: &[u8],
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<(Option<usize>, io::Result<()>)> {
@@ -248,6 +253,9 @@ pub(super) fn spawn_controlled(
             spawn_resources: SpawnResources::default(),
             prepared_spawn: None,
             custody: None,
+            #[cfg(target_os = "linux")]
+            exit_fd: None,
+            writer: Writer,
         });
         Ok(())
     })
@@ -361,6 +369,9 @@ pub(super) fn spawn_closed_with_arguments(
             spawn_resources: SpawnResources::default(),
             prepared_spawn: None,
             custody: None,
+            #[cfg(target_os = "linux")]
+            exit_fd: None,
+            writer: Writer,
         });
         owner.spawn_resources = retained;
     }
@@ -474,6 +485,9 @@ impl SpawnObjects {
                             spawn_resources: SpawnResources::default(),
                             prepared_spawn: None,
                             custody: None,
+                            #[cfg(target_os = "linux")]
+                            exit_fd: None,
+                            writer: Writer,
                         });
                     }
                     spawn_status(status)
