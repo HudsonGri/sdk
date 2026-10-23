@@ -372,3 +372,80 @@ async fn diff_query_rejects_truncation_instead_of_publishing_partial_paths()
     assert!(fixture.source.observe_diff(base.id(), 0).await.is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn native_range_restoration_removes_oversized_row_on_follow_and_reopen()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    struct NoReads;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
+    let fixture = Fixture::new().await?;
+    let baseline = "a".repeat(131_072);
+    fixture.write(&[("large.txt", Some(&baseline))]).await?;
+    let cancel = acyclic_fs::CancellationToken::new();
+    let workspace = fixture
+        .filesystem
+        .open_workspace(
+            fixture.volume.storage_name(&mut None)?,
+            BOUNDARY_BUDGET,
+            &cancel,
+        )
+        .await?
+        .value;
+    let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
+    let mut stream = fixture.source.observe_diff(base.id(), 16).await?;
+    let snapshot = stream.next().await.ok_or("snapshot")??;
+    let mut view = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+    let limits = DiffLimits {
+        file_bytes: 65_536,
+        ..LIMITS
+    };
+    view.apply(&snapshot, &NoReads, limits).await?;
+    for replacement in [b'b', b'a'] {
+        let mut transaction = workspace
+            .begin_transaction(
+                acyclic_fs::workspace::IdempotencyKey::new(),
+                BOUNDARY_BUDGET,
+                &cancel,
+            )
+            .await?
+            .value;
+        transaction
+            .write_range(
+                "/large.txt",
+                65_537,
+                vec![replacement],
+                BOUNDARY_BUDGET,
+                &cancel,
+            )
+            .await?;
+        transaction
+            .commit::<acyclic_fs::workspace::WorkspaceError, _, _>(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                BOUNDARY_BUDGET,
+                &cancel,
+                |_| {
+                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await?;
+        let publication = stream.next().await.ok_or("range publication")??;
+        assert_eq!(publication.paths[0].matches_base, replacement == b'a');
+        view.apply(&publication, &NoReads, limits).await?;
+        if replacement == b'b' {
+            // A real change remains visible despite identical file sizes.
+            assert_eq!(view.files()["large.txt"].omitted_bytes, Some(131_072));
+        } else {
+            assert!(view.files().is_empty());
+            let mut reopened = fixture.source.observe_diff(base.id(), 16).await?;
+            let snapshot = reopened.next().await.ok_or("reopen")??;
+            let mut replay = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+            replay.apply(&snapshot, &NoReads, limits).await?;
+            assert!(replay.files().is_empty());
+        }
+    }
+    Ok(())
+}

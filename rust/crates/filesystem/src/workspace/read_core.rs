@@ -156,9 +156,15 @@ pub(super) async fn matches_content<
             .record;
         let matches = match (record, expected) {
             (Some(record), Some(expected)) => {
-                record.kind == FileKind::Regular
-                    && expected.kind == record.kind
-                    && expected.payload == record.payload
+                crate::kernel::records_match_content(
+                    workspace.volume.fs.objects(),
+                    record,
+                    expected,
+                    workspace.volume_config(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?
             }
             _ => false,
         };

@@ -9,6 +9,7 @@ mod attribute_mutation;
 mod blob;
 mod checkpoint;
 pub(crate) mod closure;
+mod content_eq;
 pub(crate) mod codec;
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzzing"))]
@@ -65,6 +66,7 @@ pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
+pub(crate) use content_eq::records_match_content;
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
@@ -263,12 +265,12 @@ pub use types::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
-pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 #[cfg(not(acyclic_loom))]
 pub(crate) use volume::encode_volume_created;
 #[cfg(acyclic_loom)]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
+pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 
 #[cfg(any(test, feature = "fuzzing"))]

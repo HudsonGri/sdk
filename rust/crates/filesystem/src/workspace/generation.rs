@@ -258,7 +258,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .await
     }
 
-    /// Compares retained regular-file payload identities without reading bodies.
+    /// Compares regular-file bytes independently of their storage layout.
+    /// Shared payloads and complete chunk hashes avoid body reads; partial chunks
+    /// use bounded range comparisons charged to the caller's work budget.
     /// Metadata-only changes do not affect this comparison.
     pub async fn matches_content<W: crate::facade::FsWork>(
         &self,

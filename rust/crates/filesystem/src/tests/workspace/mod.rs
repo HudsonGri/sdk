@@ -72,6 +72,7 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 mod change_sets;
+mod content_equality;
 
 mod discovery;
 

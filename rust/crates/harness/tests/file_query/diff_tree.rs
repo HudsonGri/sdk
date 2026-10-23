@@ -155,6 +155,7 @@ fn moved_directories_expand_descendants_and_retire_previous_rows() -> TestResult
 #[tokio::test]
 async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() -> TestResult {
     let fixture = Fixture::new().await?;
+    let maximum_changes = u32::try_from(LIMITS.changes)?;
     let names: Vec<_> = (0..4097).map(|index| format!("file-{index:04}")).collect();
     let mut writes: Vec<_> = names
         .iter()
@@ -167,17 +168,37 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
     let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
     fixture.write(&[("zz-changed", Some("after"))]).await?;
     let current = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
-    let (stat, _) = current.stat("/zz-changed", BOUNDARY_BUDGET, &cancel).await;
-    // Negative control: an output bound used as a cold scan bound cannot find it.
+    let stat = current
+        .stat("/zz-changed", BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value;
+    // Run the negative control before either candidate query warms the path
+    // cache. An output bound used as a cold scan bound cannot find this path.
     let old = current
-        .paths_for_file_id(stat?.file_id, 4, BOUNDARY_BUDGET, &cancel)
+        .paths_for_file_id(stat.file_id, maximum_changes, BOUNDARY_BUDGET, &cancel)
         .await?
         .value;
     assert!(old.is_empty());
-    let mut stream = fixture.source.observe_diff(base.id(), 4).await?;
+    let mut stream = fixture
+        .source
+        .observe_diff(base.id(), maximum_changes)
+        .await?;
     let snapshot = stream.next().await.ok_or("snapshot")??;
     assert_eq!(snapshot.paths.len(), 1);
     assert_eq!(snapshot.paths[0].path, "zz-changed");
+    // Semantic records and rendered paths have separate bounds: the host also
+    // changes directory/metadata records when replacing this one visible file.
+    let changes = base
+        .diff_to(&current, maximum_changes, BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value
+        .0;
+    let paths = changes
+        .changed_paths(4, BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value
+        .0;
+    assert_eq!(paths.len(), 1);
     let mut view = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
     view.apply(&snapshot, fixture.reader.as_ref(), LIMITS)
         .await?;
@@ -189,7 +210,12 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
             ..BOUNDARY_BUDGET
         },
     )?;
-    assert!(limited.observe_diff(base.id(), 4).await.is_err());
+    assert!(
+        limited
+            .observe_diff(base.id(), maximum_changes)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -213,8 +239,11 @@ async fn directory_replacement_and_restoration_preserve_both_endpoints() -> Test
     transaction.remove("/dir", BOUNDARY_BUDGET, &cancel).await?;
     transaction.write_text("/dir", "replacement\n").await?;
     let file = commit(&mut transaction).await?;
-    let (stat, _) = file.stat("/dir/a.txt", BOUNDARY_BUDGET, &cancel).await;
-    let error = stat.unwrap_err();
+    let error = file
+        .stat("/dir/a.txt", BOUNDARY_BUDGET, &cancel)
+        .await
+        .unwrap_err()
+        .error;
     assert!(matches!(error, acyclic_fs::WorkspaceError::NotDirectory));
     // Negative control: the old NotFound-only classifier rejects this endpoint.
     assert!(!matches!(error, acyclic_fs::WorkspaceError::NotFound));
