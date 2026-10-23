@@ -140,6 +140,18 @@ const DIRECTORY_PAGE_SIZE: u32 = 256;
 /// cost per live mount.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 const CALLBACK_THREADS: u32 = 8;
+/// Descriptors one mount's startup holds at once: its destination probe, the
+/// device and the session's own copy of it, the mount helper's channel pair
+/// and diagnostic file, and the root it validates.
+const MOUNT_STARTUP_DESCRIPTORS: usize = 8;
+
+/// Admits one mount's startup descriptors from the process-wide allowance,
+/// waiting while other startups and materializations hold it, so mounts that
+/// start together cannot exhaust the process's descriptors.
+async fn admit_mount_startup()
+-> Result<acyclic_native_runtime::DescriptorAdmission, NativeMountError> {
+    Ok(acyclic_native_runtime::admit_descriptors(MOUNT_STARTUP_DESCRIPTORS).await?)
+}
 /// Named attributes a driver requests from the source per page.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;

@@ -189,6 +189,7 @@ impl FuseSession {
             if let Some(packet) = started.retirement.as_mut() {
                 prepare(packet)?;
             }
+            map_read_buffers();
             let mut config = Config::default();
             config.mount_options = vec![
                 fuser::MountOption::FSName("acyclic-fs".to_owned()),
@@ -328,6 +329,35 @@ impl FuseSession {
                 })?;
         }
         Ok(())
+    }
+}
+
+/// Set in the negative control of the read buffers' test: glibc keeps its
+/// adaptive threshold.
+#[cfg(test)]
+pub(super) const DYNAMIC_THRESHOLD: &str = "ACYCLIC_FS_TEST_DYNAMIC_MMAP_THRESHOLD";
+
+/// Keeps every session's read buffers in their own mappings. glibc raises its
+/// mapping threshold past each mapped block it frees, so once one session
+/// unmounts, later sessions' buffers would come from the heap: zeroed there,
+/// resident whole, and kept by the process after their session ends. A fixed
+/// threshold keeps each buffer a mapping that only the requests the kernel
+/// writes into make resident, returned whole when its session ends.
+fn map_read_buffers() {
+    #[cfg(test)]
+    if std::env::var_os(DYNAMIC_THRESHOLD).is_some() {
+        return;
+    }
+    #[cfg(target_env = "gnu")]
+    {
+        // fuser reads each request into a buffer of its largest write plus
+        // a page, one per callback thread.
+        const READ_BUFFER_BYTES: i32 = 16 << 20;
+        static FIXED: std::sync::Once = std::sync::Once::new();
+        // SAFETY: mallopt only adjusts allocator tuning; it is thread-safe.
+        FIXED.call_once(|| unsafe {
+            libc::mallopt(libc::M_MMAP_THRESHOLD, READ_BUFFER_BYTES);
+        });
     }
 }
 
