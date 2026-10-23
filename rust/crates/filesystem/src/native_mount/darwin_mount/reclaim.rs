@@ -47,11 +47,11 @@ fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
 // Like ordinary mount retirement, startup recovery must use Disk Arbitration
 // when the mount owner cannot issue the privileged unmount syscall directly.
 // The caller retains the authenticated destination fence throughout this call.
-fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
+pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
     let destination = field(&mount.f_mntonname)?;
     // SAFETY: the caller retains the terminated kernel name and exclusive fence.
     if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
-        return Ok(());
+        return verify_detached(mount);
     }
     let error = std::io::Error::last_os_error();
     if error.raw_os_error() != Some(libc::EPERM) {
@@ -93,6 +93,16 @@ fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
             operation: "Darwin stale mount retirement",
             status,
         });
+    }
+    verify_detached(mount)
+}
+
+fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
+    if mount_table()?
+        .iter()
+        .any(|current| same_mount(mount, current))
+    {
+        return Err(std::io::Error::other("stale mount remained after retirement").into());
     }
     Ok(())
 }
@@ -139,12 +149,6 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
             continue;
         }
         detach_stale_mount(&mount)?;
-        if mount_table()?
-            .iter()
-            .any(|current| same_mount(&mount, current))
-        {
-            return Err(std::io::Error::other("stale mount remained after retirement").into());
-        }
         // Keep the fence file: other processes may already hold its inode.
         drop(owner);
     }
