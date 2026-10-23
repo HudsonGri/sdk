@@ -64,13 +64,13 @@ impl LocalHarness {
         // denial behind every message the parent committed before completing.
         // If completion races this read, the next service pass takes a new
         // snapshot instead of denying from the older cut.
-        let (parent_done, snapshot) = completed_snapshot(
-            &inbox.parent_done,
-            files.snapshot(&Query::Child(reference.clone()), self.limits.attachments),
-        )
-        .await;
-        let snapshot = snapshot?;
-        for message in snapshot.files {
+        let (parent_done, snapshot) =
+            completed_snapshot(&inbox.parent_done, files.inner.child_input_count(reference)).await;
+        let count = snapshot?;
+        for delivered in 0..count {
+            let Some(message) = files.inner.child_input(reference, delivered).await? else {
+                continue;
+            };
             if !matches!(
                 message.key,
                 FileKey::Child {

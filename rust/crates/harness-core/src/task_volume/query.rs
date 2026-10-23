@@ -100,6 +100,13 @@ pub enum Query {
     },
     /// Approval requests and decisions.
     Approvals(Component),
+    /// One immutable approval binding, its reviews and authenticated decision.
+    Approval {
+        /// Task identity.
+        task: Component,
+        /// Request identity.
+        request: Component,
+    },
     /// Notifications for one task.
     Notifications(Component),
     /// Active child execution acknowledgements; archive history is retained.
@@ -293,6 +300,37 @@ impl Query {
                     file: ToolFile::Result,
                 },
             ),
+            Self::Approval { task, request } => {
+                return vec![
+                    range(
+                        task,
+                        TaskFile::ApprovalRequest(request.clone()),
+                        TaskFile::ApprovalRequest(request.clone()),
+                    ),
+                    range(
+                        task,
+                        TaskFile::ApprovalReview {
+                            request: request.clone(),
+                            principal: minimum.clone(),
+                        },
+                        TaskFile::ApprovalReview {
+                            request: request.clone(),
+                            principal: maximum.clone(),
+                        },
+                    ),
+                    range(
+                        task,
+                        TaskFile::ApprovalDecision {
+                            request: request.clone(),
+                            principal: minimum,
+                        },
+                        TaskFile::ApprovalDecision {
+                            request: request.clone(),
+                            principal: maximum,
+                        },
+                    ),
+                ];
+            }
             Self::Approvals(task) => range(
                 task,
                 TaskFile::ApprovalRequest(minimum),
@@ -436,6 +474,21 @@ impl Query {
                         _ => true,
                     })
             }
+            (
+                Self::Approval {
+                    task: selected,
+                    request: wanted,
+                },
+                FileKey::Task { task, file },
+            ) => {
+                selected == task
+                    && match file {
+                        TaskFile::ApprovalRequest(request)
+                        | TaskFile::ApprovalReview { request, .. }
+                        | TaskFile::ApprovalDecision { request, .. } => wanted == request,
+                        _ => false,
+                    }
+            }
             (Self::Task(t), FileKey::Task { task, .. })
             | (
                 Self::Executions(t),
@@ -522,6 +575,10 @@ impl Query {
             [".tasks", t, "executions"] => Self::Executions(component(t)?),
             [".tasks", t, "turns"] => Self::Turns(component(t)?),
             [".tasks", t, "approvals"] => Self::Approvals(component(t)?),
+            [".tasks", t, "approvals", request] => Self::Approval {
+                task: component(t)?,
+                request: component(request)?,
+            },
             [".tasks", t, "notifications"] => Self::Notifications(component(t)?),
             [".tasks", t, "turns", n] => Self::Turn {
                 task: component(t)?,

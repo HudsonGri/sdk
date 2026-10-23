@@ -131,10 +131,8 @@ impl LocalHarness {
         }
         let task_files = self.runtime.approval_files(task).await?;
         let snapshot = task_files
-            .snapshot(
-                &Query::Approvals(Component::new(task.to_string())?),
-                self.limits.attachments,
-            )
+            .inner
+            .pending_approvals(&Component::new(task.to_string())?)
             .await?;
         let files: BTreeMap<_, _> = snapshot
             .files
@@ -366,10 +364,16 @@ impl LocalHarness {
                 .into_bytes(),
         );
         let task_files = self.runtime.approval_files(task).await?;
+        // One request has at most one review and one model-start marker per
+        // configured stage, plus its request, exhaustion review and decision. Historical
+        // requests and the per-message attachment allowance are unrelated.
         let observed = task_files
             .snapshot(
-                &Query::Approvals(Component::new(task.to_string())?),
-                self.limits.attachments,
+                &Query::Approval {
+                    task: Component::new(task.to_string())?,
+                    request: request.clone(),
+                },
+                self.approval_policy.approvers.len() * 2 + 3,
             )
             .await?;
         let files: BTreeMap<_, _> = observed
@@ -474,26 +478,21 @@ impl LocalHarness {
                     {
                         return Ok(false);
                     }
-                    Some(
-                        files
-                            .observe(
-                                Query::Child(reference.clone()),
-                                None,
-                                self.limits.attachments,
-                            )
-                            .await?
-                            .changes,
-                    )
+                    let child_query = Query::Child(reference.clone());
+                    let cursor = files.inner.cut(&child_query).await?;
+                    Some(files.inner.follow(child_query, cursor).await?)
                 } else {
                     None
                 };
-                let observed = task_files
-                    .observe(query.clone(), None, self.limits.attachments)
+                let snapshot = task_files
+                    .inner
+                    .pending_approvals(&Component::new(task.to_string())?)
                     .await?;
-                let mut changes = observed.changes;
-                let files: BTreeMap<_, _> = observed
-                    .snapshot
-                    .ok_or_else(|| Error::Storage("approval snapshot absent".into()))?
+                let mut changes = task_files
+                    .inner
+                    .follow(query.clone(), snapshot.cursor)
+                    .await?;
+                let files: BTreeMap<_, _> = snapshot
                     .files
                     .into_iter()
                     .map(|file| (file.key.clone(), file))

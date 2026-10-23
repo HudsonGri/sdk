@@ -135,14 +135,11 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             }
             files.push(stored.file.clone());
         }
-        for (_, stored) in index
-            .files
-            .range(Query::Approvals(task.clone()).ranges().remove(0))
-        {
+        for pending in index.approvals.files(index, task) {
             if files.len() == maximum {
                 return Err(Error::LimitExceeded);
             }
-            files.push(stored.file.clone());
+            files.push(pending);
         }
         return Ok(files);
     }

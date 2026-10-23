@@ -293,7 +293,7 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
         .admit_root(&request.binding, &request.root, &command, &work)
         .await
         .unwrap();
-    let lease = match runtime
+    let acyclic_harness::distributed::WorkPull::Claimed(lease) = runtime
         .runtime
         .task_host()
         .pull_work(
@@ -307,9 +307,8 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
         )
         .await
         .unwrap()
-    {
-        acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
-        _ => panic!("expected the admitted root lease"),
+    else {
+        panic!("expected the admitted root lease");
     };
     runtime
         .runtime

@@ -1,4 +1,5 @@
 //! Logical task files over single-event appends and immutable segment views.
+mod approval_queries;
 mod child;
 mod child_queries;
 mod child_result;
@@ -271,6 +272,7 @@ struct Index {
     commit: CommitId,
     files: FileIndex,
     commands: command_query::Commands,
+    approvals: approval_queries::Pending,
     views: recent::Views,
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
 }
@@ -705,6 +707,7 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
             .or_default()
             .push(file.key.clone());
     }
+    index.approvals.record(&index.files, &file.key);
     let command = index.commands.prepare(&index.files, &file.key);
     let display = recent::Views::prepare(&file, position);
     let previous = index.files.insert(

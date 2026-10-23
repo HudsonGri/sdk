@@ -178,6 +178,7 @@ fn replay(
         + std::mem::size_of::<FileKey>()
         + std::mem::size_of::<((Component, u8, u64), FileKey)>()
         + std::mem::size_of::<(Component, FileKey)>()
+        + std::mem::size_of::<((Component, Component), std::collections::BTreeSet<FileKey>)>()
         + std::mem::size_of::<(Component, Vec<FileKey>)>()
         + std::mem::size_of::<FileKey>();
     let vector = child_capacity(index, &key)
@@ -228,6 +229,7 @@ fn slots(index: &Index, key: &FileKey, owner: &Option<Component>) -> u64 {
     (index.files.len() * std::mem::size_of::<(FileKey, StoredFile)>()
         + index.commands.native_index_bytes(owner)
         + index.views.native_index_bytes()
+        + index.approvals.native_index_bytes()
         + index.child_inputs.len() * std::mem::size_of::<(Component, Vec<FileKey>)>()
         + child_capacity(index, key) * std::mem::size_of::<FileKey>()) as u64
 }

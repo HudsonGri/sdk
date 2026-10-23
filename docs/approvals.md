@@ -92,3 +92,5 @@ local client. Automatic services require an explicit matching approval
 authority; otherwise the embedding supplies signed decisions through the
 runtime. Default tool bindings require an approval policy across ordinary and
 native executor entry points.
+
+Active approval queries and the retained session view keep only unsettled requests and reviews. Settled request, review and decision files remain available by canonical file paths or a per-request approval query. Approval history does not consume the per-message attachment allowance.
