@@ -134,25 +134,34 @@ impl PiRootProvider {
             ));
         }
         reference.1.absorb(&mut recorded.1)?;
-        self.remember_observed(&recorded.0)?;
+        self.remember_observed(&recorded.0, work)?;
         Ok(Some(((reference.0, recorded.0), reference.1)))
     }
 
-    /// Keeps one copy of a fully observed allocation for the provider's lifetime,
-    /// held on the provider's own ledger.
-    fn remember_observed(&self, allocation: &PiRootAllocation) -> Result<()> {
-        if self.observed.get().is_some() {
-            return Ok(());
+    /// Remembers the digest of a fully observed allocation for the provider's
+    /// lifetime. Nothing of the allocation itself is retained.
+    fn remember_observed(
+        &self,
+        allocation: &PiRootAllocation,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        if self.observed.get().is_none() {
+            let digest = self.allocation_digest(allocation, work)?;
+            let _ = self.observed.set(digest);
         }
-        let mut bytes = std::mem::size_of::<PiRootAllocation>() as u64;
-        for key in allocation.roots.keys() {
-            bytes = bytes
-                .checked_add((std::mem::size_of::<(String, RootCreation)>() + key.len()) as u64)
-                .ok_or_else(|| Self::native_failure("root allocation size overflow"))?;
-        }
-        let custody = self.original.claim(bytes, 1, WorkCounters::UNCHARGED)?;
-        let _ = self.observed.set((allocation.clone(), custody));
         Ok(())
+    }
+
+    /// The canonical digest of an allocation, encoded on the caller's work.
+    fn allocation_digest(
+        &self,
+        allocation: &PiRootAllocation,
+        work: &NativeMaterializationWork,
+    ) -> Result<ObservedAllocation> {
+        Ok(
+            *digest_pi_value(allocation, self.owner.policy().maximum_payload_bytes, work)?
+                .as_bytes(),
+        )
     }
 
     /// Re-proves the live part of one observed root creation: its lazy workspace still
@@ -197,14 +206,16 @@ impl PiRootProvider {
     }
 
     /// The allocation this provider already observed in full, when it is `expected`.
+    /// Whether `expected` is exactly the allocation this provider observed in full.
     pub(super) fn observed_allocation(
         &self,
         expected: &PiRootAllocation,
-    ) -> Option<&PiRootAllocation> {
-        self.observed
-            .get()
-            .map(|(observed, _)| observed)
-            .filter(|observed| same_allocation(expected, observed))
+        work: &NativeMaterializationWork,
+    ) -> Result<bool> {
+        match self.observed.get() {
+            Some(observed) => Ok(self.allocation_digest(expected, work)? == *observed),
+            None => Ok(false),
+        }
     }
 
     pub(crate) async fn prove_scratch_allocation_with_native_work(
