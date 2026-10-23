@@ -154,6 +154,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             provider,
         ),
     )?
+    .state_directory(root.path().join("state"))
     .without_default_tools()
     .tool(tool)
     .compaction(CompactionPolicy::Disabled);

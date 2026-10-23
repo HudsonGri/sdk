@@ -173,7 +173,7 @@ pub(crate) async fn replay_execution<'a>(
             native_size_slots(selected.capacity(), std::mem::size_of::<ExecutionRecord>())?,
         )?;
         let bytes = selected.iter().try_fold(bytes, |bytes, record| {
-            native_size_add(bytes, record.payload_bytes()?)
+            native_size_add(bytes, record.payload_bytes(io)?)
         })?;
         super::payload::preparation_output(io, output_before, bytes)?
     } else {
@@ -184,11 +184,35 @@ pub(crate) async fn replay_execution<'a>(
     Ok((tail, selected, hold))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl ExecutionRecord {
-    pub(super) fn payload_bytes(&self) -> Result<u64> {
+    pub(super) fn payload_bytes(&self, io: Option<&PreparationIo>) -> Result<u64> {
+        (self.idempotency_key.capacity() as u64)
+            .checked_add(self.event.payload_bytes(io)?)
+            .ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution record ownership overflows",
+                )
+            })
+    }
+}
+
+#[cfg(feature = "filesystem")]
+impl ExecutionEvent {
+    pub(crate) fn payload_bytes(&self, io: Option<&PreparationIo>) -> Result<u64> {
         use ExecutionEvent::*;
-        let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match &self.event {
+        let add = |left: u64, right: u64| {
+            left.checked_add(right).ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution record ownership overflows",
+                )
+            })
+        };
+        let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match self {
             Started { .. } | ModelStopped { .. } => (None, [None; 3]),
             ContextPrepared {
                 projection,
@@ -217,16 +241,14 @@ impl ExecutionRecord {
             } => (Some(call_id), [Some(result), Some(projection), None]),
             ToolFailed { call_id, .. } => (Some(call_id), [None; 3]),
         };
-        let bytes = native_size_add(
-            self.idempotency_key.capacity() as u64,
-            call.map_or(0, |call| call.capacity() as u64),
-        )?;
-        let bytes = match &self.event {
-            ToolFailed { cause, .. } => native_size_add(bytes, cause.message.capacity() as u64)?,
+        let bytes = call.map_or(0, |call| call.capacity() as u64);
+        let bytes = match self {
+            ToolFailed { cause, .. } => add(bytes, cause.message.capacity() as u64)?,
             _ => bytes,
         };
-        files.into_iter().flatten().try_fold(bytes, |bytes, file| {
-            native_size_add(bytes, file.logical_owned_bytes()?)
-        })
+        files
+            .into_iter()
+            .flatten()
+            .try_fold(bytes, |bytes, file| add(bytes, file.logical_owned_bytes()?))
     }
 }

@@ -51,11 +51,14 @@ mod summary;
 mod summary_authorization;
 #[cfg(test)]
 mod summary_authorization_tests;
+mod summary_cache;
+mod summary_map;
 #[cfg(test)]
 mod tests;
 mod traits;
 use selected::JournalSelectedResolver;
 use summary::*;
+use summary_cache::SummaryCache;
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
@@ -70,7 +73,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
-    verified: tokio::sync::Mutex<ExecutionSummary>,
+    verified: tokio::sync::Mutex<SummaryCache>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,

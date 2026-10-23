@@ -15,6 +15,21 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    async fn refresh_cached_summary(
+        &self,
+        operation: OperationId,
+        cache: &mut SummaryCache,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        cache.bind(operation, io)?;
+        let mut edit = cache.edit();
+        let (summary, retained_io) = edit.parts();
+        self.refresh_summary(operation, summary, retained_io)
+            .await?;
+        edit.finish();
+        Ok(())
+    }
+
     pub(super) async fn refresh_summary(
         &self,
         operation: OperationId,
@@ -22,10 +37,11 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if summary.operation != Some(operation) {
-            *summary = ExecutionSummary {
-                operation: Some(operation),
-                ..ExecutionSummary::default()
-            };
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "execution summary is not bound to its operation",
+            ));
         }
         let limits = self
             .owner
@@ -104,22 +120,10 @@ where
             .map(|history| history as &mut dyn crate::store::history::HistoryIo);
         owner.verify(true, &mut work).await?;
         let quiescent = {
-            let mut shared = if io.is_none() {
-                Some(self.verified.lock().await)
-            } else {
-                None
-            };
-            let mut transient = ExecutionSummary::default();
-            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            self.refresh_summary(*operation, summary, io).await?;
-            let summary_hold = io
-                .map(|io| io.guard_owned(io.owned_since(before)?))
-                .transpose()?;
-            let quiescent = summary.quiescent(io);
-            drop(transient);
-            drop(summary_hold);
-            quiescent?
+            let mut cache = self.verified.lock().await;
+            self.refresh_cached_summary(*operation, &mut cache, io)
+                .await?;
+            cache.summary().quiescent(io)?
         };
         owner.verify(true, &mut work).await?;
         Ok(quiescent)
@@ -141,19 +145,13 @@ where
             let mut borrowed = io.history_io();
             owner.verify(true, &mut Some(&mut borrowed)).await?;
             let tail = {
-                let before = io.owned_bytes()?;
-                let mut summary = ExecutionSummary::default();
-                self.refresh_summary(*operation, &mut summary, Some(&io))
+                let mut cache = self.verified.lock().await;
+                self.refresh_cached_summary(*operation, &mut cache, Some(&io))
                     .await?;
-                let summary_hold = io.guard_owned(io.owned_since(before)?)?;
-                let quiescent = summary.quiescent(Some(&io));
-                let tail = summary.tail;
-                drop(summary);
-                drop(summary_hold);
-                if !quiescent? {
+                if !cache.summary().quiescent(Some(&io))? {
                     return Ok(None);
                 }
-                tail
+                cache.summary().tail
             };
             Ok(workflow
                 .prove_release_with_io(&io)
@@ -183,49 +181,35 @@ where
     ) -> Result<()> {
         let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
         traced(span, async {
-            let mut shared = if io.is_none() {
-                Some(self.verified.lock().await)
-            } else {
-                None
-            };
-            let mut transient = ExecutionSummary::default();
-            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let result = async {
-                let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.is_some_and(|io| io.original_native_work().is_some()) {
-                        return Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unsupported,
-                            reason: "quiescence requires a task-owned execution journal",
-                        };
-                    }
-                    Error::Unsupported("quiescence requires a task-owned execution journal".into())
-                })?;
-                self.refresh_summary(*operation, summary, io).await?;
-                if !summary.quiescent(io)? {
-                    return Err(Error::Indeterminate(*operation));
+            let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if io.is_some_and(|io| io.original_native_work().is_some()) {
+                    return Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "quiescence requires a task-owned execution journal",
+                    };
                 }
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .suspend_quiescent_execution(
-                        *operation,
-                        summary.tail,
-                        revision,
-                        command,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await
+                Error::Unsupported("quiescence requires a task-owned execution journal".into())
+            })?;
+            let mut cache = self.verified.lock().await;
+            self.refresh_cached_summary(*operation, &mut cache, io)
+                .await?;
+            let summary = cache.summary();
+            if !summary.quiescent(io)? {
+                return Err(Error::Indeterminate(*operation));
             }
-            .await;
-            let summary_hold = io
-                .map(|io| io.guard_owned(io.owned_since(before)?))
-                .transpose()?;
-            drop(transient);
-            drop(summary_hold);
-            result
+            let mut borrowed = io.map(PreparationIo::history_io);
+            owner
+                .suspend_quiescent_execution(
+                    *operation,
+                    summary.tail,
+                    revision,
+                    command,
+                    &mut borrowed
+                        .as_mut()
+                        .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                )
+                .await
         })
         .await
     }
@@ -328,15 +312,11 @@ where
                 work,
             )
         })?;
-        let mut shared = if io.is_none() {
-            Some(self.verified.lock().await)
-        } else {
-            None
-        };
-        let mut transient = ExecutionSummary::default();
-        let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+        let mut cache = self.verified.lock().await;
         loop {
-            self.refresh_summary(operation_id, summary, io).await?;
+            self.refresh_cached_summary(operation_id, &mut cache, io)
+                .await?;
+            let summary = cache.summary();
             if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
@@ -349,7 +329,7 @@ where
                     )
                     .await?;
             }
-            if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
+            if let Some((sequence, previous)) = summary.retries.get(&retry_key, io)? {
                 if *previous != event_digest {
                     #[cfg(not(target_arch = "wasm32"))]
                     if io.is_some() {
@@ -393,6 +373,23 @@ where
                 .await?
             };
             if committed {
+                let sequence = summary.tail.checked_add(1).ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "execution journal sequence overflows",
+                    )
+                })?;
+                let mut edit = cache.edit();
+                let (summary, retained_io) = edit.parts();
+                summary.accept_verified(
+                    (sequence, retry_key, event_digest),
+                    event,
+                    model.as_ref(),
+                    limits,
+                    retained_io,
+                )?;
+                edit.finish();
                 drop(key);
                 drop(key_hold);
                 drop(bytes);

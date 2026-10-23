@@ -5,16 +5,50 @@ use crate::model::DigestIndex;
 
 fn grow_push<T>(values: &mut Vec<T>, value: T, io: Option<&PreparationIo>) -> Result<()> {
     if values.len() == values.capacity() {
-        let capacity = values.capacity().max(2).checked_mul(2).ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "execution index capacity overflows",
-            )
-        })?;
+        let capacity = values
+            .capacity()
+            .checked_mul(2)
+            .map(|capacity| capacity.max(1))
+            .ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution index capacity overflows",
+                )
+            })?;
         stock_vec_reserve(values, capacity, io)?;
     }
     stock_vec_push(values, value, io)
+}
+
+#[cfg(feature = "filesystem")]
+fn release_page_scratch(
+    records: &[ExecutionRecord],
+    capacity: usize,
+    before: u64,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    let Some(io) = io else {
+        return Ok(());
+    };
+    let overflow = || {
+        stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Invalid,
+            "execution page ownership overflows",
+        )
+    };
+    let bytes = (capacity as u64)
+        .checked_mul(std::mem::size_of::<ExecutionRecord>() as u64)
+        .ok_or_else(overflow)?;
+    let bytes = records.iter().try_fold(bytes, |bytes, record| {
+        bytes
+            .checked_add(record.payload_bytes(Some(io))?)
+            .ok_or_else(overflow)
+    })?;
+    let held = io.owned_bytes()?.checked_sub(before).ok_or_else(overflow)?;
+    io.release(held.checked_sub(bytes).ok_or_else(overflow)?)?;
+    Ok(())
 }
 
 #[derive(Default)]
@@ -195,6 +229,8 @@ impl<'a> RecordIndex<'a> {
         operation: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
+        #[cfg(feature = "filesystem")]
+        let page_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let page = journal
             .replay(operation, self.tail, EXECUTION_REPLAY_PAGE_RECORDS, io)?
             .await?;
@@ -205,6 +241,10 @@ impl<'a> RecordIndex<'a> {
                 "execution replay page exceeds bound",
             ));
         }
+        // Decoders may reserve conservative scratch space. Once the page is
+        // materialized, only its vector and the moved records remain live.
+        #[cfg(feature = "filesystem")]
+        release_page_scratch(&page, page.capacity(), page_before, io)?;
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
         for (index, record) in page.iter().enumerate() {
             crate::model::charge_items(io, index as u64)?;
@@ -351,7 +391,7 @@ impl StockExecution<'_> {
                     std::mem::size_of::<Vec<ExecutionRecord>>() as u64,
                     native_size_slots(records.capacity(), std::mem::size_of::<ExecutionRecord>())?,
                 )?,
-                |bytes, record| native_size_add(bytes, record.payload_bytes()?),
+                |bytes, record| native_size_add(bytes, record.payload_bytes(self.io)?),
             )?;
             if let Some(hold) = super::payload::preparation_output(self.io, before, bytes)? {
                 hold.into_retained()?;

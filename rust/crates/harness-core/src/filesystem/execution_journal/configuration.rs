@@ -243,7 +243,7 @@ where
             interactions,
             owner: None,
             execution: None,
-            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            verified: tokio::sync::Mutex::new(SummaryCache::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
             task_files: None,
