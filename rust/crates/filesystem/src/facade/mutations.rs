@@ -370,11 +370,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .ok_or(WorkError::Overflow)?,
         )?;
         let final_input_bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
+        // A transaction's content changes take its identity's instant, so a
+        // replay or rebase reproduces the same times in every view.
         let produced = crate::kernel::apply_generation_mutations_retaining_with_accounting(
             &self.volume.fs.inner.objects,
             &self.root,
             operations,
             self.volume.config,
+            self.authored_operation_id.and_then(OperationId::time_ns),
             accounting,
             cancellation,
         )
