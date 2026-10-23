@@ -431,6 +431,12 @@ mod windows {
             .split_once(CUSTODIAN)
             .map_or((name, None), |(name, custodian)| (name, Some(custodian)));
         let wide = job_name(name);
+        // Open completion before the Job: while the daemon still holds a
+        // live Job, its completion witness cannot disappear between opens.
+        let completion = custodian
+            .map(|_| super::super::custodian::Completion::open(&wide))
+            .transpose()?
+            .flatten();
         // SAFETY: a NUL-terminated name; the handle is owned on success.
         let job = unsafe { OpenJobObjectW(JOB_ACCESS, 0, wide.as_ptr()) };
         if job.is_null() {
@@ -439,11 +445,13 @@ mod windows {
                 return Err(error);
             }
         } else {
-            // A member leaves the Job's list before its process has fully
-            // exited; the custodian exits only once each has, so its exit
-            // ends the fence.
-            let fenced = terminate_and_await(job)
-                .and_then(|()| custodian.map_or(Ok(()), super::super::custodian::await_custodian));
+            // Job removal precedes full kernel exit. Its independent event
+            // is published only once the daemon's pinned members have exited.
+            let fenced = terminate_and_await(job).and_then(|()| {
+                custodian.map_or(Ok(()), |identity| {
+                    super::super::custodian::await_completion(completion.as_ref(), identity)
+                })
+            });
             // SAFETY: the Job handle opened above.
             unsafe { CloseHandle(job) };
             fenced?;

@@ -24,10 +24,11 @@ pub use wire_service::{
     HostedSourceState,
 };
 
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
-    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex().to_string()
+    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET)
+        .to_hex()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -187,6 +188,8 @@ pub use facade::{
 };
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+pub use facade::{NativeGitInspectionError, NativeGitView, ReadOnlyGeneration};
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,

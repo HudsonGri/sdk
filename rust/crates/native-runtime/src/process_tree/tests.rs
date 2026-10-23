@@ -38,6 +38,7 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         );
         if literal {
             let output = result.expect("literal input may be closed early");
@@ -104,6 +105,7 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
                 Vec::with_capacity(16),
                 Vec::with_capacity(input.len()),
             ]),
+            None,
         )
         .expect_err("undelivered exchange input must fail");
     assert_eq!(failure.error.kind(), io::ErrorKind::BrokenPipe);
@@ -502,6 +504,7 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .expect_err("cancellation must stop capture");
     assert_eq!(error.error.kind(), std::io::ErrorKind::Interrupted);
@@ -577,6 +580,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
         .expect("collect output");
@@ -591,6 +595,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None
         )
@@ -608,6 +613,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None
         )
@@ -643,6 +649,7 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
                 }
             },
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -685,6 +692,7 @@ fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
             Some(crate::CaptureInput::Literal(&input)),
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -734,6 +742,7 @@ fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
                     Ok(crate::ProcessInput::default())
                 }
             },
+            None,
             None,
             None,
         )
@@ -790,6 +799,7 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
                     }
                     Ok(crate::ProcessInput::default())
                 },
+                None,
                 None,
                 None,
             )
@@ -869,6 +879,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
                 },
                 None,
                 None,
+                None,
             )
             .expect_err("stop streaming exchange");
         assert_eq!(
@@ -915,6 +926,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .expect_err("deadline stops stalled input");
     assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
@@ -941,6 +953,7 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )
@@ -990,6 +1003,7 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
                 |_| Ok(crate::ProcessInput::default()),
                 None,
                 None,
+                None,
             )
             .expect_err("capture must fail");
         assert_eq!(error.error.kind(), kind);
@@ -1018,6 +1032,7 @@ fn bulk_output_is_collected_fully_within_its_exact_bound() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
         .expect("collect bulk output");
@@ -1042,6 +1057,7 @@ fn bulk_output_is_collected_fully_within_its_exact_bound() {
             |_| Ok(crate::ProcessInput::default()),
             None,
             None,
+            None,
         )
         .map_err(|failure| failure.error)
         .expect_err("bulk output exceeds bound");
@@ -1060,6 +1076,7 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
             None,
             || Ok(()),
             |_| Ok(crate::ProcessInput::default()),
+            None,
             None,
             None,
         )

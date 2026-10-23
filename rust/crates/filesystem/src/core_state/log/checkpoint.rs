@@ -104,7 +104,7 @@ impl CoreLog {
         if let Some(work) = work {
             self.adopt_native(work)?;
         }
-        self.flush(root)?;
+        self.flush_physical(root)?;
         // The durable WAL owns recovery until every record file and every
         // changed family directory has crossed its barrier. A directory flush
         // covers all names in that family, including earlier record writes.
@@ -209,7 +209,7 @@ impl CoreLog {
             })
             .transpose();
         truncated?;
-        let sought = self.file.seek(SeekFrom::Start(0));
+        let sought = (&*self.file).seek(SeekFrom::Start(0));
         let seek_recorded = reset
             .as_mut()
             .map(|reset| {

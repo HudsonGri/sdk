@@ -63,6 +63,7 @@ impl LocalCoreStateStore {
             root: Arc::new(root),
             ownership: Ownership::Owned(owner),
             deferral: None,
+            inspection: false,
             journal_work: None,
             ownership_anchor: None,
         })

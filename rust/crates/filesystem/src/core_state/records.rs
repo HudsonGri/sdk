@@ -248,15 +248,15 @@ pub(super) fn with_lock<T>(
     paths: &mut RecordPaths,
     action: impl FnOnce(&RecordPaths) -> Result<T, LocalCoreStateStoreError>,
 ) -> Result<T, LocalCoreStateStoreError> {
-    with_lock_with_retry(paths, action, retry_record_lock)
+    with_lock_until(paths, action, Instant::now() + RECORD_LOCK_DEADLINE)
 }
 
-pub(super) fn with_lock_with_retry<T>(
+pub(super) fn with_lock_until<T>(
     paths: &mut RecordPaths,
     action: impl FnOnce(&RecordPaths) -> Result<T, LocalCoreStateStoreError>,
-    retry: impl FnMut(Instant) -> bool,
+    deadline: Instant,
 ) -> Result<T, LocalCoreStateStoreError> {
-    let mut lock = acquire_lock_with_retry(paths, LockMode::Exclusive, retry)?;
+    let mut lock = acquire_lock_mode(paths, LockMode::Exclusive, deadline, true)?;
     let result = action(paths);
     let unlocked = lock.unlock();
     match (result, unlocked) {
@@ -269,23 +269,17 @@ pub(super) fn with_lock_with_retry<T>(
 pub(super) fn read_locked<T: DeserializeOwned>(
     paths: &mut RecordPaths,
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
-    read_locked_with_retry(paths, retry_record_lock)
-}
-
-pub(super) fn read_locked_with_retry<T: DeserializeOwned>(
-    paths: &mut RecordPaths,
-    mut retry: impl FnMut(Instant) -> bool,
-) -> Result<Option<T>, LocalCoreStateStoreError> {
-    let mut lock = acquire_lock_with_retry(paths, LockMode::Shared, &mut retry)?;
+    let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
+    let mut lock = acquire_lock_mode(paths, LockMode::Shared, deadline, true)?;
     let current = read_json(&paths.current, None).ok().flatten();
     lock.unlock()?;
     drop(lock);
     match current {
         Some(value) => Ok(Some(value)),
-        None => with_lock_with_retry(
+        None => with_lock_until(
             paths,
             |paths| read_recoverable(paths).map(|value| value.map(|(value, _)| value)),
-            retry,
+            deadline,
         ),
     }
 }
@@ -294,41 +288,45 @@ pub(super) fn acquire_lock(
     paths: &mut RecordPaths,
     mode: LockMode,
 ) -> Result<OwnerLock, LocalCoreStateStoreError> {
-    acquire_lock_with_retry(paths, mode, retry_record_lock)
+    acquire_lock_mode(paths, mode, Instant::now() + RECORD_LOCK_DEADLINE, true)
 }
 
-pub(super) fn retry_record_lock(deadline: Instant) -> bool {
-    retry_record_lock_at(deadline, Instant::now(), std::thread::sleep)
+pub(super) fn acquire_existing_lock(
+    paths: &mut RecordPaths,
+) -> Result<OwnerLock, LocalCoreStateStoreError> {
+    acquire_lock_mode(
+        paths,
+        LockMode::Shared,
+        Instant::now() + RECORD_LOCK_DEADLINE,
+        false,
+    )
 }
 
-pub(super) fn retry_record_lock_at(
-    deadline: Instant,
-    now: Instant,
-    wait: impl FnOnce(Duration),
-) -> bool {
-    if now >= deadline {
-        return false;
-    }
-    wait(RECORD_LOCK_RETRY);
-    true
-}
-
-fn acquire_lock_with_retry(
+fn acquire_lock_mode(
     paths: &mut RecordPaths,
     mode: LockMode,
-    mut retry: impl FnMut(Instant) -> bool,
+    deadline: Instant,
+    create: bool,
 ) -> Result<OwnerLock, LocalCoreStateStoreError> {
     let work = paths
         .allocation
         .as_ref()
         .map(|allocation| allocation.work().clone());
     let lock = FileLock::new(if let Some(work) = &work {
-        crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+        if create {
+            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+        }
         materialization_open_options(
             &paths.lock,
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            &if create {
+                crate::native_host::NativeOpenOptions::ReadWriteCreate
+            } else {
+                crate::native_host::NativeOpenOptions::Read
+            },
             work,
         )?
+    } else if !create {
+        File::open(&paths.lock)?
     } else {
         std::fs::create_dir_all(paths.directory())?;
         OpenOptions::new()
@@ -342,48 +340,102 @@ fn acquire_lock_with_retry(
         .as_ref()
         .map(|work| work.reserve_cleanup_write())
         .transpose()?;
-    let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
-    loop {
-        if let Some(work) = &work {
-            work.charge(crate::WorkCounters {
-                backend_read_operations: 1,
-                ..Default::default()
-            })?;
-        }
-        match lock.try_lock(mode.into()) {
-            Ok(()) => break,
-            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
-                if !retry(deadline) {
-                    if let Some(mut allocation) = paths.allocation.take() {
-                        drop((
-                            std::mem::take(&mut paths.current),
-                            std::mem::take(&mut paths.previous),
-                            std::mem::take(&mut paths.temporary),
-                        ));
-                        allocation.resize(paths.lock.capacity() as u64)?;
-                        return Err(LocalCoreStateStoreError::LazyWork(
-                            crate::LazyWorkspaceError::NativeRecordLockTimeout(
-                                std::mem::take(&mut paths.lock),
-                                Some(allocation),
-                            ),
-                        ));
-                    }
-                    return Err(LocalCoreStateStoreError::LockTimeout(paths.lock.clone()));
-                }
+    match wait_record_lock(&lock, mode, deadline, work.as_ref()) {
+        Ok(()) => {}
+        Err(LocalCoreStateStoreError::Io(error))
+            if error.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            if let Some(mut allocation) = paths.allocation.take() {
+                drop((
+                    std::mem::take(&mut paths.current),
+                    std::mem::take(&mut paths.previous),
+                    std::mem::take(&mut paths.temporary),
+                ));
+                allocation.resize(paths.lock.capacity() as u64)?;
+                return Err(LocalCoreStateStoreError::LazyWork(
+                    crate::LazyWorkspaceError::NativeRecordLockTimeout(
+                        std::mem::take(&mut paths.lock),
+                        Some(allocation),
+                    ),
+                ));
             }
-            Err(error) => return Err(error.into()),
+            return Err(LocalCoreStateStoreError::LockTimeout(paths.lock.clone()));
         }
+        Err(error) => return Err(error),
     }
     Ok(OwnerLock::new(lock, cleanup))
+}
+
+pub(super) fn wait_record_lock(
+    lock: &FileLock,
+    mode: LockMode,
+    deadline: Instant,
+    work: Option<&crate::NativeMaterializationWork>,
+) -> Result<(), LocalCoreStateStoreError> {
+    // The uncontended path creates no notification handles or waiter allocation.
+    if let Some(work) = work {
+        work.charge(crate::WorkCounters {
+            backend_read_operations: 1,
+            ..Default::default()
+        })?;
+    }
+    match lock.try_lock(mode.into()) {
+        Ok(()) => return Ok(()),
+        Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let Some(work) = work else {
+        return lock
+            .lock_until(mode.into(), deadline, None, None)
+            .map_err(Into::into);
+    };
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Waker},
+    };
+    let meter = work.runtime_meter();
+    let signal = acyclic_native_runtime::FileLockCancellation::new(Some(&meter))
+        .map_err(|error| work.runtime_error(error))?;
+    let waker = Waker::from(Arc::clone(&signal));
+    let mut registered = work.cancellation_wait()?;
+    if Pin::new(&mut registered)
+        .poll(&mut Context::from_waker(&waker))
+        .is_ready()
+    {
+        return Err(crate::NativeTreeMaterializationError::Cancelled.into());
+    }
+    let result = lock.lock_until(mode.into(), deadline, Some(&signal), Some(&meter));
+    drop(registered);
+    // Recover the token's typed cancellation before translating an IO relay.
+    if result.is_err() {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+    }
+    result.map_err(|error| {
+        if matches!(error.kind(), std::io::ErrorKind::TimedOut) {
+            error.into()
+        } else {
+            work.runtime_error(error).into()
+        }
+    })
 }
 
 pub(super) fn read_recoverable<T: DeserializeOwned>(
     paths: &RecordPaths,
 ) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
+    read_recoverable_mode(paths, true)
+}
+
+pub(super) fn read_recoverable_mode<T: DeserializeOwned>(
+    paths: &RecordPaths,
+    repair: bool,
+) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
     match paths.read(&paths.current) {
         Ok(Some(value)) => Ok(Some(value)),
+        Err(error) if !repair && !recoverable_codec_error(&error) => Err(error),
         Err(error)
-            if paths.allocation.is_some()
+            if repair
+                && paths.allocation.is_some()
                 && (matches!(
                     error,
                     LocalCoreStateStoreError::Io(_) | LocalCoreStateStoreError::LazyWork(_)
@@ -393,7 +445,9 @@ pub(super) fn read_recoverable<T: DeserializeOwned>(
         }
         current => match paths.read(&paths.previous) {
             Ok(Some(value)) => {
-                promote_previous(paths)?;
+                if repair {
+                    promote_previous(paths)?;
+                }
                 Ok(Some(value))
             }
             Err(previous) if paths.allocation.is_some() || current.is_ok() => Err(previous),
@@ -402,6 +456,17 @@ pub(super) fn read_recoverable<T: DeserializeOwned>(
                 current => current,
             },
         },
+    }
+}
+
+fn recoverable_codec_error(error: &LocalCoreStateStoreError) -> bool {
+    match error {
+        LocalCoreStateStoreError::Json(error)
+        | LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::NativeRecordJson(
+            error,
+            _,
+        )) => !error.is_io(),
+        _ => false,
     }
 }
 
@@ -529,7 +594,7 @@ fn write_journaled_in<T: Serialize>(
             {
                 let _ = paths.rename(&paths.previous, &paths.current, parent);
             }
-            return Err(error.into());
+            return Err(error);
         }
         paths.sync_in(parent)?;
         paths.remove_in(&paths.previous, parent)?;

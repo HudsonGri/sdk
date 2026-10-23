@@ -157,6 +157,11 @@ impl CheckoutTools {
             // child-tree reaping; dropping the caller cannot switch its view.
             let check_workspace = Arc::clone(&workspace);
             let check_owner = Arc::clone(owner);
+            let control = crate::filesystem::native_process::capture::OwnerControl::open(
+                context.task().ordinary_journal_owner::<LocalStream>()?,
+            )
+            .await?;
+            let owner_wake = control.wake();
             let runtime = tokio::runtime::Handle::current();
             let check = move || {
                 if acyclic_fs::capture_root_identity(&check_workspace.path)
@@ -167,12 +172,14 @@ impl CheckoutTools {
                 }
                 // Completes when the journal confirms the fence or reports
                 // it lost; no wall-clock deadline applies.
-                runtime.block_on(async {
-                    check_owner
-                        .verify_owner(None)
-                        .map_err(std::io::Error::other)?
-                        .await
-                        .map_err(std::io::Error::other)
+                control.check(|| {
+                    runtime.block_on(async {
+                        check_owner
+                            .verify_owner(None)
+                            .map_err(std::io::Error::other)?
+                            .await
+                            .map_err(std::io::Error::other)
+                    })
                 })
             };
             // Hooks share the shell's native execution scope: bound volumes are
@@ -188,7 +195,7 @@ impl CheckoutTools {
                             input,
                             registry,
                             context.effective_scope().limits().file_bytes,
-                            check,
+                            (check, Some(owner_wake)),
                         )
                     })
                     .await?;

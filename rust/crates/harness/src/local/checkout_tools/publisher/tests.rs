@@ -1,5 +1,7 @@
 use super::*;
 
+mod observed_cost;
+
 thread_local! {
     /// Stops a publication after its physical write, before its capture.
     pub(super) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

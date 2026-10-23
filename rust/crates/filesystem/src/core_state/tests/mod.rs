@@ -330,7 +330,10 @@ pub(super) fn core_crash_child_runs_until_its_crash_point() -> Result<(), Box<dy
         std::fs::write(&acknowledged, group.end.to_string())?;
     }
     if let Some(count) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_COUNT") {
-        std::fs::write(count, crate::core_state::log::crash_point_count().to_string())?;
+        std::fs::write(
+            count,
+            crate::core_state::log::crash_point_count().to_string(),
+        )?;
     }
     Ok(())
 }
@@ -481,6 +484,7 @@ mod action_publication;
 mod contexts;
 mod freeze;
 mod journal;
+mod lock_wait;
 mod log;
 #[cfg(target_os = "linux")]
 mod logical_release;

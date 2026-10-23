@@ -137,7 +137,10 @@ impl ForkControl {
             return if byte == [1] {
                 Ok(())
             } else {
-                Err(io::Error::new(io::ErrorKind::InvalidData, "pre_exec signal"))
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "pre_exec signal",
+                ))
             };
         }
     }
@@ -201,8 +204,14 @@ fn ordinary_owner_releases_only_after_clones_and_admitted_transactions_drop() {
     let status = control.finish().expect("release, join and reap child");
     assert!(status.success(), "true status: {status}");
     assert!(live_conflict, "live owner must exclude another owner");
-    assert!(clone_conflict, "a store clone must retain exclusive ownership");
-    assert!(admission_conflict, "an admitted transaction must retain its owner Arc");
+    assert!(
+        clone_conflict,
+        "a store clone must retain exclusive ownership"
+    );
+    assert!(
+        admission_conflict,
+        "an admitted transaction must retain its owner Arc"
+    );
     LocalCoreStateStore::open_owned(directory.path()).expect("exec closed inherited descriptors");
     assert!(
         dropped_error.is_none(),
@@ -214,16 +223,21 @@ fn ordinary_owner_releases_only_after_clones_and_admitted_transactions_drop() {
 fn ordinary_shared_transaction_releases_before_a_forked_child_execs() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let (mut control, live_conflict) = futures::executor::block_on(store.transaction(|namespace| {
-        let control = ForkControl::start()?;
-        let live_conflict = is_ownership_conflict(&LocalCoreStateStore::open_owned(&namespace.root));
-        Ok((control, live_conflict))
-    }))
-    .unwrap();
+    let (mut control, live_conflict) =
+        futures::executor::block_on(store.transaction(|namespace| {
+            let control = ForkControl::start()?;
+            let live_conflict =
+                is_ownership_conflict(&LocalCoreStateStore::open_owned(&namespace.root));
+            Ok((control, live_conflict))
+        }))
+        .unwrap();
     let released_error = LocalCoreStateStore::open_owned(directory.path()).err();
     let status = control.finish().expect("release, join and reap child");
     assert!(status.success(), "true status: {status}");
-    assert!(live_conflict, "a live shared transaction must exclude an owner");
+    assert!(
+        live_conflict,
+        "a live shared transaction must exclude an owner"
+    );
     LocalCoreStateStore::open_owned(directory.path()).expect("exec closed inherited descriptors");
     assert!(
         released_error.is_none(),
@@ -233,27 +247,41 @@ fn ordinary_shared_transaction_releases_before_a_forked_child_execs() {
 
 fn record_release_control(unwind: bool) {
     let directory = tempfile::tempdir().unwrap();
-    let namespace = LocalCoreStateStore::new(directory.path()).namespace().unwrap();
+    let namespace = LocalCoreStateStore::new(directory.path())
+        .namespace()
+        .unwrap();
     let mut paths = namespace.record("logical-release", &[1; 16]).unwrap();
     let mut probe = namespace.record("logical-release", &[1; 16]).unwrap();
     let mut control = None;
     let mut live_conflict = false;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_lock_with_retry(
+        with_lock_until(
             &mut paths,
             |_| {
                 control = Some(ForkControl::start()?);
                 live_conflict = matches!(
-                    with_lock_with_retry(&mut probe, |_| Ok(()), |_| false),
+                    with_lock_until(
+                        &mut probe,
+                        |_| Ok(()),
+                        Instant::now() + Duration::from_millis(20)
+                    ),
                     Err(LocalCoreStateStoreError::LockTimeout(_))
                 );
-                assert!(!unwind, "fixture action unwinds while holding its record lock");
+                assert!(
+                    !unwind,
+                    "fixture action unwinds while holding its record lock"
+                );
                 Ok(())
             },
-            |_| false,
+            Instant::now() + Duration::from_millis(20),
         )
     }));
-    let released_error = with_lock_with_retry(&mut probe, |_| Ok(()), |_| false).err();
+    let released_error = with_lock_until(
+        &mut probe,
+        |_| Ok(()),
+        Instant::now() + Duration::from_millis(20),
+    )
+    .err();
     let status = control
         .as_mut()
         .expect("record action reached pre_exec")
@@ -261,13 +289,23 @@ fn record_release_control(unwind: bool) {
         .expect("release, join and reap child");
     assert!(status.success(), "true status: {status}");
     if unwind {
-        assert!(outcome.is_err(), "fixture must exercise the real action-unwind path");
+        assert!(
+            outcome.is_err(),
+            "fixture must exercise the real action-unwind path"
+        );
     } else {
         outcome.expect("normal action must not panic").unwrap();
     }
-    assert!(live_conflict, "a live record action must exclude another writer");
-    with_lock_with_retry(&mut probe, |_| Ok(()), |_| false)
-        .expect("exec closed the inherited record descriptor");
+    assert!(
+        live_conflict,
+        "a live record action must exclude another writer"
+    );
+    with_lock_until(
+        &mut probe,
+        |_| Ok(()),
+        Instant::now() + Duration::from_millis(20),
+    )
+    .expect("exec closed the inherited record descriptor");
     assert!(
         released_error.is_none(),
         "record action end (unwind={unwind}) must release before child exec: {released_error:?}"
@@ -301,8 +339,14 @@ fn native_funded_transaction_drop_releases_once_before_child_exec() {
     let status = control.finish().expect("release, join and reap child");
     assert!(status.success(), "true status: {status}");
     assert!(live_conflict, "live native admission must exclude an owner");
-    assert!(released_error.is_none(), "native cleanup must unlock: {released_error:?}");
-    assert_eq!(after.backend_write_operations - before.backend_write_operations, 1);
+    assert!(
+        released_error.is_none(),
+        "native cleanup must unlock: {released_error:?}"
+    );
+    assert_eq!(
+        after.backend_write_operations - before.backend_write_operations,
+        1
+    );
     after.verify(budget).unwrap();
 }
 

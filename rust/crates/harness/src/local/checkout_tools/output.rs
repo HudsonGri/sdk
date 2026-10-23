@@ -38,7 +38,13 @@ pub(super) struct Output {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct Health(Arc<std::sync::Mutex<Option<String>>>);
+pub(super) struct Health(Arc<std::sync::Mutex<HealthState>>);
+
+#[derive(Default)]
+struct HealthState {
+    failure: Option<String>,
+    wake: Option<acyclic_native_runtime::ProcessWake>,
+}
 
 impl Health {
     pub(super) fn check(&self) -> std::io::Result<()> {
@@ -46,6 +52,7 @@ impl Health {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failure
             .as_ref()
         {
             Some(cause) => Err(std::io::Error::other(cause.clone())),
@@ -53,11 +60,34 @@ impl Health {
         }
     }
 
-    fn fail(&self, cause: impl std::fmt::Display) {
-        *self
+    pub(super) fn wake_on_failure(
+        &self,
+        wake: acyclic_native_runtime::ProcessWake,
+    ) -> std::io::Result<()> {
+        let mut state = self
             .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cause.to_string());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failed = state.failure.is_some();
+        if failed {
+            wake.stop()?;
+        }
+        state.wake = Some(wake);
+        drop(state);
+        Ok(())
+    }
+
+    fn fail(&self, cause: impl std::fmt::Display) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.failure.get_or_insert_with(|| cause.to_string());
+        let wake = state.wake.clone();
+        drop(state);
+        if let Some(wake) = wake {
+            let _ = wake.stop();
+        }
     }
 }
 
@@ -177,7 +207,8 @@ async fn flush_ready(
         let result = async {
             writer.flush(false, false).await?;
             writer.flush(true, false).await
-        }.await;
+        }
+        .await;
         if let Err(cause) = result {
             health.fail(cause);
             return;

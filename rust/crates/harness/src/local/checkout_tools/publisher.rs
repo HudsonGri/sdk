@@ -205,8 +205,18 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
+        self.observed_with_budget(view, operation, file, acyclic_fs::WorkBudget::UNBOUNDED)
+            .await
+    }
+
+    async fn observed_with_budget(
+        &self,
+        view: &workspace::View,
+        operation: OperationId,
+        file: FileRef,
+        budget: acyclic_fs::WorkBudget,
+    ) -> Result<FileRef> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let key = acyclic_fs::IdempotencyKey::from_bytes(
             capture::capture_operation(write_capture(operation, file.path()), 1).into_bytes(),
         );

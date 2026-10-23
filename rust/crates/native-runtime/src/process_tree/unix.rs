@@ -16,6 +16,8 @@ pub(super) fn observe_exit_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<Option<ExitStatus>> {
+    #[cfg(test)]
+    super::exit_wait::observed();
     let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
     loop {
         // SAFETY: initialized OS output storage and the exclusively owned
@@ -631,3 +633,7 @@ fn group_snapshot_has_no_live_members(
     }
     Ok(false)
 }
+
+#[cfg(test)]
+#[path = "termination_wait_tests.rs"]
+mod termination_wait_tests;

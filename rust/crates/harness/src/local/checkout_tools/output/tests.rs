@@ -4,6 +4,9 @@ use crate::{Admission, LocalHarness, model::Model, test_support::ScriptedModelPr
 use futures::StreamExt;
 
 mod cancellation;
+mod health;
+mod shell_startup;
+mod status_cost;
 
 #[tokio::test]
 async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result<()> {
@@ -644,22 +647,24 @@ async fn a_chunk_whose_fence_step_is_held_past_the_control_bound_is_published() 
     output = tokio::task::spawn_blocking(move || {
         // A full frame exercises the synchronous publication fence even when
         // short pipe reads are buffered for the timer or command exit.
-        let mut chunk = vec![b'x'; 64 * 1024];
-        chunk[..15].copy_from_slice(b"held diagnostic");
+        let mut chunk = b"held diagnostic".to_vec();
+        chunk.resize(64 * 1024, b'x');
         output.observe(ProcessOutput::Stderr(&chunk))?;
         Ok::<_, std::io::Error>(output)
     })
-        .await
-        .map_err(storage)?
-        .map_err(storage)?;
+    .await
+    .map_err(storage)?
+    .map_err(storage)?;
     assert_eq!(
         clock.held.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "the publication's fence step was not held"
     );
-    output.finish(&ToolResult {
-        value: serde_json::json!({"success": true, "exit_code": 0, "stop": null}),
-    }).await?;
+    output
+        .finish(&ToolResult {
+            value: serde_json::json!({"success": true, "exit_code": 0, "stop": null}),
+        })
+        .await?;
     let snapshot = harness
         .task_files()
         .observe(Query::Root, None, 16)
