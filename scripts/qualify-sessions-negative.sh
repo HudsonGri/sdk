@@ -38,6 +38,8 @@ replace(paths[1],'''ExecutionProgress::PreDispatchFailed(failure) => ready(
                 },
                 io,
             ),''','ExecutionProgress::PreDispatchFailed(failure) => Err(Error::Invalid(failure.into_message())),')
+replace(paths[1],'Err(error) if !reconciliation_only && phase.can_fail(&error) => {',
+        'Err(error) if false && !reconciliation_only && phase.can_fail(&error) => {')
 replace(paths[2],'if let Some(provider) = search.provider()? {','if let Some(provider) = Option::<Arc<dyn acyclic_harness::search::SearchProvider>>::None {')
 replace(paths[2],'client::local_identity(operation)','phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?')
 replace(paths[2],'phase(|| client::resume_local_identity(&local, operation)).await?','return Err("retained interactive resume is unavailable".into())')
@@ -124,7 +126,9 @@ expect_failure() {
  python3 - "$proof/$name.log" "$name" "$@" <<'PY'
 import pathlib,re,subprocess,sys,time
 started=time.monotonic()
-result=subprocess.run(sys.argv[3:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=9)
+# Each shipping driver owns its deadline and reaps its children before returning.
+# A second clock would race that cleanup and suppress the actual failed oracle.
+result=subprocess.run(sys.argv[3:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
 elapsed=time.monotonic()-started
 pathlib.Path(sys.argv[1]).write_text(result.stdout)
 print(result.stdout,end='')

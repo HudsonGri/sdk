@@ -86,6 +86,11 @@ async function run(replay) {
   assert.equal(results[0].completion, failed ? "failed" : "completed");
   if (failed) {
     assert.match(JSON.stringify(results[0]), /no older source fits the compaction policy/);
+    const task = frames[0][0].TaskSession.task;
+    assert.equal(typeof task, "string", "headless query identifies its admitted task");
+    const statuses = files.filter(file => file.key.Task?.task === task && file.key.Task?.file === "Status")
+      .map(file => JSON.parse(file.bytes.text));
+    assert.equal(statuses.at(-1)?.state, "failed", "pre-dispatch failure has a durable terminal task status");
   } else {
     assert.equal(results[0].ok.steps, 3);
     assert.equal(results[0].ok.text, answer);
