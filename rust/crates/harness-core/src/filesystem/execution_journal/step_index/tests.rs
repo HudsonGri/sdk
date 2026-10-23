@@ -179,7 +179,8 @@ fn step_links_reject_bad_lengths_tags_padding_and_forward_references() -> Result
 #[tokio::test]
 async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree() -> Result<()> {
     for (native, compare) in [(false, false), (false, true), (true, false), (true, true)] {
-        let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+        let (journal, _issuer) =
+            crate::filesystem::execution_journal::test_support::journal().await?;
         let operation = OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
@@ -323,25 +324,35 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
         })
         .await?;
     let selection = journal
-            .indexed_records(
-                ExecutionRecordQuery {
-                    operation,
-                    step: 0,
-                    include_started: true,
-                    maximum_step_records: 1,
-                    maximum: 2,
-                    select: &|_| true,
-                },
-                None
-            )?
-            .ok_or_else(|| invalid(None))?
-            .await?;
-    assert!(selection.is_some(), "validated raw tail disabled indexed selection");
+        .indexed_records(
+            ExecutionRecordQuery {
+                operation,
+                step: 0,
+                include_started: true,
+                maximum_step_records: 1,
+                maximum: 2,
+                select: &|_| true,
+            },
+            None,
+        )?
+        .ok_or_else(|| invalid(None))?
+        .await?;
+    assert!(
+        selection.is_some(),
+        "validated raw tail disabled indexed selection"
+    );
     let (tail, selected) = selection.ok_or_else(|| invalid(None))?;
     assert_eq!(tail, 2);
-    assert_eq!(selected.len(), 2, "indexed selection omitted the validated raw tail");
+    assert_eq!(
+        selected.len(),
+        2,
+        "indexed selection omitted the validated raw tail"
+    );
     assert!(matches!(selected[0].event, ExecutionEvent::Started { .. }));
-    assert!(matches!(selected[1].event, ExecutionEvent::ToolFailed { step: 0, .. }));
+    assert!(matches!(
+        selected[1].event,
+        ExecutionEvent::ToolFailed { step: 0, .. }
+    ));
     let records = journal.replay(operation, 0, 10, None)?.await?;
     assert_eq!(records.len(), 2);
     // A record at the same storage path is not sufficient authority. It must
@@ -352,17 +363,39 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
         turn_operation: journal.turn_operation(operation),
         retry_digest: "forged-tail".into(),
         event: refusal(0),
-    }).map_err(|_| invalid(None))?;
-    journal.stream.append(acyclic_stream::AppendRequest {
-        path, records: vec![forged.into()], if_tail: Some(2), idempotency_key: None,
-    }).await?;
+    })
+    .map_err(|_| invalid(None))?;
+    journal
+        .stream
+        .append(acyclic_stream::AppendRequest {
+            path,
+            records: vec![forged.into()],
+            if_tail: Some(2),
+            idempotency_key: None,
+        })
+        .await?;
     for cold in [false, true] {
-        if cold { *journal.verified.lock().await = SummaryCache::default(); }
-        assert!(journal.indexed_records(ExecutionRecordQuery {
-            operation, step: 0, include_started: true,
-            maximum_step_records: 2, maximum: 3, select: &|_| true,
-        }, None)?.ok_or_else(|| invalid(None))?.await.is_err(),
-            "indexed selection accepted a raw tail from another operation");
+        if cold {
+            *journal.verified.lock().await = SummaryCache::default();
+        }
+        assert!(
+            journal
+                .indexed_records(
+                    ExecutionRecordQuery {
+                        operation,
+                        step: 0,
+                        include_started: true,
+                        maximum_step_records: 2,
+                        maximum: 3,
+                        select: &|_| true,
+                    },
+                    None
+                )?
+                .ok_or_else(|| invalid(None))?
+                .await
+                .is_err(),
+            "indexed selection accepted a raw tail from another operation"
+        );
     }
     Ok(())
 }
@@ -370,7 +403,8 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
 #[tokio::test]
 async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<()> {
     for native in [false, true] {
-        let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+        let (journal, _issuer) =
+            crate::filesystem::execution_journal::test_support::journal().await?;
         let operation = OperationId::new();
         journal
             .append(

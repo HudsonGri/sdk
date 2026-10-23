@@ -5,8 +5,8 @@ use super::*;
 struct CoarseMetadata<T>(T);
 
 fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
-    let value = serde_json::to_value(manifest)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let value =
+        serde_json::to_value(manifest).map_err(|error| Error::Invalid(error.to_string()))?;
     // These fields reach each transitive decoder: fixed arrays, primitives,
     // FileRef, ProviderRefWire, the adjacent-tagged owner and its buffered id.
     for (pointer, is_string) in [
@@ -22,28 +22,46 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
     ] {
         for replacement in [
             serde_json::json!({"unexpected": ["escaped\\\"".repeat(256)]}),
-            if is_string { Value::Null } else { Value::String("invalid\\\"".repeat(256)) },
+            if is_string {
+                Value::Null
+            } else {
+                Value::String("invalid\\\"".repeat(256))
+            },
         ] {
             let mut malformed = value.clone();
-            *malformed.pointer_mut(pointer).ok_or_else(|| invalid(None))? = replacement;
+            *malformed
+                .pointer_mut(pointer)
+                .ok_or_else(|| invalid(None))? = replacement;
             let bytes = serde_json::to_vec(&malformed)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             for native in [false, true] {
                 let cancellation = acyclic_fs::CancellationToken::new();
-                let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+                let budget =
+                    acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
                 let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
                 let baseline = work.live_allocation_bytes();
-                let io = if native { PreparationIo::from_native_work(&work)? }
-                    else { PreparationIo::from_budget(budget, &cancellation)? };
+                let io = if native {
+                    PreparationIo::from_native_work(&work)?
+                } else {
+                    PreparationIo::from_budget(budget, &cancellation)?
+                };
                 let mut result = None;
                 let physical = acyclic_test_support::measure(|| {
-                    result = Some(io.decode(std::marker::PhantomData::<RequestManifest>, &bytes,
-                        crate::wire::ErrorCode::Storage));
+                    result = Some(io.decode(
+                        std::marker::PhantomData::<RequestManifest>,
+                        &bytes,
+                        crate::wire::ErrorCode::Storage,
+                    ));
                 });
-                assert!(result.ok_or_else(|| invalid(None))?.is_err(), "accepted malformed {pointer}");
-                assert!(physical.bytes_max <= io.receipt().peak_allocation_bytes,
-                    "unfunded diagnostic at {pointer}: {physical:?}");
+                assert!(
+                    result.ok_or_else(|| invalid(None))?.is_err(),
+                    "accepted malformed {pointer}"
+                );
+                assert!(
+                    physical.bytes_max <= io.receipt().peak_allocation_bytes,
+                    "unfunded diagnostic at {pointer}: {physical:?}"
+                );
                 assert_eq!(io.owned_bytes()?, 0);
                 drop(io);
                 assert_eq!(work.live_allocation_bytes(), baseline);

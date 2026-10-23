@@ -305,8 +305,14 @@ impl StockExecution<'_> {
                     return Ok(prepared);
                 }
                 let pre_stage = projection.canonical.is_some();
-                self.compact_response(journal, (input, step, 0), projection, accounting, (source, pre_stage))
-                    .await
+                self.compact_response(
+                    journal,
+                    (input, step, 0),
+                    projection,
+                    accounting,
+                    (source, pre_stage),
+                )
+                .await
             }
             _ => Err(stock_boundary(
                 self.io,
