@@ -55,9 +55,10 @@ impl ClientRenderer {
         }
         self.top = tui::view_transcript(
             [
-                &mut self.wrapped_reasoning,
-                &mut self.wrapped_transcript,
-                &mut self.wrapped_tools,
+                self.reasoning_visible
+                    .then_some(&mut self.wrapped_reasoning),
+                Some(&mut self.wrapped_transcript),
+                Some(&mut self.wrapped_tools),
             ],
             top,
             height,
@@ -82,9 +83,10 @@ impl ClientRenderer {
     ) -> Option<TranscriptAnchor> {
         tui::move_transcript(
             [
-                &mut self.wrapped_reasoning,
-                &mut self.wrapped_transcript,
-                &mut self.wrapped_tools,
+                self.reasoning_visible
+                    .then_some(&mut self.wrapped_reasoning),
+                Some(&mut self.wrapped_transcript),
+                Some(&mut self.wrapped_tools),
             ],
             from,
             rows,
@@ -96,35 +98,52 @@ impl ClientRenderer {
 
 impl ClientRenderer {
     /// Resolve a source-track position without traversing unrelated archive rows.
-    pub fn anchor_at(&self, mut byte: usize) -> Option<TranscriptAnchor> {
+    pub fn anchor_at(&mut self, mut byte: usize) -> Option<TranscriptAnchor> {
+        let mut anchor = None;
         for (part, source) in [
             (tui::TranscriptPart::Reasoning, &self.wrapped_reasoning),
             (tui::TranscriptPart::Answer, &self.wrapped_transcript),
             (tui::TranscriptPart::Tools, &self.wrapped_tools),
         ] {
-            if source.source_len() == 0 {
+            if source.source_len() == 0
+                || part == tui::TranscriptPart::Reasoning && !self.reasoning_visible
+            {
                 continue;
             }
             let length = source.text().len() + 1;
             if byte < length {
-                return Some(TranscriptAnchor {
+                anchor = Some(TranscriptAnchor {
                     part,
                     position: source.position_of(byte.min(length - 1)),
                 });
+                break;
             }
             byte -= length;
         }
-        None
+        tui::view_transcript(
+            [
+                self.reasoning_visible
+                    .then_some(&mut self.wrapped_reasoning),
+                Some(&mut self.wrapped_transcript),
+                Some(&mut self.wrapped_tools),
+            ],
+            anchor,
+            self.view_height,
+            usize::from(self.busy),
+        )
     }
 
     pub(super) fn source_window(&self) -> (std::ops::Range<usize>, usize) {
         let mut total = 0;
         let mut visible = None;
         for source in [
-            &self.wrapped_reasoning,
-            &self.wrapped_transcript,
-            &self.wrapped_tools,
-        ] {
+            self.reasoning_visible.then_some(&self.wrapped_reasoning),
+            Some(&self.wrapped_transcript),
+            Some(&self.wrapped_tools),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if source.source_len() == 0 {
                 continue;
             }

@@ -34,6 +34,7 @@ pub enum InputEffect {
     },
     /// A source anchor selected by the transcript track; the host writes layout.json.
     ScrollTo {
+        /// Resolved source position, or the live tail.
         anchor: Option<crate::TranscriptAnchor>,
     },
     /// Interrupt the active operation.

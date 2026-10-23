@@ -164,6 +164,15 @@ impl ClientRenderer {
         self.reasoning_rows.truncate(changed);
         self.reasoning_rows.extend_from_slice(&rows[changed..]);
         self.reasoning_changed = self.reasoning_changed.min(changed);
+        self.wrapped_transcript
+            .replace(&self.transcript, self.transcript_changed);
+        self.wrapped_tools
+            .replace(self.task.tools(), self.tools_changed);
+        self.wrapped_reasoning
+            .replace(&self.reasoning_rows, self.reasoning_changed);
+        self.transcript_changed = self.transcript.len();
+        self.tools_changed = self.task.tools().len();
+        self.reasoning_changed = self.reasoning_rows.len();
         self.documents(views);
         self.busy = self.task.busy();
         self.header = Line::from(vec![
@@ -291,21 +300,13 @@ impl ClientRenderer {
         self.wrapped = false;
         let areas = self.screen_for(files)?.areas(area, input);
         let width = areas.transcript.width;
-        self.wrapped_transcript
-            .update(&self.transcript, self.transcript_changed, width);
-        self.wrap_tools(width);
+        self.wrapped_transcript.reflow(width);
+        self.wrapped_tools.reflow(width);
         self.reasoning_visible = viewport::reasoning(files)?;
-        self.wrapped_reasoning.update(
-            if self.reasoning_visible {
-                &self.reasoning_rows
-            } else {
-                &[]
-            },
-            self.reasoning_changed,
-            width,
-        );
-        self.transcript_changed = self.transcript.len();
-        self.reasoning_changed = self.reasoning_rows.len();
+        self.wrapped_reasoning.reflow(width);
+        if !self.reasoning_visible {
+            self.wrapped_reasoning.hide();
+        }
         let side_width = areas.side.width.saturating_sub(2);
         self.side_wrapped = side_width > 0;
         if self.side_wrapped {
@@ -327,12 +328,6 @@ impl ClientRenderer {
         self.wrapped = true;
         self.select_view(files, input, usize::from(areas.transcript.height))?;
         Ok(())
-    }
-
-    fn wrap_tools(&mut self, width: u16) {
-        self.wrapped_tools
-            .update(self.task.tools(), self.tools_changed, width);
-        self.tools_changed = self.task.tools().len();
     }
 
     /// Yield before a bounded, cancellable full-search-count slice.
@@ -585,3 +580,11 @@ mod frame_tests;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "thinking_frame_tests.rs"]
 mod thinking_frame_tests;
+
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+mod viewport_cost;
