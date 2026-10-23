@@ -369,25 +369,60 @@ async fn approval_writers_share_one_claim_across_composed_hosts_and_entry_points
                 }
             };
             tokio::pin!(publish);
-            let polled = futures::poll!(publish.as_mut());
-            if released_cut {
-                assert!(
-                    polled.is_ready(),
-                    "the old unowned cut unexpectedly excluded a writer: entry={entry}"
-                );
-                if let std::task::Poll::Ready(result) = polled {
-                    result?;
-                }
-            } else {
+            let (polled, trace) = differential::observe::<_, _, differential::Operation>(
+                || (),
+                |()| {
+                    std::future::Future::poll(
+                        publish.as_mut(),
+                        &mut std::task::Context::from_waker(futures::task::noop_waker_ref()),
+                    )
+                },
+            );
+            let acquired: u64 = trace
+                .iter()
+                .filter(|(kind, _)| *kind == "interaction-writer-acquired")
+                .map(|(_, count)| count)
+                .sum();
+            assert_eq!(acquired, u64::from(released_cut), "entry={entry}");
+            if !released_cut {
                 assert!(
                     polled.is_pending(),
-                    "separately composed writer bypassed custody: entry={entry}"
+                    "writer bypassed custody: entry={entry}"
                 );
-                drop(transaction);
-                publish.await?;
+            }
+            drop(transaction);
+            match polled {
+                std::task::Poll::Ready(result) => result?,
+                std::task::Poll::Pending => publish.await?,
             }
             drop(cut);
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn approval_writer_admits_storage_before_taking_custody() -> Result<()> {
+    let initialized = initialized("writer allocation", None).await?;
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(65_536, 64 << 20);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)?;
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        assert_eq!(io.owned_bytes()?, 0);
+        // The old shape took custody before admitting any node storage.
+        assert!(io.guard_owned(1).is_err());
+        let transaction = initialized
+            .journal
+            .interactions()?
+            .transaction(Some(&io))
+            .await?;
+        drop(transaction);
+        assert_eq!(io.owned_bytes()?, 0);
     }
     Ok(())
 }

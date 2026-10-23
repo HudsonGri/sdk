@@ -137,7 +137,7 @@ where
                 || crate::model::charge_items(io, 1),
                 |bytes| {
                     io.map(|io| {
-                        let hold = io.guard_owned(bytes)?;
+                        let hold = io.reserve_decode(bytes)?;
                         io.allocation_attempt(bytes)?;
                         Ok::<_, Error>(hold)
                     })
@@ -149,6 +149,8 @@ where
             // Waiting acquires ownership; no failed publication is resubmitted.
             claims.wait_until_released(key).await;
         };
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("interaction-writer-acquired", 1_u64));
         Ok(InteractionTransaction {
             aggregate: self.aggregate(io).await?,
             _writer: writer,
