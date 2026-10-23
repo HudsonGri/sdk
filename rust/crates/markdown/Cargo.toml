@@ -12,9 +12,6 @@ description = "Incremental Markdown presentation as renderer-independent styled 
 name = "streaming"
 path = "tests/streaming.rs"
 
-[[test]]
-name = "streaming_properties"
-path = "tests/streaming_properties.rs"
 
 [[bench]]
 name = "audit"
@@ -32,7 +29,6 @@ unicase = "2.10"
 # Feature unification enables instrumentation in the parser for tests/benches,
 # without a dependency cycle or counters in ordinary consumers.
 acyclic-markdown-work = { path = "../markdown-work", version = "0.2.0", features = ["enabled"] }
-acyclic-markdown = { path = ".", features = ["fuzzing"] }
 proptest.workspace = true
 
 [lints]

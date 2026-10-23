@@ -37,7 +37,7 @@ fn proof_buffers_are_scrubbed_before_deallocation() {
     ] {
         let active = directory.path().join(case);
         let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "scrub_child", "--nocapture"])
+            .args(["--exact", "owner_proof_storage::scrub_child", "--nocapture"])
             .env("LD_PRELOAD", &library)
             .env("AUTH_SCRUB_ACTIVE", &active)
             .env("AUTH_SCRUB_CASE", case)

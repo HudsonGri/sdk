@@ -6,9 +6,9 @@ use proptest::prelude::*;
 use prost::Message;
 use std::net::{IpAddr, Ipv4Addr};
 
-#[path = "common/dns_hardening.rs"]
+#[path = "../tests/common/dns_hardening.rs"]
 mod dns_properties;
-#[path = "common/request_hardening.rs"]
+#[path = "../tests/common/request_hardening.rs"]
 mod request_properties;
 use dns_properties::numeric_name;
 use request_properties::{invalid_name, request};

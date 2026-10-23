@@ -1,5 +1,4 @@
 //! Properties over authenticated chains and current trust snapshots.
-acyclic_test_support::counting_allocator!();
 use acyclic_auth::fuzzing::signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::*};
 use ed25519_dalek::Signer;

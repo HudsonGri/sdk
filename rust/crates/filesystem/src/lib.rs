@@ -420,7 +420,23 @@ pub mod browser;
 pub use native_host::private_file::{create_owner_only_file, has_owner_only_permissions};
 
 /// Shared mutation-fuzz and property exercises.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 pub mod fuzzing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_capture;
+
+#[cfg(test)]
+#[path = "../tests/cases/access.rs"]
+mod owner_access;
+
+#[cfg(test)]
+#[path = "../tests/cases/path_properties.rs"]
+mod owner_path_properties;
+
+#[cfg(test)]
+#[cfg(feature = "native-mount")]
+#[path = "../tests/cases/projfs_paths.rs"]
+mod owner_projfs_paths;
+
+#[cfg(test)]
+extern crate self as acyclic_fs;

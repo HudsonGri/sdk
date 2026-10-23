@@ -72,3 +72,27 @@ pub const VERSION: u32 = 1;
 /// Shared property and mutation-fuzz exercises.
 #[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
 pub mod fuzzing;
+
+#[cfg(test)]
+mod owner_admission;
+
+#[cfg(test)]
+mod owner_authorization_regressions;
+
+#[cfg(test)]
+mod owner_minting;
+
+#[cfg(test)]
+mod owner_proof_storage;
+
+#[cfg(test)]
+mod owner_properties;
+
+#[cfg(test)]
+mod owner_request_hardening;
+
+#[cfg(test)]
+mod owner_verifier;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();

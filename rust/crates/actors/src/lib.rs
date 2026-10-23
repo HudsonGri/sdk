@@ -318,7 +318,19 @@ mod tests {
 mod grpc_tests;
 
 /// Shared property and mutation-fuzz exercises.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 pub mod fuzzing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_capture;
+
+#[cfg(test)]
+extern crate self as acyclic_actors;
+
+#[cfg(test)]
+mod owner_guest_metadata;
+
+#[cfg(test)]
+mod owner_timer_contract;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();

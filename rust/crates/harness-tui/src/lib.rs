@@ -104,5 +104,14 @@ pub use screen::{Screen, ScreenAreas};
 pub mod term;
 
 /// Shared property and mutation-fuzz exercises.
-#[cfg(feature = "fuzzing")]
+#[cfg(all(feature = "tui", any(test, feature = "fuzzing")))]
 pub mod fuzzing;
+
+#[cfg(test)]
+extern crate self as acyclic_harness_tui;
+
+#[cfg(all(test, feature = "tui"))]
+mod owner_main;
+
+#[cfg(all(test, feature = "tui"))]
+mod owner_terminal_negotiation;

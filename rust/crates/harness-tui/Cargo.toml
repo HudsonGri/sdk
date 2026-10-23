@@ -37,7 +37,6 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optio
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 
 [dev-dependencies]
-acyclic-harness-tui = { path = ".", features = ["fuzzing"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 alacritty_terminal = "0.26"
@@ -61,15 +60,9 @@ rustix-openpty = "0.2"
 [lints]
 workspace = true
 
-[[test]]
-name = "main"
-path = "tests/main.rs"
 
 # These suites acquire the process-wide terminal owner, including ignored
 # real-device measurements. Keep them isolated from the ordinary tests.
-[[test]]
-name = "terminal_negotiation"
-path = "tests/terminal_negotiation.rs"
 
 [[test]]
 name = "terminal_frames"

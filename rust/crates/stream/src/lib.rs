@@ -209,5 +209,17 @@ mod test_trace;
 mod path_text_tests;
 
 /// Shared wire property exercises.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+
+#[cfg(test)]
+extern crate self as acyclic_stream;
+
+#[cfg(test)]
+mod owner_session_properties;
+
+#[cfg(test)]
+mod owner_checked_session_contract;
+
+#[cfg(test)]
+mod owner_follow_data_contract;

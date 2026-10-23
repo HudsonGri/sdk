@@ -1,4 +1,5 @@
 [package]
+autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-actors"
 version.workspace = true
@@ -71,4 +72,19 @@ workspace = true
 fuzzing = []
 
 [dev-dependencies]
-acyclic-actors = { path = ".", features = ["fuzzing"] }
+
+[[test]]
+name = "descriptor_contract"
+path = "tests/descriptor_contract.rs"
+
+[[test]]
+name = "guest_contract"
+path = "tests/guest_contract.rs"
+
+[[test]]
+name = "guest_loom"
+path = "tests/guest_loom.rs"
+
+[[test]]
+name = "timer_loom"
+path = "tests/timer_loom.rs"

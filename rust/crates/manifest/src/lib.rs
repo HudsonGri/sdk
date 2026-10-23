@@ -309,5 +309,11 @@ pub fn validate_json(input: &str) -> Result<(), wasm_bindgen::JsValue> {
 }
 
 /// Shared property and mutation-fuzz exercises.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 pub mod fuzzing;
+
+#[cfg(test)]
+extern crate self as acyclic_manifest;
+
+#[cfg(test)]
+mod owner_manifest_contract;
