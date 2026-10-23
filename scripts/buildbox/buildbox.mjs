@@ -581,7 +581,7 @@ function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', bas
 if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RUSTC_WRAPPER=/home/var/bin/sccache-rustc; fi` : `unset RUSTC RUSTC_WRAPPER; export CARGO_TARGET_DIR="$BB_JOB_TARGET"`;
   // /home/var/bin/bbnpm/npm: \`npm ci\` is skipped when node_modules was installed from the same lockfile hash (node_modules
   // persists per copy and seeds new copies; rsync never carries it).
-  const inner = `set -u
+  let inner = `set -u
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BUILD_SLOT_EXEC_IN_PAYLOAD=1
 export BB_JOB_GIT_SOURCE=/work/src BB_JOB_PRIVATE_MOUNT=1
 export BB_JOB_EXPORT_SPEC=${q(JSON.stringify(exportSpec))}
@@ -589,7 +589,7 @@ if [ "\${BB_JOB_ACTIVE:-}" != 1 ]; then exec python3 /home/var/bin/bb-job.py bas
 # The host gates run under umask 022; bb1 logins default to 002, which made job-created dirs group-writable (custody checks
 # such as cloud-supervisor release_cache refuse those).
 umask 022
-export HOME="$BB_JOB_HOME" CARGO_HOME=/mnt/bb/toolchains/cargo RUSTUP_HOME=/home/var/.rustup PATH=${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
+export HOME="$BB_JOB_HOME" CARGO_HOME=/mnt/bb/toolchains/cargo RUSTUP_HOME=/home/var/.rustup PATH=/home/var/bin/bb-cargo:${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
 # The job's delegated cgroup (see the launch below): BB_CGROUP is the job leaf; the bbcg systemd-run shim turns
 # "systemd-run --user --scope -p Delegate=yes -p MemoryMax=N CMD" into an exclusive child cgroup inside the job.
 case "$(cat /proc/self/cgroup)" in 0::/bbjobs.slice/run-*.scope/job) export BB_CGROUP=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup) PATH=/home/var/bin/bbcg:$PATH;; esac
@@ -642,7 +642,11 @@ rm -f "$bbI.recs"
 export BUILD_SLOT_TREE="${id.commit} ${id.tree} ${id.content}"
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json
 ${cargoJob ? '' : NPM_ENSURE}${passEnv()}
-cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map(q).join(' ')}`;
+cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map((a, i) => q(i === 0 && path.basename(a) === 'cargo' ? '/home/var/bin/bb-cargo/cargo' : a)).join(' ')}`;
+  // Hash the complete generated build environment/driver before adding the
+  // digest itself. Dispatch filenames are operational, not compiler inputs.
+  const targetRequestHash = crypto.createHash('sha256').update(inner.split(J).join('$JOBPREFIX')).digest('hex');
+  inner = `export BB_TARGET_REQUEST_SHA256=${targetRequestHash}\n` + inner;
   let wrapper = `J=${J}
 export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 node $J.receipt-tool.mjs recover /mnt/bb/jobs

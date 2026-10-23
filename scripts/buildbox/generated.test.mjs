@@ -13,6 +13,7 @@ test('remote wrappers parse, retain isolation and archive outputs before cleanup
   const probe=String.raw`import {launchScript,pinGlibc} from './generator.mjs';
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import crypto from 'node:crypto';
 process.env.BUILD_SLOT_REMOTE_FETCH='/work/target/debug/tool';process.env.BUILD_SLOT_GLIBC='2.35';
 for(const gate of [false,true])for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
 const argv=pinGlibc(input);
@@ -22,6 +23,11 @@ const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d
 if(bodies.length!==4)throw Error('missing generated shell');
 for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);}
 const inner=bodies[1];
+const first=inner.indexOf('\n');
+const requestHash=crypto.createHash('sha256').update(inner.slice(first+1).split('/mnt/bb/jobs/fixture').join('$JOBPREFIX')).digest('hex');
+if(inner.slice(0,first)!=='export BB_TARGET_REQUEST_SHA256='+requestHash)throw Error('generated Cargo provenance digest lost or incomplete');
+if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo bypasses target proxy');
+if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
 if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
