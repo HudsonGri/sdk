@@ -73,6 +73,25 @@ pub(super) fn open(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<ExitWatch<'_>> {
+    let watch = open_watch(id, meter)?;
+    register(&watch, id)?;
+    Ok(watch)
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn open_member(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<ExitWatch<'_>> {
+    let watch = open_watch(id, meter)?;
+    register_event(&watch, id, libc::NOTE_EXIT)?;
+    Ok(watch)
+}
+
+fn open_watch(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<ExitWatch<'_>> {
     let mut watch = ExitWatch {
         fd: None,
         meter,
@@ -88,7 +107,6 @@ pub(super) fn open(
     // Retain the descriptor and its prepaid close before late accounting can
     // fail. Every successful open has one physical release on this ledger.
     recorded?;
-    register(&watch, id)?;
     Ok(watch)
 }
 
@@ -122,17 +140,22 @@ fn register(_watch: &ExitWatch<'_>, _id: libc::id_t) -> io::Result<()> {
 
 #[cfg(target_vendor = "apple")]
 fn register(watch: &ExitWatch<'_>, id: libc::id_t) -> io::Result<()> {
+    register_event(watch, id, libc::NOTE_EXIT | libc::NOTE_EXITSTATUS)
+}
+
+#[cfg(target_vendor = "apple")]
+fn register_event(watch: &ExitWatch<'_>, id: libc::id_t, flags: u32) -> io::Result<()> {
     let change = libc::kevent {
         ident: libc::uintptr_t::try_from(id).map_err(io::Error::other)?,
         filter: libc::EVFILT_PROC,
         flags: libc::EV_ADD | libc::EV_ONESHOT,
-        fflags: libc::NOTE_EXIT | libc::NOTE_EXITSTATUS,
+        fflags: flags,
         data: 0,
         udata: std::ptr::null_mut(),
     };
-    // SAFETY: one initialized change, a live queue and no output event.
     process_control_attempt(watch.meter, crate::NativeOperationKind::Read, || {
-        if unsafe {
+        // SAFETY: one initialized change, a live queue and no output event.
+        let result = unsafe {
             libc::kevent(
                 watch.as_raw_fd(),
                 &raw const change,
@@ -141,8 +164,8 @@ fn register(watch: &ExitWatch<'_>, id: libc::id_t) -> io::Result<()> {
                 0,
                 std::ptr::null(),
             )
-        } != 0
-        {
+        };
+        if result != 0 {
             let cause = io::Error::last_os_error();
             if cause.raw_os_error() != Some(libc::ESRCH) {
                 return Err(cause);
@@ -195,10 +218,34 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
 #[cfg(target_vendor = "apple")]
 fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::Result<ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
+    match member_event(watch, id, deadline, libc::NOTE_EXIT | libc::NOTE_EXITSTATUS)? {
+        Some(event) => Ok(ExitStatus::from_raw(
+            event.data.try_into().map_err(io::Error::other)?,
+        )),
+        None => platform::observe_exit_id(id, watch.meter)?.ok_or_else(timeout),
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+pub(super) fn wait_member(
+    watch: &ExitWatch<'_>,
+    id: libc::id_t,
+    deadline: Instant,
+) -> io::Result<bool> {
+    Ok(member_event(watch, id, deadline, libc::NOTE_EXIT)?.is_some())
+}
+
+#[cfg(target_vendor = "apple")]
+fn member_event(
+    watch: &ExitWatch<'_>,
+    id: libc::id_t,
+    deadline: Instant,
+    flags: u32,
+) -> io::Result<Option<libc::kevent>> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return platform::observe_exit_id(id, watch.meter)?.ok_or_else(timeout);
+            return Ok(None);
         }
         let remaining = libc::timespec {
             tv_sec: remaining.as_secs().try_into().map_err(io::Error::other)?,
@@ -234,14 +281,11 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
             if event.ident != libc::uintptr_t::try_from(id).map_err(io::Error::other)?
                 || event.filter != libc::EVFILT_PROC
                 || event.flags & libc::EV_ERROR != 0
-                || event.fflags & (libc::NOTE_EXIT | libc::NOTE_EXITSTATUS)
-                    != (libc::NOTE_EXIT | libc::NOTE_EXITSTATUS)
+                || event.fflags & flags != flags
             {
                 return Err(io::Error::other("invalid process exit notification"));
             }
-            return Ok(ExitStatus::from_raw(
-                event.data.try_into().map_err(io::Error::other)?,
-            ));
+            return Ok(Some(event));
         }
     }
 }

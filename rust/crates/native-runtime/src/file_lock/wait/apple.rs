@@ -24,7 +24,7 @@ pub(super) fn acquire(
         Ok(unsafe { OwnedFd::from_raw_fd(raw) })
     })?;
     let change = libc::kevent {
-        ident: file.as_raw_fd() as libc::uintptr_t,
+        ident: libc::uintptr_t::try_from(file.as_raw_fd()).map_err(io::Error::other)?,
         filter: libc::EVFILT_VNODE,
         flags: libc::EV_ADD | libc::EV_CLEAR,
         fflags: NOTE_FUNLOCK,
