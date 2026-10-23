@@ -65,7 +65,16 @@ pub(super) async fn run(mut case: LocalCase) -> TestResult {
     crate::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     check_outcome(&case.expect, output, task_id, operation)?;
     let requests = check_model_history(&case.expect, provider.as_ref(), steps)?;
-    verify_tool_files(&case.expect, &harness, task_id, provider.as_ref(), steps, tool_files, &scripted_calls).await?;
+    verify_tool_files(
+        &case.expect,
+        &harness,
+        task_id,
+        provider.as_ref(),
+        steps,
+        tool_files,
+        &scripted_calls,
+    )
+    .await?;
     check_scheduler_replay(&case.expect, stream.as_ref(), &mut frames, operation).await?;
     let target = source
         .observe_files(Query::Plans, None, 16, 65_536)
@@ -75,7 +84,15 @@ pub(super) async fn run(mut case: LocalCase) -> TestResult {
     let paths = check_publications(&case, &mut observation, &initial, &target).await?;
     if let Some(expected) = &case.expect.diffs {
         let current = host.resolve(&workspace, None).await?.generation;
-        check_diff(expected, &volume, (base, current), (&initial, &target), paths, reader.as_ref()).await?;
+        check_diff(
+            expected,
+            &volume,
+            (base, current),
+            (&initial, &target),
+            paths,
+            reader.as_ref(),
+        )
+        .await?;
     }
     // Fs::local reuses live roots. Release every holder before a cold reopen.
     drop(frames);
@@ -177,7 +194,11 @@ pub(crate) fn check_results(
     Ok(())
 }
 
-fn seed_references(case: &LocalCase, volume: &acyclic_harness::conversation::VolumeRef, base: &acyclic_harness::resources::GenerationRef) -> TestResult<std::collections::BTreeMap<String, Value>> {
+fn seed_references(
+    case: &LocalCase,
+    volume: &acyclic_harness::conversation::VolumeRef,
+    base: &acyclic_harness::resources::GenerationRef,
+) -> TestResult<std::collections::BTreeMap<String, Value>> {
     let mut references = std::collections::BTreeMap::new();
     let paths = case
         .turns
@@ -216,7 +237,11 @@ fn seed_references(case: &LocalCase, volume: &acyclic_harness::conversation::Vol
     Ok(references)
 }
 
-fn script_provider(case: &mut LocalCase, references: &std::collections::BTreeMap<String, Value>, provider: &ScriptedModelProvider) -> TestResult<Vec<(u64, acyclic_harness::model::ToolCall)>> {
+fn script_provider(
+    case: &mut LocalCase,
+    references: &std::collections::BTreeMap<String, Value>,
+    provider: &ScriptedModelProvider,
+) -> TestResult<Vec<(u64, acyclic_harness::model::ToolCall)>> {
     let turns = crate::local_case::bind_seed_files(std::mem::take(&mut case.turns), references)?;
     let mut scripted_calls = crate::local_tool_files::calls(&turns);
     for (call_id, arguments) in &case.expect.arguments {
@@ -238,10 +263,14 @@ fn script_provider(case: &mut LocalCase, references: &std::collections::BTreeMap
     Ok(scripted_calls)
 }
 
-fn check_outcome(expect: &crate::local_case::Expectations, output: acyclic_harness::Result<acyclic_harness::executor::TurnOutput>, task_id: acyclic_harness::TaskId, operation: acyclic_harness::OperationId) -> TestResult {
+fn check_outcome(
+    expect: &crate::local_case::Expectations,
+    output: acyclic_harness::Result<acyclic_harness::executor::TurnOutput>,
+    task_id: acyclic_harness::TaskId,
+    operation: acyclic_harness::OperationId,
+) -> TestResult {
     match (expect.outcome, output) {
-        (ExpectedOutcome::Succeeded, Ok(output))
-            if Some(&output.text) == expect.text.as_ref() => {}
+        (ExpectedOutcome::Succeeded, Ok(output)) if Some(&output.text) == expect.text.as_ref() => {}
         (ExpectedOutcome::Failed, Err(acyclic_harness::Error::TaskFailed { task, .. }))
             if task == task_id && expect.error.is_none() => {}
         // A local turn is uncertain only through a command, so the caller sees its cause.
@@ -261,7 +290,11 @@ fn check_outcome(expect: &crate::local_case::Expectations, output: acyclic_harne
     Ok(())
 }
 
-fn check_model_history(expect: &crate::local_case::Expectations, provider: &ScriptedModelProvider, steps: usize) -> TestResult<Vec<ModelRequest>> {
+fn check_model_history(
+    expect: &crate::local_case::Expectations,
+    provider: &ScriptedModelProvider,
+    steps: usize,
+) -> TestResult<Vec<ModelRequest>> {
     if provider.remaining() != 0 {
         return Err("local model script was not consumed".into());
     }
@@ -292,7 +325,15 @@ fn check_model_history(expect: &crate::local_case::Expectations, provider: &Scri
     Ok(requests)
 }
 
-async fn verify_tool_files(expect: &crate::local_case::Expectations, harness: &LocalHarness, task_id: acyclic_harness::TaskId, provider: &ScriptedModelProvider, steps: usize, tool_files: Option<acyclic_harness::task_volume::Observation>, scripted_calls: &[(u64, acyclic_harness::model::ToolCall)]) -> TestResult {
+async fn verify_tool_files(
+    expect: &crate::local_case::Expectations,
+    harness: &LocalHarness,
+    task_id: acyclic_harness::TaskId,
+    provider: &ScriptedModelProvider,
+    steps: usize,
+    tool_files: Option<acyclic_harness::task_volume::Observation>,
+    scripted_calls: &[(u64, acyclic_harness::model::ToolCall)],
+) -> TestResult {
     if let Some(observation) = tool_files {
         let dispatches = provider.dispatches();
         let execution = dispatches
@@ -312,17 +353,19 @@ async fn verify_tool_files(expect: &crate::local_case::Expectations, harness: &L
             execution,
             observation,
             scripted_calls,
-            expect
-                .results
-                .as_ref()
-                .ok_or("bash results are required")?,
+            expect.results.as_ref().ok_or("bash results are required")?,
         )
         .await?;
     }
     Ok(())
 }
 
-async fn check_scheduler_replay(expect: &crate::local_case::Expectations, stream: &acyclic_stream::LocalStream, frames: &mut acyclic_stream::RecordStream, operation: acyclic_harness::OperationId) -> TestResult {
+async fn check_scheduler_replay(
+    expect: &crate::local_case::Expectations,
+    stream: &acyclic_stream::LocalStream,
+    frames: &mut acyclic_stream::RecordStream,
+    operation: acyclic_harness::OperationId,
+) -> TestResult {
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let cut = stream.tail(path).await?;
     let mut wire_frames = Vec::new();
@@ -339,32 +382,25 @@ async fn check_scheduler_replay(expect: &crate::local_case::Expectations, stream
         }
         wire_frames.push(serde_json::from_slice(&frame.canonical_event_json)?);
     }
-    check_frames(
-        &expect.frames,
-        &wire_frames,
-        operation,
-        expect.outcome,
-    )?;
+    check_frames(&expect.frames, &wire_frames, operation, expect.outcome)?;
     let root = serde_json::to_value(operation)?;
     let terminal = wire_frames
         .iter()
         .position(|frame| frame["kind"] == "completed" && frame["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire_frames.remove(terminal);
-    if check_frames(
-        &expect.frames,
-        &wire_frames,
-        operation,
-        expect.outcome,
-    )
-    .is_ok()
-    {
+    if check_frames(&expect.frames, &wire_frames, operation, expect.outcome).is_ok() {
         return Err("wire oracle accepted a lost root terminal frame".into());
     }
     Ok(())
 }
 
-async fn check_publications(case: &LocalCase, observation: &mut acyclic_harness::task_volume::Observation, initial: &acyclic_harness::task_volume::Snapshot, target: &acyclic_harness::task_volume::Snapshot) -> TestResult<std::collections::BTreeSet<String>> {
+async fn check_publications(
+    case: &LocalCase,
+    observation: &mut acyclic_harness::task_volume::Observation,
+    initial: &acyclic_harness::task_volume::Snapshot,
+    target: &acyclic_harness::task_volume::Snapshot,
+) -> TestResult<std::collections::BTreeSet<String>> {
     let mut wire = Vec::new();
     let mut seen = initial.cursor.position;
     let mut paths = std::collections::BTreeSet::new();
@@ -389,7 +425,13 @@ async fn check_publications(case: &LocalCase, observation: &mut acyclic_harness:
                 .map(str::as_bytes)
                 != Some(file.bytes.as_ref())
             {
-                return Err("publication file bytes differ".into());
+                return Err(format!(
+                    "publication file bytes differ at {}: expected {:?}, got {:?}",
+                    file.key.path(),
+                    case.expect.files.get(&file.key.path()),
+                    String::from_utf8_lossy(file.bytes.as_ref()),
+                )
+                .into());
             }
         }
         for key in &change.removed {
@@ -419,73 +461,91 @@ async fn check_publications(case: &LocalCase, observation: &mut acyclic_harness:
     Ok(paths)
 }
 
-async fn check_diff(expected: &std::collections::BTreeMap<String, Value>, volume: &acyclic_harness::conversation::VolumeRef, generations: (acyclic_harness::resources::GenerationRef, acyclic_harness::resources::GenerationRef), snapshots: (&acyclic_harness::task_volume::Snapshot, &acyclic_harness::task_volume::Snapshot), paths: std::collections::BTreeSet<String>, reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier) -> TestResult {
+async fn check_diff(
+    expected: &std::collections::BTreeMap<String, Value>,
+    volume: &acyclic_harness::conversation::VolumeRef,
+    generations: (
+        acyclic_harness::resources::GenerationRef,
+        acyclic_harness::resources::GenerationRef,
+    ),
+    snapshots: (
+        &acyclic_harness::task_volume::Snapshot,
+        &acyclic_harness::task_volume::Snapshot,
+    ),
+    paths: std::collections::BTreeSet<String>,
+    reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier,
+) -> TestResult {
     let (base, current) = generations;
     let (initial, target) = snapshots;
-        let root = ContextRoot {
-            volume: volume.clone(),
-            directory: String::new(),
-        };
-        let mut view = DiffView::new(volume.clone(), base.clone())?;
-        let dropped = view.clone();
-        let changes = paths
-            .into_iter()
-            .map(|path| DiffPath {
-                largest_file_bytes: None,
-                matches_base: false,
-                base: initial
-                    .files
-                    .iter()
-                    .any(|file| file.key.path() == path)
-                    .then(|| PinnedContextPath {
-                        root: root.clone(),
-                        generation: base.clone(),
-                        path: path.clone(),
-                    }),
-                current: target
-                    .files
-                    .iter()
-                    .any(|file| file.key.path() == path)
-                    .then(|| PinnedContextPath {
-                        root: root.clone(),
-                        generation: current.clone(),
-                        path: path.clone(),
-                    }),
-                path,
-            })
-            .collect();
-        view.apply(
-            &DiffPublication {
-                previous: base,
-                generation: current,
-                paths: changes,
-            },
-            reader,
-            DiffLimits {
-                files: 16,
-                changes: 16,
-                file_bytes: 65_536,
-                render_bytes: 65_536,
-                work: 65_536,
-            },
-        )
-        .await?;
-        assert_rendered(&view, expected)?;
-        if !expected.is_empty() {
-            // Drop the publication only for this consumer. Exercise the same oracle
-            // immediately after the real follow and fold, without another execution
-            // or an await that could delay reaching the negative-control assertion.
-            let error = assert_rendered(&dropped, expected)
-                .expect_err("consumer that dropped the publication passed unchanged expectations");
-            assert!(
-                error.to_string().contains("rendered diffs differ"),
-                "{error}"
-            );
-        }
+    let root = ContextRoot {
+        volume: volume.clone(),
+        directory: String::new(),
+    };
+    let mut view = DiffView::new(volume.clone(), base.clone())?;
+    let dropped = view.clone();
+    let changes = paths
+        .into_iter()
+        .map(|path| DiffPath {
+            largest_file_bytes: None,
+            matches_base: false,
+            base: initial
+                .files
+                .iter()
+                .any(|file| file.key.path() == path)
+                .then(|| PinnedContextPath {
+                    root: root.clone(),
+                    generation: base.clone(),
+                    path: path.clone(),
+                }),
+            current: target
+                .files
+                .iter()
+                .any(|file| file.key.path() == path)
+                .then(|| PinnedContextPath {
+                    root: root.clone(),
+                    generation: current.clone(),
+                    path: path.clone(),
+                }),
+            path,
+        })
+        .collect();
+    view.apply(
+        &DiffPublication {
+            previous: base,
+            generation: current,
+            paths: changes,
+        },
+        reader,
+        DiffLimits {
+            files: 16,
+            changes: 16,
+            file_bytes: 65_536,
+            render_bytes: 65_536,
+            work: 65_536,
+        },
+    )
+    .await?;
+    assert_rendered(&view, expected)?;
+    if !expected.is_empty() {
+        // Drop the publication only for this consumer. Exercise the same oracle
+        // immediately after the real follow and fold, without another execution
+        // or an await that could delay reaching the negative-control assertion.
+        let error = assert_rendered(&dropped, expected)
+            .expect_err("consumer that dropped the publication passed unchanged expectations");
+        assert!(
+            error.to_string().contains("rendered diffs differ"),
+            "{error}"
+        );
+    }
     Ok(())
 }
 
-async fn check_persisted(directory: &std::path::Path, volume: &acyclic_harness::conversation::VolumeRef, workspace: &acyclic_harness::resources::WorkspaceRef, expect: &crate::local_case::Expectations) -> TestResult {
+async fn check_persisted(
+    directory: &std::path::Path,
+    volume: &acyclic_harness::conversation::VolumeRef,
+    workspace: &acyclic_harness::resources::WorkspaceRef,
+    expect: &crate::local_case::Expectations,
+) -> TestResult {
     let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory)).await?;
     let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
     for (path, expected) in &expect.files {
@@ -525,7 +585,10 @@ fn check_initial_request(requests: &[ModelRequest], prompt: &str) -> TestResult 
     Ok(())
 }
 
-fn seed_home(home: &std::path::Path, files: &std::collections::BTreeMap<String, Value>) -> TestResult {
+fn seed_home(
+    home: &std::path::Path,
+    files: &std::collections::BTreeMap<String, Value>,
+) -> TestResult {
     for (path, text) in files {
         let path = home.join(path);
         std::fs::create_dir_all(path.parent().ok_or("home file has no parent")?)?;

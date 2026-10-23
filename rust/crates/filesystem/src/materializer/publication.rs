@@ -228,14 +228,16 @@ where
         journal
     };
     if journal.preparation_progress.is_some() {
-        journal = publication_step(work, || NativeTreeMaterializationBackend::prepare_allocations(
-            &store,
-            journal,
-            &root,
-            &operation,
-            work,
-            before_effect,
-        ))
+        journal = publication_step(work, || {
+            NativeTreeMaterializationBackend::prepare_allocations(
+                &store,
+                journal,
+                &root,
+                &operation,
+                work,
+                before_effect,
+            )
+        })
         .await?;
     }
     let backend = NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
@@ -257,9 +259,17 @@ where
                 maximum_extent_spans: request.options.maximum_extent_spans,
                 transfer_bytes: request.options.transfer_bytes,
             };
-            journal = publication_step(work, || materializer
-                .stage_generation(to, &selections, &options, journal, work, before_effect))
-                .await?;
+            journal = publication_step(work, || {
+                materializer.stage_generation(
+                    to,
+                    &selections,
+                    &options,
+                    journal,
+                    work,
+                    before_effect,
+                )
+            })
+            .await?;
         }
     }
     Ok((materializer, journal))
