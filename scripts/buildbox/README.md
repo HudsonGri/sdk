@@ -67,7 +67,7 @@ returning. SDK source copies use the newest directory/index/HEAD mtime for the
 preserved. If active copies prevent meeting the cap, admission refuses with an
 INFRA diagnostic on stderr. Disk admission requires 10% free on both filesystems.
 
-Run tooling tests **on bb2**, without compiling Rust:
+Run tooling tests **on bb2**; their Rust fixtures compile there too:
 
 ```sh
 python3 scripts/buildbox/runtime.test.py

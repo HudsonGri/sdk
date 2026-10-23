@@ -15,23 +15,27 @@ if [ "${1:-}" = --collect ]; then
   exec python3 - "$@" <<'PY'
 import json, os, sys
 from pathlib import Path
-metadata, artifacts, output = map(Path, sys.argv[1:])
-m = json.loads(metadata.read_text())
-fuzz = {(p['id'], t['name']) for p in m['packages'] if (p.get('metadata') or {}).get('cargo-fuzz')
-        for t in p['targets'] if t['kind'] == ['bin']}
-paths = set()
-for line in artifacts.read_text().splitlines():
-    item = json.loads(line)
-    if item.get('reason') != 'compiler-artifact':
-        continue
-    if (item['package_id'], item['target']['name']) in fuzz and item['target']['kind'] == ['bin'] and item.get('executable'):
-        executable = Path(item['executable'])
-        if not executable.is_absolute() or not executable.is_file():
-            raise RuntimeError('invalid fuzz executable artifact: ' + str(executable))
-        paths.add(str(executable.resolve()))
-tmp = Path(str(output) + '.tmp')
-tmp.write_text(''.join(p + '\n' for p in sorted(paths)))
-os.replace(tmp, output)
+try:
+    metadata, artifacts, output = map(Path, sys.argv[1:])
+    m = json.loads(metadata.read_text())
+    fuzz = {(p['id'], t['name']) for p in m['packages'] if (p.get('metadata') or {}).get('cargo-fuzz')
+            for t in p['targets'] if t['kind'] == ['bin']}
+    paths = set()
+    for line in artifacts.read_text().splitlines():
+        item = json.loads(line)
+        if item.get('reason') != 'compiler-artifact':
+            continue
+        if (item['package_id'], item['target']['name']) in fuzz and item['target']['kind'] == ['bin'] and item.get('executable'):
+            executable = Path(item['executable'])
+            if not executable.is_absolute() or not executable.is_file():
+                raise RuntimeError('invalid fuzz executable artifact: ' + str(executable))
+            paths.add(str(executable.resolve()))
+    tmp = Path(str(output) + '.tmp')
+    tmp.write_text(''.join(p + '\n' for p in sorted(paths)))
+    os.replace(tmp, output)
+except Exception as error:
+    print('error: GATE_RUNNER_INFRA compiler-artifact discovery: ' + str(error), file=sys.stderr)
+    sys.exit(2)
 PY
 fi
 program=$1; shift

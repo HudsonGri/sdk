@@ -45,6 +45,9 @@ test('Cargo artifact package, kind and executable identity distinguish same-name
   writeFileSync(join(cwd,'forged'),forged.map(a=>JSON.stringify(a)+'\n').join(''));
   const collect=spawnSync('bash',[runner,'--collect',join(cwd,'metadata'),join(cwd,'forged'),env.GATE_FUZZ_EXECUTABLES],{cwd,env,encoding:'utf8'});
   assert.equal(collect.status,0,collect.stderr);assert.equal(readFileSync(env.GATE_FUZZ_EXECUTABLES,'utf8'),'');
+  writeFileSync(join(cwd,'forged'),'not Cargo JSON\n');
+  const invalid=spawnSync('bash',[runner,'--collect',join(cwd,'metadata'),join(cwd,'forged'),env.GATE_FUZZ_EXECUTABLES],{cwd,env,encoding:'utf8'});
+  assert.equal(invalid.status,2);assert.match(invalid.stderr,/error: GATE_RUNNER_INFRA compiler-artifact discovery:/);
  }finally{rmSync(cwd,{recursive:true,force:true});}
 });
 test('live main bootstrap uses the reviewed runner exactly',()=>{
