@@ -65,3 +65,20 @@ pub fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
     }));
     release
 }
+
+/// Classifies candidate file bytes with the production media classifier.
+pub fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
+    crate::conversation::classify_file_media(bytes)
+}
+
+/// Exercises the production directory selector against the independent reference.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn fuzz_memory_directory(data: &[u8]) {
+    crate::memory_store::fuzz_memory_directory(data);
+}
+
+/// Exercises production ordered path conflict detection with synthetic names.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn fuzz_memory_path_conflicts(data: &[u8]) {
+    crate::memory_store::fuzz_path_conflicts(data);
+}

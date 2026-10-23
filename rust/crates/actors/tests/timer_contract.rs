@@ -1,12 +1,11 @@
 //! Timer source compatibility, stable identities and inbox wake behavior.
 #[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
+use acyclic_actors::fuzzing::timer_oracle as oracle;
 use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire, schedule};
 use acyclic_stream::{MemoryStream, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt, poll};
 use proptest::prelude::*;
-#[path = "support/timer_oracle.rs"]
-mod oracle;
 
 fn timer(task: [u8; 16], operation: [u8; 16], deadline: u64) -> Result<TimerRecord, TimerError> {
     TimerRecord::new(

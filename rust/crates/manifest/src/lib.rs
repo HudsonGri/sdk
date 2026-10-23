@@ -307,3 +307,7 @@ pub fn validate_json(input: &str) -> Result<(), wasm_bindgen::JsValue> {
         .map(|_| ())
         .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;

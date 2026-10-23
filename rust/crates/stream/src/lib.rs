@@ -207,3 +207,7 @@ mod test_trace;
 #[cfg(test)]
 #[path = "lib/path_text_tests.rs"]
 mod path_text_tests;
+
+/// Shared wire property exercises.
+#[cfg(feature = "test-support")]
+pub mod test_support;

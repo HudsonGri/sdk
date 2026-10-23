@@ -406,3 +406,6 @@ pub use native_host::private_file::{create_owner_only_file, has_owner_only_permi
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_capture;
+/// Shared mutation-fuzz and property exercises.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;

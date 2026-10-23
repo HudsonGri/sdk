@@ -656,3 +656,6 @@ pub(super) async fn open_volume(
         acyclic_fs::hold_root(&std::fs::canonicalize(&path).map_err(storage)?).map_err(storage)?;
     open(filesystem, attach, root, true, state).await
 }
+
+#[cfg(all(feature = "test-support", unix))]
+pub(crate) use volumes::fuzz_mount_exclusion;

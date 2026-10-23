@@ -363,8 +363,8 @@ mod binding_paths {
         // prefix spelling or a nested task's different physical root.
         #[test]
         fn projection_keeps_the_source_binding_root(
-            directories in prop::collection::vec("[a-zA-ZÎ©Î±]{1,8}", 0..4),
-            volume in "[a-zA-ZÎ©Î±]{1,8}",
+            directories in prop::collection::vec("[a-zA-ZΩα]{1,8}", 0..4),
+            volume in "[a-zA-ZΩα]{1,8}",
         ) {
             let mut root=std::env::current_dir().map_err(|error| TestCaseError::fail(error.to_string()))?;
             for directory in directories {root.push(directory);}
@@ -590,3 +590,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(feature = "test-support", unix))]
+pub(crate) use exclude::fuzz_mount_exclusion;

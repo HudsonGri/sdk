@@ -1,7 +1,6 @@
 //! The child process inspects live allocator storage before glibc releases it.
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
-#[path = "common/signed.rs"]
-mod signed;
+use acyclic_auth::fuzzing::signed;
 use acyclic_auth::{contract::*, verify::verify};
 use prost::Message;
 use signed::*;

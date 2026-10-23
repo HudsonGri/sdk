@@ -66,3 +66,9 @@ protoc-bin-vendored = "=3.3.0"
 
 [lints]
 workspace = true
+
+[features]
+fuzzing = []
+
+[dev-dependencies]
+acyclic-actors = { path = ".", features = ["fuzzing"] }

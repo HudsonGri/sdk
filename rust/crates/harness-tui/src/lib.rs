@@ -102,3 +102,7 @@ pub use wrapped_lines::WrappedLines;
 pub use screen::{Screen, ScreenAreas};
 #[cfg(feature = "tui")]
 pub mod term;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;

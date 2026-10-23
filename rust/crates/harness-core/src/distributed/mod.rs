@@ -78,3 +78,13 @@ const COORDINATOR_WIRE_VERSION: &str = "3";
 const COORDINATOR_WIRE_DIGEST: &str =
     "667265d00a51e8a59c84844f5e9e9ab38f9fd2118921d50b044b023cc3f7fed6";
 const READ_PAGE_SIZE: u32 = 1_024;
+
+/// Exercises the production origin-locator binary codec.
+#[cfg(feature = "test-support")]
+pub fn fuzz_origin_locator(input: &[u8]) {
+    if let Some((sequence, key)) = origin_locator::decode(input) {
+        assert_eq!(input, origin_locator::encode(sequence, key));
+    } else {
+        assert_ne!(input.len(), 40);
+    }
+}

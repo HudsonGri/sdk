@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
+fuzzing = ["tui"]
 default = []
 tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:memchr", "dep:serde"]
 
@@ -36,6 +37,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optio
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 
 [dev-dependencies]
+acyclic-harness-tui = { path = ".", features = ["fuzzing"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 alacritty_terminal = "0.26"

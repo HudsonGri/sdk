@@ -1,5 +1,5 @@
 //! Properties for record admission, segmented authority and typed socket grants.
-mod common;
+use acyclic_auth::fuzzing::claims as common;
 use acyclic_auth::{authority::*, contract::*, socket::*, *};
 use common::*;
 use proptest::prelude::*;

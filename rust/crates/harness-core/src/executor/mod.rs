@@ -53,7 +53,7 @@ mod request;
 mod response;
 mod summary;
 mod summary_file;
-#[cfg(any(test, feature = "filesystem"))]
+#[cfg(any(test, feature = "filesystem", feature = "test-support"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_failure;
@@ -595,3 +595,9 @@ pub use validation::{check_json_schema_value, compile_json_schema, preparation_f
 
 /// Bounded JSON shared by the existing IO adapters.
 pub mod json;
+
+/// Applies the production summary payload namespace parser to synthetic paths.
+#[cfg(feature = "test-support")]
+pub fn fuzz_summary_operation(path: &str) -> Option<crate::OperationId> {
+    summary_identity::summary_operation(path)
+}

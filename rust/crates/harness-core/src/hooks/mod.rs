@@ -241,3 +241,8 @@ mod tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod identity_test_support;
+#[cfg(feature = "test-support")]
+mod fuzzing;
+/// Exercises hook encoding, folding and bounded output using synthetic input.
+#[cfg(feature = "test-support")]
+pub use fuzzing::check as fuzz_output;

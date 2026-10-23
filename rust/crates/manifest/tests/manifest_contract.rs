@@ -1,9 +1,8 @@
 //! Downstream admission, authorization, bounded-work and generated contract properties.
+use acyclic_manifest::fuzzing::admission;
 use acyclic_manifest::*;
 use proptest::prelude::*;
 use serde_json::{Value, json};
-#[path = "support/admission.rs"]
-mod admission;
 
 fn fixture() -> Result<DeploymentManifest, ManifestError> {
     parse(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))

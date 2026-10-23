@@ -797,3 +797,6 @@ mod checkout_publication;
 pub use checkout_publication::CheckoutPublication;
 
 pub use host::DirectoryOptions;
+/// Checks journal encoding with the independent verification oracle.
+#[cfg(all(fuzzing, feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_execution::fuzz_verify_journal;

@@ -742,3 +742,7 @@ fn blocks<'a>(
 #[cfg(test)]
 #[path = "../tests/full_parse.rs"]
 mod tests;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;

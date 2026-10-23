@@ -84,6 +84,7 @@ crc-fast = { version = "1.10.0", optional = true }
 [dev-dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+acyclic-fs = { path = ".", default-features = false, features = ["fuzzing"] }
 divan.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
@@ -156,7 +157,7 @@ windows = { version = "0.62.2", features = [
 [features]
 session = ["distributed", "acyclic-stream/grpc"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
-fuzzing = []
+fuzzing = ["dep:tempfile"]
 model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile"]

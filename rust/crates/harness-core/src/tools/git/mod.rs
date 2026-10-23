@@ -130,3 +130,9 @@ pub use run::run_with_guard;
 pub use run::{Output, Workspace, run};
 mod view;
 pub use view::{OwnedView, View};
+
+/// Applies production workspace operand normalization to an explicit root.
+#[cfg(feature = "test-support")]
+pub fn fuzz_workspace_path_argument(root: &Path, argument: &str) -> crate::Result<String> {
+    path::workspace_path_argument(root, argument)
+}

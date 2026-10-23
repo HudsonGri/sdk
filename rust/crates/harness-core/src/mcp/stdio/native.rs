@@ -339,3 +339,8 @@ fn validate_bounds(maximum_bytes: u32, timeout_ms: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "test-support")]
+mod fuzzing;
+#[cfg(feature = "test-support")]
+pub use fuzzing::check as fuzz_codec;

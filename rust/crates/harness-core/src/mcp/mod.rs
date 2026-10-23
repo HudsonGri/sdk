@@ -78,3 +78,11 @@ fn validate_operation_context(
     }
     Ok(())
 }
+
+/// Exercises executable resolution with explicitly supplied search paths.
+#[cfg(all(
+    feature = "test-support",
+    feature = "mcp-stdio",
+    not(target_arch = "wasm32")
+))]
+pub use install::fuzz_executable;

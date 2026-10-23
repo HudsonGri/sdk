@@ -121,3 +121,9 @@ use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;
+
+/// Exercise write-range admission without submitting native I/O.
+#[cfg(feature = "test-support")]
+pub fn check_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
+    file::validate_write_batch(writes)
+}
