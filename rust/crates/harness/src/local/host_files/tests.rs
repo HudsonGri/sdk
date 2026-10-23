@@ -1,6 +1,6 @@
 use super::*;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
@@ -59,13 +59,24 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     };
     let cwd = checkout.path().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
-        request(
+        let result = request(
             &cwd,
             HostAction::Open {
                 host: "codex".into(),
                 session: "fixture-native-session".into(),
             },
-        )
+        )?;
+        let child = request(
+            &cwd,
+            HostAction::Fork {
+                parent: serde_json::from_value(result["task"].clone()).map_err(storage)?,
+                reference: "endpoint-boundary".into(),
+            },
+        )?;
+        let child = PathBuf::from(child["cwd"].as_str().unwrap());
+        assert_eq!(workspace_root(&child)?, cwd);
+        assert!(!child.join(DIRECTORY).join("owner.json").exists());
+        Ok::<_, Error>(result)
     })
     .await
     .map_err(storage)??;

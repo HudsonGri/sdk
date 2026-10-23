@@ -82,7 +82,7 @@ impl Sessions {
         )
         .canonicalize()?;
         let parent = parse_task(&env::var("ACYCLIC_TASK")?)?;
-        let root = acyclic_fs::hold_root(&cwd)?.create_directories(
+        let root = acyclic_fs::hold_root(&host_files::workspace_root(&cwd)?)?.create_directories(
             &PathBuf::from(".acyclic-sdk/host-processes").join(parent.to_string()),
         )?;
         let ownership = FileLock::try_acquire(

@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result<()> {
+    let supplied = [
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "never",
+    ]
+    .map(str::to_owned);
+    assert!(
+        codex::validate(
+            "codex",
+            supplied.first_chunk::<2>().ok_or("policy pair absent")?
+        )
+        .is_err()
+    );
+    let flags = codex::parent_flags("codex", &supplied, Path::new("workspace"))?;
+    let (policy, roots) = flags
+        .split_at_checked(supplied.len())
+        .ok_or("inherited policy absent")?;
+    assert_eq!(policy, supplied);
+    assert_eq!(roots, ["--add-dir", "workspace"]);
+    let command = codex::child("codex", &flags, Path::new("view"), Some("resume-id"))?;
+    assert_eq!(command.get_current_dir(), Some(Path::new("view")));
+    assert_eq!(
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        [
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+            "--add-dir",
+            "workspace",
+            "exec",
+            "--json",
+            "--cd",
+            "view",
+            "resume",
+            "resume-id",
+            "-"
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Result<()> {
     for (host, flags, resume_option) in [
         (
@@ -14,7 +62,16 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
             "--session",
         ),
     ] {
-        let flags = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let supplied = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let flags = codex::parent_flags(host, &supplied, Path::new("workspace"))?;
+        if host == "pi" {
+            assert_eq!(flags, supplied);
+        } else {
+            assert_eq!(
+                flags.get(supplied.len()..).ok_or("workspace root absent")?,
+                ["--add-dir", "workspace"]
+            );
+        }
         let command = codex::child(
             host,
             &flags,

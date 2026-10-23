@@ -116,6 +116,9 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     let workspace = fixture.attach(&parent, mounts.path()).await?;
     std::fs::write(workspace.path().join("parent.txt"), b"host authored").map_err(storage)?;
     std::fs::write(mounts.path().join("reserved.txt"), b"not project history").map_err(storage)?;
+    let metadata = workspace.path().join(".acyclic-sdk/host-files");
+    std::fs::create_dir_all(&metadata).map_err(storage)?;
+    std::fs::write(metadata.join("owner.json"), b"parent endpoint only").map_err(storage)?;
     workspace.capture(&parent, OperationId::new()).await?;
     let unallocated = fixture.unallocated_child(&parent).await?;
     assert!(matches!(
@@ -129,6 +132,13 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     let child = fixture.task(Some(workspace.task())).await?;
     let fork = workspace.fork(&parent, &child).await?;
     assert!(fork.path().starts_with(mounts.path()));
+    assert!(
+        !fork
+            .path()
+            .join(".acyclic-sdk/host-files/owner.json")
+            .exists(),
+        "parent coordination metadata must not become child project content"
+    );
     assert_eq!(
         std::fs::read(fork.path().join("parent.txt")).map_err(storage)?,
         b"host authored"

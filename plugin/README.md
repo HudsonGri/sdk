@@ -24,7 +24,11 @@ Native built-in subagents keep their host behavior and **are not harness forks**
 The root launcher forwards the same explicit native policy arguments to managed
 children. Spawn cannot override them. Codex requires explicit `--sandbox` and
 `--ask-for-approval`; Claude requires explicit `--settings` and
-`--permission-mode`. Launch Claude with its native plugin directory enabled:
+`--permission-mode`. For Codex and Claude, the launcher records its already
+writable workspace with native `--add-dir` on both parent and child. Changing
+the child's cwd therefore retains the parent's workspace boundary, including
+the coordination mailbox; it admits no path outside the parent's workspace.
+Launch Claude with its native plugin directory enabled:
 
 ```sh
 acyclic host claude-code -- --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude

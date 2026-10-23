@@ -13,6 +13,7 @@ pub(super) fn validate(host: &str, args: &[String]) -> Result<()> {
                 "--config",
                 "--model",
                 "--profile",
+                "--add-dir",
             ],
         ),
         "claude-code" => (
@@ -27,6 +28,7 @@ pub(super) fn validate(host: &str, args: &[String]) -> Result<()> {
                 "--tools",
                 "--setting-sources",
                 "--plugin-dir",
+                "--add-dir",
             ],
         ),
         "pi" => (
@@ -67,7 +69,6 @@ pub(super) fn validate(host: &str, args: &[String]) -> Result<()> {
     }
     Ok(())
 }
-
 pub(super) fn program(host: &str) -> Result<&'static str> {
     match host {
         "codex" => Ok("codex"),
@@ -75,6 +76,20 @@ pub(super) fn program(host: &str) -> Result<&'static str> {
         "pi" => Ok("pi"),
         _ => Err("unsupported native host".into()),
     }
+}
+
+pub(super) fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<String>> {
+    validate(host, args)?;
+    let mut flags = args.to_vec();
+    if matches!(host, "codex" | "claude-code") {
+        // The parent already admits its cwd. Preserve that same root when a
+        // separate child starts in a descendant view; admit no additional path.
+        flags.extend([
+            "--add-dir".into(),
+            cwd.to_str().ok_or("non-Unicode workspace")?.into(),
+        ]);
+    }
+    Ok(flags)
 }
 
 pub(super) fn child(
@@ -116,8 +131,8 @@ pub(super) fn launch(args: &[String]) -> Result<()> {
     let host = args.first().ok_or("host requires codex or claude-code")?;
     let flags = args.get(1..).unwrap_or_default();
     let flags = flags.strip_prefix(&["--".to_owned()]).unwrap_or(flags);
-    validate(host, flags)?;
     let cwd = env::current_dir()?;
+    let flags = parent_flags(host, flags, &cwd)?;
     let location = host_files::request(
         &cwd,
         HostAction::Open {
@@ -127,9 +142,9 @@ pub(super) fn launch(args: &[String]) -> Result<()> {
     )?;
     let task = serde_json::from_value(location.get("task").cloned().ok_or("native task absent")?)?;
     let status = Command::new(program(host)?)
-        .args(flags)
+        .args(&flags)
         .current_dir(&cwd)
-        .env("ACYCLIC_HOST_ARGS", serde_json::to_string(flags)?)
+        .env("ACYCLIC_HOST_ARGS", serde_json::to_string(&flags)?)
         .env("ACYCLIC_WORKSPACE", &cwd)
         .env(
             "ACYCLIC_TASK",
@@ -144,47 +159,4 @@ pub(super) fn launch(args: &[String]) -> Result<()> {
         return Err(format!("native {host} exited {status}").into());
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result<()> {
-        let flags = [
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "never",
-        ]
-        .map(str::to_owned);
-        assert!(validate("codex", &flags[..2]).is_err());
-        let command = child("codex", &flags, Path::new("view"), Some("resume-id"))?;
-        assert_eq!(command.get_current_dir(), Some(Path::new("view")));
-        assert_eq!(
-            command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            [
-                "--sandbox",
-                "workspace-write",
-                "--ask-for-approval",
-                "never",
-                "exec",
-                "--json",
-                "--cd",
-                "view",
-                "resume",
-                "resume-id",
-                "-"
-            ]
-        );
-        assert!(
-            !command
-                .get_args()
-                .any(|arg| arg.to_string_lossy().contains("bypass"))
-        );
-        Ok(())
-    }
 }

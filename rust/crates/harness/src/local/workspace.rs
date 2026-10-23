@@ -486,11 +486,9 @@ async fn held_source(
         config,
         &path.join(volumes::INCARNATION_PATH),
     )?);
-    exclusions.push(volumes::namespace(
-        &path,
-        config,
-        &path.join(super::host_workspace::HOST_VIEW_ROOT),
-    )?);
+    for relative in [super::host_workspace::HOST_VIEW_ROOT, ".acyclic-sdk"] {
+        exclusions.push(volumes::namespace(&path, config, &path.join(relative))?);
+    }
     let source = source
         .exclude(exclusions, &work, cancellation)
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;

@@ -36,6 +36,13 @@ struct Request {
     action: HostAction,
 }
 
+/// The existing owner's admitted workspace. This only reads its descriptor;
+/// nested clients keep disposable custody files outside authored child views.
+pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
+    let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
+    discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
+}
+
 /// Contacts an existing harness. Does not select state, acquire a lifecycle
 /// lock, publish an executable identity, or start any service or agent.
 pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
@@ -51,6 +58,12 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
     let request_path = directory.join("requests").join(format!("{operation}.json"));
     let (wake, events) = std::sync::mpsc::sync_channel(1);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event
+            .as_ref()
+            .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
+        {
+            return;
+        }
         let _ = wake.try_send(event.map(|_| ()));
     })
     .map_err(storage)?;
@@ -160,9 +173,14 @@ pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
     let mut commands = CommandSession::open_local(&local, session, MAXIMUM_BYTES, 4096).await?;
     let changed = Arc::new(tokio::sync::Notify::new());
     let wake = Arc::clone(&changed);
-    let mut watcher =
-        notify::recommended_watcher(move |_: notify::Result<notify::Event>| wake.notify_one())
-            .map_err(storage)?;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        // Scanning requests opens the watched directory. Access notifications
+        // must not wake this same scan indefinitely and starve native mounts.
+        if !event.is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_))) {
+            wake.notify_one();
+        }
+    })
+    .map_err(storage)?;
     watcher
         .watch(
             &directory.path().join("requests"),
