@@ -152,7 +152,6 @@ proc-macro2 = "=1.0.107"
 syn = { version = "=3.0.6", features = ["full", "visit"] }
 proptest.workspace = true
 diffy.workspace = true
-acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
