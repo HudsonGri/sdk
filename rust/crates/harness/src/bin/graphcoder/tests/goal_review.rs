@@ -40,6 +40,62 @@ fn write(path: &str, text: &str) -> String {
 // real HTTP provider. Every invocation reopens the same canonical private files.
 #[tokio::test]
 async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
+    let [goal, plan] = goal_and_plan();
+    run([
+        ("hello", (false, false), None, false),
+        goal,
+        plan,
+        (
+            "hello",
+            (true, true),
+            Some(write(
+                "GOAL.md",
+                "---\nstatus: blocked\nreason: waiting\n---\nShip",
+            )),
+            true,
+        ),
+        (
+            "hello",
+            (true, true),
+            Some(write("GOAL.md", "---\nstatus: done\n---\nShip")),
+            false,
+        ),
+    ])
+    .await;
+}
+
+#[tokio::test]
+async fn guidance_tracks_deleted_files_and_temporary_plan_mode() {
+    let [goal, plan] = goal_and_plan();
+    run([
+        goal,
+        plan,
+        (
+            "hello",
+            (true, true),
+            Some(tool(
+                "bash",
+                json!({"command":"rm .volumes/scratch/GOAL.md"}),
+            )),
+            false,
+        ),
+        (
+            "hello",
+            (false, true),
+            Some(tool(
+                "bash",
+                json!({"command":"rm .volumes/scratch/plans/release.md && rmdir .volumes/scratch/plans"}),
+            )),
+            false,
+        ),
+        ("hello", (false, false), None, false),
+        ("Use plan mode", (false, true), None, false),
+        ("hello", (false, false), None, false),
+    ])
+    .await;
+}
+
+async fn run<const N: usize>(scenarios: [Scenario; N]) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let script = Arc::new(Mutex::new(VecDeque::<((bool, bool), String)>::new()));
@@ -75,7 +131,7 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
 
-    for (prompt, expected, edit, blocked) in scenarios() {
+    for (prompt, expected, edit, blocked) in scenarios {
         if let Some(edit) = edit {
             script.lock().unwrap().push_back((expected, edit));
         }
@@ -142,9 +198,8 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
 
 type Scenario = (&'static str, (bool, bool), Option<String>, bool);
 
-fn scenarios() -> [Scenario; 10] {
+fn goal_and_plan() -> [Scenario; 2] {
     [
-        ("hello", (false, false), None, false),
         (
             "Use GOAL MODE",
             (true, false),
@@ -157,41 +212,5 @@ fn scenarios() -> [Scenario; 10] {
             Some(write("plans/release.md", "- [ ] Ship")),
             false,
         ),
-        (
-            "hello",
-            (true, true),
-            Some(write(
-                "GOAL.md",
-                "---\nstatus: blocked\nreason: waiting\n---\nShip",
-            )),
-            true,
-        ),
-        (
-            "hello",
-            (true, true),
-            Some(write("GOAL.md", "---\nstatus: done\n---\nShip")),
-            false,
-        ),
-        (
-            "hello",
-            (true, true),
-            Some(tool(
-                "bash",
-                json!({"command":"rm .volumes/scratch/GOAL.md"}),
-            )),
-            false,
-        ),
-        (
-            "hello",
-            (false, true),
-            Some(tool(
-                "bash",
-                json!({"command":"rm .volumes/scratch/plans/release.md && rmdir .volumes/scratch/plans"}),
-            )),
-            false,
-        ),
-        ("hello", (false, false), None, false),
-        ("Use plan mode", (false, true), None, false),
-        ("hello", (false, false), None, false),
     ]
 }
