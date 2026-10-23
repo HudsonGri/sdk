@@ -1,5 +1,7 @@
 //! Bounded crash-recoverable local Stream provider.
 
+mod migration;
+
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -2525,7 +2527,7 @@ mod tests {
         }
     }
 
-    async fn append_keyed(
+    pub(super) async fn append_keyed(
         provider: &LocalStream,
         index: u64,
     ) -> Result<AppendOutcome, Box<dyn std::error::Error>> {
