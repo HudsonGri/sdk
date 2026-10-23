@@ -1,4 +1,4 @@
-//! Task forks and mounts shared by GraphCoder and native-host coordination.
+//! Task forks and mounts shared by `GraphCoder` and native-host coordination.
 use super::super::checkout_tools::{State, reconciliation};
 use super::*;
 use acyclic_fs::PublicationPermit;
@@ -80,9 +80,17 @@ impl LocalWorkspace {
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
         owner.verify_owner(None)?.await?;
-        std::fs::create_dir_all(mount_directory).map_err(storage)?;
-        let path = mount_directory.join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
+        if mount_directory != self.mount_directory {
+            return Err(Error::Invalid(
+                "task mount root differs from the shared checkout".into(),
+            ));
+        }
+        let path = self
+            .held_task_mount_root()?
+            .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
+            .map_err(storage)?
+            .path()
+            .to_path_buf();
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -134,6 +142,7 @@ impl LocalWorkspace {
             workspace: None,
             watcher: None,
             children: Default::default(),
+            allocated_mounts: Default::default(),
             mounts: Arc::clone(&workspace.mounts),
             initialized: true,
         }));
@@ -164,11 +173,12 @@ impl LocalWorkspace {
             return Ok(workspace.clone());
         }
         owner.verify_owner(None)?.await?;
-        std::fs::create_dir_all(&self.mount_directory).map_err(storage)?;
         let path = self
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
+            .held_task_mount_root()?
+            .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
+            .map_err(storage)?
+            .path()
+            .to_path_buf();
         let mounted = Arc::new(
             view.mount(
                 &path,

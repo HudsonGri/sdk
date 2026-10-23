@@ -51,15 +51,10 @@ impl LocalHarness {
         #[cfg(feature = "hooks")]
         let settings =
             settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
-        let (model, provider) = config.model.as_ref().ok_or_else(|| {
-            Error::Invalid(
-                "bind requires an agent binding; use open for native host coordination".into(),
-            )
-        })?;
-        model.validate()?;
+        let (model, provider) = bound_model(&config)?;
         let compaction = compaction::select(
             config.compaction.take(),
-            model,
+            &model,
             provider.as_ref(),
             runtime.tool_registry(),
             config.limits,
@@ -128,6 +123,16 @@ impl LocalHarness {
     pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
         &self.runtime
     }
+}
+
+fn bound_model(config: &LocalHarnessConfig) -> Result<(Model, Arc<dyn ModelProvider>)> {
+    let binding = config.model.as_ref().ok_or_else(|| {
+        Error::Invalid(
+            "bind requires an agent binding; use open for native host coordination".into(),
+        )
+    })?;
+    binding.0.validate()?;
+    Ok(binding.clone())
 }
 
 #[cfg(feature = "native-execution")]

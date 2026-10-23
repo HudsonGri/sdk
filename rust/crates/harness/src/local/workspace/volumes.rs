@@ -335,7 +335,10 @@ pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
     retired
 }
 
-fn projection_root<'a>(destination: &'a Path, relative: &str) -> Result<&'a Path> {
+pub(in crate::local) fn projection_root<'a>(
+    destination: &'a Path,
+    relative: &str,
+) -> Result<&'a Path> {
     destination
         .ancestors()
         .nth(Path::new(relative).components().count())

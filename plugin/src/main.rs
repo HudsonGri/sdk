@@ -133,11 +133,11 @@ fn internal(args: &[String]) -> Result<bool> {
 
 fn action(task: TaskId, args: &[String]) -> Result<HostAction> {
     Ok(match args.first().map(String::as_str) {
-        Some("fs") => HostAction::Fs {
+        Some("fs" | "discard") => HostAction::Fs {
             task,
             command: args
                 .iter()
-                .skip(1)
+                .skip(usize::from(args.first().map(String::as_str) == Some("fs")))
                 .map(|arg| format!("'{}'", arg.replace('\'', "'\"'\"'")))
                 .collect::<Vec<_>>()
                 .join(" "),
@@ -150,20 +150,24 @@ fn action(task: TaskId, args: &[String]) -> Result<HostAction> {
             task,
             command: "log".into(),
         },
-        Some("discard" | "cancel") if args.len() == 2 => HostAction::Cancel {
+        Some("cancel") if args.len() == 2 => HostAction::Cancel {
             task: parse_task(args.get(1).ok_or("missing task ID")?)?,
         },
         Some("reopen") if args.len() == 2 => HostAction::Reopen {
             task: parse_task(args.get(1).ok_or("missing task ID")?)?,
         },
         Some("capture") => HostAction::Capture { task },
-        _ => return Err("use fs, agents, log, capture, cancel or reopen; see --help".into()),
+        _ => {
+            return Err(
+                "use fs, discard, agents, log, capture, cancel or reopen; see --help".into(),
+            );
+        }
     })
 }
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic [--task ID] fs COMMAND... | agents | log | capture | cancel ID | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | cancel ID | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())

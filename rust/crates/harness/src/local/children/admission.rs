@@ -312,7 +312,7 @@ impl LocalHarness {
                     )
                     .await?;
                     let (input, inputs, task_kind) = if native_host {
-                        (serde_json::json!({"host":parent_record.input["host"], "session":reference.as_str()}),
+                        (serde_json::json!({"host":parent_record.input.get("host").ok_or_else(|| Error::Invalid("native parent host is absent".into()))?, "session":reference.as_str()}),
                             Vec::new(), super::super::host_task::TASK)
                     } else {
                     let (receive, model, manifest) = self

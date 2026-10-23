@@ -54,12 +54,11 @@ pub(in crate::local) fn created_project<'a>(
                 .collect::<Result<Vec<_>>>()?
                 .iter()
                 .all(|grant| scope.grants().contains(grant))
+            && selected.replace(&binding.volume).is_some()
         {
-            if selected.replace(&binding.volume).is_some() {
-                return Err(Error::Unauthorized(
-                    "child project binding is ambiguous".into(),
-                ));
-            }
+            return Err(Error::Unauthorized(
+                "child project binding is ambiguous".into(),
+            ));
         }
     }
     selected.ok_or_else(|| Error::Unauthorized("child project is not writable".into()))

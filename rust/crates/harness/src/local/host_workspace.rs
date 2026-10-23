@@ -7,6 +7,8 @@ use crate::runtime::{OwnedTaskMailbox, TaskContext};
 use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{HeldRoot, LazyWorkspaceStore as _};
 
+mod volume_guard;
+
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
@@ -19,6 +21,7 @@ pub struct HostWorkspace {
     task: TaskId,
     mount_root: Arc<HeldRoot>,
     project: VolumeRef,
+    _native_volumes: Vec<workspace::projection::Entered>,
 }
 
 impl HostWorkspace {
@@ -51,13 +54,15 @@ impl HostWorkspace {
         verify_root(&admitted_mount_root)?;
         workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
         acyclic_fs::initialize_native_mount_services().map_err(storage)?;
-        let result = Self {
+        let mut result = Self {
             workspace,
             task: owner.task_binding().0,
             mount_root: Arc::new(admitted_mount_root),
             project,
+            _native_volumes: Vec::new(),
         };
         result.verify(context).await?;
+        result.activate_volumes(context).await?;
         Ok(result)
     }
     /// Cwd to give the native host before it starts executing this task.
@@ -153,6 +158,7 @@ impl HostWorkspace {
             .workspace
             .selected_workspace(&mut state, owner.as_ref())
             .await?;
+        self.capture_volumes(context).await?;
         if let Some(mount) = &physical.mounted {
             let owner = Arc::clone(owner);
             let root = Arc::clone(&self.mount_root);
@@ -232,6 +238,7 @@ impl HostWorkspace {
             .workspace
             .selected_workspace(&mut state, owner.as_ref())
             .await?;
+        self.capture_volumes(context).await?;
         let result = commands
             .fs(
                 parsed,
@@ -247,8 +254,8 @@ impl HostWorkspace {
         self.verify(context).await?;
         verify_root(&self.mount_root)?;
         match result {
-            workspace::git::Outcome::Completed(output) => Ok(output),
-            workspace::git::Outcome::Rejected(error) => Err(error),
+            workspace::git::Outcome::Completed(output) => Ok(*output),
+            workspace::git::Outcome::Rejected(error) => Err(*error),
         }
     }
 
@@ -279,14 +286,9 @@ impl HostWorkspace {
             ));
         }
         verify_root(&self.mount_root)?;
-        let _state =
+        let mut state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
-        let allocated = child.scope().created_access.is_some();
-        let project = if allocated {
-            workspace::created_project(child, child.scope())?
-        } else {
-            &self.project
-        };
+        let project = workspace::created_project(child, child.scope())?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             if !child
                 .scope()
@@ -299,7 +301,7 @@ impl HostWorkspace {
             }
         }
         if existing {
-            self.require_retained_fork(task, project, allocated).await?;
+            self.require_retained_fork(project).await?;
         }
         let (selected, pending) = self.workspace.selected_view().await?;
         let selected = selected.as_ref().unwrap_or_else(|| self.workspace.view());
@@ -310,20 +312,17 @@ impl HostWorkspace {
             &|| async { parent_owner.verify_owner(None)?.await },
         )
         .await?;
-        let (view, mounts) = if allocated {
-            let view = self.workspace.project_view(project).await?;
+        let view = self.workspace.project_view(project).await?;
+        let key = project.storage_name(&mut None)?;
+        let mounts = if let Some(mounts) = state.allocated_mounts.get(&key) {
+            Arc::clone(mounts)
+        } else {
             let mounts = self
                 .workspace
                 .created_mounts(project, child, child.scope())
                 .await?;
-            (view, Some(mounts))
-        } else {
-            (
-                self.workspace
-                    .fork_task(task, selected, child_owner)
-                    .await?,
-                None,
-            )
+            state.allocated_mounts.insert(key, Arc::clone(&mounts));
+            mounts
         };
         parent_owner.verify_owner(None)?.await?;
         acyclic_fs::GitCompatRepository::new(
@@ -335,31 +334,26 @@ impl HostWorkspace {
         .map_err(storage)?;
         let workspace = self
             .workspace
-            .mount_task_view(view, child_owner, mounts, self.mount_root.path())
+            .mount_task_view(view, child_owner, Some(mounts), self.mount_root.path())
             .await?;
         parent_owner.verify_owner(None)?.await?;
         child_owner.verify_owner(None)?.await?;
         verify_root(&self.mount_root)?;
-        Ok(Self {
+        let mut result = Self {
             workspace,
             task,
             mount_root: Arc::clone(&self.mount_root),
             project: project.clone(),
-        })
+            _native_volumes: Vec::new(),
+        };
+        result.verify(child).await?;
+        result.activate_volumes(child).await?;
+        Ok(result)
     }
 
-    async fn require_retained_fork(
-        &self,
-        task: TaskId,
-        project: &VolumeRef,
-        allocated: bool,
-    ) -> Result<()> {
+    async fn require_retained_fork(&self, project: &VolumeRef) -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let name = if allocated {
-            project.storage_name(&mut None)?
-        } else {
-            format!("task-{task}")
-        };
+        let name = project.storage_name(&mut None)?;
         let id = self
             .workspace
             .filesystem
@@ -394,11 +388,22 @@ impl HostWorkspace {
             ));
         }
         owner.verify_owner(None)?.await?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        for (volume, operation) in std::iter::once(&self.project)
+            .chain(
+                self.workspace
+                    .mounts
+                    .mounts()
+                    .filter(|(relative, _)| !relative.is_empty())
+                    .map(|(_, mount)| &mount.view.volume),
+            )
+            .flat_map(|volume| {
+                [VolumeOperation::Read, VolumeOperation::Write].map(|operation| (volume, operation))
+            })
+        {
             if !context
                 .scope()
                 .grants()
-                .contains(&self.project.capability(operation, &mut None)?)
+                .contains(&volume.capability(operation, &mut None)?)
             {
                 return Err(Error::Unauthorized(
                     "host workspace project is not granted".into(),
@@ -413,6 +418,43 @@ impl HostWorkspace {
             ));
         }
         Ok(owner)
+    }
+
+    async fn activate_volumes(&mut self, context: &TaskContext) -> Result<()> {
+        for (relative, mount) in self.workspace.mounts.mounts() {
+            let Some(source) = &mount.view.source else {
+                continue;
+            };
+            self.verify(context).await?;
+            source.prepare_command().await?;
+            let root = workspace::volumes::projection_root(&source.destination, relative)?;
+            let options = volume_guard::options(
+                Arc::clone(self.verify(context).await?),
+                Arc::clone(&self.mount_root),
+                mount.mode.read_only(),
+            )?;
+            self._native_volumes
+                .push(source.enter_with_options(root, relative, options).await?);
+        }
+        self.verify(context).await?;
+        Ok(())
+    }
+
+    async fn capture_volumes(&self, context: &TaskContext) -> Result<()> {
+        self.verify(context).await?;
+        for (_, mount) in self.workspace.mounts.mounts() {
+            let Some(source) = &mount.view.source else {
+                continue;
+            };
+            let native = source.native().await;
+            let native = native
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("native volume projection is not active".into()))?;
+            // The mount retains the exact owner's callback, checked again at
+            // publication submission by the shared filesystem implementation.
+            native.sync().await?;
+        }
+        Ok(())
     }
 }
 

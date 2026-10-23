@@ -25,6 +25,12 @@ function result(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
 }
 
+export async function drainNativeSession(native: AgentSession, finished: Promise<void>) {
+  await native.abort();
+  await native.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  await finished.catch(() => {});
+}
+
 export default function acyclic(pi: ExtensionAPI) { install(pi); }
 
 function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
@@ -55,8 +61,7 @@ function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
     await nativeHook(ctx, "PostToolUse", { tool_name: event.toolName, tool_use_id: event.toolCallId, tool_input: event.input, tool_response: event.content });
   });
   pi.on("session_shutdown", async (_event, ctx) => {
-    for (const child of children.values()) await child.native.abort();
-    await Promise.allSettled([...children.values()].map(child => child.finished));
+    for (const child of children.values()) await drainNativeSession(child.native, child.finished);
     if (selected) await workspace(ctx.cwd, { kind: "capture", task: selected.task });
     for (const child of children.values()) child.native.dispose();
   });
@@ -86,7 +91,9 @@ function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
       });
       await loader.reload();
       const { session } = await createAgentSession({ cwd: location.cwd, model: ctx.model,
-        thinkingLevel: pi.getThinkingLevel(), tools: pi.getActiveTools(), sessionManager: manager, resourceLoader: loader });
+        scopedModels: [...ctx.scopedModels], thinkingLevel: pi.getThinkingLevel(),
+        tools: pi.getActiveTools(), sessionManager: manager, resourceLoader: loader });
+      await session.bindExtensions({ uiContext: ctx.ui, mode: ctx.mode });
       const finished = session.prompt(params.prompt).finally(async () => {
         await workspace(location.cwd, { kind: "capture", task: location.task });
       });
@@ -111,8 +118,7 @@ function install(pi: ExtensionAPI, binding?: Location, inheritedRoot?: string) {
     async execute(_call, params, _signal, _update, ctx) {
       const child = children.get(params.task);
       if (!child) throw new Error("Native child session is not open");
-      await child.native.abort();
-      await child.finished.catch(() => {});
+      await drainNativeSession(child.native, child.finished);
       const value = await workspace(ctx.cwd, { kind: "cancel", task: params.task });
       child.native.dispose(); children.delete(params.task);
       return result(value);

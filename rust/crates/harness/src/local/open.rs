@@ -34,11 +34,7 @@ pub(super) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
-        config.limits.validate(&mut None)?;
-        config.session_limits.validate(&mut None)?;
-        if config.concurrency == 0 {
-            return Err(Error::Invalid("local concurrency is zero".into()));
-        }
+        validate_configuration(&config)?;
         let mut config = config.prepare_state()?;
         let state_location = config.state_location()?;
         let passive = config.model.is_none();
@@ -405,6 +401,15 @@ impl Opening {
         };
         Ok(local)
     }
+}
+
+fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
+    config.limits.validate(&mut None)?;
+    config.session_limits.validate(&mut None)?;
+    if config.concurrency == 0 {
+        return Err(Error::Invalid("local concurrency is zero".into()));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native-execution")]

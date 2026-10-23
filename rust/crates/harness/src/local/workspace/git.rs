@@ -17,8 +17,19 @@ pub(in crate::local) struct Commands<'a> {
 }
 
 pub(in crate::local) enum Outcome {
-    Completed(acyclic_fs::GitCommandOutput),
-    Rejected(Error),
+    Completed(Box<acyclic_fs::GitCommandOutput>),
+    Rejected(Box<Error>),
+}
+
+struct Invocation<'a> {
+    workspace: &'a LocalWorkspace,
+    context: &'a CommandContext<'a>,
+    checkout: &'a workspace::View,
+    view: crate::tools::git::View<'a>,
+    source: Option<&'a workspace::MountedVolume>,
+    reserved: &'a [String],
+    lease: &'a acyclic_fs::OperationWindowLease,
+    watcher: &'a mut Option<capture::Cursor>,
 }
 
 impl Commands<'_> {
@@ -28,7 +39,7 @@ impl Commands<'_> {
         scope: &RuntimeScope,
     ) -> Result<crate::tools::FsCommand> {
         let parsed = crate::tools::parse_fs_command(command)?;
-        self.fs_source(&self.workspace, &parsed, scope)?;
+        self.fs_source(self.workspace, &parsed, scope)?;
         Ok(parsed)
     }
 
@@ -58,10 +69,11 @@ impl Commands<'_> {
     ) -> Result<&'a Option<Arc<workspace::MountedVolume>>> {
         use acyclic_fs::access::Action;
         let (relative, mount) = workspace.mounts.named(parsed.volume.as_deref())?;
-        let read_only = matches!(
-            parsed.arguments[0].as_str(),
-            "diff" | "log" | "show" | "status"
-        );
+        let command = parsed
+            .arguments
+            .first()
+            .ok_or_else(|| Error::Invalid("fs command is empty".into()))?;
+        let read_only = matches!(command.as_str(), "diff" | "log" | "show" | "status");
         for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
         {
@@ -75,7 +87,7 @@ impl Commands<'_> {
                 ));
             }
         }
-        if !relative.is_empty() && !read_only && parsed.arguments[0] != "merge" {
+        if !relative.is_empty() && !read_only && command != "merge" {
             return Err(Error::Unsupported(
                 "--volume supports diff, log, show, status and merge".into(),
             ));
@@ -113,93 +125,37 @@ impl Commands<'_> {
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         owner.verify_owner(None)?.await?;
-        let (task, fence) = owner.task_binding();
-        let lease_id = lease_identity(task, context.operation, fence);
-        let coordinator = acyclic_fs::OperationWindowCoordinator::new(
-            workspace.filesystem.operation_window_store(),
-        );
         let volume = view.workspace();
         let now = acyclic_stream::UnixMillisClock::now_unix_millis(
             &acyclic_stream::SystemUnixMillisClock,
         );
-        let before_recovery = head(view).await?;
-        if source.is_none() {
-            self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
-                .await?;
-        }
-        // A previous worker can disappear after opening its lease. Expiry
-        // fences it; complete its durable reconciliation before opening ours.
-        let recovery = coordinator
-            .recover_workspace(volume, now, acyclic_fs::OperationReconcileLimits::default())
-            .await
-            .map_err(storage)?;
-        let recovered = recovery.is_some();
-        let parent = match recovery {
-            Some(outcome) => reconciliation_generation(outcome)?,
-            None => before_recovery.clone(),
-        };
-        // With no recovered window the preparation marker covers no changes.
-        // Acknowledge it without refreshing a mount that is already current.
-        if source.is_none() {
-            self.publish_reconciliation(workspace, context, recovered)
-                .await?;
-        } else if recovered && let Some(native) = native {
+        let (parent, recovered) = self
+            .recover_window(workspace, context, view, source.is_none(), now)
+            .await?;
+        if source.is_some()
+            && recovered
+            && let Some(native) = native
+        {
             owner.verify_owner(None)?.await?;
             native.advance_to_head().await?;
             owner.verify_owner(None)?.await?;
         }
-        const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
-        let lease = coordinator
-            .begin_with_lease_id(
-                volume.id(),
-                parent.id(),
-                context.operation.to_string(),
-                now,
-                now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
-                lease_id,
-            )
-            .await
-            .map_err(storage)?;
-        let result = async {
-            owner.verify_owner(None)?.await?;
-            if source.is_none() {
-                capture::capture(
-                    (self.capture_options, self.capture_policy),
-                    (workspace, checkout),
-                    watcher,
-                    (context.operation, 0),
-                    lease.publication_permit(),
-                    Some((context.task.ordinary_journal_owner::<LocalStream>()?, false)),
-                )
-                .await?;
-            }
-            crate::tools::git::run_with_guard(
-                crate::tools::git::Workspace {
-                    filesystem: &workspace.filesystem,
-                    store: &workspace.store,
-                    view,
-                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
-                        source.destination.as_path()
-                    }),
-                    repository: if source.is_some() {
-                        volume.id()
-                    } else {
-                        workspace.view().workspace().id()
-                    },
-                    lease: Some(lease.clone()),
-                    checkout: (source.is_none() && workspace.mounted.is_none())
-                        .then_some(workspace.identity),
-                    reserved: &reserved,
-                    author: "LocalHarness",
-                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                        .unwrap_or(i64::MAX),
-                },
+        let lease = begin_window(workspace, context, volume.id(), parent.id(), now).await?;
+        let result = self
+            .execute(
                 &parsed.arguments,
-                || async { owner.verify_owner(None)?.await },
+                Invocation {
+                    workspace,
+                    context,
+                    checkout,
+                    view,
+                    source: source.as_deref(),
+                    reserved: &reserved,
+                    lease: &lease,
+                    watcher,
+                },
             )
-            .await
-        }
-        .await;
+            .await;
         let before_close = head(view).await?;
         if source.is_none()
             && !result
@@ -209,27 +165,7 @@ impl Commands<'_> {
             self.prepare_reconciliation(workspace, context, b"close", &before_close)
                 .await?;
         }
-        let closed = coordinator
-            .finish_workspace(
-                volume,
-                &lease,
-                acyclic_stream::UnixMillisClock::now_unix_millis(
-                    &acyclic_stream::SystemUnixMillisClock,
-                ),
-                acyclic_fs::OperationReconcileLimits::default(),
-            )
-            .await
-            .map_err(storage);
-        // Closing can rebase a child after the command has already published.
-        // A switched checkout belongs to the destination, so never apply the
-        // source workspace's reconciliation over it.
-        let publication = match closed {
-            Ok(acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome)) => {
-                reconciliation_generation(outcome).map(|_| ())
-            }
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        };
+        let publication = finish_window(workspace, view, &lease).await;
         // In-place actions publish directly to the workspace, including conflict
         // projections. Refresh its clean mount before another command can enter
         // this checkout. Switched actions select their destination mount below.
@@ -257,6 +193,122 @@ impl Commands<'_> {
         }
         .await;
         owner.verify_owner(None)?.await?;
+        self.finish_command(workspace, state, context, result, (publication, advanced))
+            .await
+    }
+
+    async fn recover_window(
+        &self,
+        workspace: &LocalWorkspace,
+        context: &CommandContext<'_>,
+        view: crate::tools::git::View<'_>,
+        checkout: bool,
+        now: u64,
+    ) -> Result<(
+        acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
+        bool,
+    )> {
+        let before = head(view).await?;
+        if checkout {
+            self.prepare_reconciliation(workspace, context, b"recover", &before)
+                .await?;
+        }
+        // Expired operation windows must settle before another publication.
+        let recovered = acyclic_fs::OperationWindowCoordinator::new(
+            workspace.filesystem.operation_window_store(),
+        )
+        .recover_workspace(
+            view.workspace(),
+            now,
+            acyclic_fs::OperationReconcileLimits::default(),
+        )
+        .await
+        .map_err(storage)?;
+        let changed = recovered.is_some();
+        let parent = match recovered {
+            Some(outcome) => reconciliation_generation(outcome)?,
+            None => before,
+        };
+        if checkout {
+            self.publish_reconciliation(workspace, context, changed)
+                .await?;
+        }
+        Ok((parent, changed))
+    }
+
+    async fn execute(
+        &self,
+        arguments: &[String],
+        invocation: Invocation<'_>,
+    ) -> Result<crate::tools::git::Output> {
+        let Invocation {
+            workspace,
+            context,
+            checkout,
+            view,
+            source,
+            reserved,
+            lease,
+            watcher,
+        } = invocation;
+        let owner = context
+            .task
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
+        owner.verify_owner(None)?.await?;
+        if source.is_none() {
+            capture::capture(
+                (self.capture_options, self.capture_policy),
+                (workspace, checkout),
+                watcher,
+                (context.operation, 0),
+                lease.publication_permit(),
+                Some((context.task.ordinary_journal_owner::<LocalStream>()?, false)),
+            )
+            .await?;
+        }
+        crate::tools::git::run_with_guard(
+            crate::tools::git::Workspace {
+                filesystem: &workspace.filesystem,
+                store: &workspace.store,
+                view,
+                root: source.map_or(workspace.path.as_path(), |source| {
+                    source.destination.as_path()
+                }),
+                repository: if source.is_some() {
+                    view.workspace().id()
+                } else {
+                    workspace.view().workspace().id()
+                },
+                lease: Some(lease.clone()),
+                checkout: (source.is_none() && workspace.mounted.is_none())
+                    .then_some(workspace.identity),
+                reserved,
+                author: "LocalHarness",
+                authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                    .unwrap_or(i64::MAX),
+            },
+            arguments,
+            || async { owner.verify_owner(None)?.await },
+        )
+        .await
+    }
+
+    async fn finish_command(
+        &self,
+        workspace: &Arc<LocalWorkspace>,
+        state: &mut State,
+        context: &CommandContext<'_>,
+        result: Result<crate::tools::git::Output>,
+        closed: (Result<()>, Result<()>),
+    ) -> Result<Outcome> {
+        let (publication, advanced) = closed;
+        let owner = context
+            .task
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
         let output = match result {
             Ok(output) => output,
             Err(
@@ -267,12 +319,12 @@ impl Commands<'_> {
             ) => {
                 publication?;
                 advanced?;
-                return Ok(Outcome::Rejected(error));
+                return Ok(Outcome::Rejected(Box::new(error)));
             }
             Err(error) => return Err(error),
         };
         if let Some(switched) = output.switched {
-            *active = Some(switched.into_checkout()?);
+            state.active = Some(switched.into_checkout()?);
             workspace.selected_workspace(state, owner.as_ref()).await?;
         }
         // Persist the selected view in memory even when a recovered transition
@@ -282,7 +334,7 @@ impl Commands<'_> {
         let command = output.command.ok_or_else(|| {
             Error::Conflict("recovered a pending fs transition; retry the command".into())
         })?;
-        Ok(Outcome::Completed(command))
+        Ok(Outcome::Completed(Box::new(command)))
     }
 
     async fn prepare_reconciliation(
@@ -294,7 +346,7 @@ impl Commands<'_> {
     ) -> Result<()> {
         let operation = reconciliation_operation(context.operation, phase, from.id(), from.id());
         reconciliation::prepare(
-            &workspace,
+            workspace,
             operation,
             acyclic_fs::GitGenerationRef {
                 workspace_id: from.workspace().id(),
@@ -312,7 +364,7 @@ impl Commands<'_> {
     ) -> Result<()> {
         let state = workspace.selected_view().await?.0;
         let view = state.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::publish(&workspace, view, refresh_mount, &|| async {
+        reconciliation::publish(workspace, view, refresh_mount, &|| async {
             context
                 .task
                 .owned_mailbox
@@ -323,6 +375,60 @@ impl Commands<'_> {
         })
         .await?;
         Ok(())
+    }
+}
+
+async fn begin_window(
+    workspace: &LocalWorkspace,
+    context: &CommandContext<'_>,
+    volume: acyclic_fs::WorkspaceId,
+    parent: acyclic_fs::GenerationId,
+    now: u64,
+) -> Result<acyclic_fs::OperationWindowLease> {
+    let owner = context
+        .task
+        .owned_mailbox
+        .as_ref()
+        .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?;
+    let (task, fence) = owner.task_binding();
+    const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
+    acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
+        .begin_with_lease_id(
+            volume,
+            parent,
+            context.operation.to_string(),
+            now,
+            now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
+            lease_identity(task, context.operation, fence),
+        )
+        .await
+        .map_err(storage)
+}
+
+async fn finish_window(
+    workspace: &LocalWorkspace,
+    view: crate::tools::git::View<'_>,
+    lease: &acyclic_fs::OperationWindowLease,
+) -> Result<()> {
+    // Closing can rebase the source after the command has published. The
+    // caller preserves a switched destination rather than refreshing it here.
+    let outcome =
+        acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
+            .finish_workspace(
+                view.workspace(),
+                lease,
+                acyclic_stream::UnixMillisClock::now_unix_millis(
+                    &acyclic_stream::SystemUnixMillisClock,
+                ),
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+            .await
+            .map_err(storage)?;
+    match outcome {
+        acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome) => {
+            reconciliation_generation(outcome).map(|_| ())
+        }
+        _ => Ok(()),
     }
 }
 

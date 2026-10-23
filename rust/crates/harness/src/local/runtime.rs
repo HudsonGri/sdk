@@ -68,13 +68,20 @@ pub(super) async fn open(
     ];
     if config.passive {
         grants.retain(|grant| {
-            matches!(grant.as_str(), "fork:publish" | "project:merge")
-                || grant
-                    == &format!(
-                        "task:spawn:{}@{}",
-                        fork.identity().name,
-                        fork.identity().version
-                    )
+            matches!(
+                grant.as_str(),
+                "fork:publish"
+                    | "project:merge"
+                    | "operation:declare"
+                    | "operation:observe"
+                    | "operation:cancel"
+                    | "operation:wake"
+            ) || grant
+                == &format!(
+                    "task:spawn:{}@{}",
+                    fork.identity().name,
+                    fork.identity().version
+                )
         });
     }
     #[cfg(feature = "native-execution")]

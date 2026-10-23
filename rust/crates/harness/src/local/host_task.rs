@@ -28,7 +28,7 @@ impl NativeHostTask {
     }
 
     pub(super) fn definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
-        TaskDefinition::resumable(self.clone(), self.schema.clone(), json!({}))
+        TaskDefinition::resumable(self.clone(), self.schema.clone(), json!({"type":"null"}))
     }
 }
 

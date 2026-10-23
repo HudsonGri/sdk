@@ -84,6 +84,23 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(in crate::local) fn held_task_mount_root(&self) -> Result<acyclic_fs::HeldRoot> {
+        let root = self
+            .mount_directory
+            .ancestors()
+            .nth(2)
+            .ok_or_else(|| Error::Invalid("task mount root has no checkout".into()))?;
+        if self.mount_directory != root.join(super::host_workspace::HOST_VIEW_ROOT) {
+            return Err(Error::Invalid(
+                "task mounts are outside the checkout namespace".into(),
+            ));
+        }
+        acyclic_fs::hold_root(root)
+            .map_err(storage)?
+            .create_directories(Path::new(super::host_workspace::HOST_VIEW_ROOT))
+            .map_err(storage)
+    }
+
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
@@ -154,17 +171,19 @@ impl LocalWorkspace {
         }
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
+        let binding = blake3::hash(project.storage_name(&mut None)?.as_bytes())
+            .to_hex()
+            .to_string();
         let root = self
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir_all(&root).map_err(storage)?;
+            .held_task_mount_root()?
+            .create_directories(&Path::new(".bindings").join(binding))
+            .map_err(storage)?;
         let mut mounts = mounts::owner(
-            &root,
+            root.path(),
             project,
             None,
             private.map(|volume| ("scratch".into(), volume, None)),
         )?;
-        let root = acyclic_fs::hold_root(&root).map_err(storage)?;
         volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }

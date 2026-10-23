@@ -44,7 +44,7 @@ impl CheckoutTools {
             workspace::git::Outcome::Completed(command) => Ok(ToolResult {
                 value: serde_json::json!({"result": command}),
             }),
-            workspace::git::Outcome::Rejected(error) => Ok(crate::tools::rejected_input(error)),
+            workspace::git::Outcome::Rejected(error) => Ok(crate::tools::rejected_input(*error)),
         }
     }
 }

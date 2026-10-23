@@ -116,7 +116,10 @@ fn ownership_rejects_split_arguments_foreign_hooks_and_changed_lifecycle() {
                 json!("'/owned/acyclic' __hook claude-code AnotherEvent"),
             );
         assert!(claude_hook_executable(event, &changed).is_none());
-        assert!(claude_hook_executable("AnotherEvent", &groups[0]).is_none());
+        assert!(
+            claude_hook_executable("AnotherEvent", groups.first().expect("owned hook group"))
+                .is_none()
+        );
     }
 }
 
