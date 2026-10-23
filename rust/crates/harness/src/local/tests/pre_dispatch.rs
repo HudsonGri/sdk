@@ -67,7 +67,13 @@ async fn post_dispatch_failure_keeps_the_turn_indeterminate() -> Result<()> {
     )
     .await?;
     let result = harness.run("answer").await;
-    assert!(matches!(result, Err(Error::Indeterminate(_))));
+    assert!(
+        matches!(
+            result,
+            Err(Error::Indeterminate(_) | Error::CommandIndeterminate { .. })
+        ),
+        "post-dispatch failure became terminal: {result:?}"
+    );
     assert_eq!(provider.requests().len(), 1);
     harness.disconnect_unfinished().await?;
     Ok(())
