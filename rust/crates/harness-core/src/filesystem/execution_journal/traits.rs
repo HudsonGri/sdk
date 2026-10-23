@@ -22,6 +22,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn cache_identity(&self) -> Option<crate::executor::ExecutionJournalCacheId> {
+        Some(self.cache_identity)
+    }
+
     fn supports_deferred_durability(&self) -> bool {
         self.can_defer_durability()
     }

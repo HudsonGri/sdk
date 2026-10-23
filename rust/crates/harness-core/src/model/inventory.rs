@@ -96,7 +96,7 @@ impl ToolResultContent {
 }
 #[cfg(feature = "filesystem")]
 impl ModelContent {
-    fn payload_bytes(&self) -> Result<u64> {
+    pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
             Self::Text(text) => Ok(text.capacity() as u64),
             Self::Part(part) => part.payload_bytes(),

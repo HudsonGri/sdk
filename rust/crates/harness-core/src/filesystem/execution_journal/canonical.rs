@@ -1,5 +1,13 @@
 use super::*;
 
+#[cfg(all(
+    test,
+    feature = "test-support",
+    not(acyclic_harness_loom),
+    not(target_arch = "wasm32")
+))]
+mod tests;
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -294,30 +302,35 @@ where
                         "canonical summary belongs to another step",
                     )
                 })?;
-            let (_, records, hold) = crate::executor::replay_execution(
+            let (_, records, hold) = crate::executor::selected_step_records(
                 self,
-                operation,
-                limits.model_events_per_step.saturating_add(2),
-                |event| {
-                    matches!(
-                        event,
-                        ExecutionEvent::ContextPrepared { step: 0, .. }
-                            | ExecutionEvent::ModelStarted {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                            | ExecutionEvent::Model {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                            | ExecutionEvent::ModelInline {
-                                step: 0,
-                                purpose: ModelPurpose::Summary,
-                                ..
-                            }
-                    )
+                crate::executor::ExecutionRecordQuery {
+                    operation,
+                    step: 0,
+                    include_started: false,
+                    maximum_step_records: crate::executor::ExecutionRecordQuery::step_bound(limits),
+                    maximum: limits.model_events_per_step.saturating_add(2),
+                    select: &|event| {
+                        matches!(
+                            event,
+                            ExecutionEvent::ContextPrepared { step: 0, .. }
+                                | ExecutionEvent::ModelStarted {
+                                    step: 0,
+                                    purpose: ModelPurpose::Summary,
+                                    ..
+                                }
+                                | ExecutionEvent::Model {
+                                    step: 0,
+                                    purpose: ModelPurpose::Summary,
+                                    ..
+                                }
+                                | ExecutionEvent::ModelInline {
+                                    step: 0,
+                                    purpose: ModelPurpose::Summary,
+                                    ..
+                                }
+                        )
+                    },
                 },
                 io,
             )

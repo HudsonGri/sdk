@@ -44,6 +44,17 @@ impl ModelRequest {
     }
 }
 
+#[cfg(feature = "filesystem")]
+impl ModelContent {
+    pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
+        let mut bytes = self.payload_bytes()?;
+        for part in self.parts() {
+            bytes = add(bytes, part_slack(part)?)?;
+        }
+        Ok(bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

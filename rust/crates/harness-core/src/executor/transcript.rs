@@ -16,6 +16,14 @@ pub(crate) const REQUEST_MEDIA: &str = "application/vnd.acyclic.request-segments
 ))]
 mod tests;
 
+#[cfg(all(
+    test,
+    feature = "filesystem",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+mod metadata_tests;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestManifest {
@@ -129,9 +137,49 @@ pub(crate) struct StoredProjection {
 }
 
 #[cfg(feature = "filesystem")]
-impl PreparationRecord for RequestManifest {}
+impl PreparationRecord for RequestManifest {
+    fn container_collection_slots() -> bool {
+        // Large typed values are FileRef/MessagePrefix objects. Digest bytes,
+        // counts and limits need Content buffering, not workflow-sized slots.
+        // Resident values without a container census keep the coarse bound.
+        true
+    }
+
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        crate::core::owned_sum([
+            std::mem::size_of::<Self>() as u64,
+            self.header.logical_owned_bytes()?,
+            self.messages.reference.logical_owned_bytes()?,
+        ])
+        .map(Some)
+    }
+}
 #[cfg(feature = "filesystem")]
-impl PreparationRecord for StoredProjection {}
+impl PreparationRecord for StoredProjection {
+    fn container_collection_slots() -> bool {
+        // Map values are FileRef objects; keys and optional indices fit the
+        // per-item Content allowance, including malformed scalar inputs.
+        true
+    }
+
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        // Keep sparse BTreeMap node capacity, not just occupied entry slots.
+        // A node has eleven entries, fourteen header/edge words, and at least
+        // five occupied entries except at the root.
+        crate::core::owned_sum([
+            std::mem::size_of::<Self>() as u64,
+            crate::filesystem::file_map_owned_bytes(&self.metadata)?,
+            self.request.logical_owned_bytes()?,
+            self.canonical
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+            self.checkpoint
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+        ])
+        .map(Some)
+    }
+}
 #[cfg(feature = "filesystem")]
 impl PreparationRecord for RequestHeader {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {

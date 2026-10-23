@@ -165,6 +165,8 @@ where
                         "execution journal sequence or bound is invalid",
                     ));
                 }
+                #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+                acyclic_differential::record(("execution-record-decoded", 1u64));
                 let observation: Observation = crate::filesystem::decode_record(&record.value, io)?;
                 if observation.version != OBSERVATION_VERSION {
                     return Err(canonical_boundary(

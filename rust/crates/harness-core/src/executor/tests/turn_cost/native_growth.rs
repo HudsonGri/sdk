@@ -5,6 +5,10 @@ use super::*;
 pub(super) struct ReplayOnly<'a>(pub(super) &'a dyn ExecutionJournal);
 
 impl ExecutionJournal for ReplayOnly<'_> {
+    fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
+        self.0.cache_identity()
+    }
+
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,

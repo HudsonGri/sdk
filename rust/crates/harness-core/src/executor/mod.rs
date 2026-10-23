@@ -39,7 +39,8 @@ mod journal;
 pub use execution_claim::{ExecutionClaim, ExecutionClaims};
 use journal::validate_journal;
 pub use journal::{
-    ExecutionJournal, ExecutionRecordQuery, IndexedExecutionFuture, IndexedExecutionRecords,
+    ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
+    IndexedExecutionRecords,
 };
 mod replay;
 pub(crate) use replay::replay_execution;
@@ -107,6 +108,7 @@ mod retained;
 mod turn;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
 mod checkpoint_selection;
+pub(crate) use checkpoint_selection::selected_step_records;
 use checkpoint_selection::*;
 pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonical_checkpoint_at};
 mod checkpoint_projection;

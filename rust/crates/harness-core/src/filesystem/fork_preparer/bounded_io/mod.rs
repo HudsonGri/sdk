@@ -28,8 +28,8 @@ pub(crate) use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
-pub(crate) use records::preparation_slot_bytes;
 use records::{decode_allowance_error, decode_allowance_with_code};
+pub(crate) use records::{file_map_owned_bytes, preparation_slot_bytes};
 pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
 };

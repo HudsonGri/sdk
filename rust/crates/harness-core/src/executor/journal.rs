@@ -50,8 +50,21 @@ impl ExecutionRecordQuery<'_> {
     }
 }
 
+/// Opaque identity of an immutable journal binding, independent of its address.
+/// `Default` creates a fresh identity; copying it preserves the same binding.
+/// This partitions caches and never grants authority to journal contents.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExecutionJournalCacheId(OperationId);
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Stable identity of this immutable journal binding for execution caches.
+    /// Create a fresh identity with `Default` for every new or rebound journal.
+    /// Returning `None` disables memoization without changing replay semantics.
+    fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
+        None
+    }
+
     /// All stores touched by a write phase can seal their accepted prefixes.
     fn supports_deferred_durability(&self) -> bool {
         false

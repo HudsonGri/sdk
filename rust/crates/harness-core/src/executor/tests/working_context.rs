@@ -1,8 +1,12 @@
 use super::*;
 
+#[cfg(feature = "filesystem")]
+#[path = "working_context/native.rs"]
+mod native;
+
 #[tokio::test]
 async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Result<()> {
-    let journal = Journal::default();
+    let mut journal = Journal::default();
     let (provider, _) = counted_model(
         65_536,
         None,
@@ -167,5 +171,16 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
         );
     }
     assert_eq!(provider.requests().len(), 1);
+    let address = std::ptr::from_ref(&journal) as usize;
+    journal = Journal::default();
+    assert_eq!(std::ptr::from_ref(&journal) as usize, address);
+    let mut context_input = ContextInput::copy_for_turn(&input, 1, &tail, None)?;
+    assert!(
+        execution
+            .canonical_base_for_turn(&journal, input.operation_id, &mut context_input)
+            .await
+            .is_err(),
+        "negative control reused a canonical cut after replacing its journal"
+    );
     Ok(())
 }

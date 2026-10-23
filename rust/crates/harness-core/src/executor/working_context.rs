@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) struct WorkingContext<'a> {
-    journal: usize,
+    journal: Option<ExecutionJournalCacheId>,
     operation: OperationId,
     selection: crate::conversation::ModelContextSelection,
     context: crate::context::Context,
@@ -23,14 +23,19 @@ impl<'a> StockExecution<'a> {
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, self.io)?;
         }
-        let working = self
-            .working_context
-            .get_or_try_init(|| self.load_working_context(journal, operation, input))
-            .await?;
+        let uncached;
+        let working = if journal.cache_identity().is_some() {
+            self.working_context
+                .get_or_try_init(|| self.load_working_context(journal, operation, input))
+                .await?
+        } else {
+            uncached = self.load_working_context(journal, operation, input).await?;
+            &uncached
+        };
         let Some(working) = working else {
             return self.canonical_base_for_input(journal, input).await;
         };
-        if working.journal != std::ptr::from_ref(journal).cast::<()>() as usize
+        if working.journal != journal.cache_identity()
             || working.operation != operation
             || input
                 .selected_context
@@ -127,7 +132,7 @@ impl<'a> StockExecution<'a> {
         #[cfg(not(feature = "filesystem"))]
         let hold = None;
         Ok(Some(WorkingContext {
-            journal: std::ptr::from_ref(journal).cast::<()>() as usize,
+            journal: journal.cache_identity(),
             operation,
             selection,
             context,

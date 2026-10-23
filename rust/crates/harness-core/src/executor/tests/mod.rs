@@ -373,6 +373,7 @@ struct Journal(
     ExecutionClaims,
     AtomicUsize,
     Option<crate::core::AuthorityVerifier>,
+    ExecutionJournalCacheId,
 );
 
 impl Journal {
@@ -434,6 +435,10 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn cache_identity(&self) -> Option<ExecutionJournalCacheId> {
+        Some(self.9)
+    }
+
     fn stage_prepared_model_request<'a>(
         &'a self,
         operation: OperationId,

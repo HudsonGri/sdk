@@ -53,7 +53,7 @@ fn release_page_scratch(
 
 #[derive(Default)]
 pub(super) struct RecordIndex<'a> {
-    binding: Option<(OperationId, usize)>,
+    binding: Option<(OperationId, ExecutionJournalCacheId)>,
     tail: u64,
     keys: DigestIndex<usize>,
     steps: Vec<Vec<ExecutionRecord>>,
@@ -200,12 +200,14 @@ impl<'a> RecordIndex<'a> {
         io: Option<&'a PreparationIo>,
     ) -> Result<()> {
         validate_journal(journal, io)?;
-        // A stack-local driver can be used with several journal objects in
-        // tests; a different object or operation must never reuse its prefix.
-        let binding = (operation, std::ptr::from_ref(journal).cast::<()>() as usize);
-        if self.binding != Some(binding) {
+        // Addresses can be reused after an in-place journal replacement.
+        // Providers without a stable binding identity always replay afresh.
+        let binding = journal
+            .cache_identity()
+            .map(|identity| (operation, identity));
+        if binding.is_none() || self.binding != binding {
             *self = Self::default();
-            self.binding = Some(binding);
+            self.binding = binding;
         }
         loop {
             #[cfg(feature = "filesystem")]

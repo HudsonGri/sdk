@@ -31,6 +31,8 @@ struct Timing {
     stream_flushes: Arc<AtomicU64>,
     profile: profile::Profile,
     resources: resources::Samples,
+    summaries: u32,
+    maximum_request_bytes: usize,
 }
 
 struct FlushCounter(Arc<AtomicU64>);
@@ -58,18 +60,23 @@ impl Timing {
             );
             self.profile.report(end);
             self.resources.report(end)?;
+            println!(
+                "compaction summaries={}; maximum dispatched request={} bytes",
+                self.summaries, self.maximum_request_bytes
+            );
         }
         Ok(())
     }
 }
 struct Provider {
     turns: u32,
+    compact: bool,
     timing: Arc<Mutex<Timing>>,
 }
 impl ModelProvider for Provider {
     fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
         Ok(ModelContextCapacity {
-            context_tokens: 1_048_576,
+            context_tokens: if self.compact { 65_536 } else { 1_048_576 },
             output_tokens: Some(4096),
         })
     }
@@ -78,6 +85,11 @@ impl ModelProvider for Provider {
         request: &'a PreparedModelRequest,
     ) -> BoxProviderFuture<'a, Result<ModelTokenCount>> {
         Box::pin(async move {
+            if self.compact {
+                return request
+                    .serialized_token_upper_bound(None)
+                    .map(|(count, _)| count);
+            }
             Ok(ModelTokenCount::from_upper_bounds(
                 request.request_digest(),
                 u32::try_from(request.bytes().len())
@@ -91,10 +103,33 @@ impl ModelProvider for Provider {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+        // The synthetic model answers the SDK's summary instruction with text.
+        // It retains the tool catalog when the source includes tool exchanges.
+        let summary = request.request().messages.last().is_some_and(|message| {
+            matches!(&message.content, acyclic_harness::model::ModelContent::Text(text)
+                if text.starts_with("Summarize the preceding context for continued work."))
+        });
+        if self.compact && summary {
+            drop(request);
+            self.timing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .summaries += 1;
+            return Box::pin(futures::stream::iter([
+                Ok(ModelEvent::Content {
+                    delta: "Continue the deterministic bench.noop tool sequence.".into(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]));
+        }
+        let request_bytes = request.bytes().len();
         // Include destruction of the SDK's owned request in runtime overhead;
         // this fixture retains neither earlier requests nor their full messages.
         drop(request);
         let mut timing = self.timing.lock().unwrap_or_else(PoisonError::into_inner);
+        timing.maximum_request_bytes = timing.maximum_request_bytes.max(request_bytes);
         if let Some((finished, flushes)) = timing.tool_finished.take() {
             let step_flushes = timing.stream_flushes.load(Ordering::Relaxed) - flushes;
             if let Err(error) = timing.intervals.push(finished.elapsed(), step_flushes) {
@@ -157,6 +192,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let turns = std::env::args()
         .nth(1)
         .map_or(Ok(1000), |arg| arg.parse::<u32>())?;
+    let compact = std::env::args().any(|arg| arg == "--compact");
     let root = tempfile::tempdir()?;
     let checkout = root.path().join("checkout");
     std::fs::create_dir(&checkout)?;
@@ -178,6 +214,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .try_init()?;
     let provider = Arc::new(Provider {
         turns,
+        compact,
         timing: timing.clone(),
     });
     let tool = Tool {
@@ -205,7 +242,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     .state_directory(root.path().join("state"))
     .without_default_tools()
     .tool(tool)
-    .compaction(CompactionPolicy::Disabled);
+    .compaction(if compact {
+        CompactionPolicy::default()
+    } else {
+        CompactionPolicy::Disabled
+    });
     let harness = LocalHarness::open(config).await?;
     timing
         .lock()
