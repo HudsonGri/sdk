@@ -3,6 +3,8 @@ use super::*;
 mod observed_cost;
 
 thread_local! {
+    /// Counterfactual: reread and hash even an identical authenticated payload.
+    pub(super) static REREAD_MATCHING_PAYLOAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Stops a publication after its physical write, before its capture.
     pub(super) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: a replay never captures, as before the fix.

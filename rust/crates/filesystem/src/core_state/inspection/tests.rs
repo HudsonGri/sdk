@@ -9,7 +9,14 @@ fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if entry.file_type().unwrap().is_dir() {
                 pending.push(entry.path());
             } else {
-                files.insert(entry.path(), std::fs::read(entry.path()).unwrap());
+                // Windows enforces the live owner's byte-range lock even on
+                // reads beyond EOF. Empty lock files have no bytes to read.
+                let bytes = if entry.metadata().unwrap().len() == 0 {
+                    Vec::new()
+                } else {
+                    std::fs::read(entry.path()).unwrap()
+                };
+                files.insert(entry.path(), bytes);
             }
         }
     }

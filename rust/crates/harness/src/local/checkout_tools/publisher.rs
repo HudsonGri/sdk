@@ -4,6 +4,8 @@ use crate::conversation::{
     BoundedContentFuture, ContentHold, ContentIo, ContentPublisher, FileRef,
 };
 
+mod observed;
+
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
 
 fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::OperationId {
@@ -190,88 +192,6 @@ impl CheckoutPublisher {
             .finish_owed_write(selected, watcher, PublicationPermit::Unrestricted)
             .await?;
         self.observed(view, operation, file).await
-    }
-
-    /// Rebinds a published file to the generation that captured its own
-    /// physical write, when that capture committed directly on the staged
-    /// generation and holds exactly the published bytes. The capture is
-    /// found by its durable operation identity, never by its distance from
-    /// the head, so a first attempt and every later replay return one
-    /// reference. Without such a capture the staged reference stands, and
-    /// any other change to the file still conflicts with an edit through it.
-    async fn observed(
-        &self,
-        view: &workspace::View,
-        operation: OperationId,
-        file: FileRef,
-    ) -> Result<FileRef> {
-        self.observed_with_budget(view, operation, file, acyclic_fs::WorkBudget::UNBOUNDED)
-            .await
-    }
-
-    async fn observed_with_budget(
-        &self,
-        view: &workspace::View,
-        operation: OperationId,
-        file: FileRef,
-        budget: acyclic_fs::WorkBudget,
-    ) -> Result<FileRef> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let key = acyclic_fs::IdempotencyKey::from_bytes(
-            capture::capture_operation(write_capture(operation, file.path()), 1).into_bytes(),
-        );
-        let Some(capture) = view
-            .workspace()
-            .operation_generation(key, budget, &cancellation)
-            .await
-            .map_err(storage)?
-            .value
-        else {
-            return Ok(file);
-        };
-        let parents = capture
-            .parents(budget, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        if parents != [self.staged_generation(&file)?] {
-            return Ok(file);
-        }
-        let descriptor = file.descriptor();
-        let bytes = match capture
-            .read(
-                &format!("/{}", file.path()),
-                descriptor.byte_length().saturating_add(1),
-                budget,
-                &cancellation,
-            )
-            .await
-        {
-            Ok(read) => read.value,
-            Err(failure) => match failure.error {
-                acyclic_fs::WorkspaceError::NotFound
-                | acyclic_fs::WorkspaceError::NotRegularFile
-                | acyclic_fs::WorkspaceError::IsDirectory
-                | acyclic_fs::WorkspaceError::ReadLimitExceeded => return Ok(file),
-                error => return Err(storage(error)),
-            },
-        };
-        let bytes: &[u8] = bytes.as_ref();
-        if bytes.len() as u64 != descriptor.byte_length()
-            || <sha2::Sha256 as sha2::Digest>::digest(bytes).as_slice() != descriptor.sha256()
-        {
-            return Ok(file);
-        }
-        // Retain it as publication retains the staged generation.
-        crate::filesystem::retain_published_generation(&capture).await?;
-        FileRef::new(
-            file.volume().clone(),
-            file.path().to_owned(),
-            hex::encode(capture.id().digest().into_bytes()),
-            descriptor.clone(),
-            file.display_name().to_owned(),
-            &mut None,
-        )
     }
 
     fn staged_generation(&self, file: &FileRef) -> Result<acyclic_fs::GenerationId> {

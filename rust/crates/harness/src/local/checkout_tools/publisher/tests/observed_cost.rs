@@ -17,6 +17,34 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         .0
         .ok_or_else(|| Error::NotFound("staged publication".into()))?;
     assert_ne!(staged.version(), captured.version(), "fixture must finish its own physical capture");
+    eprintln!("WRITE_REBIND_IDENTITIES equal={}", same_payloads(&publisher, &staged, &captured).await?);
+    let started = std::time::Instant::now();
+    let original = publisher.observed(view, operation, staged.clone()).await?;
+    eprintln!("WRITE_REBIND bytes={} elapsed_us={}", bytes.len(), started.elapsed().as_micros());
+    assert_eq!(original, captured);
+    let budget = acyclic_fs::WorkBudget {
+        output_bytes: 64 * 1024,
+        ..acyclic_fs::WorkBudget::UNBOUNDED
+    };
+    let bounded = publisher.observed_with_budget(view, operation, staged.clone(), budget).await;
+    assert!(bounded.is_ok(), "rebinding must authenticate metadata without rereading 1 MiB of published content: {bounded:?}");
+    assert_eq!(bounded?, captured);
+    let old = FullRead::enter();
+    let refused = publisher.observed_with_budget(view, operation, staged.clone(), budget).await;
+    let fallback = publisher.observed(view, operation, staged).await?;
+    drop(old);
+    let failure = refused.expect_err("old full read must exceed the logical output budget");
+    let refusal = failure.to_string();
+    assert!(refusal.contains("output_bytes") || refusal.contains("OutputBytes"), "{failure:?}");
+    assert_eq!(fallback, captured, "different payload layouts keep the original content fallback");
+    eprintln!("WRITE_REBIND_NEGATIVE old_read_refused={failure}");
+
+    harness.close().await?;
+    Ok(())
+}
+
+async fn same_payloads(publisher: &CheckoutPublisher, staged: &FileRef, captured: &FileRef) -> Result<bool> {
+    let view = publisher.tools.workspace.view();
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut payloads = Vec::new();
     let config = view.workspace().volume_config();
@@ -27,23 +55,51 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
     let (path, _allocation) = acyclic_fs::kernel::NamespacePath::parse_in_profile(
         "/large.txt", config.profile, config.limits, &mut accounting, &cancellation)
         .map_err(storage)?;
-    for file in [&staged, &captured] {
+    for file in [staged, captured] {
         let generation = view.workspace().generation(publisher.staged_generation(file)?,
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
         let records = generation.lookup_paths(std::slice::from_ref(&path),
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
         payloads.push(records.first().and_then(Option::as_ref).map(|record| record.payload));
     }
-    eprintln!("WRITE_REBIND_IDENTITIES equal={}", payloads.first() == payloads.get(1));
-    let started = std::time::Instant::now();
-    let original = publisher.observed(view, operation, staged.clone()).await?;
-    eprintln!("WRITE_REBIND bytes={} elapsed_us={}", bytes.len(), started.elapsed().as_micros());
-    assert_eq!(original, captured);
-    let bounded = publisher.observed_with_budget(view, operation, staged,
-        acyclic_fs::WorkBudget { object_bytes_read: 64 * 1024,
-            ..acyclic_fs::WorkBudget::UNBOUNDED }).await;
-    assert!(bounded.is_ok(), "rebinding must authenticate metadata without rereading 1 MiB of published content: {bounded:?}");
-    assert_eq!(bounded?, captured);
-    harness.disconnect_unfinished().await?;
+    Ok(payloads.first() == payloads.get(1))
+
+}
+
+struct FullRead;
+
+impl FullRead {
+    fn enter() -> Self {
+        assert!(!REREAD_MATCHING_PAYLOAD.replace(true));
+        Self
+    }
+}
+
+impl Drop for FullRead {
+    fn drop(&mut self) {
+        REREAD_MATCHING_PAYLOAD.set(false);
+    }
+}
+
+#[tokio::test]
+async fn differing_captured_bytes_keep_the_original_publication_reference() -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let original = vec![b'a'; 1024 * 1024];
+    KILL_BEFORE_CAPTURE.set(true);
+    let pending = publisher.stage_once(operation, "changed.txt", &original, "text/plain", "changed.txt", None)?.await;
+    KILL_BEFORE_CAPTURE.set(false);
+    assert!(pending.is_err());
+    let view = publisher.tools.workspace.view();
+    let writer = publisher.writer_for(&harness.project, view.workspace())?;
+    let staged = writer.observe_staged_once(operation, publisher.maximum, None)?.await?.0
+        .ok_or_else(|| Error::NotFound("pending publication".into()))?;
+    std::fs::write(directory.path().join("changed.txt"), vec![b'b'; original.len()]).map_err(storage)?;
+    let mut state = publisher.tools.state.lock().await;
+    publisher.tools.finish_owed_write((&publisher.tools.workspace, view), &mut state.watcher,
+        PublicationPermit::Unrestricted).await?;
+    assert_eq!(publisher.observed(view, operation, staged.clone()).await?, staged);
+    drop(state);
+    harness.close().await?;
     Ok(())
 }

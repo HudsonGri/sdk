@@ -290,9 +290,15 @@ fn durable_files(
                     DurableEntry::Link(std::fs::read_link(entry.path()).map_err(storage)?),
                 );
             } else if kind.is_file() {
-                let bytes = std::fs::read(entry.path()).map_err(|cause| {
-                    Error::Storage(format!("snapshot read {:?}: {cause}", entry.path()))
-                })?;
+                // An empty live-owner lock file has no content to read;
+                // Windows rejects speculative reads past its locked EOF.
+                let bytes = if entry.metadata().map_err(storage)?.len() == 0 {
+                    Vec::new()
+                } else {
+                    std::fs::read(entry.path()).map_err(|cause| {
+                        Error::Storage(format!("snapshot read {:?}: {cause}", entry.path()))
+                    })?
+                };
                 files.insert(entry.path(), DurableEntry::File(bytes));
             }
         }
