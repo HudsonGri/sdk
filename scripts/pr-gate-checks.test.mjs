@@ -24,7 +24,7 @@ test)
   echo 'error: could not compile acyclic-harness-fuzz (bin recorded_invocation test)' >&2
   exit 101
  fi
- echo 'test result: ok. 1 passed; 0 failed';;
+ if [[ " $* " != *" --no-run "* ]]; then echo 'test result: ok. 1 passed; 0 failed'; fi;;
 *) exit 9;;
 esac
 `);chmodSync(cargo,0o755);
@@ -38,13 +38,13 @@ esac
       const result=spawnSync('bash',[runner,'--skip','known-flake'],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:broken?'1':'0'}});
       assert.equal(result.status,expected,result.stdout+result.stderr);
       const calls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(c=>c.startsWith('test '));
-      assert.equal(calls.length,2);assert.ok(calls.every(c=>c.includes('-p acyclic-harness-fuzz -p reverse-consumer')));
+      assert.equal(calls.length,expected?2:3);assert.ok(calls.every(c=>c.includes('-p acyclic-harness-fuzz -p reverse-consumer')));
       assert.ok(!calls.some(c=>c.includes('--workspace')),'affected scope remains narrowed');
       if(!negative)assert.match(calls[0],/--all-targets/);
-      assert.match(calls[1],/--doc/);assert.ok(calls.every(c=>c.includes('--skip known-flake')));
+      assert.match(calls.at(-1),/--doc/);assert.ok(calls.filter(c=>!c.includes('--no-run')).every(c=>c.includes('--skip known-flake')));
       assert.match(result.stdout,new RegExp('GATE_DONE rc='+expected));
       if(expected)assert.match(result.stdout,/error\[E0425\]: cannot find type Capabilities/);
-      assert.equal(readFileSync(join(cwd,'.gate-fuzz-bins'),'utf8'),'recorded_invocation\n');
+      if(!expected)assert.equal(readFileSync(join(cwd,'.gate-fuzz-executables'),'utf8'),'');
     }
     // A preparation error must not launch unobserved background Cargo jobs.
     writeFileSync(join(cwd,'calls'),'');

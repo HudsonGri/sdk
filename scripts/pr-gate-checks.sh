@@ -59,8 +59,8 @@ fi
 # Validate dispatch before any background compiler can outlive an early exit.
 # Match main's target coverage, including test=false libFuzzer binaries.
 cargo metadata --locked --offline --no-deps --format-version 1 > .gate-pr-metadata.json || exit 2
-node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-pr-metadata.json","utf8"));for(const p of m.packages) if(p.metadata?.["cargo-fuzz"]) for(const t of p.targets) if(t.kind.includes("bin"))console.log(t.name)' > .gate-fuzz-bins || exit 2
-export GATE_FUZZ_TEST_BIN_FILE="$PWD/.gate-fuzz-bins"
+export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
+: > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
 chmod +x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" || exit 2
@@ -129,6 +129,10 @@ if [ -f scripts/check-feature-matrix.mjs ]; then
 fi
 run_tests(){
   local phase=$1; shift
+  if [ "$phase" = targets ]; then
+    bash "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" --build .gate-pr-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
+      cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" || return $?
+  fi
   cargo test --locked "${test_pkgs[@]}" --all-features --no-fail-fast "$@" -- "${harness[@]}" 2>&1 | tee -a .gate-tests.out
   local status=("${PIPESTATUS[@]}")
   if [ "${status[1]}" != 0 ]; then echo 'error: gate could not retain Cargo test output'; return 2; fi

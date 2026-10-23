@@ -27,22 +27,23 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
-    def tearDown(self):self.temp.cleanup()
+        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir="/home/var"))
+    def tearDown(self):
+        self.temp.cleanup();job.remove_home(self.real_home)
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         source=(HERE/'bb-job.py').read_text()
-        source=source.replace("real_home=Path('/home/var')",f'real_home=Path({str(self.d/"real-home")!r})')
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
-        env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+        env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
-        return result,json.loads(Path(str(meta)+'.runtime').read_text())
+        return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -74,17 +75,76 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,bytes(range(256)))
         self.assertTrue(runtime['targets_removed']);self.assertFalse(Path(runtime['hermetic_home']).exists())
         self.assertIn(b'[buildbox]',result.stderr)
-    def test_only_shared_sccache_is_excluded_and_other_real_state_still_fails(self):
-        home=self.d/'real-home';(home/'.cache/sccache').mkdir(parents=True)
-        (home/'.local/share/acyclic').mkdir(parents=True)
-        before=job.inventory(home);(home/'.cache/sccache/shared-object').write_bytes(b'x')
-        self.assertEqual(job.growth(before,job.inventory(home)),[])
-        for rel in ['.cache/cargo-xwin/toolchain.cmake','.cache/other/object','.local/share/acyclic/harness/state']:
-            p=home/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'leak')
-            self.assertIn(str(p),job.growth(before,job.inventory(home)))
-        result,runtime=self.run_job([sys.executable,'-c',f'from pathlib import Path;Path({str(home/".cache/real-leak")!r}).write_text("bad")'])
-        self.assertEqual(result.returncode,2);self.assertEqual(result.stdout,b'');self.assertIn(b'GATE_HOME_LEAK',result.stderr)
-        self.assertIn(str(home/'.cache/real-leak'),runtime['home_leaks'])
+    def test_job_and_descendant_real_home_writes_are_denied_and_negative_control(self):
+        home=self.real_home
+        (home/'.cache').mkdir();(home/'.cache/existing').write_text('keep')
+        alias=self.d/'alias';alias.symlink_to(home,target_is_directory=True)
+        for operation in [
+            f'Path({str(home/".cache/leak")!r}).write_text("bad")',
+            f'Path({str(alias/".cache/leak")!r}).write_text("bad")',
+            f'Path({str(home/".cache/existing")!r}).write_text("truncate")',
+            f'Path({str(home/".cache/existing")!r}).unlink()',
+        ]:
+            result,runtime=self.run_job([sys.executable,'-c','from pathlib import Path;'+operation])
+            self.assertEqual(result.returncode,1,result.stderr.decode())
+            self.assertIn(b'PermissionError',result.stderr)
+            self.assertFalse((home/'.cache/leak').exists())
+            self.assertEqual((home/'.cache/existing').read_text(),'keep')
+            self.assertEqual(runtime['home_guard']['writable'],False)
+        child=f'from pathlib import Path;Path({str(home/".cache/child")!r}).write_text("bad")'
+        result,_=self.run_job([sys.executable,'-c',f'import subprocess,sys;sys.exit(subprocess.call([sys.executable,"-c",{child!r}]))'])
+        self.assertEqual(result.returncode,1);self.assertFalse((home/'.cache/child').exists())
+        worker=self.worker();worker.write_text(worker.read_text().replace("runtime['home_guard']=protect_home(real_home)","runtime['home_guard']={'mechanism':'negative-control'}"))
+        meta=self.d/'negative.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        result=subprocess.run([sys.executable,str(worker),sys.executable,'-c',child],env=env,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode());self.assertTrue((home/'.cache/child').exists())
+
+    def test_concurrent_other_tenant_writer_does_not_fail_job(self):
+        home=self.real_home;cache=home/'.cache/cloud/bb2-tools';cache.mkdir(parents=True)
+        meta=self.d/'concurrent.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        process=subprocess.Popen([sys.executable,str(self.worker()),sys.executable,'-c','import sys;print("ready",flush=True);sys.stdin.readline();print("done")'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            self.assertEqual(process.stdout.readline(),b'ready\n')
+            before=set(cache.iterdir());(cache/'concurrent-object').write_text('outside writer')
+            self.assertNotEqual(before,set(cache.iterdir())) # old global diff false-positive
+            out,err=process.communicate(b'continue\n',timeout=3)
+            self.assertEqual(process.returncode,0,err.decode());self.assertEqual(out,b'done\n')
+            self.assertIn(b'GATE_HOME_GUARD',err)
+        finally:
+            if process.poll() is None:process.kill();process.communicate()
+
+    def test_missing_guard_or_inherited_home_output_is_infra(self):
+        worker=self.worker();worker.write_text(worker.read_text().replace('abi=call(444,0,0,1)','raise OSError("unavailable control")'))
+        meta=self.d/'unavailable.meta';meta.write_text('{}')
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None)
+        args=[sys.executable,str(worker),sys.executable,'-c','print("must not execute")']
+        result=subprocess.run(args,env=env,capture_output=True)
+        self.assertEqual(result.returncode,224);self.assertEqual(result.stdout,b'');self.assertIn(b'HOME guard INFRA',result.stderr)
+        worker=self.worker()
+        with (self.real_home/'inherited-output').open('w') as output:
+            result=subprocess.run(args,env=env,stdout=output,stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode,224);self.assertIn(b'writable inherited',result.stderr)
+        self.assertEqual((self.real_home/'inherited-output').read_text(),'')
+
+    def test_active_marker_does_not_bypass_kernel_home_guard(self):
+        path=self.real_home/'forged-active-marker'
+        result,_=self.run_job([sys.executable,'-c',f'from pathlib import Path;Path({str(path)!r}).write_text("bad")'],extra={'BB_JOB_ACTIVE':'1'})
+        # Nested execution reuses its owner's receipt; no new runtime is written.
+        self.assertEqual(result.returncode,1);self.assertIn(b'PermissionError',result.stderr)
+        self.assertFalse(path.exists())
+
+    def test_home_backed_git_refuses_a_shared_namespace(self):
+        repo=self.real_home/'repository';repo.mkdir()
+        subprocess.run(['git','init','--quiet',str(repo)],check=True)
+        before=(repo/'.git/HEAD').read_bytes()
+        with self.assertRaisesRegex(RuntimeError,'private buildbox worktree namespace'):
+            job.private_git(self.d,Path('/home/var'),str(repo))
+        self.assertEqual((repo/'.git/HEAD').read_bytes(),before)
     def test_unreadable_directories_cleanup_negative_control(self):
         p=self.d/'job';(p/'moved/deep').mkdir(parents=True);(p/'moved/deep/data').write_bytes(b'x')
         (p/'moved').chmod(0)

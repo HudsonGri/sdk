@@ -40,25 +40,85 @@ def disk():
         readings.append({'path':path,'free_percent':pct,'free_bytes':s.f_bavail*s.f_frsize})
     return readings
 
-def inventory(real_home):
-    # Comparing each path catches directory growth even when another process
-    # deletes files elsewhere; symlinks are never followed.
-    result={}
-    for root in [real_home/'.local/share/acyclic',real_home/'.cache']:
-        if not root.exists(): continue
-        for where,dirs,files in os.walk(root,followlinks=False):
-            # ~/.cache/sccache belongs to the standing shared sccache server, which other
-            # tenants fill concurrently; jobs here use SCCACHE_DIR=/mnt/bb/sccache.
-            if where==str(root) and root.name=='.cache': dirs[:]=[d for d in dirs if d!='sccache']
-            for name in dirs+files:
-                p=Path(where)/name
+def protect_home(real_home):
+    """Deny writes below real HOME to this process and its descendants only."""
+    real_home=real_home.resolve(strict=True)
+    libc=ctypes.CDLL(None,use_errno=True)
+    def call(number,*args):
+        result=libc.syscall(ctypes.c_long(number),*args)
+        if result<0: raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()))
+        return result
+    # ABI 3 includes both truncate and cross-directory rename/link protection.
+    if os.uname().machine not in ['x86_64','aarch64']:
+        raise RuntimeError('unsupported Landlock architecture')
+    abi=call(444,0,0,1)
+    if abi<3:raise RuntimeError('real HOME guard requires Landlock ABI >= 3')
+    writes=sum(1<<bit for bit in [1,4,5,6,7,8,9,10,11,12,13,14])
+    class Ruleset(ctypes.Structure):_fields_=[('handled_access_fs',ctypes.c_uint64)]
+    class Rule(ctypes.Structure):
+        _pack_=1
+        _fields_=[('allowed_access',ctypes.c_uint64),('parent_fd',ctypes.c_int)]
+    attr=Ruleset(writes); rules=call(444,ctypes.byref(attr),ctypes.sizeof(attr),0)
+    try:
+        # Never grant a parent of HOME. Grant its other siblings at each
+        # ancestor; every present and future path inside HOME remains protected.
+        current=Path('/')
+        for part in real_home.parts[1:]:
+            for path in current.iterdir():
+                if path.name==part or path.is_symlink():continue
+                fd=os.open(path,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
                 try:
-                    s=p.lstat(); result[str(p)]=(0 if stat.S_ISDIR(s.st_mode) else s.st_size,s.st_mtime_ns)
-                except FileNotFoundError: pass
-    return result
+                    rights=writes if stat.S_ISDIR(os.fstat(fd).st_mode) else writes & ((1<<1)|(1<<14))
+                    rule=Rule(rights,fd);call(445,rules,1,ctypes.byref(rule),0)
+                finally:os.close(fd)
+            current=current/part
+        # Only stdio reaches the payload. An already-open write descriptor
+        # bypasses open checks, so real-HOME outputs must be refused up front.
+        for fd in [0,1,2]:
+            try:
+                link=os.readlink(f'/proc/self/fd/{fd}')
+                if not link.startswith('/'):continue # pipe/socket, not a filesystem path
+                target=Path(link).resolve()
+                if target.is_relative_to(real_home) and fcntl.fcntl(fd,fcntl.F_GETFL)&os.O_ACCMODE!=os.O_RDONLY:
+                    raise RuntimeError('writable inherited real HOME descriptor '+str(fd))
+            except FileNotFoundError:pass
+        if libc.prctl(38,1,0,0,0):raise OSError(ctypes.get_errno(),'PR_SET_NO_NEW_PRIVS')
+        call(446,rules,0)
+    finally:os.close(rules)
+    return {'mechanism':'landlock','abi':abi,'real_home':str(real_home),'writable':False}
 
-def growth(before,after):
-    return [p for p,v in after.items() if p not in before or v[0]>before[p][0]]
+def private_git(job,real_home,source):
+    """Keep mutable Git state outside HOME without changing the shared copy.
+
+    buildbox already owns a private mount namespace. Bind only this job's .git
+    pointer there; source bytes and the host's pointer are unchanged. Objects
+    from the real mirror are read-only alternates; new objects/refs/index live
+    in the disposable job tree.
+    """
+    if not source:return None
+    def git(*args):
+        return subprocess.check_output(['git','-C',str(source),*args],stderr=subprocess.PIPE,text=True).strip()
+    probe=subprocess.run(['git','-C',str(source),'rev-parse','--show-toplevel'],capture_output=True,text=True)
+    if probe.returncode:return None
+    source=Path(probe.stdout.strip())
+    common=Path(git('rev-parse','--path-format=absolute','--git-common-dir')).resolve()
+    if not common.is_relative_to(real_home.resolve()):return None
+    if os.environ.get('BB_JOB_PRIVATE_MOUNT')!='1' or source!=Path('/work/src') or not (source/'.git').is_file():
+        raise RuntimeError('HOME-backed Git metadata requires the private buildbox worktree namespace')
+    own_ns=os.readlink('/proc/self/ns/mnt')
+    host_ns=subprocess.check_output(['sudo','-n','readlink','/proc/1/ns/mnt'],text=True).strip()
+    if own_ns==host_ns:raise RuntimeError('refusing private Git mount in the host namespace')
+    head=git('rev-parse','HEAD')
+    base=subprocess.run(['git','-C',str(source),'rev-parse','refs/remotes/origin/main'],capture_output=True,text=True)
+    private=job/'git';subprocess.run(['git','init','--bare','--quiet',str(private)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    (private/'objects/info/alternates').write_text(str(common/'objects')+'\n')
+    def local(*args):subprocess.run(['git','--git-dir='+str(private),*args],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    local('config','core.bare','false');local('config','core.worktree',str(source))
+    local('update-ref','--no-deref','HEAD',head);local('read-tree',head)
+    if base.returncode==0:local('update-ref','refs/remotes/origin/main',base.stdout.strip())
+    pointer=job/'git-pointer';pointer.write_text('gitdir: '+str(private)+'\n')
+    subprocess.run(['sudo','-n','mount','--bind',str(pointer),str(source/'.git')],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    return {'private_gitdir':str(private),'read_only_objects':str(common/'objects'),'mount_namespace':own_ns}
 
 def server_identity(endpoint):
     # SO_PEERCRED identifies the server, then /proc birth time protects against
@@ -114,6 +174,13 @@ def run(argv):
     # Nested build-slot reuses the enclosing job's home/admission/server, rather
     # than consuming a second tenant slot or changing the tested environment.
     if os.environ.get('BB_JOB_ACTIVE')=='1':
+        # The marker alone is not proof: callers and pre-upgrade parents may
+        # supply it without an inherited Landlock domain.
+        try:protect_home(Path('/home/var'))
+        except (OSError,RuntimeError) as error:
+            print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True)
+            return 224
+        os.environ['CARGO_HOME']='/mnt/bb/toolchains/cargo'
         if Path(argv[0]).name=='cargo':
             os.environ['RUSTC']='/home/var/bin/bigstack/rustc'
             if os.environ.get('BB_CACHE_DISABLED')=='1':os.environ['RUSTC_WRAPPER']=''
@@ -130,7 +197,7 @@ def run(argv):
     runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
              'admission':admission}
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
-    server=None; child=None; before=None; rc=224; units=[]
+    server=None; child=None; rc=224; units=[]
     def interrupted(n,f):
         if child:
             try: os.killpg(child.pid,n)
@@ -145,7 +212,7 @@ def run(argv):
         env.update(HOME=str(job/'home'),XDG_DATA_HOME=str(job/'data'),XDG_STATE_HOME=str(job/'state'),
                    XDG_CACHE_HOME=str(job/'cache'),XDG_CONFIG_HOME=str(job/'config'),
                    XDG_RUNTIME_DIR=str(job/'runtime'),TMPDIR=str(job/'tmp'),
-                   CARGO_HOME='/home/var/.cargo',RUSTUP_HOME='/home/var/.rustup',
+                   CARGO_HOME='/mnt/bb/toolchains/cargo',RUSTUP_HOME='/home/var/.rustup',
                    BB_JOB_ACTIVE='1',BB_ADMITTED='1',BB_JOB_HOME=str(job/'home'),BB_JOB_TMP=str(job/'tmp'),BB_JOB_TARGET=str(job/'target'),
                    XWIN_CACHE_DIR='/mnt/bb/toolchains/cargo-xwin',
                    CARGO_TARGET_DIR=str(job/'target'),GATE_MAIN_TARGET_DIR=str(job/'gate-main'),
@@ -165,7 +232,14 @@ def run(argv):
         except ValueError: pass
         # Preserve only persistent toolchain directories, never user state.
         env.setdefault('PATH','/home/var/.cargo/bin:/usr/bin:/bin')
-        before=inventory(real_home)
+        try:
+            runtime['git_metadata']=private_git(job,real_home,os.environ.get('BB_JOB_GIT_SOURCE'))
+            runtime['home_guard']=protect_home(real_home)
+        except (OSError,RuntimeError,subprocess.SubprocessError) as error:
+            runtime['home_guard_error']=str(error);atomic(runtimefile,runtime)
+            print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True)
+            return 224
+        print('GATE_HOME_GUARD '+json.dumps(runtime['home_guard']),file=sys.stderr,flush=True)
         if env.get('BB_CACHE_DISABLED')=='1' or env.get('RUSTC_WRAPPER')=='':
             env['BB_CACHE_DISABLED']='1';runtime['cache']='disabled'
         else:server,runtime['cache']=start_cache(job,env)
@@ -189,12 +263,6 @@ def run(argv):
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224
-        leaked=growth(before,inventory(real_home))
-        if leaked:
-            print('\nerror: GATE_HOME_LEAK real user state grew: '+', '.join(leaked[:30]),file=sys.stderr,flush=True)
-            runtime['home_leaks']=leaked; atomic(runtimefile,runtime)
-            if rc==0: rc=2
-        else: print('\nGATE_HOME_GUARD rc=0',file=sys.stderr,flush=True)
         return rc
     finally:
         # A signal does not leave test children running after their home/cache

@@ -582,12 +582,13 @@ if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RU
   // persists per copy and seeds new copies; rsync never carries it).
   const inner = `set -u
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BUILD_SLOT_EXEC_IN_PAYLOAD=1
+export BB_JOB_GIT_SOURCE=/work/src BB_JOB_PRIVATE_MOUNT=1
 export BB_JOB_EXPORT_SPEC=${q(JSON.stringify(exportSpec))}
 if [ "\${BB_JOB_ACTIVE:-}" != 1 ]; then exec python3 /home/var/bin/bb-job.py bash ${J}.sh; fi
 # The host gates run under umask 022; bb1 logins default to 002, which made job-created dirs group-writable (custody checks
 # such as cloud-supervisor release_cache refuse those).
 umask 022
-export HOME="$BB_JOB_HOME" CARGO_HOME=/home/var/.cargo RUSTUP_HOME=/home/var/.rustup PATH=${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
+export HOME="$BB_JOB_HOME" CARGO_HOME=/mnt/bb/toolchains/cargo RUSTUP_HOME=/home/var/.rustup PATH=${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
 # The job's delegated cgroup (see the launch below): BB_CGROUP is the job leaf; the bbcg systemd-run shim turns
 # "systemd-run --user --scope -p Delegate=yes -p MemoryMax=N CMD" into an exclusive child cgroup inside the job.
 case "$(cat /proc/self/cgroup)" in 0::/bbjobs.slice/run-*.scope/job) export BB_CGROUP=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup) PATH=/home/var/bin/bbcg:$PATH;; esac

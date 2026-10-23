@@ -75,7 +75,7 @@ def main():
     reruns = [line for line in text.splitlines() if 'to rerun pass' in line and any(re.search(r'-p ' + re.escape(p) + r'(?![A-Za-z0-9_-])', line) for p in roots)]
     only_docs = bool(reruns) and all(line.startswith('error: doctest failed') for line in reruns) and not re.search(r'^error: could not compile ', text, re.M)
     skips = [line.strip() for line in Path('Q:/lanes/hangs.txt').read_text().splitlines() if line.strip() and not line.startswith('#')]
-    key_data = {'base': args.base, 'roots': roots, 'docs': only_docs, 'skips': skips, 'target_coverage': 'all-targets+doc-executor-v2', 'runner_sha256': hashlib.sha256((lanes / 'gate-test-runner.sh').read_bytes()).hexdigest()}
+    key_data = {'base': args.base, 'roots': roots, 'docs': only_docs, 'skips': skips, 'target_coverage': 'all-targets+doc-artifacts-v3', 'runner_sha256': hashlib.sha256((lanes / 'gate-test-runner.sh').read_bytes()).hexdigest()}
     if compiler_roots:
         key_data['check_targets'] = True
         key_data['check_only'] = not bool(failing_roots)
@@ -145,12 +145,16 @@ trap 'touch "$cache"' EXIT
 echo "GATE_TEST_BASELINE_START base=@BASE@ roots=@ROOTS@"
 @CHECK@
 cargo metadata --locked --offline --no-deps --format-version 1 > .gate-baseline-metadata.json || exit 2
-node -e 'const m=JSON.parse(require("fs").readFileSync(".gate-baseline-metadata.json","utf8"));for(const p of m.packages)if(p.metadata?.["cargo-fuzz"])for(const t of p.targets)if(t.kind.includes("bin"))console.log(t.name)' > .gate-fuzz-bins || exit 2
-export GATE_FUZZ_TEST_BIN_FILE="$PWD/.gate-fuzz-bins"
+export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
+: > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/.gate-test-runner.sh"
 chmod +x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" || exit 2
 run_tests() {
+  if [[ " $* " == *" --all-targets "* ]]; then
+    bash "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" --build .gate-baseline-metadata.json "$GATE_FUZZ_EXECUTABLES" -- \
+      cargo test --locked @PACKAGES@ --all-features --no-fail-fast "$@" || return $?
+  fi
   cargo test --locked @PACKAGES@ --all-features --no-fail-fast "$@" -- @SKIPS@ 2>&1 | tee -a .gate-test-baseline.out
   status=("${PIPESTATUS[@]}"); result=${status[0]}
   if [ "${status[1]}" != 0 ]; then echo 'error: failed to retain baseline output'; result=2; fi

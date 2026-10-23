@@ -17,6 +17,7 @@ case "$1" in
 metadata) printf '%s\n' 'METADATA';;
 test)
  echo "$*" >> calls
+ if [[ " $* " == *" --no-run "* ]]; then exit 0; fi
  if [[ " $* " == *" --all-targets "* ]]; then
   echo 'thread main panicked: Unauthorized("runtime signing custody is closed")'
   echo 'error: test failed, to rerun pass `-p acyclic-conformance --bench harness`'
@@ -33,7 +34,7 @@ esac
   # A historical default-target result must not satisfy wider qualification.
   (results/'old.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[]}))
   (results/'old.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
-  (results/'interrupted.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[],'target_coverage':'all-targets+doc-executor-v2','runner_sha256':hashlib.sha256((root/'gate-test-runner.sh').read_bytes()).hexdigest()}))
+  (results/'interrupted.json').write_text(json.dumps({'base':'a'*40,'roots':['acyclic-conformance'],'docs':False,'skips':[],'target_coverage':'all-targets+doc-artifacts-v3','runner_sha256':hashlib.sha256((root/'gate-test-runner.sh').read_bytes()).hexdigest()}))
   (results/'interrupted.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
   source=(HERE/'coordinator/gate-test-baseline.py').read_text().replace("Path('Q:/lanes/hangs.txt')",f'Path({str(root/"hangs")!r})')
   if negative:source=source.replace("else 'run_tests --all-targets; rc=$?'", "else 'run_tests; rc=$?'")
