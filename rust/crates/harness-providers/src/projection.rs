@@ -143,15 +143,13 @@ pub(crate) fn body_named<'a>(
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
+    let mut in_prefix = true;
     for message in &request.messages {
+        in_prefix &= message.role == ModelRole::System;
+        let hoist = matches!(adapter, Adapter::Anthropic | Adapter::Gemini);
         #[cfg(not(target_arch = "wasm32"))]
-        if provider.codex_login.is_some() && message.role == ModelRole::System {
-            system.push(text_content(&message.content, files)?);
-            continue;
-        }
-        if message.role == ModelRole::System
-            && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
-        {
+        let hoist = hoist || provider.codex_login.is_some();
+        if in_prefix && hoist {
             system.push(text_content(&message.content, files)?);
         } else {
             for projected in project_message(
@@ -168,7 +166,7 @@ pub(crate) fn body_named<'a>(
         }
     }
     sequence::finish(adapter, &mut messages);
-    let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
+    let mut tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
         Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
         Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
             "parameters":tool.input_schema,"strict":false}),
@@ -176,6 +174,11 @@ pub(crate) fn body_named<'a>(
             "description":tool.description,"parameters":tool.input_schema}}),
         Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
     }) }).collect::<Result<_>>()?;
+    if adapter == Adapter::Anthropic
+        && let Some(tool) = tools.last_mut()
+    {
+        tool["cache_control"] = json!({"type":"ephemeral"});
+    }
     system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens
@@ -239,7 +242,11 @@ pub(crate) fn body_named<'a>(
             map.insert("stream".into(), json!(true));
             map.insert("max_tokens".into(), json!(max));
             if !system.is_empty() {
-                map.insert("system".into(), json!(system.join("\n\n")));
+                map.insert(
+                    "system".into(),
+                    json!([{"type":"text", "text":system.join("\n\n"),
+                    "cache_control":{"type":"ephemeral"}}]),
+                );
             }
             if !tools.is_empty() {
                 map.insert("tools".into(), json!(tools));
@@ -478,7 +485,11 @@ fn project_message<'a>(
             Vec::new()
         } else {
             vec![Message::Anthropic {
-                role: if role == "tool" { "user" } else { role },
+                role: if role == "assistant" {
+                    "assistant"
+                } else {
+                    "user"
+                },
                 content: ordered,
             }]
         }),
