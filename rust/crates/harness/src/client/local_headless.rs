@@ -256,90 +256,96 @@ impl LocalFileClient {
             .transpose()
     }
 
-    async fn run(
-        &mut self,
+    // Prompt and JSONL share this owner loop. Construct its storage/follow state
+    // on a separate frame so it is not retained as scratch space in prompt's
+    // poll while the same thread is driving a model and staging its journal.
+    #[inline(never)]
+    fn run<'a>(
+        &'a mut self,
         operation: OperationId,
-        mut input: impl Stream<Item = Result<String>> + Unpin,
+        mut input: impl Stream<Item = Result<String>> + Unpin + 'a,
         mut input_open: bool,
-        output: &mut impl Write,
-    ) -> Result<HeadlessOutcome> {
-        if operation != self.operation {
-            return Err(Error::Unauthorized("headless operation differs".into()));
-        }
-        self.initial(output)?;
-        loop {
-            let settled = self.outcome()?;
-            if settled.is_none()
-                && self.host_done
-                && self.query.cursor().position >= self.drain_through
-            {
-                let error = self
-                    .host_error
-                    .take()
-                    .unwrap_or(Error::Indeterminate(operation));
-                return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate {
-                    Ok(HeadlessOutcome::Indeterminate)
-                } else {
-                    Err(error)
-                };
+        output: &'a mut impl Write,
+    ) -> Pin<Box<dyn Future<Output = Result<HeadlessOutcome>> + 'a>> {
+        Box::pin(async move {
+            if operation != self.operation {
+                return Err(Error::Unauthorized("headless operation differs".into()));
             }
-            if let Some(outcome) = settled {
-                if input_open {
-                    match input.next().now_or_never() {
-                        Some(Some(line)) => {
-                            self.submit(&parse_local_request(&line?, operation)?)
-                                .await?;
-                            continue;
+            self.initial(output)?;
+            loop {
+                let settled = self.outcome()?;
+                if settled.is_none()
+                    && self.host_done
+                    && self.query.cursor().position >= self.drain_through
+                {
+                    let error = self
+                        .host_error
+                        .take()
+                        .unwrap_or(Error::Indeterminate(operation));
+                    return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate {
+                        Ok(HeadlessOutcome::Indeterminate)
+                    } else {
+                        Err(error)
+                    };
+                }
+                if let Some(outcome) = settled {
+                    if input_open {
+                        match input.next().now_or_never() {
+                            Some(Some(line)) => {
+                                self.submit(&parse_local_request(&line?, operation)?)
+                                    .await?;
+                                continue;
+                            }
+                            Some(None) | None => {}
                         }
-                        Some(None) | None => {}
+                    }
+                    return Ok(outcome);
+                }
+                let submitted = self.submitted
+                    || self
+                        .query
+                        .file(&key(operation, TaskFile::Request)?)
+                        .is_some();
+                enum Next {
+                    Input(Option<Result<String>>),
+                    File(Result<()>),
+                    Host(Result<()>),
+                }
+                let next = tokio::select! {
+                    biased;
+                    line = input.next(), if input_open => Next::Input(line),
+                    change = self.query.publish_next(async |change| publish(output, change)) => Next::File(change),
+                    result = &mut self.host, if !self.host_done => Next::Host(result),
+                };
+                match next {
+                    Next::Input(Some(line)) => {
+                        self.submit(&parse_local_request(&line?, operation)?)
+                            .await?
+                    }
+                    Next::Input(None) => {
+                        input_open = false;
+                        if !submitted {
+                            return Err(Error::NotFound("operation was not submitted".into()));
+                        }
+                    }
+                    Next::File(result) => {
+                        result?;
+                    }
+                    Next::Host(result) => {
+                        self.host_done = true;
+                        self.host_error = result.err();
+                        self.drain_through = self
+                            .local
+                            .task_files()
+                            .inner
+                            .snapshot(&selection(operation)?, MAXIMUM_FILES)
+                            .await?
+                            .cursor
+                            .position;
                     }
                 }
-                return Ok(outcome);
             }
-            let submitted = self.submitted
-                || self
-                    .query
-                    .file(&key(operation, TaskFile::Request)?)
-                    .is_some();
-            enum Next {
-                Input(Option<Result<String>>),
-                File(Result<()>),
-                Host(Result<()>),
-            }
-            let next = tokio::select! {
-                biased;
-                line = input.next(), if input_open => Next::Input(line),
-                change = self.query.publish_next(async |change| publish(output, change)) => Next::File(change),
-                result = &mut self.host, if !self.host_done => Next::Host(result),
-            };
-            match next {
-                Next::Input(Some(line)) => {
-                    self.submit(&parse_local_request(&line?, operation)?)
-                        .await?
-                }
-                Next::Input(None) => {
-                    input_open = false;
-                    if !submitted {
-                        return Err(Error::NotFound("operation was not submitted".into()));
-                    }
-                }
-                Next::File(result) => {
-                    result?;
-                }
-                Next::Host(result) => {
-                    self.host_done = true;
-                    self.host_error = result.err();
-                    self.drain_through = self
-                        .local
-                        .task_files()
-                        .inner
-                        .snapshot(&selection(operation)?, MAXIMUM_FILES)
-                        .await?
-                        .cursor
-                        .position;
-                }
-            }
-        }
+        })
     }
 }
 
@@ -379,7 +385,7 @@ impl HeadlessClient for LocalFileClient {
         validate(&command, operation)?;
         self.initial(output)?;
         self.submit(&command).await?;
-        Box::pin(self.run(operation, futures::stream::empty(), false, output)).await
+        self.run(operation, futures::stream::empty(), false, output).await
     }
     async fn input<W: Write>(
         &mut self,
@@ -387,7 +393,7 @@ impl HeadlessClient for LocalFileClient {
         input: impl Stream<Item = Result<String>> + Unpin,
         output: &mut W,
     ) -> Result<HeadlessOutcome> {
-        Box::pin(self.run(operation, input, true, output)).await
+        self.run(operation, input, true, output).await
     }
 }
 
