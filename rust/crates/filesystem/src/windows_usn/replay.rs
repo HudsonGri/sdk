@@ -200,7 +200,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires a live local Windows volume with a readable USN journal"]
+
     fn live_usn_replay_is_bounded_and_resumes_only_after_acceptance() {
         let root = tempfile::tempdir().unwrap();
         let stop = crate::CancellationToken::new();

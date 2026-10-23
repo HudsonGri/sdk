@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(windows)]
 #[tokio::test]
-#[ignore = "requires a live NTFS volume with a readable USN journal"]
+
 async fn live_name_index_journal_uses_held_source_before_discovery() {
     let parent = tempfile::tempdir().unwrap();
     let selected = parent.path().join("selected");
