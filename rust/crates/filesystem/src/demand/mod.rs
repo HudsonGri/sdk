@@ -55,9 +55,13 @@ mod source_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub use accounting::DemandWork;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use accounting::NativeView;
+#[cfg(not(target_arch = "wasm32"))]
 use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admissions::NativeProofAccounting;
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+pub(crate) use admissions::RECONCILES;
 #[cfg(target_os = "macos")]
 pub(crate) use context::native_demand_read_error;
 #[cfg(not(target_arch = "wasm32"))]

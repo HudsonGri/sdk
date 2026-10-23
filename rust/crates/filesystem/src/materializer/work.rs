@@ -117,29 +117,7 @@ impl NativeMaterializationWork {
     ) -> T {
         self.state.with_original_leaf(|state| {
             state.within_window(self.window.as_deref(), |state| {
-                state.scope(
-                    |work| &mut work.native_invocation,
-                    self.invocation.as_ref().map(Arc::downgrade),
-                    |state| {
-                        state.scope(
-                            |work| &mut work.native_resource,
-                            self.resource.as_ref().map(Arc::downgrade),
-                            |state| {
-                                state.scope(
-                                    |work| &mut work.capture_custody,
-                                    None,
-                                    |state| {
-                                        state.scope(
-                                            |work| &mut work.recheck_items,
-                                            self.recheck_items,
-                                            operation,
-                                        )
-                                    },
-                                )
-                            },
-                        )
-                    },
-                )
+                state.view_scope(self.view(None), operation)
             })
         })
     }
@@ -147,13 +125,21 @@ impl NativeMaterializationWork {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.state(|state| {
-            state.scope(
-                |work| &mut work.capture_custody,
-                self.capture_origin.clone(),
-                operation,
-            )
+        self.state.with_original_leaf(|state| {
+            state.view_scope(self.view(self.capture_origin.clone()), operation)
         })
+    }
+    #[inline]
+    fn view(
+        &self,
+        custody: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    ) -> crate::demand::NativeView {
+        crate::demand::NativeView {
+            invocation: self.invocation.as_ref().map(Arc::downgrade),
+            resource: self.resource.as_ref().map(Arc::downgrade),
+            custody,
+            recheck_items: self.recheck_items,
+        }
     }
     pub(super) fn poison(&self, error: NativeTreeMaterializationError) {
         self.state(|state| {
