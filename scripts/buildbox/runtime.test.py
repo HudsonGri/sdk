@@ -28,13 +28,14 @@ class RuntimeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
     def tearDown(self):self.temp.cleanup()
-    def worker(self,negative=False,cleanup_failure=False):
+    def worker(self,negative=False,cleanup_failure=False,custody_negative=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("real_home=Path('/home/var')",f'real_home=Path({str(self.d/"real-home")!r})')
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
+        if custody_negative:source=source.replace('start_new_session=True)', 'start_new_session=False)')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
@@ -43,6 +44,83 @@ class RuntimeTests(unittest.TestCase):
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
+
+    def custody_case(self, interrupted, negative=False):
+        """A FIFO admits a side effect only after the wrapper has exited."""
+        import select
+        fifo=self.d/'custody-release';os.mkfifo(fifo)
+        marker=self.d/'late-effect'
+        meta=self.d/'custody.receipt-meta.v2.json';meta.write_text('{}')
+        code='''import json,os,select,sys
+from pathlib import Path
+ready_read,ready_write=os.pipe()
+child=os.fork()
+if child==0:
+ os.close(ready_read)
+ release=os.open(sys.argv[1],os.O_RDONLY|os.O_NONBLOCK)
+ print(json.dumps({'pid':os.getpid(),'root':os.getppid()}),flush=True)
+ os.write(ready_write,b'S');os.close(ready_write)
+ select.select([release],[],[])
+ if os.read(release,1):Path(sys.argv[2]).write_text('after cleanup')
+ os._exit(0)
+os.close(ready_write);os.read(ready_read,1);os.close(ready_read)
+if sys.argv[3]=='normal':sys.exit(0)
+os.waitpid(child,0)
+'''
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),
+             'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
+        worker=subprocess.Popen([sys.executable,str(self.worker(custody_negative=negative)),
+            sys.executable,'-c',code,str(fifo),str(marker),
+            'normal' if interrupted is None else 'signal'],
+            env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        descriptors=[]
+        runtimefile=Path(str(meta)+'.runtime')
+        try:
+            self.assertTrue(select.select([worker.stdout],[],[],2)[0], 'custody fixture did not start')
+            descendants=json.loads(worker.stdout.readline())
+            for pid in descendants.values():
+                try:descriptors.append(os.pidfd_open(pid))
+                except ProcessLookupError:pass
+            if interrupted is not None:worker.send_signal(interrupted)
+            worker.wait(timeout=2)
+            if interrupted==signal.SIGKILL:job.cleanup_runtime(runtimefile)
+            runtime=json.loads(runtimefile.read_text())
+            self.assertTrue(runtime['home_removed'])
+            self.assertFalse(Path(runtime['hermetic_home']).exists())
+            if negative:
+                # The old group shape permits live work after cleanup. Admit
+                # exactly that work, rather than inferring failure from time.
+                self.assertIsNotNone(job.identity(descendants['pid']))
+                release=os.open(fifo,os.O_WRONLY|os.O_NONBLOCK)
+                os.write(release,b'S');os.close(release)
+                worker.communicate(timeout=2)
+                self.assertEqual(marker.read_text(),'after cleanup')
+            else:
+                for descriptor in descriptors:
+                    self.assertTrue(select.select([descriptor],[],[],2)[0],
+                                    'descendant survived command custody')
+                worker.communicate(timeout=2)
+                self.assertFalse(marker.exists())
+        finally:
+            if worker.poll() is None:worker.kill();worker.wait()
+            for descriptor in descriptors:
+                try:signal.pidfd_send_signal(descriptor,signal.SIGKILL)
+                except ProcessLookupError:pass
+                os.close(descriptor)
+            if runtimefile.exists():job.cleanup_runtime(runtimefile)
+            fifo.unlink(missing_ok=True);marker.unlink(missing_ok=True)
+
+    def test_command_custody_drains_descendants_on_direct_signal_and_parent_death(self):
+        for interrupted in [signal.SIGTERM,signal.SIGKILL]:
+            with self.subTest(signal=interrupted):self.custody_case(interrupted)
+
+    def test_completed_shell_keeps_descendant_custody_until_cleanup(self):
+        self.custody_case(None)
+
+    def test_missing_owned_group_allows_side_effects_after_cleanup(self):
+        for interrupted in [None,signal.SIGTERM,signal.SIGKILL]:
+            with self.subTest(signal=interrupted):self.custody_case(interrupted,negative=True)
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')

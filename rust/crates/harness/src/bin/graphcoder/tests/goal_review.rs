@@ -39,7 +39,8 @@ fn write(path: &str, text: &str) -> String {
 // The subprocess is the shipping binary, with its shipping thread/runtime and
 // real HTTP provider. Every invocation reopens the same canonical private files.
 #[tokio::test]
-async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
+async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
     let [goal, plan] = goal_and_plan();
     run([
         ("hello", (false, false), None, false),
@@ -61,11 +62,12 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
             false,
         ),
     ])
-    .await;
+    .await
 }
 
 #[tokio::test]
-async fn guidance_tracks_deleted_files_and_temporary_plan_mode() {
+async fn guidance_tracks_deleted_files_and_temporary_plan_mode()
+-> Result<(), Box<dyn std::error::Error>> {
     let [goal, plan] = goal_and_plan();
     run([
         goal,
@@ -92,50 +94,69 @@ async fn guidance_tracks_deleted_files_and_temporary_plan_mode() {
         ("Use plan mode", (false, true), None, false),
         ("hello", (false, false), None, false),
     ])
-    .await;
+    .await
 }
 
-async fn run<const N: usize>(scenarios: [Scenario; N]) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
     let script = Arc::new(Mutex::new(VecDeque::<((bool, bool), String)>::new()));
     let received = script.clone();
-    let app = Router::new()
-        .route(
-            "/count",
-            post(|| async { Json(json!({"input_tokens":64})) }),
-        )
-        .route(
-            "/responses",
-            post(move |Json(body): Json<Value>| {
-                let (expected, answer) = received
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .expect("unexpected request");
-                assert_eq!(guidance(&body), expected, "{body}");
-                async move { ([("content-type", "text/event-stream")], answer) }
-            }),
-        );
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let directory = tempfile::tempdir().unwrap();
+    let app =
+        Router::new()
+            .route(
+                "/count",
+                post(|| async { Json(json!({"input_tokens":64})) }),
+            )
+            .route(
+                "/responses",
+                post(move |Json(body): Json<Value>| {
+                    let request = received.lock().map_err(|error| error.to_string()).and_then(
+                        |mut script| {
+                            script
+                                .pop_front()
+                                .ok_or_else(|| "unexpected request".to_owned())
+                        },
+                    );
+                    async move {
+                        let (expected, answer) =
+                            request.map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+                        assert_eq!(guidance(&body), expected, "{body}");
+                        Ok::<_, axum::http::StatusCode>((
+                            [("content-type", "text/event-stream")],
+                            answer,
+                        ))
+                    }
+                }),
+            );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
-    std::fs::create_dir(&workspace).unwrap();
-    std::fs::create_dir(&settings).unwrap();
+    std::fs::create_dir(&workspace)?;
+    std::fs::create_dir(&settings)?;
     let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},
-        "max_event_bytes":4096,
-        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
-    }})).unwrap()).unwrap();
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec(&json!({"graphcoder-qual":{
+            "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+            "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},
+            "max_event_bytes":4096,
+            "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+        }}))?,
+    )?;
 
     for (prompt, expected, edit, blocked) in scenarios {
         if let Some(edit) = edit {
-            script.lock().unwrap().push_back((expected, edit));
+            script
+                .lock()
+                .map_err(|error| error.to_string())?
+                .push_back((expected, edit));
         }
-        script.lock().unwrap().push_back((expected, ANSWER.into()));
+        script
+            .lock()
+            .map_err(|error| error.to_string())?
+            .push_back((expected, ANSWER.into()));
         let operation = OperationId::new();
         let output = execute_with(
             &workspace,
@@ -146,14 +167,14 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) {
             (prompt, if blocked { 3 } else { 0 }),
         )
         .await;
-        let completions: Vec<_> = std::str::from_utf8(&output)
-            .unwrap()
+        let changes = std::str::from_utf8(&output)?
             .lines()
             .skip(1)
-            .flat_map(|line| {
-                let change = jsonl::parse_change(line).unwrap();
-                change.file.into_iter().chain(change.files)
-            })
+            .map(jsonl::parse_change)
+            .collect::<Result<Vec<_>, _>>()?;
+        let completions = changes
+            .into_iter()
+            .flat_map(|change| change.file.into_iter().chain(change.files))
             .filter(|file| {
                 matches!(
                     file.key,
@@ -163,11 +184,14 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) {
                     }
                 )
             })
-            .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["completion"].clone())
-            .collect();
+            .map(|file| {
+                serde_json::from_slice::<Value>(&file.bytes)
+                    .map(|value| value["completion"].clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let expected_completion = if blocked { "blocked" } else { "completed" };
         assert_eq!(completions, [json!(expected_completion)]);
-        assert!(script.lock().unwrap().is_empty());
+        assert!(script.lock().map_err(|error| error.to_string())?.is_empty());
         // Replay, including blocked output, must issue no further HTTP work.
         execute_with(
             &workspace,
@@ -190,10 +214,11 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) {
                 )
                 .await;
             }
-            assert!(script.lock().unwrap().is_empty());
+            assert!(script.lock().map_err(|error| error.to_string())?.is_empty());
         }
     }
     server.abort();
+    Ok(())
 }
 
 type Scenario = (&'static str, (bool, bool), Option<String>, bool);
