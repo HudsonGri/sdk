@@ -86,6 +86,7 @@ fuzz_target!(|data: &[u8]| {
     let source = [Line::from(vec![Span::raw(text.as_ref())])];
     let mut wrapped = WrappedLines::default();
     wrapped.update(&source, 0, width);
+    wrapped.wrap_all();
     assert!(
         wrapped
             .rows()
@@ -114,6 +115,7 @@ fuzz_target!(|data: &[u8]| {
     );
     let mut split_wrapped = WrappedLines::default();
     split_wrapped.update(&split, 0, width);
+    split_wrapped.wrap_all();
     assert_eq!(wrapped.rows(), split_wrapped.rows());
     let mut fields = data.splitn(5, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();

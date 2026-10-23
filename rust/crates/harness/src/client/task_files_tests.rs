@@ -89,6 +89,7 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
         },
         10,
         100,
+        |_, _| unreachable!("submit does not navigate"),
     )
     .await
     .unwrap();
