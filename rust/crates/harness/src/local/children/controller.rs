@@ -28,6 +28,10 @@ impl LocalHarness {
     // so a refused retirement keeps the view for the next settlement instead
     // of failing the turn that already settled.
     async fn retire_child_view(&self, child: TaskId) {
+        #[cfg(test)]
+        if crate::native_environment::variable(super::RETAIN_CHILD_VIEWS).is_some() {
+            return;
+        }
         if let Some(workspace) = &self.workspace
             && let Err(error) = workspace.settle_child(child).await
         {
