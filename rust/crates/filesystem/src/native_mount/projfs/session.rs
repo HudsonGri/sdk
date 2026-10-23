@@ -195,8 +195,11 @@ impl ProjFsSession {
             NotificationBitMask: open_notifications(request.writable),
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
+        // ProjFS otherwise sizes each instance's pool by the host's cores.
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
+            PoolThreadCount: crate::native_mount::CALLBACK_THREADS,
+            ConcurrentThreadCount: crate::native_mount::CALLBACK_THREADS,
             ..Default::default()
         };
         options.NotificationMappings = &raw mut mapping;
