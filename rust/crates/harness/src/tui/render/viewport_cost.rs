@@ -266,3 +266,50 @@ fn production_first_frame_and_resize_have_exact_work_and_allocations_at_n_and_2n
 fn negative_control_production_eager_reflow_fails_the_same_assertion() {
     costs::<true>(1000);
 }
+
+fn invisible_work<const WRAP_CONTROL: bool>(length: usize) {
+    for (width, height) in [(0, 20), (80, 0)] {
+        for find in [false, true] {
+            let mut fixture = fixture(length);
+            let anchor = crate::tui::TranscriptAnchor {
+                part: crate::tui::TranscriptPart::Answer,
+                position: crate::tui::RowPosition { line: 10, row: 0 },
+            };
+            fixture._runtime.block_on(async {
+                fixture.files.write_state(
+                    crate::client::CommandFileRoot::Session,
+                    "layout.json",
+                    &serde_json::json!({
+                        "transcript_top": anchor,
+                        "open_view": if find { "find" } else { "transcript" },
+                        "view_input": if find { "find" } else { "prompt" },
+                        "search_query": "plain",
+                    }),
+                ).await.unwrap();
+            });
+            WrappedLines::take_work();
+            fixture.renderer.layout(&fixture.files, &fixture.input, width, height).unwrap();
+            if WRAP_CONTROL {
+                fixture.renderer.wrapped_transcript.view(Top::Tail, 1);
+            }
+            assert_eq!(
+                WrappedLines::take_work(), (0, 0, 0),
+                "an invisible transcript performs no wrapping or painting"
+            );
+            assert_eq!(fixture.renderer.top, Some(anchor));
+            assert_eq!(crate::client::tui_anchor(&fixture.files).unwrap(), Some(anchor));
+        }
+    }
+}
+
+#[test]
+fn invisible_production_viewports_do_no_work_at_n_and_2n() {
+    invisible_work::<false>(1000);
+    invisible_work::<false>(2000);
+}
+
+#[test]
+#[should_panic(expected = "an invisible transcript performs no wrapping or painting")]
+fn negative_control_wrapping_an_invisible_transcript_is_detected() {
+    invisible_work::<true>(1000);
+}
