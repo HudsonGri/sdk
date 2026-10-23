@@ -39,6 +39,7 @@ where
                     },
                     owner,
                     io,
+                    None,
                 )
                 .await;
             drop(hold);
@@ -67,6 +68,7 @@ where
         action: Action,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         io: Option<&PreparationIo>,
+        aggregate: Option<&mut StreamAggregate<P>>,
     ) -> Result<ApplyResult> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);
@@ -79,7 +81,16 @@ where
                 )
                 .await?;
         }
-        let mut aggregate = self.aggregate(io).await?;
+        // A resolution carries its authenticated cut through the complete
+        // transaction. Reopening here would replay the same history again.
+        let mut reconstructed;
+        let aggregate = match aggregate {
+            Some(aggregate) => aggregate,
+            None => {
+                reconstructed = self.aggregate(io).await?;
+                &mut reconstructed.0
+            }
+        };
         let (committed, _) = crate::store::operations::bounded_operation_with_retained_quota(
             &self.stream,
             self.verifier.audience(),
@@ -101,7 +112,7 @@ where
                     "committed interaction revision is zero",
                 )
             })?,
-            None => aggregate.0.reducer().revision(),
+            None => aggregate.reducer().revision(),
         };
         drop((committed, hold));
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -120,8 +131,8 @@ where
             causal_parent: None,
             action,
         };
-        let result = aggregate.0.execute(command, owner, &mut work).await;
-        drop((aggregate, hold));
+        let result = aggregate.execute(command, owner, &mut work).await;
+        drop(hold);
         result
     }
 

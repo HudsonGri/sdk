@@ -196,3 +196,89 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn approval_settlement_reconstructs_once_for_every_entry_point() -> Result<()> {
+    use crate::runtime::InteractionResolver as _;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for entry in 0..3 {
+        for approved in [false, true] {
+            let initialized = runtime.block_on(initialized("settlement", None))?;
+            let journal = &initialized.journal;
+            let host = journal.interactions()?;
+            let id = InteractionId::from_bytes([88; 16]);
+            let request = Interaction::approval(
+                "Settle once".into(),
+                initialized.operation,
+                [5; 32],
+                crate::interaction::ApprovalSubject::Opaque {},
+            )?;
+            runtime.block_on(journal.open_interaction(id, &request, None)?)?;
+            let (ticket, _) = runtime.block_on(host.read(id, None))?.unwrap();
+            let body = ApprovalDecisionFile::new(
+                "human",
+                ticket.request.descriptor().sha256(),
+                1,
+                approved,
+                None,
+            )?;
+            let file = decision(id, "human", &body);
+            let human = responder(&initialized._conversation, "human", &[id])?;
+            for reconstruct_again in [false, true] {
+                let (result, trace) = differential::observe::<_, _, differential::Operation>(
+                    || (),
+                    |()| {
+                        runtime.block_on(async {
+                            if reconstruct_again {
+                                // Negative control restores a discarded reconstruction
+                                // before settling the same authenticated binding.
+                                host.read(id, None).await?;
+                            }
+                            match entry {
+                                0 => journal.write_approval_decision(&file, &human).await,
+                                1 => host
+                                    .resolve_approval(
+                                        OperationId::from_bytes([89; 16]),
+                                        human.copy(&mut None)?,
+                                        id,
+                                        1,
+                                        approved,
+                                        None,
+                                    )
+                                    .await
+                                    .map(|_| ()),
+                                _ => {
+                                    host.resolve_latest(
+                                        id,
+                                        InteractionResponse::Approval {
+                                            approved,
+                                            reason: None,
+                                        },
+                                        &human,
+                                        journal.owner.as_ref().map(|(owner, _)| owner),
+                                    )
+                                    .await
+                                }
+                            }
+                        })
+                    },
+                );
+                result?;
+                let count: u64 = trace
+                    .iter()
+                    .filter(|(kind, _)| *kind == "interaction-reconstruction")
+                    .map(|(_, count)| count)
+                    .sum();
+                assert_eq!(
+                    count,
+                    1 + u64::from(reconstruct_again),
+                    "entry={entry}, approved={approved}"
+                );
+            }
+        }
+    }
+    Ok(())
+}

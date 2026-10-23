@@ -76,9 +76,9 @@ where
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
     ) -> Result<()> {
         self.verify_responder_scope(id, responder, None)?;
+        let mut aggregate = self.aggregate(None).await?;
         let (_, prior) = self
-            .read(id, None)
-            .await?
+            .read_at(&aggregate.0, id, None)?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         if let Some(previous) = &prior
             && previous.outcome.is_terminal()
@@ -87,7 +87,9 @@ where
                 previous.outcome,
                 InteractionOutcome::Approved {} | InteractionOutcome::Declined {}
             );
-            let stored = self.read_resolution_file(id, detail, None).await?;
+            let stored = self
+                .read_resolution_file(&aggregate.0, id, detail, None)
+                .await?;
             let same = match (stored, &response) {
                 (Some(bytes), InteractionResponse::Approval { approved, reason }) if detail => {
                     let stored: ApprovalDecisionFile = crate::contract::json_from_slice(&bytes)
@@ -112,11 +114,12 @@ where
         let version = prior
             .as_ref()
             .map_or(Ok(1), |prior| next_revision(prior.expected_version))?;
-        self.resolve_response(
+        self.resolve_response_at(
             (resolve_operation(id, version), id, version),
             responder,
             response,
             owner,
+            &mut aggregate.0,
         )
         .await?;
         Ok(())
@@ -132,11 +135,11 @@ where
         decision: ApprovalDecisionFile,
         responder: &Scope,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
+        aggregate: &mut StreamAggregate<P>,
     ) -> Result<()> {
         self.verify_responder_scope(id, responder, None)?;
         let (ticket, prior) = self
-            .read(id, None)
-            .await?
+            .read_at(aggregate, id, None)?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         let version = decision.expected_version;
         if ticket.kind != crate::interaction::InteractionKind::Approval
@@ -148,7 +151,7 @@ where
         if let Some(previous) = &prior
             && previous.outcome.is_terminal()
         {
-            let stored = match self.read_resolution_file(id, true, None).await? {
+            let stored = match self.read_resolution_file(aggregate, id, true, None).await? {
                 Some(bytes) if previous.detail.is_some() => Some(
                     ApprovalDecisionFile::decode(&bytes, self.maximum_bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?,
@@ -165,11 +168,12 @@ where
             approved: decision.approved(),
             reason: decision.reason,
         };
-        self.resolve_response(
+        self.resolve_response_at(
             (resolve_operation(id, version), id, version),
             responder,
             response,
             owner,
+            aggregate,
         )
         .await?;
         Ok(())
@@ -182,12 +186,23 @@ where
         response: InteractionResponse,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
     ) -> Result<ResolutionReceipt> {
+        self.verify_responder_scope(binding.1, scope, None)?;
+        let mut aggregate = self.aggregate(None).await?;
+        self.resolve_response_at(binding, scope, response, owner, &mut aggregate.0)
+            .await
+    }
+
+    async fn resolve_response_at(
+        &self,
+        binding: (OperationId, InteractionId, u64),
+        scope: &Scope,
+        response: InteractionResponse,
+        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
+        aggregate: &mut StreamAggregate<P>,
+    ) -> Result<ResolutionReceipt> {
         let (operation_id, id, expected_version) = binding;
-        let ticket = self.open_resolution(scope, id, expected_version).await?;
-        let request = self
-            .read_request(id, None)
-            .await?
-            .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
+        let ticket = self.open_resolution(scope, id, expected_version, aggregate)?;
+        let request = self.read_ticket_request(&ticket, None).await?;
         request.validate_response(&response, &mut None)?;
         let (outcome, detail) = match response {
             InteractionResponse::Approval { approved, reason } => {
@@ -234,6 +249,7 @@ where
                 },
                 owner,
                 None,
+                Some(aggregate),
             )
             .await?,
         )
@@ -277,16 +293,16 @@ where
         Ok(())
     }
 
-    async fn open_resolution(
+    fn open_resolution(
         &self,
         scope: &Scope,
         id: InteractionId,
         expected_version: u64,
+        aggregate: &StreamAggregate<P>,
     ) -> Result<InteractionTicket> {
         self.verify_responder_scope(id, scope, None)?;
         let (ticket, prior) = self
-            .read(id, None)
-            .await?
+            .read_at(aggregate, id, None)?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         let next = match &prior {
             Some(prior) if prior.outcome.is_terminal() => prior.expected_version,

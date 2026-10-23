@@ -82,7 +82,17 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
         let aggregate = self.aggregate(io).await?;
-        Self::admitted(&aggregate.0, id, io)
+        self.read_at(&aggregate.0, id, io)
+    }
+
+    /// Copies a ticket from the transaction's already authenticated cut.
+    pub(in crate::filesystem) fn read_at(
+        &self,
+        aggregate: &StreamAggregate<P>,
+        id: InteractionId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
+        Self::admitted(aggregate, id, io)
     }
 
     /// Reads the ticket and latest resolution together with the provider's
@@ -200,6 +210,14 @@ where
         else {
             return Ok(None);
         };
+        self.read_ticket_request(ticket, io).await.map(Some)
+    }
+
+    pub(super) async fn read_ticket_request(
+        &self,
+        ticket: &InteractionTicket,
+        io: Option<&PreparationIo>,
+    ) -> Result<Interaction> {
         let bytes = self.read_file(&ticket.request, io).await?;
         let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         admit_interaction(&bytes, io)?;
@@ -218,18 +236,17 @@ where
         }
         #[cfg(target_arch = "wasm32")]
         let _ = custody;
-        Ok(Some(request))
+        Ok(request)
     }
 
     pub(crate) async fn read_resolution_file(
         &self,
+        aggregate: &StreamAggregate<P>,
         id: InteractionId,
         detail: bool,
         io: Option<&PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
-        let aggregate = self.aggregate(io).await?;
         let Some((_, Some(resolution))) = aggregate
-            .0
             .reducer()
             .interaction(&Uuid::from_bytes(id.into_bytes()))
         else {
