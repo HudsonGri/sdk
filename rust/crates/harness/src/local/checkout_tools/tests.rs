@@ -237,12 +237,16 @@ fn task_cache(broken: bool) {
                 let views = StateArc::clone(&views);
                 thread::spawn(move || {
                     let key = TaskId::from_bytes([if broken { 1 } else { value }; 16]);
-                    let selected =
-                        complete(child_views::ChildViews::acquire(&views, key, async || {
+                    let selected = complete(child_views::ChildViews::acquire(
+                        &views,
+                        key,
+                        async || {
                             thread::yield_now();
                             Ok(value)
-                        }))
-                        .unwrap();
+                        },
+                        async |_| Ok(()),
+                    ))
+                    .unwrap();
                     (*selected, value)
                 })
             })
