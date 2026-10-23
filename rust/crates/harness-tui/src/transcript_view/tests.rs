@@ -84,7 +84,7 @@ proptest! {
         reasoning in prop::collection::vec("[a-z日🙂 ]{0,35}",0..10),
         answer in prop::collection::vec("[a-z日🙂 ]{0,35}",0..10),
         tools in prop::collection::vec("[a-z日🙂 ]{0,35}",0..10),
-        width in 1u16..20, height in 0usize..10, busy in any::<bool>(),
+        width in 1u16..20, height in 0usize..10, busy in any::<bool>(), reasoning_visible in any::<bool>(),
         motions in prop::collection::vec(-30isize..30,1..16),
     ) {
         let mut source = [reasoning,answer,tools].map(|lines|lines.into_iter().map(Line::raw).collect::<Vec<_>>());
@@ -97,22 +97,26 @@ proptest! {
                 width = width % 19 + 1;
                 for (part,lines) in parts.iter_mut().zip(&source) { part.update(lines,lines.len(),width); }
             }
-            let (old, positions) = eager(&source,width);
+            let mut visible = source.clone();
+            if !reasoning_visible { visible[0].clear(); }
+            let (old, positions) = eager(&visible,width);
             let maximum = (old.len()+usize::from(busy)).saturating_sub(height);
             let expected = if height == 0 { anchor } else {
                 let first = rank(anchor,&positions,maximum).saturating_add_signed(motion).min(maximum);
                 (first < maximum).then(||positions[first])
             };
             let before = anchor;
-            anchor = move_transcript(parts.each_mut(),anchor,motion,height,usize::from(busy));
+            anchor = move_transcript({ let [a,b,c] = parts.each_mut(); [reasoning_visible.then_some(a),Some(b),Some(c)] },anchor,motion,height,usize::from(busy));
             prop_assert_eq!(anchor,expected);
-            view_transcript(parts.each_mut(),anchor,height,usize::from(busy));
+            view_transcript({ let [a,b,c] = parts.each_mut(); [reasoning_visible.then_some(a),Some(b),Some(c)] },anchor,height,usize::from(busy));
             if height == 0 {
                 prop_assert_eq!(anchor,before);
                 prop_assert!(shown(&parts).is_empty());
             } else {
                 let first = rank(anchor,&positions,maximum).min(old.len());
-                prop_assert_eq!(shown(&parts), old[first..(first+height).min(old.len())]);
+                let actual = shown(&parts);
+                let expected = &old[first..(first+height).min(old.len())];
+                prop_assert_eq!(actual.as_slice(), expected);
             }
             let changed = source[2].len();
             source[2].push(Line::raw("appended tool output"));
@@ -140,8 +144,14 @@ fn zero_height_does_not_drop_a_saved_source_position() {
         part: TranscriptPart::Answer,
         position: RowPosition { line: 1, row: 0 },
     });
-    assert_eq!(view_transcript(parts.each_mut(), anchor, 0, 0), anchor);
-    assert_eq!(move_transcript(parts.each_mut(), anchor, -2, 0, 0), anchor);
+    assert_eq!(
+        view_transcript(parts.each_mut().map(Some), anchor, 0, 0),
+        anchor
+    );
+    assert_eq!(
+        move_transcript(parts.each_mut().map(Some), anchor, -2, 0, 0),
+        anchor
+    );
     // The old 'first shown row' representation erased anchors in hidden views.
     assert_ne!(
         parts
@@ -157,10 +167,129 @@ fn omitted_tool_section_fails_the_same_visible_text_assertion() {
     let mut parts: [WrappedLines; 3] = std::array::from_fn(|_| WrappedLines::default());
     parts[1].update(&[Line::raw("answer")], 0, 80);
     // Deliberately omit production's tool source; the independent oracle has it.
-    view_transcript(parts.each_mut(), None, 4, 0);
+    view_transcript(parts.each_mut().map(Some), None, 4, 0);
     assert_eq!(
         shown(&parts),
         vec!["answer", "tool output"],
         "every source section participates"
     );
+}
+
+#[test]
+fn hiding_a_section_preserves_its_source_and_index() {
+    let mut parts: [WrappedLines; 3] = std::array::from_fn(|_| WrappedLines::default());
+    parts[0].update(&[Line::raw("reasoning")], 0, 80);
+    parts[1].update(&[Line::raw("answer")], 0, 80);
+    let revision = parts[0].revision();
+    view_transcript(parts.each_mut().map(Some), None, 4, 0);
+    assert_eq!(shown(&parts), ["reasoning", "answer"]);
+    parts[0].hide();
+    let [_, answer, tools] = parts.each_mut();
+    view_transcript([None, Some(answer), Some(tools)], None, 4, 0);
+    assert_eq!(shown(&parts), ["answer"]);
+    assert_eq!(parts[0].text(), "reasoning");
+    assert_eq!(parts[0].revision(), revision);
+    let measured = acyclic_test_support::measure(|| {
+        view_transcript(parts.each_mut().map(Some), None, 4, 0);
+    });
+    assert_eq!(shown(&parts), ["reasoning", "answer"]);
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+}
+
+#[test]
+fn seeking_into_the_last_page_follows_future_appends() {
+    let mut parts: [WrappedLines; 3] = std::array::from_fn(|_| WrappedLines::default());
+    let mut source = (0..20)
+        .map(|line| Line::raw(format!("row {line}")))
+        .collect::<Vec<_>>();
+    parts[1].update(&source, 0, 80);
+    let anchor = view_transcript(
+        parts.each_mut().map(Some),
+        Some(TranscriptAnchor {
+            part: TranscriptPart::Answer,
+            position: RowPosition { line: 19, row: 0 },
+        }),
+        4,
+        0,
+    );
+    assert_eq!(anchor, None);
+    source.push(Line::raw("new tail"));
+    parts[1].replace(&source, 20);
+    view_transcript(parts.each_mut().map(Some), anchor, 4, 0);
+    assert_eq!(shown(&parts), ["row 17", "row 18", "row 19", "new tail"]);
+}
+
+fn endpoint_jumps(broken: bool) {
+    for length in [1000, 2000] {
+        let mut parts: [WrappedLines; 3] = std::array::from_fn(|_| WrappedLines::default());
+        parts[1].update(&vec![Line::raw("plain transcript row"); length], 0, 80);
+        WrappedLines::take_work();
+        let jumped = if broken {
+            // Restore the former row walk instead of the endpoint shortcut.
+            let last = parts[1].last_position().unwrap();
+            let (first, _) = parts[1].step(last, -isize::MAX).unwrap();
+            view_transcript(
+                parts.each_mut().map(Some),
+                Some(TranscriptAnchor {
+                    part: TranscriptPart::Answer,
+                    position: first,
+                }),
+                10,
+                0,
+            )
+        } else {
+            move_transcript(parts.each_mut().map(Some), None, -isize::MAX, 10, 0)
+        };
+        assert_eq!(
+            jumped,
+            Some(TranscriptAnchor {
+                part: TranscriptPart::Answer,
+                position: RowPosition::default()
+            })
+        );
+        assert_eq!(
+            WrappedLines::take_work(),
+            (10, 200, 10),
+            "endpoint jumps wrap one page"
+        );
+        assert_eq!(
+            move_transcript(parts.each_mut().map(Some), None, isize::MAX, 10, 0),
+            None
+        );
+        assert_eq!(
+            WrappedLines::take_work(),
+            (10, 200, 10),
+            "endpoint jumps wrap one page"
+        );
+    }
+}
+
+#[test]
+fn endpoint_jumps_wrap_exactly_one_page_at_n_and_2n() {
+    endpoint_jumps(false);
+}
+#[test]
+#[should_panic(expected = "endpoint jumps wrap one page")]
+fn negative_control_endpoint_row_walk_fails_the_same_work_assertion() {
+    endpoint_jumps(true);
+}
+
+#[test]
+fn advancing_past_the_last_source_row_reaches_an_activity_only_frame() {
+    let mut parts: [WrappedLines; 3] = std::array::from_fn(|_| WrappedLines::default());
+    parts[2].update(&[Line::raw("output")], 0, 1);
+    let previous = move_transcript(parts.each_mut().map(Some), None, -1, 1, 1);
+    assert_eq!(
+        previous,
+        Some(TranscriptAnchor {
+            part: TranscriptPart::Tools,
+            position: RowPosition { line: 0, row: 5 }
+        })
+    );
+    assert_eq!(
+        move_transcript(parts.each_mut().map(Some), previous, 1, 1, 1),
+        None
+    );
+    // The old exhausted-part branch returned the same last source row.
+    assert_ne!(previous, None);
 }

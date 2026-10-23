@@ -47,7 +47,7 @@ proptest! {
         for motion in motions {
             expected = expected.saturating_add_signed(motion).min(maximum);
             anchor = candidate.move_by(anchor, motion, height);
-            let top = anchor.map_or(Top::Back(0), Top::At);
+            let top = anchor.map_or(Top::Tail, Top::At);
             let window = candidate.view(top, height);
             prop_assert_eq!(window.top, positions[expected]);
             let contents = |rows: &[Line<'_>]| rows.iter().map(|row| {
@@ -75,7 +75,7 @@ fn visible_work(length: usize, eager_control: bool) -> (usize, usize, usize) {
     if eager_control {
         candidate.wrap_all();
     } else {
-        candidate.view(Top::Back(0), 10);
+        candidate.view(Top::Tail, 10);
     }
     WORK.with(|work| work.get())
 }
@@ -87,10 +87,10 @@ fn first_frame_and_resize_wrap_exactly_the_visible_rows() {
         let source = vec![Line::raw("plain transcript row"); length];
         let mut candidate = WrappedLines::default();
         candidate.update(&source, 0, 80);
-        candidate.view(Top::Back(0), 10);
+        candidate.view(Top::Tail, 10);
         candidate.update(&source, length, 40);
         WORK.with(|work| work.set((0, 0, 0)));
-        candidate.view(Top::Back(0), 10);
+        candidate.view(Top::Tail, 10);
         assert_eq!(WORK.with(|work| work.get()), (10, 200, 10));
     }
 }
@@ -114,7 +114,7 @@ fn assert_equal_frame_costs(eager_control: bool) {
                 if eager_control {
                     candidate.wrap_all();
                 } else {
-                    candidate.view(Top::Back(0), 10);
+                    candidate.view(Top::Tail, 10);
                 }
             });
             costs.push((
@@ -125,7 +125,7 @@ fn assert_equal_frame_costs(eager_control: bool) {
             if !eager_control {
                 WORK.with(|work| work.set((0, 0, 0)));
                 let repeated = acyclic_test_support::measure(|| {
-                    candidate.view(Top::Back(0), 10);
+                    candidate.view(Top::Tail, 10);
                 });
                 assert_eq!(WORK.with(|work| work.get()), (0, 0, 0));
                 assert_eq!((repeated.count_total, repeated.bytes_total), (0, 0));
@@ -185,4 +185,17 @@ fn an_anchored_wheel_step_wraps_only_the_three_new_rows() {
         assert_eq!((unchanged.count_total, unchanged.bytes_total), (0, 0));
     }
     assert_eq!(costs[0], costs[1]);
+}
+
+#[test]
+fn reflow_preserves_the_source_and_search_index() {
+    let mut candidate = WrappedLines::default();
+    candidate.replace(&[Line::raw("searchable source")], 0);
+    candidate.reflow(80);
+    let text = candidate.text().to_owned();
+    let revision = candidate.index.revision;
+    let measured = acyclic_test_support::measure(|| candidate.reflow(40));
+    assert_eq!(candidate.text(), text);
+    assert_eq!(candidate.index.revision, revision);
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
 }

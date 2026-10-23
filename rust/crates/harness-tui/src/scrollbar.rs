@@ -5,8 +5,11 @@ use std::ops::Range;
 /// Source progress of the borrowed window. Geometry never asks for a global
 /// wrapped-row count: ranges and total use normalized source bytes.
 pub struct TranscriptScrollbar<'a> {
+    /// Source extent painted in the current window.
     pub visible: Range<usize>,
+    /// Complete source length.
     pub total: usize,
+    /// Followed theme styles.
     pub theme: &'a ThemeStyles,
 }
 
