@@ -8,30 +8,7 @@ impl StockExecution<'_> {
         source: &FileRef,
         phase: &mut DispatchPhase,
     ) -> Result<ExecutionProgress<TurnOutput>> {
-        let scope = self
-            .original_context()
-            .map_or(&self.stock.tool_scope, |context| context.scope());
-        with_history_io(self.io, |work| {
-            self.stock.limits.validate_file(source, work)?;
-            scope.limits().validate_file(source, work)?;
-            if source.volume().class() != VolumeClass::AgentPrivate
-                || source.descriptor().media_type() != "application/json"
-            {
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "summary source is not private context JSON",
-                ));
-            }
-            if !crate::runtime::read_granted_with_work(scope.grants(), source, work)? {
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "summary source is outside the admitted read grant",
-                ));
-            }
-            Ok(())
-        })?;
+        self.validate_summary_source(source)?;
         let bytes = journal.load(source, self.io)?.await?;
         #[cfg(feature = "filesystem")]
         let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
@@ -72,8 +49,7 @@ impl StockExecution<'_> {
                 Some(input),
                 input.operation_id,
                 0,
-                captured.context,
-                instruction,
+                (captured.context, instruction),
                 phase,
             )
             .await?;
@@ -107,5 +83,31 @@ impl StockExecution<'_> {
             metadata,
             steps: 1,
         }))
+    }
+    fn validate_summary_source(&self, source: &FileRef) -> Result<()> {
+        let scope = self
+            .original_context()
+            .map_or(&self.stock.tool_scope, |context| context.scope());
+        with_history_io(self.io, |work| {
+            self.stock.limits.validate_file(source, work)?;
+            scope.limits().validate_file(source, work)?;
+            if source.volume().class() != VolumeClass::AgentPrivate
+                || source.descriptor().media_type() != "application/json"
+            {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "summary source is not private context JSON",
+                ));
+            }
+            if !crate::runtime::read_granted_with_work(scope.grants(), source, work)? {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "summary source is outside the admitted read grant",
+                ));
+            }
+            Ok(())
+        })
     }
 }

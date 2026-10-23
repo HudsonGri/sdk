@@ -1,6 +1,6 @@
 use super::*;
 
-fn check<const OPEN: bool>(selection: String, index: usize, operation: OperationId) {
+fn check<const OPEN: bool>(selection: &str, index: usize, operation: OperationId) {
     let modes = ["unified", "split", "stat"];
     let settings = json!({"diff_modes":modes,"diff_mode":modes[index],"retained":selection});
     let layout = json!({"selected_task":selection,"history_page":42,"open_view":"help"});
@@ -46,12 +46,12 @@ fn check<const OPEN: bool>(selection: String, index: usize, operation: Operation
 proptest::proptest! {
     #[test]
     fn diff_cycles_and_opens_without_losing_selection(selection in ".{0,64}", index in 0usize..3, id in proptest::array::uniform16(proptest::num::u8::ANY)) {
-        check::<true>(selection,index,OperationId::from_bytes(id));
+        check::<true>(&selection,index,OperationId::from_bytes(id));
     }
 }
 
 #[test]
 #[should_panic(expected = "diff must publish both mode and view")]
 fn settings_only_negative_control() {
-    check::<false>("retained".into(), 0, OperationId::new());
+    check::<false>("retained", 0, OperationId::new());
 }

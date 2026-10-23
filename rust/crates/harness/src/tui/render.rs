@@ -97,20 +97,7 @@ impl ClientRenderer {
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
     pub fn update(&mut self, views: &ClientViews, authority: &wire::Authority) {
-        let key = authority.id.clone();
-        if self.key != key {
-            *self = Self {
-                key,
-                tool_details: self.tool_details,
-                ..Self::default()
-            };
-        }
-        #[cfg(test)]
-        {
-            self.folded_views += 1;
-        }
-        self.wrapped = false;
-        self.side_wrapped = false;
+        self.select_authority(authority);
         let selected = selection::selected::<true>(views, authority);
         let archive = views
             .selections()
@@ -188,6 +175,23 @@ impl ClientRenderer {
         self.notices
             .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
         self.compose_notices();
+    }
+
+    fn select_authority(&mut self, authority: &wire::Authority) {
+        let key = authority.id.clone();
+        if self.key != key {
+            *self = Self {
+                key,
+                tool_details: self.tool_details,
+                ..Self::default()
+            };
+        }
+        #[cfg(test)]
+        {
+            self.folded_views += 1;
+        }
+        self.wrapped = false;
+        self.side_wrapped = false;
     }
 
     fn documents(&mut self, views: &ClientViews) {
@@ -359,21 +363,13 @@ impl ClientRenderer {
         self.busy
     }
 
-    /// Compose the panel selected by the followed command layout file.
-    /// Unknown views retain the document overview until their widget is available.
-    pub fn screen_for<P: acyclic_stream::StreamProvider + ?Sized>(
+    fn refresh_notices<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         files: &crate::client::CommandSession<P>,
-    ) -> crate::Result<Screen<'_>> {
+        history_after: u64,
+    ) -> crate::Result<()> {
         use crate::client::CommandFileRoot;
-        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
-        let cut = (
-            files.output_sequence(),
-            layout
-                .as_ref()
-                .and_then(|value| value["history_after"].as_u64())
-                .unwrap_or(0),
-        );
+        let cut = (files.output_sequence(), history_after);
         if self.outcome_cut != Some(cut) {
             let output = files.output_page(0)?;
             self.outcome_notice = output
@@ -403,6 +399,24 @@ impl ClientRenderer {
             self.notice_file = feedback.cloned();
             self.compose_notices();
         }
+        Ok(())
+    }
+
+    /// Compose the panel selected by the followed command layout file.
+    /// Unknown views retain the document overview until their widget is available.
+    pub fn screen_for<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        files: &crate::client::CommandSession<P>,
+    ) -> crate::Result<Screen<'_>> {
+        use crate::client::CommandFileRoot;
+        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        self.refresh_notices(
+            files,
+            layout
+                .as_ref()
+                .and_then(|value| value["history_after"].as_u64())
+                .unwrap_or(0),
+        )?;
         let view = layout
             .as_ref()
             .and_then(|value| value.get("open_view"))

@@ -16,15 +16,18 @@ async fn once(query: String, foreign: bool) -> Result<()> {
     )
     .await?;
     let owner = fixture.running(1).await?;
-    let volume = TaskVolume::open(stream, StreamPath::new("dispatch").unwrap())
-        .await
-        .map_err(storage)?
-        .reopen_erased()
-        .await
-        .map_err(storage)?;
+    let volume = TaskVolume::open(
+        stream,
+        StreamPath::new("dispatch").map_err(|error| Error::Invalid(error.to_string()))?,
+    )
+    .await
+    .map_err(storage)?
+    .reopen_erased()
+    .await
+    .map_err(storage)?;
     let other = TaskVolume::open(
         Arc::new(MemoryStream::default()),
-        StreamPath::new("dispatch").unwrap(),
+        StreamPath::new("dispatch").map_err(|error| Error::Invalid(error.to_string()))?,
     )
     .await
     .map_err(storage)?
@@ -41,6 +44,7 @@ async fn once(query: String, foreign: bool) -> Result<()> {
         error: None,
     }])?);
     let operation = crate::OperationId::from_bytes([17; 16]);
+    let forbidden_resolution = std::cell::Cell::new(false);
     if foreign {
         assert!(
             dispatch(
@@ -48,13 +52,17 @@ async fn once(query: String, foreign: bool) -> Result<()> {
                 &owner,
                 operation,
                 Some(&input),
-                || panic!("foreign provider reached search"),
+                || {
+                    forbidden_resolution.set(true);
+                    Err(Error::Invalid("foreign provider reached search".into()))
+                },
                 None
             )
             .await
             .is_err()
         );
         assert_eq!(provider.remaining(), 1);
+        assert!(!forbidden_resolution.get());
     }
     let bytes = dispatch(
         &volume,
@@ -65,9 +73,10 @@ async fn once(query: String, foreign: bool) -> Result<()> {
         None,
     )
     .await?
-    .unwrap();
+    .ok_or_else(|| Error::Invalid("missing search outcome".into()))?;
     assert_eq!(
-        serde_json::from_slice::<SearchOutcome>(&bytes).unwrap(),
+        serde_json::from_slice::<SearchOutcome>(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         SearchOutcome::Succeeded {
             response: SearchResponse { results: vec![] }
         }
@@ -78,11 +87,14 @@ async fn once(query: String, foreign: bool) -> Result<()> {
         &owner,
         operation,
         None,
-        || panic!("completed search was redispatched"),
+        || {
+            forbidden_resolution.set(true);
+            Err(Error::Invalid("completed search was redispatched".into()))
+        },
         None,
     )
     .await?
-    .unwrap();
+    .ok_or_else(|| Error::Invalid("missing replay outcome".into()))?;
     assert_eq!(bytes, replay);
     let changed = SearchRequest {
         query: format!("{} changed", input.query),
@@ -94,12 +106,16 @@ async fn once(query: String, foreign: bool) -> Result<()> {
             &owner,
             operation,
             Some(&changed),
-            || panic!("changed request reached search"),
+            || {
+                forbidden_resolution.set(true);
+                Err(Error::Invalid("changed request reached search".into()))
+            },
             None
         )
         .await
         .is_err()
     );
+    assert!(!forbidden_resolution.get());
     Ok(())
 }
 
@@ -108,6 +124,7 @@ proptest::proptest! {
     #[test]
     fn tool_dispatch_preserves_request_identity_and_never_redispatches(query in "[a-zA-Z0-9 ]{1,40}", foreign in proptest::bool::ANY) {
         let query = format!("query {query}");
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(once(query,foreign)).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        runtime.block_on(once(query,foreign)).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
     }
 }

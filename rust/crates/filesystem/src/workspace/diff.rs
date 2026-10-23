@@ -208,41 +208,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         reverse_drop(file_ids, id_bytes, accounting)?;
         let descendant_bytes = workspace_vec_bytes(&descendants.0);
         reverse_drop(descendants, descendant_bytes, accounting)?;
-        let mut retained = 0;
-        let mut retired_paths = 0_u64;
-        for index in 0..paths.0.len() {
-            accounting.charge_items(1)?;
-            let entry = paths.0.get(index).ok_or(FsError::InvalidDiff)?;
-            let changed = match (&entry.before, &entry.after) {
-                (Some(before), Some(after)) => {
-                    before.kind != after.kind
-                        || before.metadata != after.metadata
-                        || (before.kind != FileKind::Directory && before.payload != after.payload)
-                }
-                (None, None) => false,
-                _ => true,
-            };
-            if changed {
-                if retained == maximum_entries as usize {
-                    return Err(WorkspaceError::ChangedPathLimit);
-                }
-                if retained != index {
-                    let copied = copy_work((2 * std::mem::size_of::<ChangedPath>()) as u64);
-                    accounting.admit(copied)?;
-                    paths.0.swap(retained, index);
-                    accounting.record_completed(copied)?;
-                }
-                retained += 1;
-            } else {
-                retired_paths = retired_paths
-                    .checked_add(entry.path.retained_bytes())
-                    .ok_or(crate::WorkError::Overflow)?;
-            }
-        }
-        paths.0.truncate(retained);
-        accounting.release_owned(&mut paths.1, retired_paths)?;
-        accounting.check()?;
-        Ok(paths)
+        retain_changed_paths(paths, maximum_entries, accounting)
     }
 
     /// Computes the bounded net delta of two contiguous change sets.
@@ -271,4 +237,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
             .diff(&self.from, &next.to, maximum_changes, budget, cancellation)
             .await
     }
+}
+
+fn retain_changed_paths(
+    mut paths: (Vec<ChangedPath>, KernelOwnedAllocation),
+    maximum_entries: u32,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    let mut retained = 0;
+    let mut retired_paths = 0_u64;
+    for index in 0..paths.0.len() {
+        accounting.charge_items(1)?;
+        let entry = paths.0.get(index).ok_or(FsError::InvalidDiff)?;
+        let changed = match (&entry.before, &entry.after) {
+            (Some(before), Some(after)) => {
+                before.kind != after.kind
+                    || before.metadata != after.metadata
+                    || (before.kind != FileKind::Directory && before.payload != after.payload)
+            }
+            (None, None) => false,
+            _ => true,
+        };
+        if changed {
+            if retained == maximum_entries as usize {
+                return Err(WorkspaceError::ChangedPathLimit);
+            }
+            if retained != index {
+                let copied = copy_work((2 * std::mem::size_of::<ChangedPath>()) as u64);
+                accounting.admit(copied)?;
+                paths.0.swap(retained, index);
+                accounting.record_completed(copied)?;
+            }
+            retained += 1;
+        } else {
+            retired_paths = retired_paths
+                .checked_add(entry.path.retained_bytes())
+                .ok_or(crate::WorkError::Overflow)?;
+        }
+    }
+    paths.0.truncate(retained);
+    accounting.release_owned(&mut paths.1, retired_paths)?;
+    accounting.check()?;
+    Ok(paths)
 }

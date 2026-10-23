@@ -122,7 +122,7 @@ pub async fn local_identity(
 s=s[:start]+old+'\n'+s[end:];s=s.replace('{FileKey, FileValue, Query}','{Component, FileKey, FileValue, Query, TaskFile}');p.write_text(s)
 replace(paths[4],'return files.cancel_active().await;','return Ok(());')
 replace(paths[5],'} => self.rewind_checkpoint(operation, required(target)?).await,','} => Err(Error::Unsupported("rewind is unavailable".into())),')
-replace(paths[6],'        if diff_open {','        if false && diff_open {')
+replace(paths[6],'    if open {','    if false && open {')
 PY
 cargo build --locked -p graphcoder -p harness-mock-model
 binary="$CARGO_TARGET_DIR/debug/graphcoder"

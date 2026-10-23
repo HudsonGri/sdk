@@ -189,16 +189,7 @@ where
     }
     let store = state.materialization(work.clone());
     let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
-        if !valid_journal(&journal, request.operation_id)
-            || journal.root_identity != Some(actual.to_bytes())
-            || journal.plan.intent
-                != (MaterializationIntent::GenerationTransition {
-                    from: request.from,
-                    to: request.to,
-                })
-        {
-            return Err(NativeWorkspacePublicationError::MismatchedJournal);
-        }
+        validate_generation_journal(&journal, &request)?;
         check_native_plan(&journal.plan, work)?;
         work.set_original_work(journal.work);
         journal
@@ -256,14 +247,7 @@ where
         let completion = materializer.store.prepare_action(journal).await?;
         let identity = materializer.backend.reset_target_directory("").await?;
         journal = completion.await?;
-        let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let mut selections = Vec::new();
-        for edit in &journal.plan.edits {
-            if let MaterializationEdit::Install { path, .. } = edit {
-                let relative = copy_string(path, &mut storage)?;
-                push_buffer(&mut selections, relative, &mut storage)?;
-            }
-        }
+        let (_storage, selections) = install_selections(&journal, work)?;
         if !selections.is_empty() {
             let (destination, _allocation) = materializer.backend.staging_path("")?;
             let options = crate::MaterializeOptions {
@@ -279,6 +263,38 @@ where
         }
     }
     Ok((materializer, journal))
+}
+
+fn validate_generation_journal(
+    journal: &MaterializationJournal,
+    request: &NativeWorkspacePublication<'_>,
+) -> Result<(), NativeWorkspacePublicationError> {
+    if !valid_journal(journal, request.operation_id)
+        || journal.root_identity != Some(request.source_root_identity.to_bytes())
+        || journal.plan.intent
+            != (MaterializationIntent::GenerationTransition {
+                from: request.from,
+                to: request.to,
+            })
+    {
+        return Err(NativeWorkspacePublicationError::MismatchedJournal);
+    }
+    Ok(())
+}
+
+fn install_selections(
+    journal: &MaterializationJournal,
+    work: &NativeMaterializationWork,
+) -> Result<(crate::NativeAllocation, Vec<String>), NativeWorkspacePublicationError> {
+    let mut storage = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+    let mut selections = Vec::new();
+    for edit in &journal.plan.edits {
+        if let MaterializationEdit::Install { path, .. } = edit {
+            let relative = copy_string(path, &mut storage)?;
+            push_buffer(&mut selections, relative, &mut storage)?;
+        }
+    }
+    Ok((storage, selections))
 }
 
 /// Publication failure with the original admitted cause.

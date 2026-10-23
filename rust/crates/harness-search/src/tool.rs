@@ -23,7 +23,7 @@ pub fn bind<P: StreamProvider + 'static>(
         revision: "1".into(),
         description: "Search the web and return ranked sources for citations".into(),
         input_schema: schema::input::<SearchRequest>()?,
-        output_schema: output.clone(),
+        output_schema: output,
         projection_schema: schema::ProjectionMode::Full.schema::<files::SearchOutcome>()?,
     };
     definition.validate(&mut None)?;

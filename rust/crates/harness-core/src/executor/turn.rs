@@ -1,5 +1,7 @@
 use super::*;
 
+type CollectedStep = (Vec<(ToolInvocation, usize)>, String, Value);
+
 impl StockExecution<'_> {
     pub(super) async fn execute_progress(
         &self,
@@ -136,7 +138,7 @@ impl StockExecution<'_> {
         step: u32,
         model_events: Vec<ModelEvent>,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<(Vec<(ToolInvocation, usize)>, String, Value)> {
+    ) -> Result<CollectedStep> {
         let completed_message = self.has_completed_message(&model_events)?;
         let mut calls = Vec::new();
         let mut text = String::new();
@@ -152,7 +154,6 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                 }
-                ModelEvent::Content { .. } => {}
                 ModelEvent::MessageCompleted { text: completed } => {
                     self.retire_step_text(text)?;
                     text = completed;
@@ -188,7 +189,7 @@ impl StockExecution<'_> {
                         ModelContentPart::Reasoning { block },
                     )?;
                 }
-                ModelEvent::Reasoning { .. } => {}
+                ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
             }
         }
         Ok((calls, text, completed))

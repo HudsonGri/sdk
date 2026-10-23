@@ -49,13 +49,13 @@ pub(super) fn rows(files: Option<&FileQueryView>) -> Vec<Line<'static>> {
                     .decision(&file.key, &bytes(file))
                     .is_ok_and(|decision| decision.is_some())
             });
-        if !resolved {
-            if let crate::interaction::Interaction::Approval { prompt, .. } = request.request {
-                rows.push(Line::raw(format!(
-                    "Approval: {} [y/n]",
-                    super::super::display_text(&prompt)
-                )));
-            }
+        if !resolved
+            && let crate::interaction::Interaction::Approval { prompt, .. } = request.request
+        {
+            rows.push(Line::raw(format!(
+                "Approval: {} [y/n]",
+                super::super::display_text(&prompt)
+            )));
         }
     }
     rows

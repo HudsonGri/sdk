@@ -69,6 +69,48 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
     Ok((directory, harness, tools))
 }
 
+#[tokio::test]
+async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()> {
+    let (directory, harness, tools) = fixture().await?;
+    // A queued arrival can name a directory which the completed command has
+    // already replaced with a file. It cannot acquire another native watch.
+    let folder = directory.path().join("folder");
+    std::fs::write(&folder, b"replacement").map_err(storage)?;
+    let relative = Path::new("folder").join("child");
+    let config = tools.workspace.view().workspace().volume_config();
+    let path = acyclic_fs::native_capture::host_path_to_namespace(
+        &relative,
+        config.profile,
+        config.limits,
+    )
+    .map_err(storage)?;
+    let batch = WatchBatch::Changes {
+        epoch: 0,
+        first_sequence: 0,
+        next_sequence: 1,
+        changes: vec![acyclic_fs::WatchChange::Arrived(path)],
+        original: Default::default(),
+    };
+    let mut cursor = Cursor::open(&tools.workspace, &tools.capture_policy)?;
+    arrivals::register(
+        &mut cursor.watcher,
+        &batch,
+        &tools.workspace,
+        &tools.capture_policy,
+    )?;
+    let error = std::fs::symlink_metadata(directory.path().join(relative))
+        .err()
+        .ok_or_else(|| Error::Invalid("fixture descendant unexpectedly exists".into()))?;
+    assert!(acyclic_fs::native_capture::host_path_is_absent(&error));
+    // Unix reports ENOTDIR here; Windows may report an absent descendant.
+    // The Unix observation is a negative control for the old classifier.
+    #[cfg(unix)]
+    assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+    drop(cursor);
+    drop(tools);
+    harness.close().await
+}
+
 async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
     let cancellation = CancellationToken::new();
     let workspace = tools.workspace.view().workspace();

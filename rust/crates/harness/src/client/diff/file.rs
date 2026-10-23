@@ -49,17 +49,6 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
-    pub(super) fn too_large(kind: DiffKind, bytes: u64) -> Self {
-        Self {
-            kind,
-            binary: false,
-            omitted_bytes: Some(bytes),
-            added: 0,
-            removed: 0,
-            hunks: Vec::new(),
-            patch: String::new(),
-        }
-    }
     /// Computes a file against its immutable base. `None` means the path returned
     /// to its baseline; adding/removing an empty file remains a visible change.
     /// Formatting stops before the patch exceeds `maximum_render_bytes`.

@@ -198,8 +198,7 @@ impl StockExecution<'_> {
         self.resolve_response_accounting(
             journal,
             (input, step),
-            projection,
-            accounting,
+            (projection, accounting),
             prepared,
             &records,
             phase,
@@ -302,13 +301,13 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        projection: ResponseProjection,
-        accounting: Option<ContextAccounting>,
+        captured: (ResponseProjection, Option<ContextAccounting>),
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
         phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step) = turn;
+        let (projection, accounting) = captured;
         match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
             (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
@@ -351,7 +350,12 @@ impl StockExecution<'_> {
                     return Ok(prepared);
                 }
                 self.compact_response(
-                    journal, input, step, projection, accounting, source, policy, phase,
+                    journal,
+                    (input, step),
+                    (projection, accounting),
+                    source,
+                    policy,
+                    phase,
                 )
                 .await
             }

@@ -231,7 +231,7 @@ impl StockExecutor {
         let _execution = journal.claim_execution(operation, None)?;
         let phase = &mut DispatchPhase::new();
         StockExecution::ordinary(self)
-            .summarize(journal, None, operation, 0, source, instruction, phase)
+            .summarize(journal, None, operation, 0, (source, instruction), phase)
             .await
             .map(|(summary, _)| summary)
     }
@@ -254,8 +254,7 @@ impl StockExecutor {
                 Some(input),
                 input.operation_id,
                 step,
-                source,
-                instruction,
+                (source, instruction),
                 phase,
             )
             .await

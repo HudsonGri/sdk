@@ -139,7 +139,11 @@ fn oversized_edits_and_restorations_match_the_baseline_without_body_reads()
             fixture.write(&[("large.txt", Some(&edited))]).await?;
             let changed = stream.next().await.ok_or("edit")??;
             assert!(
-                !changed.paths[0].matches_base,
+                !changed
+                    .paths
+                    .first()
+                    .ok_or("missing diff path")?
+                    .matches_base,
                 "length alone is insufficient"
             );
             view.apply(&changed, &NoReads, limits).await?;
@@ -150,7 +154,13 @@ fn oversized_edits_and_restorations_match_the_baseline_without_body_reads()
 
             fixture.write(&[("large.txt", Some(&baseline))]).await?;
             let restored = stream.next().await.ok_or("restore")??;
-            assert!(restored.paths[0].matches_base);
+            assert!(
+                restored
+                    .paths
+                    .first()
+                    .ok_or("missing diff path")?
+                    .matches_base
+            );
             let encoded = serde_json::to_vec(&restored)?;
             assert_eq!(
                 serde_json::from_slice::<acyclic_harness::client::DiffPublication>(&encoded)?,
@@ -160,7 +170,11 @@ fn oversized_edits_and_restorations_match_the_baseline_without_body_reads()
             // old size-only shortcut did, and the real reducer retains its row.
             let mut broken = view.clone();
             let mut size_only = restored.clone();
-            size_only.paths[0].matches_base = false;
+            size_only
+                .paths
+                .first_mut()
+                .ok_or("missing negative-control path")?
+                .matches_base = false;
             broken.apply(&size_only, &NoReads, limits).await?;
             assert!(!broken.files().is_empty());
 
@@ -217,10 +231,17 @@ fn diff_query_omits_large_bodies_and_follows_resize_then_delete()
                     ..LIMITS
                 };
                 view.apply(&snapshot, &NoReads, limits).await?;
-                let large = "x".repeat(bound as usize + extra);
+                let large = "x".repeat(usize::try_from(bound)? + extra);
                 fixture.write(&[("note.txt", Some(large.as_str()))]).await?;
                 let added = stream.next().await.ok_or("addition")??;
-                assert_eq!(added.paths[0].largest_file_bytes, Some(large.len() as u64));
+                assert_eq!(
+                    added
+                        .paths
+                        .first()
+                        .ok_or("missing diff path")?
+                        .largest_file_bytes,
+                    Some(large.len() as u64)
+                );
                 view.apply(&added, &NoReads, limits).await?;
                 assert_eq!(
                     view.files()["note.txt"].omitted_bytes,
@@ -236,13 +257,27 @@ fn diff_query_omits_large_bodies_and_follows_resize_then_delete()
                 fixture.write(&[("note.txt", None)]).await?;
                 let deleted = stream.next().await.ok_or("deletion")??;
                 assert_eq!(deleted.paths.len(), 1);
-                assert!(deleted.paths[0].current.is_none());
+                assert!(
+                    deleted
+                        .paths
+                        .first()
+                        .ok_or("missing diff path")?
+                        .current
+                        .is_none()
+                );
                 let changed = view
                     .apply(&deleted, fixture.reader.as_ref(), limits)
                     .await?;
                 assert_eq!(changed, ["note.txt"]);
                 if baseline.is_none() {
-                    assert!(deleted.paths[0].base.is_none());
+                    assert!(
+                        deleted
+                            .paths
+                            .first()
+                            .ok_or("missing diff path")?
+                            .base
+                            .is_none()
+                    );
                     assert!(view.files().is_empty());
                     assert_eq!(view.line_counts(), (0, 0));
                 }
@@ -400,7 +435,7 @@ async fn native_range_restoration_removes_oversized_row_on_follow_and_reopen()
         ..LIMITS
     };
     view.apply(&snapshot, &NoReads, limits).await?;
-    for replacement in [b'b', b'a'] {
+    for replacement in *b"ba" {
         let mut transaction = workspace
             .begin_transaction(
                 acyclic_fs::workspace::IdempotencyKey::new(),
@@ -433,7 +468,14 @@ async fn native_range_restoration_removes_oversized_row_on_follow_and_reopen()
             )
             .await?;
         let publication = stream.next().await.ok_or("range publication")??;
-        assert_eq!(publication.paths[0].matches_base, replacement == b'a');
+        assert_eq!(
+            publication
+                .paths
+                .first()
+                .ok_or("missing diff path")?
+                .matches_base,
+            replacement == b'a'
+        );
         view.apply(&publication, &NoReads, limits).await?;
         if replacement == b'b' {
             // A real change remains visible despite identical file sizes.

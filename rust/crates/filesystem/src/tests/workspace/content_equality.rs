@@ -105,7 +105,9 @@ fn native_range_restoration_compares_bytes_across_payload_layouts() -> Result<()
                     assert_eq!(equal, replacement == byte);
                     let actual = unbounded!(current, read("/large", bytes.len() as u64))?;
                     let mut expected = bytes.clone();
-                    expected[offset as usize] = replacement;
+                    *expected
+                        .get_mut(usize::try_from(offset)?)
+                        .ok_or("range offset outside fixture")? = replacement;
                     assert_eq!(actual.as_ref(), expected);
                     if replacement == byte {
                         // Negative control: the former payload-identity comparison

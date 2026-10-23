@@ -70,7 +70,7 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
             if next == back {
                 return Ok(false);
             }
-            let key = if modal(&layout) {
+            let key = if modal(layout) {
                 "view_back"
             } else {
                 "transcript_back"

@@ -211,14 +211,14 @@ impl McpRuntimeCallbacks {
         for event in events {
             match event {
                 ModelEvent::Content { delta } if !completed_message => text.push_str(&delta),
-                ModelEvent::Content { .. } => {}
                 ModelEvent::MessageCompleted { text: completed } => text = completed,
                 ModelEvent::ToolCall(_) => {
                     return Err(Error::Unsupported(
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));
                 }
-                ModelEvent::Reasoning { .. }
+                ModelEvent::Content { .. }
+                | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }
                 | ModelEvent::Completed { .. } => {}
             }

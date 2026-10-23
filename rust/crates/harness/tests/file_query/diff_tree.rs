@@ -185,7 +185,10 @@ async fn one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound() ->
         .await?;
     let snapshot = stream.next().await.ok_or("snapshot")??;
     assert_eq!(snapshot.paths.len(), 1);
-    assert_eq!(snapshot.paths[0].path, "zz-changed");
+    assert_eq!(
+        snapshot.paths.first().ok_or("missing diff path")?.path,
+        "zz-changed"
+    );
     // Semantic records and rendered paths have separate bounds: the host also
     // changes directory/metadata records when replacing this one visible file.
     let changes = base

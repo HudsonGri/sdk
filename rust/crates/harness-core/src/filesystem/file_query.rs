@@ -191,7 +191,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             self.reader.host.provider.clone(),
             &self.volume.storage_name(&mut None)?,
         )?;
-        let workspace = self.reader.host.open(&reference, Some(&io)).await?;
+        let workspace = self.reader.host.open(&reference, Some(io)).await?;
         let (provider, path) = self
             .reader
             .host
@@ -227,7 +227,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             commit: [0; 32],
         };
         let (cursor, anchor, valid_resume) = cut(provider.as_ref(), &path, cursor, head).await?;
-        let current = generation(&workspace, &anchor, &io).await?;
+        let current = generation(&workspace, &anchor, io).await?;
 
         let records = provider
             .follow_checked(

@@ -413,11 +413,11 @@ proptest::proptest! {
         let operation_id = OperationId::new();
         let request = FileApproval { task, id, request: Interaction::Approval { prompt: "approve".into(), operation_id, action_digest: digest } };
         let query = request.query().unwrap();
-        proptest::prop_assert_eq!(crate::task_volume::Query::folder(&format!(".tasks/{task}/approvals/{id}")).unwrap(), query.clone());
-        proptest::prop_assert_eq!(serde_json::from_slice::<crate::task_volume::Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), query.clone());
+        proptest::prop_assert_eq!(&crate::task_volume::Query::folder(&format!(".tasks/{task}/approvals/{id}")).unwrap(), &query);
+        proptest::prop_assert_eq!(&serde_json::from_slice::<crate::task_volume::Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), &query);
         proptest::prop_assert!(query.matches(&request.key().unwrap()));
         let encoded = serde_json::to_vec(&request).unwrap();
-        proptest::prop_assert_eq!(serde_json::from_slice::<FileApproval>(&encoded).unwrap(), request.clone());
+        proptest::prop_assert_eq!(&serde_json::from_slice::<FileApproval>(&encoded).unwrap(), &request);
         let key = FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::ApprovalDecision { request: Component::new(id.to_string()).unwrap(), principal: Component::new("user").unwrap() } };
         let mut decision = FileApprovalDecision { binding: ApprovalBinding { operation_id, action_digest: digest }, approved };
         let bytes = serde_json::to_vec(&decision).unwrap();

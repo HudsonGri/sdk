@@ -127,10 +127,24 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         if selection_first && let Some(value) = selection {
             self.apply_outcome(value).await?;
         }
+        self.publish_execution_result(result_key, &result, result_budget)
+            .await?;
+        self.persist_activity().await?;
+        if !selection_first && let Some(value) = selection {
+            self.apply_outcome(value).await?;
+        }
+        result.map(Some)
+    }
+    async fn publish_execution_result(
+        &mut self,
+        result_key: files::FileKey,
+        result: &Result<Value>,
+        result_budget: u64,
+    ) -> Result<()> {
         loop {
             let previous = self.generation;
             let sequence = self.generation.position;
-            let bytes = archive::output_bytes(sequence, &result, result_budget)?;
+            let bytes = archive::output_bytes(sequence, result, result_budget)?;
             match self.publish(result_key.clone(), bytes, true).await {
                 Ok(()) => break,
                 // The effect has already finished. Only retry its outcome file,
@@ -144,11 +158,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(error) => return Err(error),
             }
         }
-        self.persist_activity().await?;
-        if !selection_first && let Some(value) = selection {
-            self.apply_outcome(value).await?;
-        }
-        result.map(Some)
+        Ok(())
     }
 }
 

@@ -289,10 +289,8 @@ impl StockExecution<'_> {
                 }
                 self.compact_response(
                     journal,
-                    input,
-                    step,
-                    projection,
-                    accounting,
+                    (input, step),
+                    (projection, accounting),
                     source,
                     policy,
                     &mut DispatchPhase::new(),

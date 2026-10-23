@@ -24,7 +24,7 @@ use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub(super) async fn run(case: LocalCase) -> TestResult {
+pub(super) async fn run(mut case: LocalCase) -> TestResult {
     case.validate()?;
     let steps = case.turns.len();
     let temporary = local_workspace::temporary()?;
@@ -35,14 +35,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let home = temporary.path().join("home");
-    for (path, text) in &case.home {
-        let path = home.join(path);
-        std::fs::create_dir_all(path.parent().ok_or("home file has no parent")?)?;
-        match text {
-            Value::String(text) => std::fs::write(path, text)?,
-            value => std::fs::write(path, serde_json::to_vec(value)?)?,
-        }
-    }
+    seed_home(&home, &case.home)?;
     let config = local_harness_config(&directory, (model, provider.clone()))?
         .settings(SettingsConfig::new(&directory, &home).codex_home(home.join(".codex")))
         .state_directory(&state)
@@ -59,59 +52,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
     let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
     let base = host.resolve(&workspace, None).await?.generation;
-    let mut references = std::collections::BTreeMap::new();
-    let paths = case
-        .turns
-        .iter()
-        .filter_map(|turn| match turn {
-            ScriptedTurn::Events(events) => Some(events),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|event| match event {
-            ScriptedEvent::Event(ModelEvent::ToolCall(call))
-                if matches!(call.name.split('@').next(), Some("read" | "edit")) =>
-            {
-                call.arguments.get("file").and_then(Value::as_str)
-            }
-            _ => None,
-        });
-    for path in paths {
-        if let std::collections::btree_map::Entry::Vacant(entry) = references.entry(path.to_owned())
-        {
-            let text = case
-                .seed
-                .get(path)
-                .ok_or("file recipe does not name a seeded file")?;
-            let file = FileRef::new(
-                volume.clone(),
-                path.into(),
-                hex::encode(base.as_resource().key()),
-                FileDescriptor::from_bytes(text.as_bytes(), "text/plain", &mut None)?,
-                path.rsplit('/').next().ok_or("seed filename")?.into(),
-                &mut None,
-            )?;
-            entry.insert(serde_json::to_value(file)?);
-        }
-    }
-    let turns = crate::local_case::bind_seed_files(case.turns, &references)?;
-    let mut scripted_calls = crate::local_tool_files::calls(&turns);
-    for (call_id, arguments) in &case.expect.arguments {
-        let (_, call) = scripted_calls
-            .iter_mut()
-            .find(|(_, call)| &call.call_id == call_id)
-            .ok_or("rewritten arguments name no scripted bash call")?;
-        call.arguments = arguments.clone();
-    }
-    // A refused call never ran, so it publishes no tool request or result files.
-    scripted_calls.retain(|(_, call)| {
-        case.expect.results.as_ref().is_none_or(|results| {
-            results
-                .get(&call.call_id)
-                .is_none_or(|result| result["content"]["kind"] != "error")
-        })
-    });
-    provider.extend(turns);
+    let references = seed_references(&case, &volume, &base)?;
+    let scripted_calls = script_provider(&mut case, &references, provider.as_ref())?;
     let stream = local_task_stream(&harness);
     let (operation, task_id, status) =
         crate::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
@@ -121,235 +63,19 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         .await?;
     let output = harness.resume(task_id).await;
     crate::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
-    match (case.expect.outcome, output) {
-        (ExpectedOutcome::Succeeded, Ok(output))
-            if Some(&output.text) == case.expect.text.as_ref() => {}
-        (ExpectedOutcome::Failed, Err(acyclic_harness::Error::TaskFailed { task, .. }))
-            if task == task_id && case.expect.error.is_none() => {}
-        // A local turn is uncertain only through a command, so the caller sees its cause.
-        (
-            ExpectedOutcome::Indeterminate,
-            Err(acyclic_harness::Error::CommandIndeterminate {
-                operation_id: id, ..
-            }),
-        ) if id == operation => {}
-        (ExpectedOutcome::Failed, Err(error))
-            if case
-                .expect
-                .error
-                .as_deref()
-                .is_some_and(|expected| error.to_string().contains(expected)) => {}
-        (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
-    }
-    if provider.remaining() != 0 {
-        return Err("local model script was not consumed".into());
-    }
-    let requests = provider.requests();
-    if requests.len() != steps {
-        return Err("local scenario did not consume exactly its scripted model turns".into());
-    }
-    check_requests(&case.expect, &requests)?;
-    if let Some(expected) = &case.expect.results {
-        let actual = model_results(requests.last().ok_or("missing model request")?)?;
-        check_results(expected, &actual)?;
-        // Corrupt the consumer's real captured model history, not expectations.
-        for call in expected.keys() {
-            let mut missing = actual.clone();
-            missing.remove(call);
-            if check_results(expected, &missing).is_ok() {
-                return Err("model oracle accepted a lost tool result".into());
-            }
-            for field in ["name", "content"] {
-                let mut broken = actual.clone();
-                broken.get_mut(call).ok_or("missing result")?[field] = "CORRUPTED".into();
-                if check_results(expected, &broken).is_ok() {
-                    return Err("model oracle accepted a corrupted tool result".into());
-                }
-            }
-        }
-    }
-    if let Some(observation) = tool_files {
-        let dispatches = provider.dispatches();
-        let execution = dispatches
-            .first()
-            .ok_or("missing model dispatch")?
-            .operation_id;
-        if dispatches.len() != steps
-            || dispatches.iter().enumerate().any(|(step, dispatch)| {
-                dispatch.operation_id != execution || dispatch.step as usize != step
-            })
-        {
-            return Err("local model execution or step binding differs".into());
-        }
-        crate::local_tool_files::verify(
-            &harness,
-            task_id,
-            execution,
-            observation,
-            &scripted_calls,
-            case.expect
-                .results
-                .as_ref()
-                .ok_or("bash results are required")?,
-        )
-        .await?;
-    }
-    let path = StreamPath::new("harness/v3/coordinator/events")?;
-    let cut = stream.tail(path).await?;
-    let mut wire_frames = Vec::new();
-    for sequence in 0..cut {
-        let record = crate::stall::waiting("scheduler wire replay", frames.next())
-            .await
-            .ok_or("scheduler wire ended")??;
-        if record.sequence != sequence {
-            return Err("scheduler wire has a sequence gap".into());
-        }
-        let frame = acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
-        if frame.revision != sequence + 1 {
-            return Err("scheduler wire has a revision gap".into());
-        }
-        wire_frames.push(serde_json::from_slice(&frame.canonical_event_json)?);
-    }
-    check_frames(
-        &case.expect.frames,
-        &wire_frames,
-        operation,
-        case.expect.outcome,
-    )?;
-    let root = serde_json::to_value(operation)?;
-    let terminal = wire_frames
-        .iter()
-        .position(|frame| frame["kind"] == "completed" && frame["operation_id"] == root)
-        .ok_or("missing terminal")?;
-    wire_frames.remove(terminal);
-    if check_frames(
-        &case.expect.frames,
-        &wire_frames,
-        operation,
-        case.expect.outcome,
-    )
-    .is_ok()
-    {
-        return Err("wire oracle accepted a lost root terminal frame".into());
-    }
+    check_outcome(&case.expect, output, task_id, operation)?;
+    let requests = check_model_history(&case.expect, provider.as_ref(), steps)?;
+    verify_tool_files(&case.expect, &harness, task_id, provider.as_ref(), steps, tool_files, &scripted_calls).await?;
+    check_scheduler_replay(&case.expect, stream.as_ref(), &mut frames, operation).await?;
     let target = source
         .observe_files(Query::Plans, None, 16, 65_536)
         .await?
         .snapshot
         .ok_or("missing final diff snapshot")?;
-    let mut wire = Vec::new();
-    let mut seen = initial.cursor.position;
-    let mut paths = std::collections::BTreeSet::new();
-    let mut removed = std::collections::BTreeSet::new();
-    while seen != target.cursor.position {
-        let change = crate::stall::waiting(
-            "workspace follow before the settled cut",
-            observation.changes.next(),
-        )
-        .await
-        .ok_or("diff follow ended")??;
-        if change.cursor.position <= seen || change.cursor.position > target.cursor.position {
-            return Err("diff publication cursor did not advance to the accepted cut".into());
-        }
-        seen = change.cursor.position;
-        for file in &change.files {
-            if case
-                .expect
-                .files
-                .get(&file.key.path())
-                .and_then(Option::as_deref)
-                .map(str::as_bytes)
-                != Some(file.bytes.as_ref())
-            {
-                return Err("publication file bytes differ".into());
-            }
-        }
-        for key in &change.removed {
-            let path = key.path();
-            if case.expect.files.get(&path) != Some(&None) {
-                return Err(format!("unexpected removal publication: {path}").into());
-            }
-            removed.insert(path);
-        }
-        if case.expect.diffs.is_some() {
-            paths.extend(change.files.iter().map(|file| file.key.path()));
-            paths.extend(change.removed.iter().map(|key| key.path()));
-        }
-        wire.push(serde_json::to_value(&change)?);
-    }
-    matchers::ordered(&case.expect.wire, &wire, "file publication wire")?;
-    for (path, expected) in &case.expect.files {
-        if expected.is_none()
-            && ((case.seed.contains_key(path) && !removed.contains(path))
-                || target.files.iter().any(|file| file.key.path() == *path))
-        {
-            return Err(
-                format!("missing removal publication or deleted file remains: {path}").into(),
-            );
-        }
-    }
+    let paths = check_publications(&case, &mut observation, &initial, &target).await?;
     if let Some(expected) = &case.expect.diffs {
         let current = host.resolve(&workspace, None).await?.generation;
-        let root = ContextRoot {
-            volume: volume.clone(),
-            directory: String::new(),
-        };
-        let mut view = DiffView::new(volume.clone(), base.clone())?;
-        let dropped = view.clone();
-        let changes = paths
-            .into_iter()
-            .map(|path| DiffPath {
-                largest_file_bytes: None,
-                matches_base: false,
-                base: initial
-                    .files
-                    .iter()
-                    .any(|file| file.key.path() == path)
-                    .then(|| PinnedContextPath {
-                        root: root.clone(),
-                        generation: base.clone(),
-                        path: path.clone(),
-                    }),
-                current: target
-                    .files
-                    .iter()
-                    .any(|file| file.key.path() == path)
-                    .then(|| PinnedContextPath {
-                        root: root.clone(),
-                        generation: current.clone(),
-                        path: path.clone(),
-                    }),
-                path,
-            })
-            .collect();
-        view.apply(
-            &DiffPublication {
-                previous: base,
-                generation: current,
-                paths: changes,
-            },
-            reader.as_ref(),
-            DiffLimits {
-                files: 16,
-                changes: 16,
-                file_bytes: 65_536,
-                render_bytes: 65_536,
-                work: 65_536,
-            },
-        )
-        .await?;
-        assert_rendered(&view, expected)?;
-        if !expected.is_empty() {
-            // Drop the publication only for this consumer. Exercise the same oracle
-            // immediately after the real follow and fold, without another execution
-            // or an await that could delay reaching the negative-control assertion.
-            let error = assert_rendered(&dropped, expected)
-                .expect_err("consumer that dropped the publication passed unchanged expectations");
-            assert!(
-                error.to_string().contains("rendered diffs differ"),
-                "{error}"
-            );
-        }
+        check_diff(expected, &volume, (base, current), (&initial, &target), paths, reader.as_ref()).await?;
     }
     // Fs::local reuses live roots. Release every holder before a cold reopen.
     drop(frames);
@@ -362,38 +88,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     drop(host);
     drop(initial);
     drop(target);
-    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
-    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
-    for (path, expected) in &case.expect.files {
-        let read = cold
-            .read(&workspace, None, &format!("/{path}"), 65_536, None)
-            .await;
-        match (expected, read) {
-            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
-            (_, actual) => {
-                return Err(format!("persisted file differs: {path}: {actual:?}").into());
-            }
-        }
-    }
-    if requests.is_empty() {
-        // Only a failed case may stop before dispatch; validate() requires it.
-        return Ok(());
-    }
-    if [PLATFORM.name, "fs", "read", "write", "edit"]
-        .iter()
-        .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
-    {
-        return Err("local scenario did not use the production default toolset".into());
-    }
-    let prompt = ModelContent::Text(case.prompt);
-    if !requests[0]
-        .messages
-        .iter()
-        .any(|message| message.content == prompt)
-    {
-        return Err("local scenario prompt was lost before model dispatch".into());
-    }
+    check_persisted(&directory, &volume, &workspace, &case.expect).await?;
+    check_initial_request(&requests, &case.prompt)?;
     Ok(())
 }
 
@@ -476,6 +172,366 @@ pub(crate) fn check_results(
                 actual[call]
             )
             .into());
+        }
+    }
+    Ok(())
+}
+
+fn seed_references(case: &LocalCase, volume: &acyclic_harness::conversation::VolumeRef, base: &acyclic_harness::resources::GenerationRef) -> TestResult<std::collections::BTreeMap<String, Value>> {
+    let mut references = std::collections::BTreeMap::new();
+    let paths = case
+        .turns
+        .iter()
+        .filter_map(|turn| match turn {
+            ScriptedTurn::Events(events) => Some(events),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|event| match event {
+            ScriptedEvent::Event(ModelEvent::ToolCall(call))
+                if matches!(call.name.split('@').next(), Some("read" | "edit")) =>
+            {
+                call.arguments.get("file").and_then(Value::as_str)
+            }
+            _ => None,
+        });
+    for path in paths {
+        if let std::collections::btree_map::Entry::Vacant(entry) = references.entry(path.to_owned())
+        {
+            let text = case
+                .seed
+                .get(path)
+                .ok_or("file recipe does not name a seeded file")?;
+            let file = FileRef::new(
+                volume.clone(),
+                path.into(),
+                hex::encode(base.as_resource().key()),
+                FileDescriptor::from_bytes(text.as_bytes(), "text/plain", &mut None)?,
+                path.rsplit('/').next().ok_or("seed filename")?.into(),
+                &mut None,
+            )?;
+            entry.insert(serde_json::to_value(file)?);
+        }
+    }
+    Ok(references)
+}
+
+fn script_provider(case: &mut LocalCase, references: &std::collections::BTreeMap<String, Value>, provider: &ScriptedModelProvider) -> TestResult<Vec<(u64, acyclic_harness::model::ToolCall)>> {
+    let turns = crate::local_case::bind_seed_files(std::mem::take(&mut case.turns), references)?;
+    let mut scripted_calls = crate::local_tool_files::calls(&turns);
+    for (call_id, arguments) in &case.expect.arguments {
+        let (_, call) = scripted_calls
+            .iter_mut()
+            .find(|(_, call)| &call.call_id == call_id)
+            .ok_or("rewritten arguments name no scripted bash call")?;
+        call.arguments = arguments.clone();
+    }
+    // A refused call never ran, so it publishes no tool request or result files.
+    scripted_calls.retain(|(_, call)| {
+        case.expect.results.as_ref().is_none_or(|results| {
+            results
+                .get(&call.call_id)
+                .is_none_or(|result| result["content"]["kind"] != "error")
+        })
+    });
+    provider.extend(turns);
+    Ok(scripted_calls)
+}
+
+fn check_outcome(expect: &crate::local_case::Expectations, output: acyclic_harness::Result<acyclic_harness::executor::TurnOutput>, task_id: acyclic_harness::TaskId, operation: acyclic_harness::OperationId) -> TestResult {
+    match (expect.outcome, output) {
+        (ExpectedOutcome::Succeeded, Ok(output))
+            if Some(&output.text) == expect.text.as_ref() => {}
+        (ExpectedOutcome::Failed, Err(acyclic_harness::Error::TaskFailed { task, .. }))
+            if task == task_id && expect.error.is_none() => {}
+        // A local turn is uncertain only through a command, so the caller sees its cause.
+        (
+            ExpectedOutcome::Indeterminate,
+            Err(acyclic_harness::Error::CommandIndeterminate {
+                operation_id: id, ..
+            }),
+        ) if id == operation => {}
+        (ExpectedOutcome::Failed, Err(error))
+            if expect
+                .error
+                .as_deref()
+                .is_some_and(|expected| error.to_string().contains(expected)) => {}
+        (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
+    }
+    Ok(())
+}
+
+fn check_model_history(expect: &crate::local_case::Expectations, provider: &ScriptedModelProvider, steps: usize) -> TestResult<Vec<ModelRequest>> {
+    if provider.remaining() != 0 {
+        return Err("local model script was not consumed".into());
+    }
+    let requests = provider.requests();
+    if requests.len() != steps {
+        return Err("local scenario did not consume exactly its scripted model turns".into());
+    }
+    check_requests(expect, &requests)?;
+    if let Some(expected) = &expect.results {
+        let actual = model_results(requests.last().ok_or("missing model request")?)?;
+        check_results(expected, &actual)?;
+        // Corrupt the consumer's real captured model history, not expectations.
+        for call in expected.keys() {
+            let mut missing = actual.clone();
+            missing.remove(call);
+            if check_results(expected, &missing).is_ok() {
+                return Err("model oracle accepted a lost tool result".into());
+            }
+            for field in ["name", "content"] {
+                let mut broken = actual.clone();
+                broken.get_mut(call).ok_or("missing result")?[field] = "CORRUPTED".into();
+                if check_results(expected, &broken).is_ok() {
+                    return Err("model oracle accepted a corrupted tool result".into());
+                }
+            }
+        }
+    }
+    Ok(requests)
+}
+
+async fn verify_tool_files(expect: &crate::local_case::Expectations, harness: &LocalHarness, task_id: acyclic_harness::TaskId, provider: &ScriptedModelProvider, steps: usize, tool_files: Option<acyclic_harness::task_volume::Observation>, scripted_calls: &[(u64, acyclic_harness::model::ToolCall)]) -> TestResult {
+    if let Some(observation) = tool_files {
+        let dispatches = provider.dispatches();
+        let execution = dispatches
+            .first()
+            .ok_or("missing model dispatch")?
+            .operation_id;
+        if dispatches.len() != steps
+            || dispatches.iter().enumerate().any(|(step, dispatch)| {
+                dispatch.operation_id != execution || dispatch.step as usize != step
+            })
+        {
+            return Err("local model execution or step binding differs".into());
+        }
+        crate::local_tool_files::verify(
+            harness,
+            task_id,
+            execution,
+            observation,
+            scripted_calls,
+            expect
+                .results
+                .as_ref()
+                .ok_or("bash results are required")?,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn check_scheduler_replay(expect: &crate::local_case::Expectations, stream: &acyclic_stream::LocalStream, frames: &mut acyclic_stream::RecordStream, operation: acyclic_harness::OperationId) -> TestResult {
+    let path = StreamPath::new("harness/v3/coordinator/events")?;
+    let cut = stream.tail(path).await?;
+    let mut wire_frames = Vec::new();
+    for sequence in 0..cut {
+        let record = crate::stall::waiting("scheduler wire replay", frames.next())
+            .await
+            .ok_or("scheduler wire ended")??;
+        if record.sequence != sequence {
+            return Err("scheduler wire has a sequence gap".into());
+        }
+        let frame = acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
+        if frame.revision != sequence + 1 {
+            return Err("scheduler wire has a revision gap".into());
+        }
+        wire_frames.push(serde_json::from_slice(&frame.canonical_event_json)?);
+    }
+    check_frames(
+        &expect.frames,
+        &wire_frames,
+        operation,
+        expect.outcome,
+    )?;
+    let root = serde_json::to_value(operation)?;
+    let terminal = wire_frames
+        .iter()
+        .position(|frame| frame["kind"] == "completed" && frame["operation_id"] == root)
+        .ok_or("missing terminal")?;
+    wire_frames.remove(terminal);
+    if check_frames(
+        &expect.frames,
+        &wire_frames,
+        operation,
+        expect.outcome,
+    )
+    .is_ok()
+    {
+        return Err("wire oracle accepted a lost root terminal frame".into());
+    }
+    Ok(())
+}
+
+async fn check_publications(case: &LocalCase, observation: &mut acyclic_harness::task_volume::Observation, initial: &acyclic_harness::task_volume::Snapshot, target: &acyclic_harness::task_volume::Snapshot) -> TestResult<std::collections::BTreeSet<String>> {
+    let mut wire = Vec::new();
+    let mut seen = initial.cursor.position;
+    let mut paths = std::collections::BTreeSet::new();
+    let mut removed = std::collections::BTreeSet::new();
+    while seen != target.cursor.position {
+        let change = crate::stall::waiting(
+            "workspace follow before the settled cut",
+            observation.changes.next(),
+        )
+        .await
+        .ok_or("diff follow ended")??;
+        if change.cursor.position <= seen || change.cursor.position > target.cursor.position {
+            return Err("diff publication cursor did not advance to the accepted cut".into());
+        }
+        seen = change.cursor.position;
+        for file in &change.files {
+            if case
+                .expect
+                .files
+                .get(&file.key.path())
+                .and_then(Option::as_deref)
+                .map(str::as_bytes)
+                != Some(file.bytes.as_ref())
+            {
+                return Err("publication file bytes differ".into());
+            }
+        }
+        for key in &change.removed {
+            let path = key.path();
+            if case.expect.files.get(&path) != Some(&None) {
+                return Err(format!("unexpected removal publication: {path}").into());
+            }
+            removed.insert(path);
+        }
+        if case.expect.diffs.is_some() {
+            paths.extend(change.files.iter().map(|file| file.key.path()));
+            paths.extend(change.removed.iter().map(|key| key.path()));
+        }
+        wire.push(serde_json::to_value(&change)?);
+    }
+    matchers::ordered(&case.expect.wire, &wire, "file publication wire")?;
+    for (path, expected) in &case.expect.files {
+        if expected.is_none()
+            && ((case.seed.contains_key(path) && !removed.contains(path))
+                || target.files.iter().any(|file| file.key.path() == *path))
+        {
+            return Err(
+                format!("missing removal publication or deleted file remains: {path}").into(),
+            );
+        }
+    }
+    Ok(paths)
+}
+
+async fn check_diff(expected: &std::collections::BTreeMap<String, Value>, volume: &acyclic_harness::conversation::VolumeRef, generations: (acyclic_harness::resources::GenerationRef, acyclic_harness::resources::GenerationRef), snapshots: (&acyclic_harness::task_volume::Snapshot, &acyclic_harness::task_volume::Snapshot), paths: std::collections::BTreeSet<String>, reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier) -> TestResult {
+    let (base, current) = generations;
+    let (initial, target) = snapshots;
+        let root = ContextRoot {
+            volume: volume.clone(),
+            directory: String::new(),
+        };
+        let mut view = DiffView::new(volume.clone(), base.clone())?;
+        let dropped = view.clone();
+        let changes = paths
+            .into_iter()
+            .map(|path| DiffPath {
+                largest_file_bytes: None,
+                matches_base: false,
+                base: initial
+                    .files
+                    .iter()
+                    .any(|file| file.key.path() == path)
+                    .then(|| PinnedContextPath {
+                        root: root.clone(),
+                        generation: base.clone(),
+                        path: path.clone(),
+                    }),
+                current: target
+                    .files
+                    .iter()
+                    .any(|file| file.key.path() == path)
+                    .then(|| PinnedContextPath {
+                        root: root.clone(),
+                        generation: current.clone(),
+                        path: path.clone(),
+                    }),
+                path,
+            })
+            .collect();
+        view.apply(
+            &DiffPublication {
+                previous: base,
+                generation: current,
+                paths: changes,
+            },
+            reader,
+            DiffLimits {
+                files: 16,
+                changes: 16,
+                file_bytes: 65_536,
+                render_bytes: 65_536,
+                work: 65_536,
+            },
+        )
+        .await?;
+        assert_rendered(&view, expected)?;
+        if !expected.is_empty() {
+            // Drop the publication only for this consumer. Exercise the same oracle
+            // immediately after the real follow and fold, without another execution
+            // or an await that could delay reaching the negative-control assertion.
+            let error = assert_rendered(&dropped, expected)
+                .expect_err("consumer that dropped the publication passed unchanged expectations");
+            assert!(
+                error.to_string().contains("rendered diffs differ"),
+                "{error}"
+            );
+        }
+    Ok(())
+}
+
+async fn check_persisted(directory: &std::path::Path, volume: &acyclic_harness::conversation::VolumeRef, workspace: &acyclic_harness::resources::WorkspaceRef, expect: &crate::local_case::Expectations) -> TestResult {
+    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory)).await?;
+    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
+    for (path, expected) in &expect.files {
+        let read = cold
+            .read(workspace, None, &format!("/{path}"), 65_536, None)
+            .await;
+        match (expected, read) {
+            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
+            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (_, actual) => {
+                return Err(format!("persisted file differs: {path}: {actual:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_initial_request(requests: &[ModelRequest], prompt: &str) -> TestResult {
+    let Some(first) = requests.first() else {
+        // Only a failed case may stop before dispatch; validate() requires it.
+        return Ok(());
+    };
+    if [PLATFORM.name, "fs", "read", "write", "edit"]
+        .iter()
+        .any(|name| !first.tools.iter().any(|tool| tool.name == *name))
+    {
+        return Err("local scenario did not use the production default toolset".into());
+    }
+    let prompt = ModelContent::Text(prompt.into());
+    if !first
+        .messages
+        .iter()
+        .any(|message| message.content == prompt)
+    {
+        return Err("local scenario prompt was lost before model dispatch".into());
+    }
+    Ok(())
+}
+
+fn seed_home(home: &std::path::Path, files: &std::collections::BTreeMap<String, Value>) -> TestResult {
+    for (path, text) in files {
+        let path = home.join(path);
+        std::fs::create_dir_all(path.parent().ok_or("home file has no parent")?)?;
+        match text {
+            Value::String(text) => std::fs::write(path, text)?,
+            value => std::fs::write(path, serde_json::to_vec(value)?)?,
         }
     }
     Ok(())

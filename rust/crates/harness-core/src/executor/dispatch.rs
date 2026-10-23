@@ -41,16 +41,13 @@ impl StockExecution<'_> {
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
         self.require_model_producer().await?;
-        let (_, records) = self
-            .model_records(journal, input.operation_id, step, purpose)
-            .await?;
         let RetainedModelStep {
             request: retained_request,
             mut admission,
             events: replayed,
-        } = retain_preparation(
-            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
-        )?;
+        } = self
+            .retained_dispatch_step(journal, input.operation_id, step, purpose)
+            .await?;
         let started = retained_request.is_some();
         if started {
             phase.start();
@@ -68,10 +65,7 @@ impl StockExecution<'_> {
             )
             .await?;
         let request_digest = request.request_digest();
-        let purpose_key = match purpose {
-            ModelPurpose::Response => "model",
-            ModelPurpose::Summary => "summary",
-        };
+        let purpose_key = model_purpose_key(purpose);
         #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
@@ -93,15 +87,7 @@ impl StockExecution<'_> {
         let stream = if let Some(continuation) = continuation {
             #[cfg(feature = "filesystem")]
             {
-                _continuation_hold = io
-                    .filter(|_| stock_is_native(io))
-                    .map(|io| {
-                        io.guard_owned(
-                            continuation.capacity() as u64
-                                * std::mem::size_of::<ModelEvent>() as u64,
-                        )
-                    })
-                    .transpose()?;
+                _continuation_hold = self.hold_continuation(&continuation)?;
             }
             Either::Left(futures::stream::iter(continuation.into_iter().map(Ok)))
         } else {
@@ -109,7 +95,10 @@ impl StockExecution<'_> {
             {
                 _continuation_hold = None;
             }
-            let attempt = if !started {
+            let attempt = if started {
+                self.resume_model_attempt(input.operation_id, dispatch, replayed.is_empty(), phase)
+                    .await?
+            } else {
                 self.claim_model_dispatch(
                     journal,
                     input,
@@ -119,29 +108,6 @@ impl StockExecution<'_> {
                     phase,
                 )
                 .await?
-            } else if replayed.is_empty()
-                && !self.stock.reconciliation_only
-                && !super::unsettled_resume::enabled()
-            {
-                // Only an owned task can authorize reissuing the retained
-                // request under its existing dispatch and current fence.
-                // An unowned callback has no such recovery authority.
-                if self.stock.task.is_none() {
-                    return Err(Error::Indeterminate(input.operation_id));
-                }
-                self.claim_task_model(dispatch).await?;
-                phase.start()
-            } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
-                // An incomplete response has not dispatched any of its tool calls.
-                // When the provider cannot recover its prefix, fail definitively
-                // instead of retaining a reservation that can never make progress.
-                // Keep the recorded prefix and never generate a different suffix.
-                return Err(Error::ModelUnavailable {
-                    failure: crate::ModelTransportFailure::Interrupted,
-                    excerpt: String::new(),
-                });
-            } else {
-                return Err(Error::Indeterminate(input.operation_id));
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
@@ -170,6 +136,68 @@ impl StockExecution<'_> {
             .await?;
         crate::obs::obs_record!("items" = observed.len());
         Ok(observed)
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn hold_continuation(
+        &self,
+        continuation: &Vec<ModelEvent>,
+    ) -> Result<Option<crate::conversation::ContentHold<'_>>> {
+        self.io
+            .filter(|_| stock_is_native(self.io))
+            .map(|io| {
+                io.guard_owned(
+                    continuation.capacity() as u64 * std::mem::size_of::<ModelEvent>() as u64,
+                )
+            })
+            .transpose()
+    }
+
+    async fn retained_dispatch_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        purpose: ModelPurpose,
+    ) -> Result<RetainedModelStep> {
+        let (_, records) = self
+            .model_records(journal, operation, step, purpose)
+            .await?;
+        retain_preparation(
+            retained_model_step(journal, &records, step, purpose, self.stock.limits, self.io)
+                .await?,
+        )
+    }
+
+    async fn resume_model_attempt(
+        &self,
+        operation: OperationId,
+        dispatch: crate::model::ModelDispatch,
+        replayed_empty: bool,
+        phase: &mut DispatchPhase,
+    ) -> Result<phase::ProviderAttempt> {
+        if replayed_empty && !self.stock.reconciliation_only && !super::unsettled_resume::enabled()
+        {
+            // Only an owned task can authorize reissuing the retained
+            // request under its existing dispatch and current fence.
+            // An unowned callback has no such recovery authority.
+            if self.stock.task.is_none() {
+                return Err(Error::Indeterminate(operation));
+            }
+            self.claim_task_model(dispatch).await?;
+            Ok(phase.start())
+        } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
+            // An incomplete response has not dispatched any of its tool calls.
+            // When the provider cannot recover its prefix, fail definitively
+            // instead of retaining a reservation that can never make progress.
+            // Keep the recorded prefix and never generate a different suffix.
+            Err(Error::ModelUnavailable {
+                failure: crate::ModelTransportFailure::Interrupted,
+                excerpt: String::new(),
+            })
+        } else {
+            Err(Error::Indeterminate(operation))
+        }
     }
 
     async fn resolve_model_request(
@@ -512,5 +540,12 @@ impl StockExecution<'_> {
                 (false, false) => "dispatch",
             }
         );
+    }
+}
+
+fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
+    match purpose {
+        ModelPurpose::Response => "model",
+        ModelPurpose::Summary => "summary",
     }
 }

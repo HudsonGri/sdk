@@ -21,6 +21,7 @@ use std::{
     reason = "Cargo-provided executable metadata for this integration crate"
 )]
 const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const ANSWERS: [&str; 3] = ["ALPHA_REPLY", "BRAVO_REPLY", "CHARLIE_REPLY"];
 
 fn answer(text: &str) -> String {
@@ -60,7 +61,7 @@ struct Running(std::process::Child);
 
 impl Running {
     /// Waits for the requested exit; the deadline only bounds a quit regression.
-    fn exit(mut self, screen: &mut Screen) -> std::process::ExitStatus {
+    fn exit(mut self, screen: &mut Screen) -> TestResult<std::process::ExitStatus> {
         // PTY EOF is delivered by the blocking reader, including every final
         // output byte. Waiting for it bounds quit without polling the process.
         let deadline = Instant::now() + Duration::from_secs(8);
@@ -70,8 +71,10 @@ impl Running {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             {
                 Ok(bytes) => screen.advance(&bytes),
-                Err(mpsc::RecvTimeoutError::Disconnected) => return self.0.wait().unwrap(),
-                Err(mpsc::RecvTimeoutError::Timeout) => panic!("GraphCoder did not exit on Ctrl+D"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(self.0.wait()?),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("GraphCoder did not exit on Ctrl+D".into());
+                }
             }
         }
     }
@@ -105,14 +108,14 @@ impl Screen {
     }
 
     /// Waits for `condition`; the deadline only bounds a hang, nothing is timed.
-    fn until(&mut self, what: &str, mut condition: impl FnMut(&str) -> bool) {
+    fn until(&mut self, what: &str, mut condition: impl FnMut(&str) -> bool) -> TestResult {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             let text = String::from_utf8_lossy(&self.bytes);
             // Answer each primary device-attributes probe so startup never waits.
             let probes = text.matches("\x1b[c").count();
             for _ in self.answered..probes {
-                self.input.write_all(b"\x1b[?62;1c").unwrap();
+                self.input.write_all(b"\x1b[?62;1c")?;
             }
             self.answered = probes;
             assert!(
@@ -120,35 +123,78 @@ impl Screen {
                 "a later prompt was refused:\n{text}"
             );
             if condition(&self.visible()) {
-                return;
+                return Ok(());
             }
             match self
                 .output
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             {
                 Ok(bytes) => self.advance(&bytes),
-                Err(error) => panic!("no {what} ({error}):\n{}", self.visible()),
+                Err(error) => {
+                    return Err(format!("no {what} ({error}):\n{}", self.visible()).into());
+                }
             }
         }
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn three_prompts_in_the_tui_continue_one_conversation() {
-    conversation(false).await;
+async fn three_prompts_in_the_tui_continue_one_conversation() -> TestResult {
+    conversation(false).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_blocked_task_exits_the_tui_nonzero() {
-    conversation(true).await;
+async fn a_blocked_task_exits_the_tui_nonzero() -> TestResult {
+    conversation(true).await
 }
 
-async fn conversation(blocked: bool) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+async fn conversation(blocked: bool) -> TestResult {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let app = responses(&bodies, blocked);
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+    });
+    let directory = tempfile::tempdir()?;
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    let home = directory.path().join("home");
+    for path in [&workspace, &settings, &home] {
+        std::fs::create_dir(path)?;
+    }
+    let catalog = directory.path().join("catalog.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_vec(&json!({"graphcoder-qual":{
+            "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+            "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+            "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+        }}))?,
+    )?;
+    let (child, screen, reader) = launch(&workspace, &catalog, &settings, &home)?;
+    let driven = drive(child, screen, bodies.clone(), blocked).await?;
+    reader.join().map_err(|_| "PTY reader panicked")?;
+    assert_eq!(
+        driven.code(),
+        Some(if blocked { 3 } else { 0 }),
+        "{driven:?}"
+    );
+    check_requests(&bodies, blocked)?;
+    stop.send(())
+        .map_err(|_| "server stopped before test completed")?;
+    server.await??;
+    Ok(())
+}
+
+fn responses(bodies: &Arc<Mutex<Vec<Value>>>, blocked: bool) -> Router {
     let recorded = bodies.clone();
-    let app = Router::new()
+    Router::new()
         .route(
             "/count",
             post(|| async { Json(json!({"input_tokens":64})) }),
@@ -158,7 +204,9 @@ async fn conversation(blocked: bool) {
             post(move |Json(body): Json<Value>| {
                 let bodies = recorded.clone();
                 async move {
-                    let mut bodies = bodies.lock().unwrap();
+                    let mut bodies = bodies
+                        .lock()
+                        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
                     bodies.push(body);
                     if blocked && bodies.len() == 1 {
                         let event = json!({"type":"response.output_item.done","output_index":0,
@@ -168,45 +216,31 @@ async fn conversation(blocked: bool) {
                                 "media_type":"text/markdown","display_name":"goal"}).to_string()}});
                         let completed =
                             json!({"type":"response.completed","response":{"status":"completed"}});
-                        return (
+                        return Ok::<_, axum::http::StatusCode>((
                             [("content-type", "text/event-stream")],
                             format!("data: {event}\n\ndata: {completed}\n\n"),
-                        );
+                        ));
                     }
                     let text = ANSWERS.get(bodies.len() - 1).copied().unwrap_or("EXTRA");
-                    ([("content-type", "text/event-stream")], answer(text))
+                    Ok(([("content-type", "text/event-stream")], answer(text)))
                 }
             }),
-        );
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .unwrap();
-    });
-    let directory = tempfile::tempdir().unwrap();
-    let workspace = directory.path().join("workspace");
-    let settings = directory.path().join("settings");
-    let home = directory.path().join("home");
-    for path in [&workspace, &settings, &home] {
-        std::fs::create_dir(path).unwrap();
-    }
-    let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
-        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
-    }})).unwrap()).unwrap();
+        )
+}
+
+fn launch(
+    workspace: &std::path::Path,
+    catalog: &std::path::Path,
+    settings: &std::path::Path,
+    home: &std::path::Path,
+) -> TestResult<(Running, Screen, std::thread::JoinHandle<()>)> {
     let size = rustix_openpty::rustix::termios::Winsize {
         ws_row: 40,
         ws_col: 120,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let pty = rustix_openpty::openpty(None, Some(&size)).unwrap();
+    let pty = rustix_openpty::openpty(None, Some(&size))?;
     let controller = File::from(pty.controller);
     let user = File::from(pty.user);
     // `setsid --ctty` makes the pseudo-terminal the child's /dev/tty.
@@ -215,26 +249,25 @@ async fn conversation(blocked: bool) {
             .arg("--ctty")
             .arg(EXECUTABLE)
             .arg("--workspace")
-            .arg(&workspace)
+            .arg(workspace)
             .arg("--catalog")
-            .arg(&catalog)
+            .arg(catalog)
             .arg("--settings-root")
-            .arg(&settings)
+            .arg(settings)
             .args(["--model", "graphcoder-qual/tiny"])
-            .current_dir(&workspace)
+            .current_dir(workspace)
             .env("TERM", "xterm-256color")
-            .env("HOME", &home)
+            .env("HOME", home)
             .env("CODEX_HOME", home.join("codex-home"))
             .env_remove("OPENAI_API_KEY")
             .env("XDG_DATA_HOME", home.join("data"))
-            .stdin(Stdio::from(user.try_clone().unwrap()))
-            .stdout(Stdio::from(user.try_clone().unwrap()))
+            .stdin(Stdio::from(user.try_clone()?))
+            .stdout(Stdio::from(user.try_clone()?))
             .stderr(Stdio::from(user))
-            .spawn()
-            .unwrap(),
+            .spawn()?,
     );
     let (sink, output_events) = mpsc::channel();
-    let mut output = controller.try_clone().unwrap();
+    let mut output = controller.try_clone()?;
     let reader = std::thread::spawn(move || {
         let mut buffer = [0; 8192];
         // The read fails with EIO once the child closes the terminal.
@@ -244,8 +277,7 @@ async fn conversation(blocked: bool) {
             }
         }
     });
-    let requested = bodies.clone();
-    let mut screen = Screen {
+    let screen = Screen {
         bytes: Vec::new(),
         output: output_events,
         terminal: Term::new(Config::default(), &Grid, Events),
@@ -253,78 +285,82 @@ async fn conversation(blocked: bool) {
         input: controller,
         answered: 0,
     };
-    let driven = tokio::task::spawn_blocking(move || {
+    Ok((child, screen, reader))
+}
+
+async fn drive(
+    child: Running,
+    mut screen: Screen,
+    requested: Arc<Mutex<Vec<Value>>>,
+    blocked: bool,
+) -> TestResult<std::process::ExitStatus> {
+    tokio::task::spawn_blocking(move || -> TestResult<_> {
         let child = child;
         screen.until("composer", |text| {
             text.starts_with("○ GraphCoder") && text.contains('└')
-        });
+        })?;
         let prompts: &[&str] = if blocked {
             &["Use goal mode"]
         } else {
             &["first prompt", "first prompt", "third prompt"]
         };
-        for (index, prompt) in prompts.iter().enumerate() {
-            screen
-                .input
-                .write_all(format!("{prompt}\r").as_bytes())
-                .unwrap();
+        for (index, (prompt, expected)) in prompts.iter().zip(ANSWERS).enumerate() {
+            screen.input.write_all(format!("{prompt}\r").as_bytes())?;
+
             // A fast turn can settle between frames without ever painting busy.
             // Require the actual answer and idle header in the current terminal,
             // rather than a transient glyph somewhere in the output history.
             if blocked {
                 screen.until("blocked goal", |text| {
                     settled(text, "goal blocked: GOAL.md is blocked.")
-                });
+                })?;
             } else {
-                screen.until(ANSWERS[index], |text| {
-                    requested.lock().unwrap().len() == index + 1 && settled(text, ANSWERS[index])
-                });
+                screen.until(expected, |text| {
+                    requested
+                        .lock()
+                        .is_ok_and(|bodies| bodies.len() == index + 1)
+                        && settled(text, expected)
+                })?;
             }
         }
-        screen.input.write_all(b"\x04").unwrap();
+        screen.input.write_all(b"\x04")?;
         let status = child.exit(&mut screen);
         drop(screen);
         status
     })
-    .await
-    .unwrap();
-    reader.join().unwrap();
-    assert_eq!(
-        driven.code(),
-        Some(if blocked { 3 } else { 0 }),
-        "{driven:?}"
-    );
-    let bodies = bodies.lock().unwrap();
+    .await?
+}
+
+fn check_requests(bodies: &Arc<Mutex<Vec<Value>>>, blocked: bool) -> TestResult {
+    let bodies = bodies.lock().map_err(|error| error.to_string())?;
     if blocked {
         assert_eq!(
             bodies.len(),
             2,
             "the tool result completes its turn, then the blocked goal stops continuation"
         );
-        stop.send(()).unwrap();
-        drop(bodies);
-        server.await.unwrap();
-        return;
+        return Ok(());
     }
     assert_eq!(bodies.len(), 3);
     // Each later request carries every earlier prompt and answer.
-    for (index, body) in bodies.iter().enumerate() {
+    for (index, (body, expected)) in bodies.iter().zip(ANSWERS).enumerate() {
         let body = body.to_string();
-        for earlier in 0..index {
-            assert!(
-                body.contains(ANSWERS[earlier]),
-                "request {index} lacks {}",
-                ANSWERS[earlier]
-            );
+        for earlier in ANSWERS.iter().take(index) {
+            assert!(body.contains(earlier), "request {index} lacks {earlier}");
         }
         assert!(
-            !body.contains(ANSWERS[index]),
+            !body.contains(expected),
             "request {index} saw its own answer"
         );
     }
-    assert!(bodies[2].to_string().contains("first prompt"));
-    stop.send(()).unwrap();
-    server.await.unwrap();
+    assert!(
+        bodies
+            .get(2)
+            .ok_or("missing third request")?
+            .to_string()
+            .contains("first prompt")
+    );
+    Ok(())
 }
 
 proptest::proptest! {

@@ -75,57 +75,7 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
 
-    for (prompt, expected, edit, blocked) in [
-        ("hello", (false, false), None, false),
-        (
-            "Use GOAL MODE",
-            (true, false),
-            Some(write("GOAL.md", "---\nstatus: done\n---\nShip")),
-            false,
-        ),
-        (
-            "hello",
-            (true, false),
-            Some(write("plans/release.md", "- [ ] Ship")),
-            false,
-        ),
-        (
-            "hello",
-            (true, true),
-            Some(write(
-                "GOAL.md",
-                "---\nstatus: blocked\nreason: waiting\n---\nShip",
-            )),
-            true,
-        ),
-        (
-            "hello",
-            (true, true),
-            Some(write("GOAL.md", "---\nstatus: done\n---\nShip")),
-            false,
-        ),
-        (
-            "hello",
-            (true, true),
-            Some(tool(
-                "bash",
-                json!({"command":"rm .volumes/scratch/GOAL.md"}),
-            )),
-            false,
-        ),
-        (
-            "hello",
-            (false, true),
-            Some(tool(
-                "bash",
-                json!({"command":"rm .volumes/scratch/plans/release.md && rmdir .volumes/scratch/plans"}),
-            )),
-            false,
-        ),
-        ("hello", (false, false), None, false),
-        ("Use plan mode", (false, true), None, false),
-        ("hello", (false, false), None, false),
-    ] {
+    for (prompt, expected, edit, blocked) in scenarios() {
         if let Some(edit) = edit {
             script.lock().unwrap().push_back((expected, edit));
         }
@@ -188,4 +138,60 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
         }
     }
     server.abort();
+}
+
+type Scenario = (&'static str, (bool, bool), Option<String>, bool);
+
+fn scenarios() -> [Scenario; 10] {
+    [
+        ("hello", (false, false), None, false),
+        (
+            "Use GOAL MODE",
+            (true, false),
+            Some(write("GOAL.md", "---\nstatus: done\n---\nShip")),
+            false,
+        ),
+        (
+            "hello",
+            (true, false),
+            Some(write("plans/release.md", "- [ ] Ship")),
+            false,
+        ),
+        (
+            "hello",
+            (true, true),
+            Some(write(
+                "GOAL.md",
+                "---\nstatus: blocked\nreason: waiting\n---\nShip",
+            )),
+            true,
+        ),
+        (
+            "hello",
+            (true, true),
+            Some(write("GOAL.md", "---\nstatus: done\n---\nShip")),
+            false,
+        ),
+        (
+            "hello",
+            (true, true),
+            Some(tool(
+                "bash",
+                json!({"command":"rm .volumes/scratch/GOAL.md"}),
+            )),
+            false,
+        ),
+        (
+            "hello",
+            (false, true),
+            Some(tool(
+                "bash",
+                json!({"command":"rm .volumes/scratch/plans/release.md && rmdir .volumes/scratch/plans"}),
+            )),
+            false,
+        ),
+        ("hello", (false, false), None, false),
+        ("Use plan mode", (false, true), None, false),
+        ("hello", (false, false), None, false),
+    ]
 }

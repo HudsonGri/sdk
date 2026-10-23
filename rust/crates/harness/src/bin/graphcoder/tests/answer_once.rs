@@ -270,105 +270,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
     let operation = client::local_identity(None);
     let presentation = {
         let local = local.clone();
-        async move {
-            let authority = local.client_owner();
-            let root = TaskId::parse(&authority.id)?;
-            let mut client = TaskFileClient::observe_task(
-                local.task_files().as_ref(),
-                &authority,
-                root,
-                1024,
-                4 * 1024 * 1024,
-            )
-            .await?;
-            let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
-            client.follow_commands(&commands).await?;
-            let reader = local.client_reader()?;
-            commands.submit(PROMPT, reader.as_ref()).await?;
-            let mut renderer = ClientRenderer::default();
-            let mut submitted = false;
-            for changes in 0.. {
-                assert!(
-                    changes < MAXIMUM_CHANGES,
-                    "the turn did not settle within {MAXIMUM_CHANGES} file changes"
-                );
-                // The production loop: follow the active task, else the root.
-                client
-                    .follow_task(
-                        local.task_files().as_ref(),
-                        commands.presentation_task()?.unwrap_or(root),
-                    )
-                    .await?;
-                renderer.update_files(&client, &authority);
-                renderer.configure(client.views(), &authority, &commands)?;
-                // Paint every observed live/final cut, not only settlement.
-                frame(&mut renderer, &commands, 100, 200)?;
-                assert!(
-                    expected.starts_with(&rows(&renderer)),
-                    "a completed answer must be painted exactly once"
-                );
-                submitted |= commands.active_task().is_some();
-                // Settled: the request was claimed, its canonical result file
-                // is followed and its retained selection is followed. The screen is
-                // observed only afterwards, so a suppressed answer still
-                // reaches the assertions.
-                if submitted
-                    && commands.active_task().is_none()
-                    && !renderer.is_busy()
-                    && answered(&client)
-                {
-                    break;
-                }
-                futures::select! {
-                    change = client.next_change().fuse() => change?,
-                    change = commands.observe_change().fuse() => change?,
-                }
-            }
-            assert_painted(&mut renderer, &commands, &expected)?;
-            let rows = rows(&renderer);
-            // Reopen the production snapshot/follow path and rebuild every
-            // disposable render cache from the same durable transcript files.
-            let mut reopened = TaskFileClient::observe_task(
-                local.task_files().as_ref(),
-                &authority,
-                root,
-                1024,
-                4 * 1024 * 1024,
-            )
-            .await?;
-            reopened.follow_commands(&commands).await?;
-            let mut replay = ClientRenderer::default();
-            replay.update_files(&reopened, &authority);
-            replay.configure(reopened.views(), &authority, &commands)?;
-            assert_painted(&mut replay, &commands, &expected)?;
-            let mut layout = commands
-                .state(CommandFileRoot::Session, "layout.json")?
-                .unwrap_or_default();
-            layout["open_view"] = "find".into();
-            layout["view_input"] = "find".into();
-            layout["search_query"] = "Body 7.".into();
-            commands
-                .write_state(CommandFileRoot::Session, "layout.json", &layout)
-                .await?;
-            let mut find = String::new();
-            for _ in 0..MAXIMUM_SEARCH_STEPS {
-                let painted = frame(&mut renderer, &commands, 120, 40)?;
-                let status = painted
-                    .lines()
-                    .find_map(|line| line.trim().strip_prefix("Find: "))
-                    .unwrap_or_default();
-                find = status
-                    .split(" matches")
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned();
-                if !status.contains('…') {
-                    break;
-                }
-                renderer.search_progress().await;
-            }
-            Ok::<_, Error>(Transcript { rows, find })
-        }
+        async move { present_transcript(&local, operation, &expected).await }
     };
     let transcript = tokio::time::timeout(
         HANG_GUARD,
@@ -382,6 +284,107 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
         loopback.stop().await;
     }
     transcript
+}
+
+async fn present_transcript(
+    local: &Arc<LocalHarness>,
+    operation: OperationId,
+    expected: &[String],
+) -> Result<Transcript, Error> {
+    let authority = local.client_owner();
+    let root = TaskId::parse(&authority.id)?;
+    let mut client = TaskFileClient::observe_task(
+        local.task_files().as_ref(),
+        &authority,
+        root,
+        1024,
+        4 * 1024 * 1024,
+    )
+    .await?;
+    let mut commands = client::local_ui(local, &operation.to_string(), &authority).await?;
+    client.follow_commands(&commands).await?;
+    let reader = local.client_reader()?;
+    commands.submit(PROMPT, reader.as_ref()).await?;
+    let mut renderer = ClientRenderer::default();
+    let mut submitted = false;
+    for changes in 0.. {
+        assert!(
+            changes < MAXIMUM_CHANGES,
+            "the turn did not settle within {MAXIMUM_CHANGES} file changes"
+        );
+        // The production loop: follow the active task, else the root.
+        client
+            .follow_task(
+                local.task_files().as_ref(),
+                commands.presentation_task()?.unwrap_or(root),
+            )
+            .await?;
+        renderer.update_files(&client, &authority);
+        renderer.configure(client.views(), &authority, &commands)?;
+        // Paint every observed live/final cut, not only settlement.
+        frame(&mut renderer, &commands, 100, 200)?;
+        assert!(
+            expected.starts_with(&rows(&renderer)),
+            "a completed answer must be painted exactly once"
+        );
+        submitted |= commands.active_task().is_some();
+        // Settled: the request was claimed, its canonical result file
+        // is followed and its retained selection is followed. The screen is
+        // observed only afterwards, so a suppressed answer still
+        // reaches the assertions.
+        if submitted && commands.active_task().is_none() && !renderer.is_busy() && answered(&client)
+        {
+            break;
+        }
+        futures::select! {
+            change = client.next_change().fuse() => change?,
+            change = commands.observe_change().fuse() => change?,
+        }
+    }
+    assert_painted(&mut renderer, &commands, expected)?;
+    let rows = rows(&renderer);
+    // Reopen the production snapshot/follow path and rebuild every
+    // disposable render cache from the same durable transcript files.
+    let mut reopened = TaskFileClient::observe_task(
+        local.task_files().as_ref(),
+        &authority,
+        root,
+        1024,
+        4 * 1024 * 1024,
+    )
+    .await?;
+    reopened.follow_commands(&commands).await?;
+    let mut replay = ClientRenderer::default();
+    replay.update_files(&reopened, &authority);
+    replay.configure(reopened.views(), &authority, &commands)?;
+    assert_painted(&mut replay, &commands, expected)?;
+    let mut layout = commands
+        .state(CommandFileRoot::Session, "layout.json")?
+        .unwrap_or_default();
+    layout["open_view"] = "find".into();
+    layout["view_input"] = "find".into();
+    layout["search_query"] = "Body 7.".into();
+    commands
+        .write_state(CommandFileRoot::Session, "layout.json", &layout)
+        .await?;
+    let mut find = String::new();
+    for _ in 0..MAXIMUM_SEARCH_STEPS {
+        let painted = frame(&mut renderer, &commands, 120, 40)?;
+        let status = painted
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Find: "))
+            .unwrap_or_default();
+        find = status
+            .split(" matches")
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        if !status.contains('…') {
+            break;
+        }
+        renderer.search_progress().await;
+    }
+    Ok::<_, Error>(Transcript { rows, find })
 }
 
 /// The checked property: every section of a completed answer is painted
