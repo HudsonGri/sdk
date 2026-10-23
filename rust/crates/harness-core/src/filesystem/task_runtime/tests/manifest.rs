@@ -433,14 +433,27 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "hooks",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
 #[tokio::test]
 async fn unfinished_prompt_hook_prevents_terminal_preparation_failure_on_replay() -> Result<()> {
     use crate::hooks::{HookEvent, HookOutput, HookSite};
     use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
     for event in HookEvent::at(HookSite::Prompt) {
         let fixture = Fixture::new().await?;
-        let runtime = fixture.runtime(None).await?;
+        let provider: Arc<dyn StreamProvider> = fixture.stream.clone();
+        let files = crate::task_volume::TaskFiles::open(
+            provider,
+            &fixture.volume,
+            &fixture.issuer.verifier(&mut None)?,
+            &fixture.signed,
+            65_536,
+        )
+        .await?;
+        let runtime = fixture.runtime(None).await?.with_task_files(Arc::new(files))?;
         let (reference, _) = manifest(&fixture, true, "retained hook").await?;
         let (task, fence, command, payload) =
             retained_command(&fixture, &runtime, reference).await?;

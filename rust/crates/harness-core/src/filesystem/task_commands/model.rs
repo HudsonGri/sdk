@@ -31,12 +31,11 @@ where
                 let (journal, operation) =
                     self.command_journal(task, fence, turn, context, io).await?;
                 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-                if io.is_none() {
+                if io.is_none()
+                    && let Some(files) = context.task_files()
+                {
                     // Prompt hooks claim effects in the private file ledger,
                     // before ModelStarted exists in the execution journal.
-                    let Some(files) = context.task_files() else {
-                        return Err(error);
-                    };
                     if crate::hooks::effects::unsettled_prompt(&files.inner, task, operation)
                         .await?
                     {
