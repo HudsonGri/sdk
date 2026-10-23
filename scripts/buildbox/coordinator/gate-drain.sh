@@ -27,7 +27,10 @@ run_gate(){
   return "$rc"
 }
 merge(){
-  if ! python "$T/gate-merge.py" merge "$@" --repo "${GATE_REPO:-Q:/sdk}" --worktree "${GATE_WORKTREE:-Q:/wt/pr-gate}" --state "$L" --alerts "${GATE_ALERTS:-$HOME/.codex-fleet/alerts.log}"; then
+  local diagnostic
+  if ! diagnostic=$(python "$T/gate-merge.py" merge "$@" --repo "${GATE_REPO:-Q:/sdk}" --worktree "${GATE_WORKTREE:-Q:/wt/pr-gate}" --state "$L" --alerts "${GATE_ALERTS:-$HOME/.codex-fleet/alerts.log}" 2>&1); then
+    printf '%s\n' "$diagnostic"
+    prep hold "$@" --reason "$diagnostic"
     printf '%s\n' "$@" >> "$P"; preparation_infra=1
   fi
 }

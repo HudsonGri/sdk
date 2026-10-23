@@ -79,6 +79,19 @@ class MergeFence(unittest.TestCase):
             gate.record(self.repo, self.repo, self.state, [1])
         self.assertFalse((self.state/'.prepared-heads.json').exists())
 
+    def test_bad_pin_holds_once_without_reexecution_and_requires_recovery(self):
+        argv = [sys.executable, str(HERE/'gate-prepare.py'), 'hold', '1', '2',
+                '--repo', str(self.repo), '--worktree', str(self.repo),
+                '--state', str(self.state), '--alerts', str(self.alerts),
+                '--reason', 'invalid prepared head pin']
+        for _ in range(2):
+            result = subprocess.run(argv, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertEqual(self.alerts.read_text().count('GATE_PREPARATION_INFRA'), 1)
+        hold = json.loads((self.state/'preparation-hold.json').read_text())
+        self.assertEqual(set(hold['prs']), {'1', '2'})
+        self.assertIn('invalid prepared head pin', hold['reason'])
+
     def test_direct_and_bisect_dispatch_merge_only_pinned_groups(self):
         # Verdict evaluation must retain the tree whose generation was pinned.
         # Resetting it before merge would make every valid pin stale.
