@@ -6,7 +6,7 @@ proptest! {
     #[test]
     fn approval_rules_deny_wins_in_either_order(allow_first in any::<bool>(), path in "[a-z]{1,32}") {
         let mut rules = [RuleVerdict::Allow, RuleVerdict::Deny].map(|verdict| ApprovalRule {
-            tool: Some("write".into()), arguments: None, verdict,
+            tool: Some("write".into()), arguments: None, selectors: vec![], verdict,
         });
         if allow_first { rules.reverse(); }
         prop_assert_eq!(ApprovalRule::evaluate(&rules, RuleVerdict::Ask, "write", &serde_json::json!({"path":path})), RuleVerdict::Deny);
@@ -19,6 +19,7 @@ fn approval_rules_bind_exact_arguments_and_policy_order() -> Result<()> {
     let rule = ApprovalRule {
         tool: Some("write".into()),
         arguments: Some(serde_json::json!({"path":"approved","text":"one"})),
+        selectors: vec![],
         verdict: RuleVerdict::Allow,
     };
     assert!(rule.matches(
@@ -124,6 +125,7 @@ fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
     let selected = ApprovalRule {
         tool: Some("write".into()),
         arguments: None,
+        selectors: vec![],
         verdict: RuleVerdict::Allow,
     };
     for fallback in [RuleVerdict::Allow, RuleVerdict::Deny, RuleVerdict::Ask] {
@@ -137,6 +139,7 @@ fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
     let wildcard_deny = ApprovalRule {
         tool: None,
         arguments: None,
+        selectors: vec![],
         verdict: RuleVerdict::Deny,
     };
     assert_eq!(
@@ -146,6 +149,7 @@ fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
     let selected_deny = ApprovalRule {
         tool: Some("write".into()),
         arguments: None,
+        selectors: vec![],
         verdict: RuleVerdict::Deny,
     };
     assert_eq!(

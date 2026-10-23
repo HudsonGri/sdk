@@ -8,6 +8,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod selectors;
+pub use selectors::ApprovalSelector;
+
 /// Ordered escalation chain. An `ask` advances to the next approver.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +23,7 @@ pub struct ApprovalPolicy {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Approver {
-    /// Ordered exact tool/argument rules, with an explicit fallback.
+    /// Tool/argument selectors, with an explicit fallback.
     Rules {
         /// Authenticated rule identity.
         principal: String,
@@ -47,7 +50,7 @@ pub enum Approver {
     Parent,
 }
 
-/// Exact-match rule. Omitted selectors match every admitted tool call.
+/// Conjunctive rule. Omitted selectors match every admitted tool call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRule {
@@ -55,7 +58,10 @@ pub struct ApprovalRule {
     pub tool: Option<String>,
     /// Optional exact arguments, including all object fields.
     pub arguments: Option<Value>,
-    /// Result when both selectors match.
+    /// Additional argument selectors, all of which must match.
+    #[serde(default)]
+    pub selectors: Vec<ApprovalSelector>,
+    /// Result when every selector matches.
     pub verdict: RuleVerdict,
 }
 
@@ -97,6 +103,11 @@ impl ApprovalPolicy {
                 } => {
                     if rules.len() > 1024 {
                         return Err(Error::Invalid("too many approval rules".into()));
+                    }
+                    for rule in rules {
+                        for selector in &rule.selectors {
+                            selector.validate()?;
+                        }
                     }
                     principal.as_str()
                 }
@@ -164,9 +175,9 @@ impl ApprovalRule {
                 tool, arguments, ..
             } => Self::evaluate(rules, fallback, tool, arguments),
             crate::interaction::ApprovalSubject::Opaque {} => Self::decide(
-                rules
-                    .iter()
-                    .filter(|rule| rule.tool.is_none() && rule.arguments.is_none()),
+                rules.iter().filter(|rule| {
+                    rule.tool.is_none() && rule.arguments.is_none() && rule.selectors.is_empty()
+                }),
                 fallback,
             ),
         }
@@ -190,6 +201,10 @@ impl ApprovalRule {
                 .arguments
                 .as_ref()
                 .is_none_or(|expected| expected == arguments)
+            && self
+                .selectors
+                .iter()
+                .all(|selector| selector.matches(arguments))
     }
 }
 

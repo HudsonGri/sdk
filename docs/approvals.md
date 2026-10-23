@@ -39,6 +39,17 @@ An `allow` or `deny` settles the request; `ask` advances to the next stage.
 Exhausting the chain denies the action. Within one rule set, matching `deny`
 wins over `ask`, which wins over `allow`. Omitted or null selectors are
 wildcards; supplied arguments must equal the complete arguments object.
+Rules can also conjoin `selectors` against the exact argument object. Each uses an
+RFC 6901 `pointer`: `{"kind":"pattern","pointer":"/command","pattern":"cargo test *"}`
+uses an anchored pattern with `*` as its only wildcard;
+`{"kind":"path_within","pointer":"/path","root":"/src"}` accepts that path or its
+descendants using the filesystem's canonical portable path grammar; and
+`{"kind":"equal","pointer":"/volume","value":"work"}` selects a declared volume.
+Relative paths are anchored at the logical volume root. Traversal, repeated or
+native separators, missing fields and wrong types refuse the match. Path and
+volume selectors restrict approval; the normal workload capability and filesystem
+policy must still authorize the effect. A matching approval never widens them.
+
 An explicitly opaque subject exposes no tool metadata: only selector-free rules
 match it, and the configured fallback still applies.
 The policy identity, including stage order, is pinned at task admission and

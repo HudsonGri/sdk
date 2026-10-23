@@ -72,9 +72,12 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
     let llm = json!({"kind":"llm","principal":"reviewer","model":"graphcoder-qual/reviewer","prompt":"REVIEW_FIXTURE"});
     let stages = match case {
         Case::RuleAllow | Case::RuleDeny => vec![json!({"kind":"rules","principal":"rules",
-            "rules":[{"tool":"url_fetch","arguments":{"url":if matches!(case,Case::RuleDeny) {
-                format!("http://{address}/changed-subject")
-            } else { format!("http://{address}/effect") }},"verdict":"allow"}],"fallback":"deny"})],
+            "rules":[{"tool":"url_fetch","arguments":{"url":format!("http://{address}/effect")},
+                "selectors":[{"kind":"pattern","pointer":"/url","pattern":if matches!(case,Case::RuleDeny) {
+                    format!("http://{address}/changed*")
+                } else { format!("http://{address}/e*") }},
+                {"kind":"equal","pointer":"/url","value":format!("http://{address}/effect")}],
+                "verdict":"allow"}],"fallback":"deny"})],
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
         Case::Chain => vec![rule("ask"), llm, human],
