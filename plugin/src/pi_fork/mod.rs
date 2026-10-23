@@ -180,6 +180,10 @@ pub(crate) struct PiForkPlan {
     pub(crate) frozen: LazySnapshotRef,
     #[serde(skip)]
     _input_allocations: Option<acyclic_fs::NativeAllocation>,
+    /// The digest of the publication this plan was read back from; a plan
+    /// still being built has none.
+    #[serde(skip)]
+    published: Option<blake3::Hash>,
 }
 
 impl PartialEq for PiForkPlan {
@@ -294,4 +298,7 @@ mod inputs;
 mod lifecycle;
 mod preparation;
 mod source_policy;
+mod validated;
 mod validation;
+
+pub(crate) use validated::{ValidatedForkPlans, ValidatedPlanKey};

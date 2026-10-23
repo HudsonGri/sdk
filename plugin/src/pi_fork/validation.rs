@@ -3,7 +3,18 @@ use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
 impl<'a> PiForkCoordinator<'a> {
+    /// Validates a plan once per publication, caller and owner: a plan read
+    /// back from its publication is checked the first time and looked up after.
     pub(super) fn validate_plan(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
+        let key = plan
+            .published
+            .map(|published| self.owner.validated_plan_key(&published, caller));
+        self.resources
+            .validated_fork_plans
+            .validate_once(key, || self.validate_plan_contents(plan, caller))
+    }
+
+    fn validate_plan_contents(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
         let original = original_operation(
             self.owner.policy().root_task,
             caller,
