@@ -13,9 +13,9 @@ fn find(layout: &serde_json::Value) -> bool {
 pub(super) fn reasoning<P: StreamProvider + ?Sized>(
     files: &CommandSession<P>,
 ) -> crate::Result<bool> {
-    let settings = files.state(CommandFileRoot::Config, "settings.json")?;
-    let layout = files.state(CommandFileRoot::Session, "layout.json")?;
-    if layout.as_ref().is_some_and(find) {
+    let settings = files.state_ref(CommandFileRoot::Config, "settings.json")?;
+    let layout = files.state_ref(CommandFileRoot::Session, "layout.json")?;
+    if layout.is_some_and(find) {
         return Ok(false);
     }
     settings
@@ -40,6 +40,7 @@ impl ClientRenderer {
         self.view_height = height;
         if height == 0 {
             self.search_open = false;
+            self.close_search();
             self.wrapped_reasoning.hide();
             self.wrapped_transcript.hide();
             self.wrapped_tools.hide();
@@ -47,9 +48,12 @@ impl ClientRenderer {
             return Ok(());
         }
         let layout = files
-            .state(CommandFileRoot::Session, "layout.json")?
-            .unwrap_or_default();
-        self.search_open = find(&layout);
+            .state_ref(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or(&serde_json::Value::Null);
+        self.search_open = find(layout);
+        if !self.search_open {
+            self.close_search();
+        }
         let rows = tui::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
         self.search.project(rows, self.search_open);
         let mut top = crate::client::tui_anchor(files)?;
@@ -88,6 +92,15 @@ impl ClientRenderer {
             );
         }
         Ok(())
+    }
+
+    fn close_search(&mut self) {
+        self.search.project(
+            tui::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools),
+            false,
+        );
+        self.wrapped_transcript.clear_search_index();
+        self.wrapped_tools.clear_search_index();
     }
 
     /// First displayed source identity and its distance from a presented row.

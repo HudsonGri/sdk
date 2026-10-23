@@ -41,7 +41,7 @@ fn closed<const RESERVE: bool>(size: usize) {
             if RESERVE {
                 // The removed production path allocated from transcript length
                 // before checking whether Find was open.
-                search.needle.reserve(projection.index.text.len());
+                search.needle.reserve(projection.search_index().text.len());
             }
             search.project(&projection, false);
         });
@@ -72,6 +72,8 @@ fn closed_transcript_reservation_negative_control() {
 
 fn sparse<const RESERVE: bool>(size: usize, matches: usize) -> ([usize; 7], u64) {
     let projection = projection(size, matches);
+    // Query/match storage is measured independently of the optional source index.
+    projection.search_index();
     let mut search = TranscriptSearch::default();
     let initial = measure(|| search.project(&projection, true));
     assert_eq!(initial.count_total, 0);
@@ -82,7 +84,9 @@ fn sparse<const RESERVE: bool>(size: usize, matches: usize) -> ([usize; 7], u64)
     });
     let background = measure(|| {
         if RESERVE {
-            search.positions.reserve(projection.index.text.len());
+            search
+                .positions
+                .reserve(projection.search_index().text.len());
         }
         while search.pending() {
             search.advance(&projection, 256);
