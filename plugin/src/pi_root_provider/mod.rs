@@ -34,7 +34,7 @@ use acyclic_harness::{
     store::{HistoryReadLimits, HistoryReader},
 };
 use acyclic_harness::{
-    JsonValueSchema, json_typed_diagnostic_owned_bytes, json_value_decode_owned_bytes,
+    JsonValueSchema, json_typed_diagnostic_owned_bytes,
     sdk_json_diagnostic_bytes,
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
@@ -58,7 +58,7 @@ mod sources;
 
 pub(crate) use codec::{
     canonical_pi_value, digest_pi_value, guarded_pi_bytes, guarded_pi_decode,
-    guarded_pi_decode_measured, guarded_pi_value, native_buffer_codec_charge, read_pi_input,
+    guarded_pi_value, native_buffer_codec_charge, read_pi_input,
 };
 use inputs::{
     NativeInputCoordinates, observe_pi_input_at, publish_pi_input_with_native_coordinates,

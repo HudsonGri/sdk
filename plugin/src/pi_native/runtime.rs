@@ -1,7 +1,8 @@
 use super::*;
 
 /// Captured once by the original root SDK bootstrap and kept only in the protected Pi owner file.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeHostRuntime {
     pub(crate) version: String,
@@ -12,7 +13,8 @@ pub(crate) struct PiNativeHostRuntime {
     pub(crate) environment: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeCaptureLimits {
     pub(crate) timeout_ms: u32,
@@ -333,7 +335,8 @@ pub(super) fn require_caller_environment(environment: &BTreeMap<String, String>)
 }
 
 /// Child inputs bound to the protected host configuration.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeInvocation {
     pub(crate) runtime_digest: [u8; 32],

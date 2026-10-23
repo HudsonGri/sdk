@@ -34,7 +34,8 @@ const MAXIMUM_OWNER_BYTES: u64 = super::MAXIMUM_ADAPTER_STATE_BYTES;
 const ISSUER: &str = "acyclic.pi";
 
 /// Host-selected root policy.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerPolicy {
     pub(crate) root_task: TaskId,
@@ -81,7 +82,8 @@ impl PiOwnerPolicy {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerConfig {
     version: u32,
