@@ -203,7 +203,7 @@ fn approval_settlement_reconstructs_once_for_every_entry_point() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .map_err(|error| Error::Storage(error.to_string()))?;
     for entry in 0..3 {
         for approved in [false, true] {
             let initialized = runtime.block_on(initialized("settlement", None))?;

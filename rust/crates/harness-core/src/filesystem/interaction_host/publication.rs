@@ -84,12 +84,11 @@ where
         // A resolution carries its authenticated cut through the complete
         // transaction. Reopening here would replay the same history again.
         let mut reconstructed;
-        let aggregate = match aggregate {
-            Some(aggregate) => aggregate,
-            None => {
-                reconstructed = self.aggregate(io).await?;
-                &mut reconstructed.0
-            }
+        let aggregate = if let Some(aggregate) = aggregate {
+            aggregate
+        } else {
+            reconstructed = self.aggregate(io).await?;
+            &mut reconstructed.0
         };
         let (committed, _) = crate::store::operations::bounded_operation_with_retained_quota(
             &self.stream,
