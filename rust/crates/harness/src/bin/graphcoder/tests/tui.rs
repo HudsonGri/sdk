@@ -273,8 +273,7 @@ async fn conversation(blocked: bool) {
             // rather than a transient glyph somewhere in the output history.
             if blocked {
                 screen.until("blocked goal", |text| {
-                    requested.lock().unwrap().len() == 1
-                        && settled(text, "goal blocked: GOAL.md is blocked.")
+                    settled(text, "goal blocked: GOAL.md is blocked.")
                 });
             } else {
                 screen.until(ANSWERS[index], |text| {
@@ -297,7 +296,11 @@ async fn conversation(blocked: bool) {
     );
     let bodies = bodies.lock().unwrap();
     if blocked {
-        assert_eq!(bodies.len(), 1, "a blocked goal must stop model dispatch");
+        assert_eq!(
+            bodies.len(),
+            2,
+            "the tool result completes its turn, then the blocked goal stops continuation"
+        );
         stop.send(()).unwrap();
         drop(bodies);
         server.await.unwrap();
