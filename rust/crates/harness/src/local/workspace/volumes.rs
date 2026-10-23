@@ -190,8 +190,8 @@ fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
 
 /// The single native execution scope shared by the shell and hooks. Entry projects
 /// every bound volume, so a command sees persisted volume data. A successful
-/// exit publishes and detaches each projection and removes its SDK-owned
-/// residue, so the checkout holds no mount between executions. The body owns
+/// exit publishes and advances each projection for the next command. Disconnect
+/// retires verified projections; unverified exits discard them. The body owns
 /// every check that must precede publication.
 struct Claim {
     source: Arc<MountedVolume>,
@@ -271,7 +271,7 @@ pub(in crate::local) async fn native_scope<T>(
         // No command ran, so the volumes already entered leave through the
         // same exit. A failed leave keeps its projection, and the next exit
         // or retirement retries it and reports that cause again.
-        let _ = leave_all(std::mem::take(&mut claims.entries)).await;
+        let _ = leave_all(std::mem::take(&mut claims.entries), true).await;
         return Err(error);
     }
     // Boxed, as are projection entry and exit: these deep futures stay out of
@@ -280,11 +280,11 @@ pub(in crate::local) async fn native_scope<T>(
     // rather than this caller future.
     let (value, mut claims) = Box::pin(body(claims)).await?;
     let entered = std::mem::take(&mut claims.entries);
-    leave_all(entered).await?;
+    leave_all(entered, false).await?;
     Ok(value)
 }
 
-async fn leave_all(entered: Vec<Claim>) -> Result<()> {
+async fn leave_all(entered: Vec<Claim>, retire: bool) -> Result<()> {
     // Publication is an accepted operation. Losing its caller after verification
     // must not release the execution guard before physical retirement finishes.
     spawn(async move {
@@ -292,7 +292,7 @@ async fn leave_all(entered: Vec<Claim>) -> Result<()> {
         for claim in entered.into_iter().rev() {
             keep_first(
                 &mut retired,
-                Box::pin(claim.source.leave(claim.entered)).await,
+                Box::pin(claim.source.leave(claim.entered, retire)).await,
             );
         }
         retired
@@ -376,7 +376,6 @@ mod binding_paths {
 // FUSE's elevated helper cannot traverse an owner-only mount, and ProjFS cannot
 // start a virtualization root at a placeholder in another projection. Retain
 // the already bound volume instead of mounting again below the task view.
-#[cfg(any(target_os = "linux", windows))]
 pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
@@ -425,9 +424,8 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
     Ok(())
 }
 
-// A command retires its physical projection. Resolve its held parent rather
-// than requiring that transient destination to exist when validating an alias.
-#[cfg(any(target_os = "linux", windows))]
+// A cancelled command may discard its physical projection. Resolve its held
+// parent so an alias can still be validated before that projection is remounted.
 fn canonical_destination(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
@@ -438,7 +436,7 @@ fn canonical_destination(path: &Path) -> Result<PathBuf> {
     Ok(std::fs::canonicalize(parent).map_err(mount_io)?.join(name))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, path)
 }

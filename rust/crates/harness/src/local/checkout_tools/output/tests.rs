@@ -382,7 +382,9 @@ async fn fixture(
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
         harness.submit(operation, "bash output").await?
     else {
-        return Err(Error::Conflict("output fixture admission was not durable".into()));
+        return Err(Error::Conflict(
+            "output fixture admission was not durable".into(),
+        ));
     };
     let worker = crate::distributed::Worker {
         id: "output-test".into(),
@@ -395,7 +397,9 @@ async fn fixture(
         .pull_work(&worker, Some(operation), &mut None)
         .await?
     else {
-        return Err(Error::Conflict("output fixture work was not claimed".into()));
+        return Err(Error::Conflict(
+            "output fixture work was not claimed".into(),
+        ));
     };
     harness
         .runtime
@@ -671,3 +675,4 @@ async fn a_chunk_whose_fence_step_is_held_past_the_control_bound_is_published() 
     );
     Ok(())
 }
+mod storage;

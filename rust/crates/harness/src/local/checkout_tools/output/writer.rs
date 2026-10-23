@@ -178,9 +178,16 @@ impl Writer {
         // the original owner even when cancellation stopped further execution.
         self.flush(false, true).await?;
         self.flush(true, true).await?;
+        let outcome: std::collections::BTreeMap<_, _> = result
+            .value
+            .as_object()
+            .ok_or_else(|| Error::Invalid("process result must be an object".into()))?
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "stdout" | "stderr"))
+            .collect();
         self.publish(
             ToolFile::Result,
-            serde_json::to_vec(&result.value).map_err(storage)?.into(),
+            serde_json::to_vec(&outcome).map_err(storage)?.into(),
             true,
         )
         .await

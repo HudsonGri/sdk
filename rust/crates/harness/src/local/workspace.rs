@@ -97,16 +97,9 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        #[cfg(any(target_os = "linux", windows))]
+        // Aliases share the bound volume's projection and execution owner.
+        // Reattaching would give two native mounts independent write custody.
         volumes::link(path, &mut mounts)?;
-        #[cfg(not(any(target_os = "linux", windows)))]
-        volumes::attach(
-            &self.filesystem,
-            &self.store,
-            &acyclic_fs::hold_root(path).map_err(storage)?,
-            &mut mounts,
-        )
-        .await?;
         Ok(Arc::new(mounts))
     }
 

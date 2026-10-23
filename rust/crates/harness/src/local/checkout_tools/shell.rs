@@ -13,8 +13,8 @@ impl CheckoutTools {
     ) -> Result<ToolResult> {
         // The physical command sees external edits directly. One post-command
         // cut publishes them together with its edits after process cleanup.
-        let maximum = usize::try_from(context.effective_scope().limits().render_bytes)
-            .map_err(storage)?;
+        let maximum =
+            usize::try_from(context.effective_scope().limits().render_bytes).map_err(storage)?;
         let files = output::Output::open(context, Arc::clone(&self.task_files), request).await?;
         let mounts = Arc::clone(&state.mounts);
         let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
@@ -23,9 +23,10 @@ impl CheckoutTools {
                 let (result, state, files, claims) =
                     self.shell(input, maximum, state, files, claims).await?;
                 if !result.as_ref().is_ok_and(|result| {
-                    result.value.get("stop").is_none_or(|stop| {
-                        stop.is_null() || stop["cleanup_completed"] == true
-                    })
+                    result
+                        .value
+                        .get("stop")
+                        .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
                 }) {
                     return Err(Error::Indeterminate(context.operation_id()));
                 }
@@ -33,7 +34,9 @@ impl CheckoutTools {
                 Ok(((result, state, files), claims))
             })
             .await?;
-        let State { active, watcher, .. } = &mut *state;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
         let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
         self.capture(
             (&workspace, view),

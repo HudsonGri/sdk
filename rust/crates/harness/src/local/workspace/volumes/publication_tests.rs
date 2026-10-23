@@ -153,6 +153,8 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     release.send(()).map_err(storage)?;
     next.await?;
     assert_eq!(published(scratch, "/data").await?, b"next verified");
+    assert!(scratch.native().await.is_some());
+    retire(mounts).await?;
     assert!(scratch.native().await.is_none());
     assert!(!scratch.destination.exists());
     Ok(())
@@ -177,13 +179,12 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     let first = scratch.enter(root, SCRATCH_PATH, false).await?;
     let unverified = scratch.enter(root, SCRATCH_PATH, false).await?;
     write_projected(&scratch.destination.join("data"), b"unverified")?;
-    scratch.leave(first).await?;
+    scratch.leave(first, false).await?;
     assert_eq!(published(scratch, "/data").await?, b"unverified");
     scratch.abandon(unverified).await?;
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
@@ -529,6 +530,10 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     );
     std::fs::create_dir(&first.destination).map_err(storage)?;
     native_scope(&duplicate, async |claims| Ok(((), claims))).await?;
+    assert!(first.native().await.is_some());
+    retire(&duplicate).await?;
     assert!(first.native().await.is_none());
     Ok(())
 }
+
+mod retention;

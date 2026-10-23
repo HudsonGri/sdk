@@ -1,4 +1,4 @@
-//! Logical volume bindings acquire an OS projection only for native execution.
+//! Logical volume bindings retain verified OS projections until disconnect.
 use super::*;
 use crate::sync::SyncMutex;
 use crate::sync::owned::{OwnedMutexGuard, lock_owned};
@@ -52,9 +52,9 @@ impl Drop for Entered {
     }
 }
 
-// Claims are added only under the projection lock, and the last scope retires
-// under that same lock, so a projection never retires under a running command
-// and a new scope never adopts one that is being retired.
+// Claims are added and released under the projection lock. Abandonment and
+// explicit retirement hold that same lock, so neither can retire a running
+// command's projection or race with a new scope adopting it.
 pub(in crate::local) async fn enter<T>(
     slot: &StateArc<AsyncMutex<Option<T>>>,
     users: &StateArc<SyncMutex<usize>>,
@@ -123,9 +123,9 @@ impl MountedVolume {
         .await
     }
 
-    pub(super) async fn leave(&self, entered: Entered) -> Result<()> {
-        leave(&self.native, &self.users, entered, async |slot, retire| {
-            self.publish_locked(slot, retire).await
+    pub(super) async fn leave(&self, entered: Entered, retire: bool) -> Result<()> {
+        leave(&self.native, &self.users, entered, async |slot, last| {
+            self.publish_locked(slot, retire && last).await
         })
         .await
     }
@@ -179,8 +179,8 @@ impl MountedVolume {
         self.publish_locked(&mut slot, true).await
     }
 
-    // The single retirement path: publish, detach, then remove the residue
-    // projection created. A failed detach keeps the owner for a later retry.
+    // Publish and advance verified projections in place. Explicit retirement
+    // also detaches and removes SDK residue, retaining failed cleanup for retry.
     async fn publish_locked(&self, slot: &mut Option<Native>, retire: bool) -> Result<()> {
         if let Some(native) = slot.as_ref() {
             if native.discard {
