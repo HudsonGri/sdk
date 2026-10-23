@@ -108,7 +108,7 @@ impl HeldRoot {
         &self,
         first: &Path,
         second: &Path,
-    ) -> Result<Option<([u8; A], [u8; B])>, DemandError> {
+    ) -> Result<Option<crate::native_host::PublishedPair<A, B>>, DemandError> {
         self.root
             .read_published_pair(first, second, &mut crate::native_host::ordinary_work())
     }

@@ -6,6 +6,10 @@ use std::io::Write as _;
 #[cfg(any(test, feature = "native-mount"))]
 use std::path::PathBuf;
 
+/// Two immutable records returned after their shared namespace barrier.
+#[cfg(any(test, feature = "native-mount"))]
+pub type PublishedPair<const A: usize, const B: usize> = ([u8; A], [u8; B]);
+
 #[cfg(test)]
 #[cfg(all(target_os = "linux", acyclic_fs_native_loom))]
 pub(crate) mod models;
@@ -23,7 +27,7 @@ impl HostRoot {
         first: &Path,
         second: &Path,
         work: &mut W,
-    ) -> Result<Option<([u8; A], [u8; B])>, DemandError>
+    ) -> Result<Option<PublishedPair<A, B>>, DemandError>
     where
         W: NativeHostWork<Error = DemandError>,
     {
@@ -110,12 +114,12 @@ impl HostRoot {
         relative: &Path,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let mut held: Option<(Dir, Option<NativeRootIdentity>)> = None;
+        let mut held: Option<Dir> = None;
         for component in relative.components() {
             let std::path::Component::Normal(name) = component else {
                 return Err(W::invalid_request());
             };
-            let directory = held.as_ref().map_or(&self.directory, |held| &held.0);
+            let directory = held.as_ref().unwrap_or(&self.directory);
             #[cfg(test)]
             let duplicate = if publish_probe::duplicate_parents() {
                 Some(clone_directory(directory, work)?)
@@ -126,11 +130,10 @@ impl HostRoot {
             let directory = duplicate.as_ref().unwrap_or(directory);
             work.started_io(ITEM)?;
             #[cfg(unix)]
-            let child = (open_unix_directory(directory, name, true, work)?, None);
+            let child = open_unix_directory(directory, name, true, work)?;
             #[cfg(windows)]
             let child = with_wide_path(Path::new(name), work, |name, work| {
-                open_windows_directory(directory, name, true, work)
-                    .map(|(directory, identity)| (directory, Some(identity)))
+                open_windows_directory_handle(directory, name, true, work)
             })?;
             // Even an existing child may have just been created by another
             // opener. Persist its name before returning a capability whose
@@ -144,13 +147,12 @@ impl HostRoot {
             }
             held = Some(child);
         }
-        let Some((directory, identity)) = held else {
+        let Some(directory) = held else {
             return self.try_clone(work);
         };
-        let identity = match identity {
-            Some(identity) => identity,
-            None => directory_identity(&directory, work)?,
-        };
+        // Only the returned root needs an identity. The native component
+        // opens already reject links and enforce each ancestor's access.
+        let identity = directory_identity(&directory, work)?;
         Ok(Self {
             directory,
             identity,
