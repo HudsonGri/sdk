@@ -1,4 +1,4 @@
-//! Run with the complete parallel `local::` module. The old pre_exec path
+//! Run with the complete parallel `local::` module. The old `pre_exec` path
 //! invokes this host's atfork handler even when the command itself completes;
 //! this catches the allocator-lock convoy without relying on machine speed.
 

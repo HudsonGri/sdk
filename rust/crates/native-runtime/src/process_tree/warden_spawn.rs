@@ -412,8 +412,9 @@ unsafe fn serve(argv: *const *const c_char) -> io::Result<()> {
         channel.read_exact(&mut has_cwd)?;
         let cwd = match has_cwd {
             [0] => None,
-            [1] => Some(CString::new(read_bytes(&mut channel)?)
-                .map_err(|_| io::ErrorKind::InvalidInput)?),
+            [1] => Some(
+                CString::new(read_bytes(&mut channel)?).map_err(|_| io::ErrorKind::InvalidInput)?,
+            ),
             _ => return Err(io::ErrorKind::InvalidData.into()),
         };
         // SAFETY: argv[4..] is the NUL-terminated program argument array.
@@ -446,7 +447,11 @@ struct Exec {
 }
 
 impl Exec {
-    unsafe fn prepare(args: *const *const c_char, environment: Vec<CString>, cwd: Option<CString>) -> io::Result<Self> {
+    unsafe fn prepare(
+        args: *const *const c_char,
+        environment: Vec<CString>,
+        cwd: Option<CString>,
+    ) -> io::Result<Self> {
         // SAFETY: serve supplies the live program and environment arrays.
         let program = unsafe { CStr::from_ptr(*args) }.to_bytes();
         if program.is_empty() {
@@ -503,7 +508,12 @@ impl Exec {
             // SAFETY: only the program changes cwd, after the warden's fork.
             // chdir is async-signal-safe; its CString was prepared before fork.
             if unsafe { libc::chdir(cwd.as_ptr()) } != 0 {
-                fail(channel, io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+                fail(
+                    channel,
+                    io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO),
+                );
             }
         }
         let mut denied = false;
