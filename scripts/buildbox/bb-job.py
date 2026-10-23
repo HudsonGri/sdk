@@ -201,13 +201,17 @@ def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
     cache=max(0,now-started_cache_cpu) if now is not None and started_cache_cpu is not None else None
     out={'payload_wall_seconds':max(0,time.monotonic()-started_wall),
          'waited_children_cpu_seconds':own,'owned_cache_cpu_seconds':cache,
-         'attributed_cpu_seconds':own+(cache or 0),
+         'attributed_cpu_seconds':own+cache if cache is not None else (own if server is None else None),
          'cpu_coverage':'waited-child-tree+owned-sccache; excludes unawaited descendants',
          'compiler_policy':'ephemeral-target-no-incremental-v1'}
-    if server:
+    if server and cache is None:
+        out['cpu_incomplete_reason']='owned-sccache-unavailable-at-terminal-sample'
+        out['sccache_stats_error']='owned-server-unavailable'
+    elif server:
         try:
             result=subprocess.run([SCCACHE,'--show-stats','--stats-format','json'],env=env,capture_output=True,text=True,timeout=5)
-            if result.returncode==0:out['sccache']=json.loads(result.stdout)
+            if identity(server['pid'])!=server['identity']:out['sccache_stats_error']='owned-server-exited-during-stats'
+            elif result.returncode==0:out['sccache']=json.loads(result.stdout)
             else:out['sccache_stats_error']='exit='+str(result.returncode)
         except (OSError,ValueError,subprocess.TimeoutExpired) as error:
             out['sccache_stats_error']=type(error).__name__

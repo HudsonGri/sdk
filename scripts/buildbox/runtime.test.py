@@ -171,6 +171,19 @@ sys.stdout.buffer.write(bytes(range(256)))
         env={'CARGO_INCREMENTAL':'1'}
         self.assertNotEqual(env['CARGO_INCREMENTAL'],'0') # former inherited override
         job.compiler_policy(env);self.assertEqual(env['CARGO_INCREMENTAL'],'0')
+    def test_exited_cache_cpu_is_incomplete_never_zero(self):
+        server={'pid':123,'identity':'fixture'}
+        with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=None),patch.object(job.subprocess,'run') as stats:
+            receipt=job.cost_receipt({},server,2,3,time.monotonic())
+        self.assertIsNone(receipt['attributed_cpu_seconds'])
+        self.assertEqual(receipt['waited_children_cpu_seconds'],10)
+        self.assertIn('unavailable',receipt['cpu_incomplete_reason']);stats.assert_not_called()
+        self.assertEqual(10+(None or 0),10) # former false numeric cost drops all cache CPU
+        with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=8),patch.object(job,'identity',return_value='fixture'),patch.object(job.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'{}','')):
+            complete=job.cost_receipt({},server,2,3,time.monotonic())
+        self.assertEqual(complete['attributed_cpu_seconds'],15)
+        self.assertNotIn('cpu_incomplete_reason',complete)
+
     def test_unreadable_directories_cleanup_negative_control(self):
         p=self.d/'job';(p/'moved/deep').mkdir(parents=True);(p/'moved/deep/data').write_bytes(b'x')
         (p/'moved').chmod(0)
