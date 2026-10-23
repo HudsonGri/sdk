@@ -10,7 +10,18 @@ pub(super) struct Owner {
     pub task: TaskId,
     pub project: VolumeRef,
     pub(super) workspace: Option<PathBuf>,
-    pub(super) workspace_identity: Option<[u8; 16]>,
+    pub(super) workspace_identity: Option<RootWitness>,
+    pub(super) workspace_incarnation: Option<[u8; 16]>,
+}
+
+/// Evidence retained independently of the checkout token. A token locates state;
+/// it does not prove that a different physical root is the original checkout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) enum RootWitness {
+    Unstable,
+    StableObjectId([u8; 16]),
+    FileHandle { object: [u8; 16], handle: [u8; 32] },
 }
 
 impl Drop for Owner {
@@ -35,7 +46,12 @@ mod tests {
         #[test]
         fn owner_record_round_trips(
             key in any::<[u8; 32]>(), agent in any::<[u8; 16]>(),
-            task in any::<[u8; 16]>(), identity in any::<Option<[u8; 16]>>(),
+            task in any::<[u8; 16]>(), identity in proptest::option::of(proptest::prop_oneof![
+                Just(RootWitness::Unstable),
+                any::<[u8; 16]>().prop_map(RootWitness::StableObjectId),
+                (any::<[u8; 16]>(), any::<[u8; 32]>()).prop_map(|(object, handle)| RootWitness::FileHandle { object, handle }),
+            ]),
+            incarnation in any::<Option<[u8; 16]>>(),
             workspace in proptest::option::of(".{0,128}"),
         ) {
             let owner = Owner {
@@ -45,6 +61,7 @@ mod tests {
                     "volume".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None,
                 ).unwrap(),
                 workspace: workspace.map(PathBuf::from), workspace_identity: identity,
+                workspace_incarnation: incarnation,
             };
             let bytes = serde_json::to_vec(&owner).unwrap();
             let decoded: Owner = serde_json::from_slice(&bytes).unwrap();

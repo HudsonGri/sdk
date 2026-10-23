@@ -499,7 +499,8 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
 }
 
 /// Authors a volume alias in `child` the way a mounted child projection
-/// does: a symbolic link to the host volume, published by the child itself.
+/// does: a symbolic link to the host volume, beneath a `.volumes` the host
+/// creates when absent, published by the child itself.
 async fn author_volume_alias(child: &Lazy) -> Result<()> {
     let stop = CancellationToken::new();
     let mut alias = child
@@ -507,6 +508,9 @@ async fn author_volume_alias(child: &Lazy) -> Result<()> {
         .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
         .await?
         .value;
+    alias
+        .create_dir_all("/.volumes", WorkBudget::UNBOUNDED, &stop)
+        .await?;
     alias
         .create_symbolic_link(
             "/.volumes/scratch",
@@ -1369,6 +1373,282 @@ async fn agent_discard_retires_only_the_parent_reference() -> Result<()> {
             .bytes
             .as_ref(),
         b"child\n"
+    );
+    Ok(())
+}
+
+/// Reads `path` from the view's head, or `None` when it is absent.
+async fn read_text(view: &Lazy, path: &str) -> Result<Option<Vec<u8>>> {
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    Ok(view
+        .read(path, 64, &mut work)
+        .await
+        .ok()
+        .map(|read| read.bytes.as_ref().to_vec()))
+}
+
+/// A stash cut at every effect boundary, followed by a workspace write
+/// before the next command, still completes: the retried restore replays
+/// the transaction its operation committed instead of building another one
+/// from the moved head under the same identity.
+#[tokio::test]
+async fn a_stash_cut_at_every_step_and_written_after_still_completes() -> Result<()> {
+    let mut cut = 0;
+    loop {
+        cut += 1;
+        let (_temp, _root, fs, store, main) = fixture().await?;
+        write_text(&main, "/base.txt", b"base\n").await?;
+        let repo = main.workspace().id();
+        run(&fs, &store, &main, repo, &["add", "base.txt"]).await?;
+        run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+        write_text(&main, "/base.txt", b"changed\n").await?;
+        write_text(&main, "/nested/new.txt", b"new\n").await?;
+
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let interrupted = git::run_with_guard(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: std::path::Path::new("."),
+                repository: repo,
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["stash".to_owned()],
+            || {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                std::future::ready(if call == cut {
+                    Err(Error::Unauthorized("cut".into()))
+                } else {
+                    Ok(())
+                })
+            },
+        )
+        .await;
+        let completed = interrupted.is_ok();
+        // The workspace moves on before the next command recovers the stash.
+        write_text(&main, "/later.txt", b"later\n").await?;
+        let mut answered = false;
+        for _ in 0..2 {
+            let output = git::run(
+                git::Workspace {
+                    filesystem: &fs,
+                    store: &store,
+                    view: (&main).into(),
+                    root: std::path::Path::new("."),
+                    repository: repo,
+                    lease: None,
+                    checkout: None,
+                    reserved: &[],
+                    author: "test",
+                    authored_at_seconds: 1,
+                },
+                &["status".to_owned()],
+            )
+            .await?;
+            if output.command.is_some() {
+                answered = true;
+                break;
+            }
+        }
+        assert!(answered, "status never answered after cut {cut}");
+        if read_text(&main, "/base.txt").await?.as_deref() == Some(b"changed\n".as_slice()) {
+            // Cut before the transition was recorded: nothing to resume, so
+            // the stash is simply run again.
+            run(&fs, &store, &main, repo, &["stash"]).await?;
+        }
+        assert_eq!(
+            read_text(&main, "/base.txt").await?.as_deref(),
+            Some(b"base\n".as_slice()),
+            "cut at effect {cut}"
+        );
+        assert_eq!(
+            read_text(&main, "/nested/new.txt").await?,
+            None,
+            "cut at effect {cut}"
+        );
+        if completed {
+            assert!(cut > 1, "the stash has effect boundaries to cut");
+            return Ok(());
+        }
+    }
+}
+
+/// The host path every tree-applying entry point below must leave in place.
+const SCRATCH: &str = ".volumes/scratch";
+
+/// Commits a user file `/.volumes` (tagged `a`), then its removal, and
+/// returns the view. With `hosted`, the host then publishes its reserved
+/// `.volumes/scratch` alias, so `.volumes` is now a directory no saved tree
+/// holds as one. With `dirty`, `/base.txt` differs from both commits.
+async fn volumes_replaced(
+    hosted: bool,
+    dirty: bool,
+) -> Result<(tempfile::TempDir, LocalFs, LocalCoreStateStore, Lazy)> {
+    let (temp, _root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    let reserved = [SCRATCH.to_owned()];
+    write_text(&main, "/base.txt", b"base\n").await?;
+    write_text(&main, "/.volumes", b"user\n").await?;
+    for command in [&["add", "-A"][..], &["commit", "-m", "a"], &["tag", "a"]] {
+        run_reserving(&fs, &store, &main, repo, &reserved, command).await?;
+    }
+    main.workspace().remove("/.volumes").await?;
+    for command in [&["add", "-A"][..], &["commit", "-m", "b"]] {
+        run_reserving(&fs, &store, &main, repo, &reserved, command).await?;
+    }
+    if hosted {
+        author_volume_alias(&main).await?;
+    }
+    if dirty {
+        write_text(&main, "/base.txt", b"dirty\n").await?;
+    }
+    Ok((temp, fs, store, main))
+}
+
+/// Whether the head still holds the host's `.volumes/scratch` alias.
+async fn scratch_kept(view: &Lazy) -> Result<bool> {
+    let stop = CancellationToken::new();
+    let head = view
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    Ok(head
+        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .is_ok_and(|stat| stat.value.kind == acyclic_fs::kernel::FileKind::SymbolicLink))
+}
+
+/// Every command that writes a saved tree over the live workspace keeps a
+/// reserved host path and the directory holding it, where restoring the
+/// saved `/.volumes` file would have removed that directory.
+#[tokio::test]
+async fn tree_applying_commands_keep_the_directories_of_reserved_paths() -> Result<()> {
+    let reserved = [SCRATCH.to_owned()];
+    for (command, dirty) in [
+        (&["reset", "--hard", "a"][..], true),
+        (&["restore", "--source", "a", ".volumes", "base.txt"], true),
+        (&["checkout", "a", "--", ".volumes", "base.txt"], true),
+        (&["restore", "--source", "a", ".volumes"], false),
+        (&["revert", "HEAD"], false),
+        (&["cherry-pick", "a"], false),
+    ] {
+        let (_temp, fs, store, main) = volumes_replaced(true, dirty).await?;
+        let repo = main.workspace().id();
+        run_reserving(&fs, &store, &main, repo, &reserved, command)
+            .await
+            .map_err(|error| format!("{command:?}: {error}"))?;
+        assert!(scratch_kept(&main).await?, "{command:?}");
+        assert_eq!(
+            read_text(&main, "/base.txt").await?.as_deref(),
+            Some(&b"base\n"[..]),
+            "{command:?}"
+        );
+    }
+    // Control: with nothing reserved beneath it, the saved file restores.
+    let (_temp, fs, store, main) = volumes_replaced(false, true).await?;
+    let repo = main.workspace().id();
+    run_reserving(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &reserved,
+        &["reset", "--hard", "a"],
+    )
+    .await?;
+    assert_eq!(
+        read_text(&main, "/.volumes").await?.as_deref(),
+        Some(&b"user\n"[..])
+    );
+    // A user file where the reserved path's parent would be holds no
+    // reserved path: looking one up through it is absence, so it restores.
+    write_text(&main, "/.volumes", b"changed\n").await?;
+    run_reserving(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &reserved,
+        &["restore", "--source", "a", ".volumes"],
+    )
+    .await?;
+    assert_eq!(
+        read_text(&main, "/.volumes").await?.as_deref(),
+        Some(&b"user\n"[..])
+    );
+    Ok(())
+}
+
+/// A whole-tree restore (stash, abort) rewrites the unreserved children of a
+/// directory the saved tree lacks, and keeps the directory and its reserved
+/// child.
+#[tokio::test]
+async fn a_whole_tree_restore_keeps_the_directory_of_a_reserved_path() -> Result<()> {
+    let reserved = [SCRATCH.to_owned()];
+    let (_temp, fs, store, main) = volumes_replaced(true, false).await?;
+    let repo = main.workspace().id();
+    write_text(&main, "/.volumes/other.txt", b"user\n").await?;
+    run_reserving(&fs, &store, &main, repo, &reserved, &["stash"]).await?;
+    assert!(scratch_kept(&main).await?);
+    assert_eq!(read_text(&main, "/.volumes/other.txt").await?, None);
+    Ok(())
+}
+
+/// `show REV:PATH` prints a committed link's stored target without following
+/// it, and history captured before a path was reserved lists that path in
+/// no listing once it is: `ls-files`, `log`, `show` and `show REV:PATH` all
+/// read through the repository policy, before any new capture.
+#[tokio::test]
+async fn committed_links_show_and_reserved_history_stays_hidden() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    write_text(&main, "/base.txt", b"base\n").await?;
+    author_volume_alias(&main).await?;
+    for command in [&["add", "-A"][..], &["commit", "-m", "legacy"]] {
+        run(&fs, &store, &main, repo, command).await?;
+    }
+    let show = ["show", "HEAD:.volumes/scratch"];
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { kind, value }) =
+        run(&fs, &store, &main, repo, &show).await?.0
+    else {
+        return Err("expected the committed link".into());
+    };
+    assert_eq!(kind, "file");
+    assert_eq!(
+        value.get("text").and_then(serde_json::Value::as_str),
+        Some("/host/volumes/scratch")
+    );
+
+    let reserved = [SCRATCH.to_owned()];
+    for command in [&["ls-files"][..], &["log"], &["show"]] {
+        let paths: Vec<String> = match run_reserving(&fs, &store, &main, repo, &reserved, command)
+            .await?
+            .0
+        {
+            GitCommandOutput::Paths(paths) => paths,
+            GitCommandOutput::Commits(commits) => commits
+                .into_iter()
+                .flat_map(|commit| commit.tracked_paths)
+                .collect(),
+            _ => return Err(format!("{command:?} is not a listing").into()),
+        };
+        assert!(paths.iter().any(|path| path == "base.txt"), "{command:?}");
+        assert!(
+            !paths.iter().any(|path| path.starts_with(".volumes")),
+            "{command:?} lists {paths:?}"
+        );
+    }
+    assert!(
+        run_reserving(&fs, &store, &main, repo, &reserved, &show)
+            .await
+            .is_err()
     );
     Ok(())
 }

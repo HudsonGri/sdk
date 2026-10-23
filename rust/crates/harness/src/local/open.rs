@@ -2,7 +2,7 @@ use super::*;
 
 struct Opening {
     config: LocalHarnessConfig,
-    state_directory: PathBuf,
+    state_location: config::StateLocation,
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -40,7 +40,7 @@ impl Opening {
             return Err(Error::Invalid("local concurrency is zero".into()));
         }
         let mut config = config.prepare_state()?;
-        let state_directory = config.resolved_state_directory()?;
+        let state_location = config.state_location()?;
         config.model.0.validate()?;
         let mut tools = ToolRegistry::default();
         if config.default_tools {
@@ -93,7 +93,7 @@ impl Opening {
         }
         Ok(Self {
             config,
-            state_directory,
+            state_location,
             tools,
             compaction,
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -105,6 +105,36 @@ impl Opening {
             #[cfg(feature = "native-execution")]
             native_mounts,
         })
+    }
+
+    /// Captures the checkout and selects its control directory, refusing a
+    /// caller's overlapping control directory before capture can publish the
+    /// checkout's incarnation token.
+    fn checkout(&self) -> Result<(PathBuf, Option<owner::Checkout>)> {
+        let selected_directory = match (&self.state_location, &self.config.project) {
+            (config::StateLocation::Directory(directory), LocalProject::Workspace(path)) => {
+                Some(owner::separated_directory(directory, Some(path))?)
+            }
+            (config::StateLocation::ProjectRoot(root), LocalProject::Workspace(path)) => {
+                owner::separated_directory(root, Some(path))?;
+                None
+            }
+            _ => None,
+        };
+        let checkout = match &self.config.project {
+            LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
+            LocalProject::Volume { .. } => None,
+        };
+        let directory = match selected_directory {
+            Some(directory) => directory,
+            None => owner::separated_directory(
+                &self
+                    .state_location
+                    .resolve(&self.config.project, checkout.as_ref())?,
+                checkout.as_ref().map(|checkout| checkout.path.as_path()),
+            )?,
+        };
+        Ok((directory, checkout))
     }
 
     async fn storage(&self) -> Result<Storage> {
@@ -127,12 +157,13 @@ impl Opening {
         {
             return Err(Error::Invalid("local workspace is not a directory".into()));
         }
-        let checkout = match &self.config.project {
-            LocalProject::Workspace(path) => Some(path.as_path()),
-            LocalProject::Volume { .. } => None,
+        let (directory, checkout) = self.checkout()?;
+        #[cfg(test)]
+        let checkout = match (&self.config.project, owner::RECAPTURE.get()) {
+            (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
+            _ => checkout,
         };
-        let directory = owner::separated_directory(&self.state_directory, checkout)?;
-        let owner = owner::Owner::open(&directory, &self.config.project)?;
+        let owner = owner::Owner::open(&directory, &self.config.project, checkout.as_ref())?;
         let options = acyclic_fs::LocalOptions::new(match &self.config.project {
             LocalProject::Workspace(_) => directory.join("filesystem"),
             LocalProject::Volume { directory, .. } => directory.clone(),
@@ -154,7 +185,7 @@ impl Opening {
         } = PrivateVolumes::open(&files, &owner).await?;
         #[cfg(feature = "native-execution")]
         let workspace = self
-            .workspace(&filesystem, &directory, &owner, &scratch)
+            .workspace(&filesystem, &directory, &owner, &scratch, checkout)
             .await?;
         #[cfg(feature = "native-execution")]
         let files = match &workspace {
@@ -199,6 +230,7 @@ impl Opening {
         directory: &Path,
         owner: &owner::Owner,
         scratch: &VolumeRef,
+        checkout: Option<owner::Checkout>,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
         // Retain the existing owned WAL instead of reopening/checkpointing it
@@ -213,34 +245,23 @@ impl Opening {
             store,
             processes: Some(fence_stale_processes(directory.join("processes")).await?),
         };
+        let attach = workspace::Attach {
+            volume: &owner.project,
+            scratch,
+            directory,
+            operation: workspace::attach_operation(owner.task),
+            native_mounts: self.native_mounts,
+        };
         let workspace = match &self.config.project {
-            LocalProject::Workspace(path) => Some(
-                workspace::open(
-                    filesystem,
-                    &owner.project,
-                    scratch,
-                    path,
-                    directory,
-                    owner.workspace_identity,
-                    workspace::attach_operation(owner.task),
-                    false,
-                    self.native_mounts,
-                    state,
-                )
-                .await?,
-            ),
-            LocalProject::Volume { .. } => Some(
-                workspace::open_volume(
-                    filesystem,
-                    &owner.project,
-                    scratch,
-                    directory,
-                    workspace::attach_operation(owner.task),
-                    self.native_mounts,
-                    state,
-                )
-                .await?,
-            ),
+            LocalProject::Workspace(_) => {
+                let root = checkout
+                    .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
+                    .root;
+                Some(workspace::open(filesystem, &attach, root, false, state).await?)
+            }
+            LocalProject::Volume { .. } => {
+                Some(workspace::open_volume(filesystem, &attach, state).await?)
+            }
         };
         Ok(workspace.map(Arc::new))
     }

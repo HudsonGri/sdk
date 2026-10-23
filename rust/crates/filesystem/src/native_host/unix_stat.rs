@@ -34,7 +34,11 @@ pub(super) fn clone_directory<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    retry_io(work, READ, || directory.try_clone())
+    retry_io(work, READ, || {
+        #[cfg(all(test, target_os = "linux"))]
+        stat_probe::directory_clone();
+        directory.try_clone()
+    })
 }
 
 #[cfg(unix)]
@@ -52,6 +56,10 @@ pub(super) fn open_unix<W: NativeHostWork>(
     let result = retry_io(work, delta, || {
         #[cfg(all(test, target_os = "linux"))]
         stat_probe::event("openat");
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(error) = stat_probe::fault("openat") {
+            return Err(error);
+        }
         use std::os::fd::FromRawFd as _;
         // SAFETY: callers retain the parent and name; a successful open returns one owned descriptor.
         let fd = unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666 as libc::c_uint) };
@@ -218,6 +226,86 @@ fn file_handle_at(fd: i32, name: &std::ffi::CStr, flags: rustix::fs::AtFlags) ->
     Some(*digest.finalize().as_bytes())
 }
 
+/// The held root's kernel file handle digest, which carries the inode
+/// generation. The query is independent of `statx`. An interrupted query is
+/// retried; every other failure keeps its cause, and a filesystem that issues
+/// no handles is `Unsupported`: never a missing value hashed as identity.
+#[cfg(target_os = "linux")]
+pub(super) fn root_file_handle<W: NativeHostWork>(
+    fd: std::os::fd::RawFd,
+    work: &mut W,
+) -> Result<[u8; 32], W::Error> {
+    /// `struct file_handle` with room for `MAX_HANDLE_SZ` bytes.
+    #[repr(C)]
+    struct FileHandle {
+        handle_bytes: libc::c_uint,
+        handle_type: libc::c_int,
+        f_handle: [u8; 128],
+    }
+    let handle = retry_io(work, READ, || {
+        #[cfg(test)]
+        stat_probe::query(true);
+        let mut handle = FileHandle {
+            handle_bytes: 128,
+            handle_type: 0,
+            f_handle: [0; 128],
+        };
+        let mut mount_id: libc::c_int = 0;
+        #[cfg(test)]
+        let injected = stat_probe::fault("handle");
+        #[cfg(not(test))]
+        let injected: Option<io::Error> = None;
+        let error = match injected.map_or_else(
+            || {
+                // SAFETY: every pointer refers to a live, writable local of
+                // the layout the kernel expects, `handle_bytes` is the capacity
+                // of `f_handle`, the empty name is NUL-terminated, and the call
+                // is synchronous.
+                let result = unsafe {
+                    libc::syscall(
+                        libc::SYS_name_to_handle_at,
+                        fd,
+                        c"".as_ptr(),
+                        std::ptr::from_mut(&mut handle),
+                        std::ptr::from_mut(&mut mount_id),
+                        libc::AT_EMPTY_PATH,
+                    )
+                };
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            },
+            Err,
+        ) {
+            Ok(()) => return Ok(handle),
+            Err(error) => error,
+        };
+        #[cfg(test)]
+        if stat_probe::fold_errors() {
+            handle.handle_bytes = 0;
+            return Ok(handle);
+        }
+        Err(if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "checkout filesystem issues no kernel file handles",
+            )
+        } else {
+            error
+        })
+    })?;
+    let bytes = usize::try_from(handle.handle_bytes)
+        .ok()
+        .and_then(|length| handle.f_handle.get(..length))
+        .ok_or_else(|| io::Error::other("kernel file handle exceeds its buffer"))?;
+    let mut digest = blake3::Hasher::new();
+    digest.update(&handle.handle_type.to_le_bytes());
+    digest.update(bytes);
+    Ok(*digest.finalize().as_bytes())
+}
+
 #[cfg(unix)]
 pub(super) fn fstat<W: NativeHostWork>(
     fd: std::os::fd::RawFd,
@@ -227,6 +315,10 @@ pub(super) fn fstat<W: NativeHostWork>(
     retry_io(work, READ, || {
         #[cfg(all(test, target_os = "linux"))]
         stat_probe::fstat_query();
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(error) = stat_probe::fault("fstat") {
+            return Err(error);
+        }
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: held descriptor, terminated name and complete output remain live.
         let result = unsafe {

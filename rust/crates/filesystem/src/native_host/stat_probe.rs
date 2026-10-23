@@ -3,6 +3,48 @@ use super::*;
 use std::cell::{Cell, RefCell};
 
 type Edit = (u64, Box<dyn FnOnce()>);
+#[cfg(target_os = "linux")]
+thread_local! {
+    static DIRECTORY_SYNCS: RefCell<Option<Vec<NativeRootIdentity>>> = const { RefCell::new(None) };
+    static DIRECTORY_CLONES: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn take_directory_clones() -> usize {
+    DIRECTORY_CLONES.replace(Some(0)).unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn directory_clone() {
+    if let Some(clones) = DIRECTORY_CLONES.get() {
+        DIRECTORY_CLONES.set(Some(clones + 1));
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn take_directory_syncs() -> Vec<NativeRootIdentity> {
+    DIRECTORY_SYNCS
+        .replace(Some(Vec::new()))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn directory_sync(fd: std::os::fd::RawFd) {
+    DIRECTORY_SYNCS.with_borrow_mut(|syncs| {
+        if let Some(syncs) = syncs {
+            // SAFETY: the caller holds the directory for the entire query.
+            // A failed probe records nothing, so the comparing test fails.
+            let Ok(stat) = rustix::fs::fstat(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) })
+            else {
+                return;
+            };
+            syncs.push(NativeRootIdentity {
+                device: device_id(stat.st_dev),
+                object: stat.st_ino,
+            });
+        }
+    });
+}
 thread_local! {
     static STATE: Cell<Option<(bool, u64, u64)>> = const { Cell::new(None) };
     static EDIT: RefCell<Option<Edit>> = const { RefCell::new(None) };
@@ -11,6 +53,10 @@ thread_local! {
     static RESTORE_WALK: Cell<bool> = const { Cell::new(false) };
     static EXAMINATIONS: Cell<Option<u64>> = const { Cell::new(None) };
     static LEGACY_BIRTH_TIME: Cell<bool> = const { Cell::new(false) };
+    #[cfg(target_os = "linux")]
+    static FAULT: Cell<Option<(&'static str, i32)>> = const { Cell::new(None) };
+    #[cfg(target_os = "linux")]
+    static FOLD: Cell<bool> = const { Cell::new(false) };
     #[cfg(target_os = "linux")]
     static STATX_OPTIONS: Cell<(bool, bool)> = const { Cell::new((false, false)) };
 }
@@ -224,4 +270,55 @@ pub(crate) fn baseline_at<W: NativeHostWork>(
         }
     }
     Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
+}
+
+#[cfg(target_os = "linux")]
+/// Fails the next `query` on this thread once with `errno`, as the host would.
+pub(crate) struct Fault;
+#[cfg(target_os = "linux")]
+impl Fault {
+    pub(crate) fn inject(query: &'static str, errno: i32) -> Self {
+        FAULT.set(Some((query, errno)));
+        Self
+    }
+    /// Whether the injected failure has fired.
+    pub(crate) fn fired(&self) -> bool {
+        FAULT.get().is_none()
+    }
+    /// Restores the folding defect: a failed handle query hashes as an
+    /// absent handle instead of failing.
+    pub(crate) fn fold_errors(&self) {
+        FOLD.set(true);
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for Fault {
+    fn drop(&mut self) {
+        FAULT.set(None);
+        FOLD.set(false);
+    }
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn fold_errors() -> bool {
+    FOLD.get()
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn fault(query: &'static str) -> Option<std::io::Error> {
+    match FAULT.get() {
+        Some((target, errno)) if target == query => {
+            FAULT.set(None);
+            Some(std::io::Error::from_raw_os_error(errno))
+        }
+        _ => None,
+    }
+}
+#[cfg(target_os = "linux")]
+/// The native queries this thread made while `Probe::rescan` recorded them.
+pub(crate) fn events() -> Vec<&'static str> {
+    EVENTS.with_borrow(|events| {
+        events
+            .as_ref()
+            .map(|(length, events)| events[..*length].to_vec())
+            .unwrap_or_default()
+    })
 }

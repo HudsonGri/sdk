@@ -1,5 +1,12 @@
 use super::*;
 
+thread_local! {
+    /// Stops a publication after its physical write, before its capture.
+    pub(super) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: a replay never captures, as before the fix.
+    pub(super) static REPLAY_SKIPS_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 async fn fixture() -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,
@@ -125,6 +132,18 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
     Ok(())
 }
 
+/// A replay publishes the staged file again: the staged reference itself,
+/// or, once the replay finished the write's pending capture, the reference
+/// at that capture, which holds exactly the same bytes. Later edits name the
+/// reference the replay returned, as an agent would.
+fn assert_republished(replayed: &FileRef, staged: &FileRef) -> FileRef {
+    assert_eq!(
+        (replayed.volume(), replayed.path(), replayed.descriptor()),
+        (staged.volume(), staged.path(), staged.descriptor()),
+    );
+    replayed.clone()
+}
+
 #[tokio::test]
 async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_completed_edits()
 -> Result<()> {
@@ -146,32 +165,31 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .await?;
     assert!(!directory.path().join("once.txt").exists());
     // Recovery normally enters through observe_staged_once, before executing
-    // the tool again. It must repair the checkout as well as return its ref.
-    assert_eq!(
-        publisher
-            .observe_staged_once(operation, 1024, None)?
-            .await?
-            .0
-            .as_ref(),
-        Some(&original)
-    );
+    // the tool again. It must repair the checkout as well as return its ref,
+    // finishing the write's pending capture as a replayed write would.
+    let recovered = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?
+        .0
+        .ok_or_else(|| Error::Invalid("the committed upload was not recovered".into()))?;
+    let original = assert_republished(&recovered, &original);
     assert_eq!(
         std::fs::read(directory.path().join("once.txt")).map_err(storage)?,
         b"once"
     );
-    assert_eq!(
-        publisher
+    assert_republished(
+        &publisher
             .stage_once(
                 operation,
                 "once.txt",
                 b"once",
                 "text/plain",
                 "once.txt",
-                None
+                None,
             )?
             .await?
             .0,
-        original
+        &original,
     );
 
     let operation = OperationId::new();
@@ -186,19 +204,19 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         )?
         .await?;
     assert!(!directory.path().join("path.txt").exists());
-    assert_eq!(
-        publisher
+    let original = assert_republished(
+        &publisher
             .stage(
                 operation,
                 "path.txt",
                 b"path",
                 "text/plain",
                 "path.txt",
-                None
+                None,
             )?
             .await?
             .0,
-        original
+        &original,
     );
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -213,12 +231,12 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
         b"path"
     );
-    assert_eq!(
-        publisher
+    assert_republished(
+        &publisher
             .stage_at(operation, &original, b"replacement", None)?
             .await?
             .0,
-        replacement
+        &replacement,
     );
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -233,12 +251,12 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .value
         .id();
     std::fs::write(directory.path().join("path.txt"), b"later user edit").map_err(storage)?;
-    assert_eq!(
-        publisher
+    assert_republished(
+        &publisher
             .stage_at(operation, &original, b"replacement", None)?
             .await?
             .0,
-        replacement
+        &replacement,
     );
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
@@ -246,9 +264,15 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     );
     // Git recovery may enter with the already-committed target as both
     // heads. It must use the saved source and retain later checkout edits too.
+    // The replay above already captured the write, so the target is the
+    // staged generation below the head.
     let head = view
         .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .generation(
+            publisher.staged_generation(&replacement)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
         .map_err(storage)?
         .value;
@@ -453,6 +477,360 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         publisher
             .destination(Some(&harness.project), ".volumes/scratch/note", None)
             .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let (written, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "result.txt",
+            b"before edit\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    // Before the fix the returned version named the staged generation, and
+    // capturing the write's own host metadata made that generation stale.
+    let (edited, _) = publisher
+        .stage_at(OperationId::new(), &written, b"after edit\n", None)?
+        .await?;
+    assert_eq!(edited.path(), "result.txt");
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"after edit\n"
+    );
+    // The edit's own reference is just as current.
+    publisher
+        .stage_at(OperationId::new(), &edited, b"third\n", None)?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"third\n"
+    );
+    Ok(())
+}
+
+// Negative control: rebinding never hides a foreign change. A user edit made
+// after the write still makes the returned reference stale.
+#[tokio::test]
+async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let (written, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    let path = directory.path().join("result.txt");
+    std::fs::write(&path, b"user bytes\n").map_err(storage)?;
+    let conflict = match publisher.stage_at(OperationId::new(), &written, b"overwrite\n", None) {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    let conflict = conflict.ok_or_else(|| Error::Invalid("stale reference was accepted".into()))?;
+    assert_eq!(
+        conflict.code(),
+        crate::wire::ErrorCode::Conflict,
+        "{conflict}"
+    );
+    assert_eq!(std::fs::read(&path).map_err(storage)?, b"user bytes\n");
+    Ok(())
+}
+
+// Recovery returns the reference the write returned, and it stays editable.
+// Negative control: before recovery rebound its reference, observing the
+// operation returned the staged generation, and the edit conflicted.
+#[tokio::test]
+async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let (written, _) = publisher
+        .stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    let (observed, _) = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?;
+    let observed = observed.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
+    assert_eq!(observed.version(), written.version());
+    publisher
+        .stage_at(OperationId::new(), &observed, b"edited\n", None)?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"edited\n"
+    );
+    Ok(())
+}
+
+/// Whether an edit through the reference that a replayed write returns
+/// succeeds, after the first attempt stopped between its physical write and
+/// that write's capture. The replay either reruns the write or, as the write
+/// tool does on restart, recovers the operation first.
+async fn replay_after_an_interrupted_capture_is_editable(
+    skip: bool,
+    recover: bool,
+) -> Result<bool> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let write = || {
+        publisher.stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )
+    };
+    KILL_BEFORE_CAPTURE.set(true);
+    let interrupted = match write() {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    KILL_BEFORE_CAPTURE.set(false);
+    assert!(
+        interrupted.is_some(),
+        "the first attempt was not interrupted"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"agent bytes\n"
+    );
+    REPLAY_SKIPS_CAPTURE.set(skip);
+    let replayed = if recover {
+        match publisher.observe_staged_once(operation, 1024, None) {
+            Ok(observed) => observed.await.map(|(file, _)| file),
+            Err(error) => Err(error),
+        }
+    } else {
+        match write() {
+            Ok(staged) => staged.await.map(|(file, _)| Some(file)),
+            Err(error) => Err(error),
+        }
+    };
+    REPLAY_SKIPS_CAPTURE.set(false);
+    let replayed = replayed?
+        .ok_or_else(|| Error::Invalid("the interrupted write was not recovered".into()))?;
+    let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None) {
+        Ok(staged) => staged.await.map(|_| ()),
+        Err(error) => Err(error),
+    };
+    Ok(edited.is_ok())
+}
+
+#[tokio::test]
+async fn a_replay_finishes_an_interrupted_capture() -> Result<()> {
+    assert!(replay_after_an_interrupted_capture_is_editable(false, false).await?);
+    // Negative control: a replay that skips the pending capture returns the
+    // staged reference, which the write's own host metadata makes stale.
+    assert!(!replay_after_an_interrupted_capture_is_editable(true, false).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_finishes_an_interrupted_capture() -> Result<()> {
+    assert!(replay_after_an_interrupted_capture_is_editable(false, true).await?);
+    // Negative control: recovery that skips the pending capture returns the
+    // staged reference, which the write's own host metadata makes stale.
+    assert!(!replay_after_an_interrupted_capture_is_editable(true, true).await?);
+    Ok(())
+}
+
+/// The reference that names `file`'s staged generation: the parent of the
+/// capture that `file` names.
+async fn staged_reference(harness: &LocalHarness, file: &FileRef) -> Result<FileRef> {
+    let workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view()
+        .workspace()
+        .clone();
+    let digest: [u8; 32] = hex::decode(file.version())
+        .map_err(storage)?
+        .try_into()
+        .map_err(|_| Error::Invalid("file version is not a generation".into()))?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let parents = workspace
+        .generation(
+            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(digest)),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .parents(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .await
+        .map_err(storage)?
+        .value;
+    let [staged] = parents.as_slice() else {
+        return Err(Error::Invalid("the capture has no unique parent".into()));
+    };
+    FileRef::new(
+        file.volume().clone(),
+        file.path().to_owned(),
+        hex::encode(staged.digest().into_bytes()),
+        file.descriptor().clone(),
+        file.display_name().to_owned(),
+        &mut None,
+    )
+}
+
+// Recovery finds the write's capture by its operation, however many commits
+// have buried it, so a retried edit through the recovered reference replays.
+// Negative control: the staged reference, which recovery returned once the
+// capture lay deeper than a bounded walk from the head, makes that retry fail.
+#[tokio::test]
+async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let (written, _) = publisher
+        .stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    let edit = OperationId::new();
+    publisher
+        .stage_at(edit, &written, b"edited\n", None)?
+        .await?;
+    // Bury the capture well past any walk bounded at 64 with commits that
+    // leave the head's content, and so the checkout, unchanged.
+    let workspace = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view()
+        .workspace()
+        .clone();
+    for _ in 0..33 {
+        workspace
+            .write_text("/buried", "x")
+            .await
+            .map_err(storage)?;
+        workspace.remove("/buried").await.map_err(storage)?;
+    }
+    let (recovered, _) = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?;
+    let recovered =
+        recovered.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
+    assert_eq!(recovered.version(), written.version());
+    publisher
+        .stage_at(edit, &recovered, b"edited\n", None)?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"edited\n"
+    );
+    let staged = staged_reference(&harness, &written).await?;
+    assert_ne!(staged.version(), written.version());
+    let retried = match publisher.stage_at(edit, &staged, b"edited\n", None) {
+        Ok(retry) => retry.await.map(|_| ()),
+        Err(error) => Err(error),
+    };
+    assert!(matches!(&retried, Err(Error::Conflict(_))), "{retried:?}");
+    Ok(())
+}
+
+// Another write between an interrupted capture and its recovery cannot take
+// the interrupted write's capture: the next capture first finishes the
+// capture the interrupted write durably owes, under that write's own
+// operation. Recovery then returns that capture, the reference an
+// uninterrupted write returns. Negative control: when the other write's
+// capture records the interrupted write as its own, no capture exists under
+// the write's operation and recovery returns the staged reference.
+#[tokio::test]
+async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    KILL_BEFORE_CAPTURE.set(true);
+    let interrupted = match publisher.stage_once(
+        operation,
+        "result.txt",
+        b"agent bytes
+",
+        "text/plain",
+        "result.txt",
+        None,
+    ) {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    KILL_BEFORE_CAPTURE.set(false);
+    assert!(
+        interrupted.is_some(),
+        "the first attempt was not interrupted"
+    );
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "other.txt",
+            b"other bytes
+",
+            "text/plain",
+            "other.txt",
+            None,
+        )?
+        .await?;
+    let (recovered, _) = publisher
+        .observe_staged_once(operation, 1024, None)?
+        .await?;
+    let recovered = recovered
+        .ok_or_else(|| Error::Invalid("the interrupted write was not recovered".into()))?;
+    let key = acyclic_fs::IdempotencyKey::from_bytes(
+        super::super::capture::capture_operation(write_capture(operation, "result.txt"), 1)
+            .into_bytes(),
+    );
+    let capture = harness
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view()
+        .workspace()
+        .operation_generation(
+            key,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .ok_or_else(|| Error::Invalid("another write took the interrupted capture".into()))?;
+    assert_eq!(
+        recovered.version(),
+        hex::encode(capture.id().digest().into_bytes())
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"agent bytes
+"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("other.txt")).map_err(storage)?,
+        b"other bytes
+"
     );
     Ok(())
 }

@@ -203,8 +203,9 @@ pub use git_compat::{
     blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts,
-    git_generation_with_paths_from, git_merge_resolution, git_tracked_paths_after,
-    grep_git_generation, parse_git_public_command, walk_git_tree,
+    git_generation_with_paths_from, git_merge_resolution, git_paths_preserving_reserved,
+    git_restore_paths, git_tracked_paths_after, grep_git_generation, parse_git_public_command,
+    walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
@@ -276,9 +277,10 @@ pub use multi_root::{
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
-    CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
-    capture_baseline, capture_paths, capture_root_identity, capture_subtree, capture_watch_batch,
-    host_path_to_namespace, namespace_to_host_path,
+    CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, HeldRoot, SearchRoot,
+    WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
+    capture_root_identity, capture_subtree, capture_watch_batch, file_identity, hold_root,
+    hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
@@ -286,9 +288,7 @@ pub use native_exchange::{
     prepare_native_exchange, publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_identity::NativeRootIdentity;
-#[cfg(all(feature = "native-mount", target_os = "linux"))]
-pub use native_mount::recover_disconnected_native_mount_destination;
+pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
@@ -309,6 +309,10 @@ pub use native_mount::{
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     reclaim_native_mount_destination_fence, recover_native_mount_destination,
     restore_checkout_host_path, seal_checkout, seal_checkout_with_permit,
+};
+#[cfg(all(feature = "native-mount", target_os = "linux"))]
+pub use native_mount::{
+    recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,
 };
 pub use notification::{
     AsyncNotificationStore, MemoryNotificationStore, NotificationError, NotificationPoll,

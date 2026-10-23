@@ -66,6 +66,27 @@ impl Pinned {
             rustix::fs::Mode::empty(),
         )
         .map_err(std::io::Error::from)?;
+        Self::pin(parent, leaf)
+    }
+
+    /// Pins `leaf` in an already held parent directory.
+    pub(super) fn open_in(
+        parent: &impl std::os::fd::AsFd,
+        leaf: &std::ffi::OsStr,
+    ) -> Result<Option<Self>, NativeMountError> {
+        crate::native_host::require_leaf(Path::new(leaf))
+            .map_err(|_| NativeMountError::InvalidDestination)?;
+        let parent = rustix::fs::openat(
+            parent,
+            c".",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        Self::pin(parent, leaf)
+    }
+
+    fn pin(parent: OwnedFd, leaf: &std::ffi::OsStr) -> Result<Option<Self>, NativeMountError> {
         let file = match rustix::fs::openat(
             &parent,
             leaf,

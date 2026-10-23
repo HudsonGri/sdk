@@ -552,3 +552,118 @@ async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()> {
+    let parent = tempfile::tempdir().map_err(super::super::storage)?;
+    let users = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = parent.path().join("checkout");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    let config = |state: &std::path::Path| {
+        super::checkout_config(&workspace, (model()?, text()))
+            .map(|config| config.state_directory(state))
+    };
+    let state = || {
+        super::super::owner::state_directory_in(
+            users.path(),
+            &config(users.path())?.project,
+            Some(&super::super::owner::Checkout::capture(&workspace)?),
+        )
+    };
+    let first = state()?;
+    assert_eq!(state()?, first, "an unchanged checkout keeps its state");
+    let harness = LocalHarness::open(config(&first)?).await?;
+    assert_eq!(harness.run("first clone").await?.text, "done");
+    harness.close().await?;
+    // Delete and re-clone. The new directory has no incarnation token, so it
+    // is a new incarnation even where the filesystem reissues the object id.
+    std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    // The previous clone's state refuses the new clone.
+    let Err(Error::Unauthorized(message)) = LocalHarness::open(config(&first)?).await else {
+        panic!("the previous clone's state accepted a new checkout");
+    };
+    assert!(message.contains("different workspace"), "{message}");
+    let second = state()?;
+    assert_ne!(second, first);
+    let harness = LocalHarness::open(config(&second)?).await?;
+    assert_eq!(harness.run("second clone").await?.text, "done");
+    harness.close().await?;
+    Ok(())
+}
+
+/// Opening a checkout through the default entry point, with default per-user
+/// state selection under a temporary data root, captures its root once for
+/// state selection, owner validation and binding together. The negative
+/// control restores the per-consumer capture in production, and the same
+/// guard counts it. Each capture's physical queries are counted exactly by
+/// the filesystem's held-root tests.
+#[tokio::test]
+async fn opening_a_checkout_captures_its_root_once() -> Result<()> {
+    use super::super::owner::{CAPTURES, RECAPTURE, STATE_ROOT};
+    let workspace = tempfile::tempdir().map_err(super::super::storage)?;
+    let users = tempfile::tempdir().map_err(super::super::storage)?;
+    STATE_ROOT.set(Some(users.path().to_path_buf()));
+    let captures = async |recapture: bool| -> Result<usize> {
+        CAPTURES.set(0);
+        RECAPTURE.set(recapture);
+        let opened = LocalHarness::open(super::checkout_config(
+            workspace.path(),
+            (model()?, text()),
+        )?)
+        .await;
+        RECAPTURE.set(false);
+        opened?.close().await?;
+        Ok(CAPTURES.get())
+    };
+    let shared = captures(false).await;
+    let repeated = captures(true).await;
+    STATE_ROOT.set(None);
+    assert_eq!(shared?, 1);
+    assert_eq!(repeated?, 2, "the guard missed a duplicate root capture");
+    // Default selection placed the state under the temporary data root.
+    assert!(
+        std::fs::read_dir(users.path())
+            .map_err(super::super::storage)?
+            .next()
+            .is_some()
+    );
+    Ok(())
+}
+
+/// A kill after any durable step of the first open's owner publication leaves
+/// a checkout that reopens and accepts a prompt. The negative control publishes
+/// the record in place, and a kill mid-write bricks the checkout.
+#[tokio::test]
+async fn a_kill_at_any_step_of_owner_publication_reopens_and_accepts_a_prompt() -> Result<()> {
+    use super::super::owner::publication;
+    async fn killed_then_reopened(step: usize, torn: bool) -> Result<Result<()>> {
+        let workspace = tempfile::tempdir().map_err(super::super::storage)?;
+        let state = tempfile::tempdir().map_err(super::super::storage)?;
+        let config = || {
+            super::checkout_config(workspace.path(), (model()?, text()))
+                .map(|config| config.state_directory(state.path()))
+        };
+        publication::tear(torn);
+        publication::kill_at(Some(step));
+        let killed = LocalHarness::open(config()?).await;
+        publication::kill_at(None);
+        publication::tear(false);
+        assert!(killed.is_err(), "step {step} was not killed");
+        Ok(match LocalHarness::open(config()?).await {
+            Ok(harness) => {
+                run(&harness).await?;
+                harness.close().await
+            }
+            Err(error) => Err(error),
+        })
+    }
+    for step in 0..publication::STEPS {
+        killed_then_reopened(step, false).await??;
+    }
+    assert!(
+        killed_then_reopened(1, true).await?.is_err(),
+        "a torn owner record did not brick the checkout"
+    );
+    Ok(())
+}

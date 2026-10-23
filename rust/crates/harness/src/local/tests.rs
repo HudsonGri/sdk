@@ -668,9 +668,10 @@ async fn assert_checkout(harness: &LocalHarness, state: &Path, other: &Path) -> 
         .await
         .map_err(super::storage)?;
     assert_eq!(bytes.bytes.as_ref(), b"original checkout");
+    let captured = super::owner::Checkout::capture(other)?;
     let other = crate::test_support::local_harness_config(other, (model()?, text()))?;
     assert!(matches!(
-        super::owner::Owner::open(&state, &other.project),
+        super::owner::Owner::open(&state, &other.project, Some(&captured)),
         Err(Error::Unauthorized(_))
     ));
     Ok(())
@@ -786,8 +787,13 @@ mod volumes;
 #[path = "tests/checkout_reopen.rs"]
 mod checkout_reopen;
 
+#[cfg(feature = "native-execution")]
+#[path = "tests/checkout_incarnation.rs"]
+mod checkout_incarnation;
+
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout_reconciliation;
+mod git_view;
 
 #[cfg(feature = "native-execution")]
 mod merge_recovery;

@@ -16,6 +16,57 @@ impl HostRoot {
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
     }
+    /// The held root's incarnation, from one generation query of the held
+    /// root beside the identity its open already read. A host whose object
+    /// ids are not stable reports `Unstable`; a failed query keeps its cause.
+    pub(crate) fn incarnation<W: NativeHostWork<Error = DemandError>>(
+        &self,
+        work: &mut W,
+    ) -> Result<crate::NativeRootIncarnation, DemandError> {
+        #[cfg(all(test, target_os = "linux"))]
+        if stat_probe::duplicate() {
+            directory_identity(&self.directory, work)?;
+        }
+        #[cfg(target_os = "linux")]
+        let generation = match root_file_handle(self.directory.as_raw_fd(), work) {
+            Ok(handle) => crate::NativeRootGeneration::FileHandle(handle),
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Unsupported => {
+                crate::NativeRootGeneration::Unstable
+            }
+            Err(error) => return Err(error),
+        };
+        #[cfg(target_os = "macos")]
+        let generation = {
+            let fd = self.directory.as_raw_fd();
+            let unique = retry_io(work, READ, || {
+                let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+                // SAFETY: the held descriptor and complete output remain live.
+                if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: the successful call initialized the complete record.
+                let name = unsafe { stat.assume_init() }.f_fstypename;
+                let name = name.map(|unit| unit.to_ne_bytes()[0]);
+                Ok(name.starts_with(b"apfs\0") || name.starts_with(b"hfs\0"))
+            })?;
+            stable_object_ids(unique)
+        };
+        #[cfg(windows)]
+        let generation = stable_object_ids(reports_every_change(&self.directory, work)?);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        let generation = stable_object_ids(false);
+        #[cfg(target_os = "linux")]
+        let volume = durable_volume(&self.directory, self.identity.device, work)?;
+        // A Windows volume serial number is durable; a BSD `f_fsid` is the
+        // device number, so the device is already the best volume witness.
+        #[cfg(not(target_os = "linux"))]
+        let volume = self.identity.device;
+        Ok(crate::NativeRootIncarnation {
+            identity: self.identity,
+            generation,
+            volume,
+        })
+    }
     #[cfg(unix)]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
         self.directory.as_raw_fd()
@@ -440,4 +491,40 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     let marks = before & MARKS;
     let ignored = marks | if before & 0x0040_0000 != 0 { 0x20 } else { 0 };
     before & !ignored == after & !ignored && after & MARKS & !marks == 0
+}
+
+/// The durable id of the filesystem holding `directory`. Linux `st_dev` is the
+/// kernel's current device assignment and may be renumbered across remounts
+/// (btrfs subvolumes, device-mapper minors, probe order), while UUID-backed
+/// filesystems derive `f_fsid` from the volume itself. A filesystem reporting
+/// no `f_fsid` keeps its device number as the volume scope.
+#[cfg(target_os = "linux")]
+fn durable_volume<W: NativeHostWork<Error = DemandError>>(
+    directory: &Dir,
+    device: u64,
+    work: &mut W,
+) -> Result<u64, DemandError> {
+    let fsid = retry_io(work, READ, || {
+        #[cfg(test)]
+        stat_probe::event("fsid");
+        #[cfg(test)]
+        if let Some(error) = stat_probe::fault("fsid") {
+            return Err(error);
+        }
+        rustix::fs::fstatvfs(directory)
+            .map(|stat| stat.f_fsid)
+            .map_err(io::Error::from)
+    })?;
+    Ok(if fsid == 0 { device } else { fsid })
+}
+
+/// A filesystem whose object ids stay stable for a root's lifetime, or one
+/// that may renumber them.
+#[cfg(not(target_os = "linux"))]
+const fn stable_object_ids(stable: bool) -> crate::NativeRootGeneration {
+    if stable {
+        crate::NativeRootGeneration::StableObjectId
+    } else {
+        crate::NativeRootGeneration::Unstable
+    }
 }

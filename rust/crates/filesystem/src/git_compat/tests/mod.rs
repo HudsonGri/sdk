@@ -303,12 +303,14 @@ async fn publish_fixture(
 mod argv;
 mod capture;
 mod history;
+mod host_namespaces;
 mod incremental;
 #[cfg(acyclic_fs_loom)]
 mod model;
 #[cfg(acyclic_fs_loom)]
 mod model_store;
 mod properties;
+mod restore_paths;
 mod state;
 mod tree;
 mod wire;

@@ -3,6 +3,85 @@ mod feature_policy;
 use super::*;
 use std::path::PathBuf;
 
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn default_state_overlap_is_refused_before_checkout_publication() -> Result<()> {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            super::super::owner::STATE_ROOT.set(self.0.take());
+        }
+    }
+    let checkout = tempfile::tempdir().map_err(super::super::storage)?;
+    let info = checkout.path().join(".git/info");
+    std::fs::create_dir_all(&info).map_err(super::super::storage)?;
+    let exclude = info.join("exclude");
+    std::fs::write(&exclude, b"# retained user rule\n").map_err(super::super::storage)?;
+    let _restore =
+        Restore(super::super::owner::STATE_ROOT.replace(Some(checkout.path().join("nested/data"))));
+    let config = LocalHarnessConfig::new(checkout.path(), (model()?, text()))
+        .compaction(crate::context::CompactionPolicy::Disabled)
+        .without_default_tools();
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(crate::native_settings::SettingsConfig::for_test(
+        checkout.path(),
+    )?);
+    assert!(matches!(
+        config.resolved_state_directory(),
+        Err(Error::Invalid(_))
+    ));
+    let result = LocalHarness::open(config).await;
+    assert!(
+        matches!(&result, Err(Error::Invalid(_))),
+        "unexpected open result: {}",
+        match &result {
+            Ok(_) => "opened".into(),
+            Err(error) => error.to_string(),
+        }
+    );
+    assert!(!checkout.path().join(".volumes").exists());
+    assert!(!checkout.path().join("nested").exists());
+    assert_eq!(
+        std::fs::read(exclude).map_err(super::super::storage)?,
+        b"# retained user rule\n"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn explicit_state_overlap_is_refused_before_checkout_publication() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let checkout = root.path().join("checkout");
+    let info = checkout.join(".git/info");
+    std::fs::create_dir_all(&info).map_err(super::super::storage)?;
+    let exclude = info.join("exclude");
+    std::fs::write(&exclude, b"# retained user rule\n").map_err(super::super::storage)?;
+    for state in [
+        root.path().to_path_buf(),
+        checkout.clone(),
+        checkout.join("state"),
+    ] {
+        let config = LocalHarnessConfig::new(&checkout, (model()?, text()))
+            .state_directory(state)
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .without_default_tools();
+        #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        let config = config.settings(crate::native_settings::SettingsConfig::for_test(&checkout)?);
+        assert!(matches!(
+            LocalHarness::open(config).await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(!checkout.join(".volumes").exists());
+        assert!(!checkout.join("state").exists());
+        assert_eq!(
+            std::fs::read(&exclude).map_err(super::super::storage)?,
+            b"# retained user rule\n"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
@@ -14,6 +93,10 @@ fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
     assert!(
         matches!(unrooted.resolved_state_directory(), Err(Error::Unsupported(message))
             if message == super::super::owner::UNIT_TESTS_INJECT_STATE)
+    );
+    assert!(
+        !checkout.path().join(".volumes").exists(),
+        "refused ambient selection published checkout metadata"
     );
     // Positive control: the injected directory is the one resolution, and the test helper always injects one.
     let injected = tempfile::tempdir().map_err(super::super::storage)?;
@@ -73,6 +156,7 @@ fn unit_tests_cannot_resolve_the_user_home_or_codex_home() -> Result<()> {
 }
 
 #[test]
+#[cfg(feature = "native-execution")]
 fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::storage)?;
     let projects = tempfile::tempdir().map_err(super::super::storage)?;
@@ -81,9 +165,11 @@ fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
         std::fs::create_dir(path).map_err(super::super::storage)?;
     }
     let at = |path: &PathBuf| {
+        let checkout = super::super::owner::Checkout::capture(path)?;
         super::super::owner::state_directory_in(
             root.path(),
             &super::super::LocalProject::Workspace(path.clone()),
+            Some(&checkout),
         )
     };
     let state = at(&first)?;
@@ -94,7 +180,8 @@ fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
     assert!(matches!(
         super::super::owner::state_directory_in(
             &first.join("nested"),
-            &super::super::LocalProject::Workspace(first.clone())
+            &super::super::LocalProject::Workspace(first.clone()),
+            Some(&super::super::owner::Checkout::capture(&first)?),
         ),
         Err(Error::Invalid(_))
     ));
@@ -366,6 +453,10 @@ async fn open_rejects_control_state_inside_the_checkout() -> Result<()> {
         if message.contains("separate from the checkout"))
     );
     assert!(!state.exists(), "refused root created a directory");
+    assert!(
+        !checkout.path().join(".volumes").exists(),
+        "refused control root published checkout metadata"
+    );
     Ok(())
 }
 

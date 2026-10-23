@@ -7,10 +7,263 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
         .map_err(|_| CaptureError::InvalidOptions)
 }
 
+/// A root held open from its capture through its binding, so the root a
+/// caller validated is the root it binds, whatever replaces the path in
+/// between.
+pub struct HeldRoot {
+    pub(crate) root: HostRoot,
+    pub(crate) path: PathBuf,
+}
+
+impl HeldRoot {
+    /// Opens an existing descendant directory without following links or
+    /// reopening this root by its original name.
+    pub fn open_directory(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .open_directory(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// Opens a regular leaf relative to this held directory. A writable
+    /// open creates an absent leaf and never follows a link.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn open_file(&self, leaf: &Path, writable: bool) -> Result<std::fs::File, DemandError> {
+        self.root
+            .open_record_file(leaf, writable, &mut crate::native_host::ordinary_work())
+    }
+
+    /// Persists a file using the platform's native full-sync primitive.
+    pub fn sync_file(&self, file: &std::fs::File) -> Result<(), DemandError> {
+        self.root
+            .sync_record_file(file, &mut crate::native_host::ordinary_work())
+    }
+
+    /// Persists names created in this held directory.
+    pub fn sync_directory(&self) -> Result<(), DemandError> {
+        self.root
+            .sync_directory(&mut crate::native_host::ordinary_work())
+    }
+
+    /// The held root's device and object id, read when it was opened.
+    #[must_use]
+    pub const fn identity(&self) -> NativeRootIdentity {
+        self.root.identity()
+    }
+
+    /// The held root's identity and generation, from one generation query of
+    /// the held root. A failed query keeps its cause; a filesystem whose
+    /// object ids may change across remounts is `Unstable`.
+    pub fn incarnation(&self) -> Result<crate::NativeRootIncarnation, DemandError> {
+        self.root
+            .incarnation(&mut crate::native_host::ordinary_work())
+    }
+
+    /// A second handle on the same held root, never reopened by path.
+    pub fn try_clone(&self) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .try_clone(&mut crate::native_host::ordinary_work())?,
+            path: self.path.clone(),
+        })
+    }
+
+    /// The held directory at `relative` below this root, each missing
+    /// component created in its held parent and never through a link. Each
+    /// parent is synced, including parents of concurrently created children,
+    /// before returning, so records below it have a durable reachable name.
+    pub fn create_directories(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .create_directories(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// The `N` bytes published at `leaf` in this held directory, after
+    /// publishing a lazily generated candidate exclusively and atomically if
+    /// nothing is: a kill at any step leaves no record or the complete one,
+    /// and every concurrent publisher returns the same record. The candidate
+    /// function is called only after a read observes no record; reading an
+    /// existing publication never depends on candidate generation.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn read_or_publish<const N: usize>(
+        &self,
+        leaf: &Path,
+        candidate: impl FnMut() -> Result<[u8; N], DemandError>,
+    ) -> Result<[u8; N], DemandError> {
+        self.root
+            .read_or_publish(leaf, candidate, &mut crate::native_host::ordinary_work())
+    }
+
+    /// The path the root was opened at.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// A search-only view of this held directory, never reopened by path.
+    pub fn search(&self) -> Result<SearchRoot, DemandError> {
+        let held = self.try_clone()?;
+        Ok(SearchRoot {
+            root: held.root,
+            path: held.path,
+        })
+    }
+}
+
+/// A directory held for name lookup only. Holding it needs search
+/// (traverse) permission, never read (list) permission, so an ancestor a
+/// process may cross but not list still anchors no-follow lookups below it.
+pub struct SearchRoot {
+    root: HostRoot,
+    path: PathBuf,
+}
+
+impl SearchRoot {
+    /// The descendant directory at `relative`, held for search only. No
+    /// component is followed through a link.
+    pub fn open_search_directory(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .open_search_directory(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// The readable descendant directory at `relative`, reached through
+    /// search-only intermediate directories. No component is followed
+    /// through a link.
+    pub fn open_directory(&self, relative: &Path) -> Result<HeldRoot, DemandError> {
+        Ok(HeldRoot {
+            root: self
+                .root
+                .open_directory_searching(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// Opens an existing regular leaf for reading, never through a link.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn open_file(&self, leaf: &Path) -> Result<std::fs::File, DemandError> {
+        self.root
+            .open_record_file(leaf, false, &mut crate::native_host::ordinary_work())
+    }
+
+    /// The device and object id of whatever `path` names once every link is
+    /// followed from this held directory. `path` may hold several
+    /// components, `..`, or be absolute, as a Git metadata pointer may.
+    pub fn resolved_identity(&self, path: &Path) -> Result<NativeRootIdentity, DemandError> {
+        // An NT relative open cannot name `..`, so Windows resolves any
+        // pointer other than one leaf by name. A directory with open handles
+        // below it cannot be renamed there, so this held directory's path
+        // still names it.
+        #[cfg(windows)]
+        if crate::native_host::require_leaf(path).is_err() {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+            };
+            let file = std::fs::OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES.0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+                .open(self.path.join(path))?;
+            return file_identity(&file);
+        }
+        self.root
+            .resolved_identity(path, &mut crate::native_host::ordinary_work())
+    }
+
+    /// The held directory's device and object id, read when it was opened.
+    #[must_use]
+    pub const fn identity(&self) -> NativeRootIdentity {
+        self.root.identity()
+    }
+
+    /// The path the directory was opened at.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::fmt::Debug for SearchRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchRoot")
+            .field("path", &self.path)
+            .field("identity", &self.identity())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Holds the directory at `path` for search only; a final link is refused.
+pub fn hold_search_root(path: &Path) -> Result<SearchRoot, DemandError> {
+    Ok(SearchRoot {
+        root: HostRoot::open_search(path, &mut crate::native_host::ordinary_work())?,
+        path: path.to_path_buf(),
+    })
+}
+
+/// The device and object id of an open file, comparable with
+/// [`SearchRoot::resolved_identity`].
+pub fn file_identity(file: &std::fs::File) -> Result<NativeRootIdentity, DemandError> {
+    crate::native_host::file_identity(file, &mut crate::native_host::ordinary_work())
+}
+
+impl std::fmt::Debug for HeldRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HeldRoot")
+            .field("path", &self.path)
+            .field("identity", &self.identity())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opens a no-follow root once and holds it. Every query failure keeps its
+/// cause.
+pub fn hold_root(path: &Path) -> Result<HeldRoot, DemandError> {
+    Ok(HeldRoot {
+        root: HostRoot::open(path, &mut crate::native_host::ordinary_work())?,
+        path: path.to_path_buf(),
+    })
+}
+
 /// Reads a bounded set of final host states and applies one atomic checkout transaction.
 pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
+    options: &CaptureOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_paths_in(checkout, paths, None, options, budget, cancellation).await
+}
+
+/// [`capture_paths`] from a held root. The held directory is the source and
+/// is never reopened by `options.source_root`; it must have
+/// `options.expected_root_identity`.
+pub async fn capture_held_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    root: &HeldRoot,
+    options: &CaptureOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_paths_in(checkout, paths, Some(root), options, budget, cancellation).await
+}
+
+async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    held: Option<&HeldRoot>,
     options: &CaptureOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -26,7 +279,19 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let result = async {
-        let source_root = open_source_root(options, &scope.native)?;
+        let source_root = match held {
+            None => open_source_root(options, &scope.native)?,
+            Some(held) => {
+                let root = held
+                    .root
+                    .try_clone(&mut scope.native.clone())
+                    .map_err(capture_demand_error)?;
+                if root.identity() != options.expected_root_identity {
+                    return Err(CaptureError::RootChanged);
+                }
+                root
+            }
+        };
         let mut unique = clone_capture_paths(paths, None, &scope.native)?;
         capture_sort_by(&mut unique, Ord::cmp, &scope.native)?;
         if capture_has_duplicate_paths(&unique, &scope.native)? {

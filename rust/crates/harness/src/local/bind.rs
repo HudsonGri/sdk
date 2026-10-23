@@ -140,7 +140,9 @@ async fn bound_workspace(
 ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
     Ok(
         if let Some((checkout, directory)) = checkout.zip(directory) {
-            let identity = acyclic_fs::capture_root_identity(checkout).map_err(storage_error)?;
+            let root =
+                acyclic_fs::hold_root(&std::fs::canonicalize(checkout).map_err(storage_error)?)
+                    .map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",
                 &serde_json::to_vec(volume).map_err(storage_error)?,
@@ -148,20 +150,23 @@ async fn bound_workspace(
             let operation = acyclic_fs::OperationId::from_bytes(
                 digest[..16].try_into().map_err(storage_error)?,
             );
+            let store = acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
+                .with_ownership_anchor(state_owner);
+            let attach = workspace::Attach {
+                volume,
+                scratch: volume,
+                directory: &directory,
+                operation,
+                native_mounts: false,
+            };
             Some(Arc::new(
                 workspace::open(
                     filesystem,
-                    volume,
-                    volume,
-                    checkout,
-                    &directory,
-                    Some(identity.to_bytes()),
-                    operation,
+                    &attach,
+                    root,
                     true,
-                    false,
                     workspace::OwnerState {
-                        store: acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
-                            .with_ownership_anchor(state_owner),
+                        store,
                         processes: None,
                     },
                 )

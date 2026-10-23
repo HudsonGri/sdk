@@ -86,13 +86,9 @@ pub(super) fn rename_unix_names_once(
 }
 
 #[cfg(unix)]
-pub(super) fn sync_held_descriptor_once(file: &impl std::os::fd::AsRawFd) -> io::Result<()> {
-    // SAFETY: the borrowed descriptor remains owned by the live caller.
-    if unsafe { libc::fsync(file.as_raw_fd()) } < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+pub(super) fn sync_held_descriptor_once(file: &impl std::os::fd::AsFd) -> io::Result<()> {
+    // One native full flush per metered attempt; EINTR returns to `retry_io`.
+    acyclic_native_runtime::sync_descriptor_once(file.as_fd())
 }
 
 #[cfg(windows)]

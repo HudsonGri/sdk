@@ -100,7 +100,13 @@ impl LocalWorkspace {
         #[cfg(any(target_os = "linux", windows))]
         volumes::link(path, &mut mounts)?;
         #[cfg(not(any(target_os = "linux", windows)))]
-        volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &acyclic_fs::hold_root(path).map_err(storage)?,
+            &mut mounts,
+        )
+        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -158,6 +164,7 @@ impl LocalWorkspace {
             None,
             private.map(|volume| ("scratch".into(), volume, None)),
         )?;
+        let root = acyclic_fs::hold_root(&root).map_err(storage)?;
         volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }
@@ -260,24 +267,104 @@ pub(super) struct OwnerState {
     pub(super) processes: Option<Arc<acyclic_native_runtime::ProcessCustody>>,
 }
 
+/// What a checkout or volume view attaches as: the volume it serves, its
+/// scratch volume, its control directory and the operation that attaches it.
+pub(super) struct Attach<'a> {
+    pub(super) volume: &'a VolumeRef,
+    pub(super) scratch: &'a VolumeRef,
+    pub(super) directory: &'a Path,
+    pub(super) operation: acyclic_fs::OperationId,
+    pub(super) native_mounts: bool,
+}
+
 pub(super) async fn open(
     filesystem: &acyclic_fs::Fs<LocalAuthorityBackend, LocalObjectBackend>,
-    volume: &VolumeRef,
-    scratch: &VolumeRef,
-    path: &Path,
-    directory: &Path,
-    identity: Option<[u8; 16]>,
-    operation: acyclic_fs::OperationId,
+    attach: &Attach<'_>,
+    root: acyclic_fs::HeldRoot,
     existing: bool,
-    native_mounts: bool,
     state: OwnerState,
 ) -> Result<LocalWorkspace> {
     let OwnerState { store, processes } = state;
-    let path = std::fs::canonicalize(path).map_err(storage)?;
+    let &Attach {
+        volume,
+        scratch,
+        directory,
+        native_mounts,
+        ..
+    } = attach;
+    // The held root is the root its holder validated; binding and every setup
+    // side effect work in it and never reopen the path, so a replacement
+    // there can neither attach this state nor receive its scratch setup.
+    let path = root.path().to_path_buf();
+    let identity = root.identity();
+    #[cfg(test)]
+    setup_probe::before_setup(&path);
+    let setup = if native_mounts {
+        Some(setup_probe::setup_root(&root)?)
+    } else {
+        None
+    };
     #[cfg(target_os = "linux")]
-    if native_mounts {
-        volumes::recover_after_crash(&path)?;
+    if let Some(setup) = &setup {
+        volumes::recover_after_crash(setup)?;
     }
+    let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(view.workspace())
+        .await
+        .map_err(storage)?;
+    let mut mounts = mounts::owner(
+        &path,
+        volume,
+        None,
+        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
+    )?;
+    if let Some(setup) = &setup {
+        volumes::attach(filesystem, &store, setup, &mut mounts).await?;
+        Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
+    }
+    let context_line = mounts.context_line();
+    let mounts = Arc::new(mounts);
+    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
+        view.workspace().id(),
+        Arc::clone(&mounts),
+    )));
+    Ok(LocalWorkspace {
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        selection_reads: std::sync::atomic::AtomicUsize::new(0),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        mount_advances: std::sync::atomic::AtomicUsize::new(0),
+        path,
+        fresh,
+        view,
+        mount_directory: directory.join("task-views"),
+        mounted: None,
+        filesystem: filesystem.clone(),
+        store,
+        identity,
+        state,
+        context_line,
+        mounts,
+        processes,
+    })
+}
+
+/// The checkout's lazy view: reopened from its retained state, bound to an
+/// existing volume, or attached fresh. Returns whether it is fresh.
+async fn lazy_view(
+    filesystem: &acyclic_fs::LocalFs,
+    attach: &Attach<'_>,
+    root: acyclic_fs::HeldRoot,
+    existing: bool,
+    store: &LocalCoreStateStore,
+) -> Result<(View, bool)> {
+    let &Attach {
+        volume,
+        operation,
+        native_mounts,
+        ..
+    } = attach;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -305,119 +392,139 @@ pub(super) async fn open(
         || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
         |workspace| workspace.volume_config(),
     );
-    let source = NativeDemandSource::open(
-        std::borrow::Cow::Borrowed(&path),
-        config.profile,
-        config.limits,
+    let source = held_source(
+        root,
+        config,
         original.as_ref().map(|state| state.source),
-        None,
+        native_mounts,
         &work,
         &cancellation,
     )
+    .await?;
+    let fresh = original.is_none();
+    let view = match selected {
+        Some(workspace) if !fresh => {
+            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting).await
+        }
+        Some(workspace) => {
+            LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting).await
+        }
+        None => LazyWorkspace::attach(
+            filesystem,
+            &name,
+            source,
+            store.clone(),
+            acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+            operation,
+            &mut accounting,
+        )
+        .await
+        .map(|(view, ..)| view),
+    }
+    .map_err(storage)?;
+    Ok((view, fresh))
+}
+
+/// The held root's native source. Scratch mounts and the incarnation
+/// namespace are excluded, so capture never records them.
+async fn held_source(
+    root: acyclic_fs::HeldRoot,
+    config: acyclic_fs::VolumeConfig,
+    reference: Option<acyclic_fs::demand::SourceReference>,
+    native_mounts: bool,
+    work: &NativeMaterializationWork,
+    cancellation: &acyclic_fs::CancellationToken,
+) -> Result<Arc<NativeDemandSource>> {
+    let path = root.path().to_path_buf();
+    let source = NativeDemandSource::open_held(
+        root,
+        config.profile,
+        config.limits,
+        reference,
+        None,
+        work,
+        cancellation,
+    )
     .await
     .map_err(storage)?;
-    if identity != Some(source.root_identity().to_bytes()) {
-        return Err(Error::Unauthorized(
-            "local checkout root was replaced during open".into(),
-        ));
-    }
-    let exclusions = if native_mounts {
+    let mut exclusions = if native_mounts {
         volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
     } else {
         Vec::new()
     };
-    let source = source
-        .exclude(exclusions, &&work, &cancellation)
-        .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
-    let source = Arc::new(source);
-    let fresh = original.is_none();
-    let view = match selected {
-        Some(workspace) if original.is_some() => {
-            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
-                .await
-                .map_err(storage)?
-        }
-        Some(workspace) => LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
-            .await
-            .map_err(storage)?,
-        None => {
-            LazyWorkspace::attach(
-                filesystem,
-                &name,
-                source,
-                store.clone(),
-                acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-                operation,
-                &mut accounting,
-            )
-            .await
-            .map_err(storage)?
-            .0
-        }
-    };
-    acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(view.workspace())
-        .await
-        .map_err(storage)?;
-    let mut mounts = mounts::owner(
+    exclusions.push(volumes::namespace(
         &path,
-        volume,
-        None,
-        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
-    )?;
-    if native_mounts {
-        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
-        Box::pin(volumes::parents::bind(
-            &view,
-            &path,
-            &mounts,
-            acyclic_fs::NativeRootIdentity::from_bytes(
-                identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
-            ),
-            &cancellation,
-        ))
-        .await?;
-    }
-    let context_line = mounts.context_line();
-    let mounts = Arc::new(mounts);
-    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
-        view.workspace().id(),
-        Arc::clone(&mounts),
-    )));
-    Ok(LocalWorkspace {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        selection_reads: std::sync::atomic::AtomicUsize::new(0),
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        mount_advances: std::sync::atomic::AtomicUsize::new(0),
-        path,
-        fresh,
-        view,
-        mount_directory: directory.join("task-views"),
-        mounted: None,
-        filesystem: filesystem.clone(),
-        store,
-        identity: acyclic_fs::NativeRootIdentity::from_bytes(
-            identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
-        ),
-        state,
-        context_line,
-        mounts,
-        processes,
-    })
+        config,
+        &path.join(volumes::INCARNATION_PATH),
+    )?);
+    let source = source
+        .exclude(exclusions, &work, cancellation)
+        .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
+    Ok(Arc::new(source))
 }
+
+/// The root that scratch setup works in: the held root itself. Under test,
+/// a hook can replace the checkout's path before setup, and the negative
+/// control restores setup that re-resolves the saved path.
+mod setup_probe {
+    use super::*;
+
+    #[cfg(test)]
+    type SetupHook = Box<dyn FnOnce(&Path)>;
+
+    #[cfg(test)]
+    thread_local! {
+        static BEFORE_SETUP: std::cell::RefCell<Option<SetupHook>> =
+            const { std::cell::RefCell::new(None) };
+        static FOLLOW_PATH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Runs `hook` with the checkout's path after its root is held and
+    /// before setup. Unix only: Windows refuses to rename a held directory.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(in crate::local) fn replace_before_setup(hook: impl FnOnce(&Path) + 'static) {
+        BEFORE_SETUP.set(Some(Box::new(hook)));
+    }
+
+    /// Negative control: setup reopens the saved path.
+    #[cfg(test)]
+    pub(in crate::local) fn follow_path(follow: bool) {
+        FOLLOW_PATH.set(follow);
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_setup(path: &Path) {
+        if let Some(hook) = BEFORE_SETUP.take() {
+            hook(path);
+        }
+    }
+
+    pub(super) fn setup_root(root: &acyclic_fs::HeldRoot) -> Result<acyclic_fs::HeldRoot> {
+        #[cfg(test)]
+        if FOLLOW_PATH.get() {
+            return acyclic_fs::hold_root(root.path()).map_err(storage);
+        }
+        root.try_clone().map_err(storage)
+    }
+}
+#[cfg(test)]
+pub(super) use setup_probe::follow_path;
+#[cfg(test)]
+#[cfg(unix)]
+pub(super) use setup_probe::replace_before_setup;
 
 // A configured SDK volume gets one persistent private native view. Bootstrap
 // into a sibling and rename only the complete generation, before binding its
 // native source. Subsequent commands and reopen reuse the ordinary lazy path.
 pub(super) async fn open_volume(
     filesystem: &acyclic_fs::LocalFs,
-    volume: &VolumeRef,
-    scratch: &VolumeRef,
-    directory: &Path,
-    operation: acyclic_fs::OperationId,
-    native_mounts: bool,
+    attach: &Attach<'_>,
     state: OwnerState,
 ) -> Result<LocalWorkspace> {
+    let &Attach {
+        volume, directory, ..
+    } = attach;
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
         let staging = bootstrap::staging(directory)?;
@@ -458,20 +565,7 @@ pub(super) async fn open_volume(
         )
         .await?;
     }
-    let identity = acyclic_fs::capture_root_identity(&path)
-        .map_err(storage)?
-        .to_bytes();
-    open(
-        filesystem,
-        volume,
-        scratch,
-        &path,
-        directory,
-        Some(identity),
-        operation,
-        true,
-        native_mounts,
-        state,
-    )
-    .await
+    let root =
+        acyclic_fs::hold_root(&std::fs::canonicalize(&path).map_err(storage)?).map_err(storage)?;
+    open(filesystem, attach, root, true, state).await
 }
