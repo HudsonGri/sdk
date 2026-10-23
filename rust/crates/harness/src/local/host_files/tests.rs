@@ -32,7 +32,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
     std::fs::write(
         requests.join("oversized.json"),
-        vec![b'x'; MAXIMUM_BYTES as usize + 1],
+        vec![b'x'; usize::try_from(MAXIMUM_BYTES).map_err(storage)? + 1],
     )
     .map_err(storage)?;
     let foreign = OperationId::new();
