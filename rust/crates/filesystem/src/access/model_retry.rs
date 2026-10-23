@@ -1,10 +1,9 @@
-use acyclic_fs::CancellationToken;
+use crate::CancellationToken;
 use std::cell::Cell;
 use std::future::{Future, ready};
 use std::task::{Context, Poll, Waker};
 
-#[path = "../../src/access/retry.rs"]
-mod protocol;
+use super::retry as protocol;
 
 fn run<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);

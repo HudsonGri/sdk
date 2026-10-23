@@ -1,8 +1,7 @@
-use acyclic_fs::access::*;
-use acyclic_fs::kernel::NamespacePath;
+use super::*;
+use crate::kernel::NamespacePath;
 
-#[path = "../../src/access/view.rs"]
-mod published;
+use super::view as published;
 
 fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
     let principal = Principal {
@@ -36,7 +35,7 @@ fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
         },
         &principal,
         Resource {
-            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
+            config: crate::VolumeConfig::portable(crate::Lifecycle::Durable),
             lineage: &[],
             volume,
             generation: 1,
