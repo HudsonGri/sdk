@@ -49,7 +49,15 @@ fn construct(live: &AtomicUsize) -> Result<u8> {
 fn retirement(broken: bool) {
     let views = StateArc::new(ChildViews::<u8>::default());
     let live = StateArc::new(AtomicUsize::new(0));
-    drop(complete(ChildViews::acquire(&views, TASK, async || construct(&live))).unwrap());
+    drop(
+        complete(ChildViews::acquire(
+            &views,
+            TASK,
+            async || construct(&live),
+            async |_| Ok(()),
+        ))
+        .unwrap(),
+    );
     let escaped = StateArc::new(crate::sync::SyncMutex::new(None));
     let settling = {
         let (views, live, escaped) = (
@@ -77,7 +85,15 @@ fn retirement(broken: bool) {
     let acquiring = {
         let (views, live) = (StateArc::clone(&views), StateArc::clone(&live));
         thread::spawn(move || {
-            drop(complete(ChildViews::acquire(&views, TASK, async || construct(&live))).unwrap());
+            drop(
+                complete(ChildViews::acquire(
+                    &views,
+                    TASK,
+                    async || construct(&live),
+                    async |_| Ok(()),
+                ))
+                .unwrap(),
+            );
         })
     };
     settling.join().unwrap();
@@ -102,12 +118,17 @@ fn progress(broken: bool) {
     let command = complete(lock_owned(StateArc::clone(&parent)));
     let child = thread::spawn(move || {
         for _ in 0..2 {
-            let view = complete(ChildViews::acquire(&views, TASK, async || {
-                if broken {
-                    drop(lock_owned(StateArc::clone(&parent)).await);
-                }
-                Ok(1)
-            }))
+            let view = complete(ChildViews::acquire(
+                &views,
+                TASK,
+                async || {
+                    if broken {
+                        drop(lock_owned(StateArc::clone(&parent)).await);
+                    }
+                    Ok(1)
+                },
+                async |_| Ok(()),
+            ))
             .unwrap();
             assert_eq!(*view, 1);
         }

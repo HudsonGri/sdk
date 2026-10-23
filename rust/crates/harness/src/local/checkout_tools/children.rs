@@ -68,7 +68,7 @@ impl CheckoutTools {
         // The child's own construction gate pins construction and publication
         // of one native binding; the parent's checkout guard is never taken.
         // Owner and mount callbacks never reacquire either.
-        child_views::ChildViews::acquire(&self.workspace.children, task, async || {
+        let create = async || {
             owner.verify_owner(None)?.await?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let project_workspace = self
@@ -103,7 +103,13 @@ impl CheckoutTools {
             );
             owner.verify_owner(None)?.await?;
             Ok(tools)
-        })
+        };
+        child_views::ChildViews::acquire(
+            &self.workspace.children,
+            task,
+            create,
+            async |tools: &Self| tools.retire_view().await,
+        )
         .await
     }
 }
@@ -119,30 +125,42 @@ impl LocalWorkspace {
         .await
     }
 
-    // Detaches this view's native mount on birth-time credit. Retirement
-    // preserves uncaptured data, which the next mount of this view recovers.
+    // Detaches this view's native mount on birth-time credit, then removes
+    // the directory it was mounted on, which no later mount reuses. Both
+    // steps are idempotent, so a retry resumes wherever a failed one stopped.
+    // Retirement preserves uncaptured data in the view's store, which the
+    // next mount of this view recovers.
     fn retire_mount(&self) -> Result<()> {
-        if let Some(mount) = &self.mounted {
-            mount.prepare_unmount_cleanup().map_err(storage)?;
-            mount
-                .retire(&acyclic_fs::CancellationToken::new())
-                .map_err(storage)?;
+        let Some(mount) = &self.mounted else {
+            return Ok(());
+        };
+        mount.prepare_unmount_cleanup().map_err(storage)?;
+        mount
+            .retire(&acyclic_fs::CancellationToken::new())
+            .map_err(storage)?;
+        // Only a detached projection's own directory is removed: FUSE and
+        // macOS leave it empty, ProjFS leaves its hydrated placeholders.
+        #[cfg(windows)]
+        let removed = std::fs::remove_dir_all(&self.path);
+        #[cfg(not(windows))]
+        let removed = std::fs::remove_dir(&self.path);
+        match removed {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(storage(error)),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
 impl CheckoutTools {
     // The caller holds this view's construction gate and no call holds the
-    // view, so neither its state nor its mounts have another user.
-    async fn retire_view(&self) -> Result<()> {
+    // view, so neither its state nor its mounts have another user. A failed
+    // step leaves what it had not retired owned here, for the retry.
+    pub(super) async fn retire_view(&self) -> Result<()> {
         let mut state = lock_owned(StateArc::clone(&self.state)).await;
-        if let Some((id, selected)) = state.workspace.take()
-            && let Err(error) = selected.retire_mount()
-        {
-            state.workspace = Some((id, selected));
-            return Err(error);
+        if let Some((_, selected)) = &state.workspace {
+            selected.retire_mount()?;
         }
+        state.workspace = None;
         drop(state);
         self.workspace.retire_mount()
     }

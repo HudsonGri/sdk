@@ -241,7 +241,7 @@ fn task_cache(broken: bool) {
                         complete(child_views::ChildViews::acquire(&views, key, async || {
                             thread::yield_now();
                             Ok(value)
-                        }))
+                        }, async |_| Ok(())))
                         .unwrap();
                     (*selected, value)
                 })

@@ -76,10 +76,15 @@ impl CheckoutTools {
             None if root == task => return Ok(None),
             Some(found) if found == task => {
                 // A durable fork of this task exists: reopen it.
-                return child_views::ChildViews::acquire(views, task, async || {
-                    let view = self.fork_task(task, self.workspace.view(), owner).await?;
-                    self.mount_task_view(view, owner, None).await
-                })
+                return child_views::ChildViews::acquire(
+                    views,
+                    task,
+                    async || {
+                        let view = self.fork_task(task, self.workspace.view(), owner).await?;
+                        self.mount_task_view(view, owner, None).await
+                    },
+                    async |tools: &Self| tools.retire_view().await,
+                )
                 .await
                 .map(Some);
             }
@@ -92,7 +97,7 @@ impl CheckoutTools {
         };
         // Only this fork pins the parent's selected branch, under that branch
         // owner's guard, through the durable, idempotent fork.
-        child_views::ChildViews::acquire(views, task, async || {
+        let create = async || {
             let view = if let Some(parent) = &parent {
                 serialized(&parent.state, async |state| {
                     from_selected(
@@ -113,6 +118,9 @@ impl CheckoutTools {
                 .await?
             };
             self.mount_task_view(view, owner, None).await
+        };
+        child_views::ChildViews::acquire(views, task, create, async |tools: &Self| {
+            tools.retire_view().await
         })
         .await
         .map(Some)
