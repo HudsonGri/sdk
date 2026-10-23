@@ -1,4 +1,4 @@
-use super::cache::{Cache, Cost, Entry};
+use super::cache::{Access, Cache, Cost, Entry};
 use super::*;
 use std::fs::OpenOptions;
 
@@ -17,7 +17,9 @@ fn create(path: &Path) -> io::Result<File> {
 }
 
 fn cached(cache: &Arc<Cache<Native>>, path: &Path) -> io::Result<Arc<Entry<Native>>> {
-    Entry::new(cache, create(path)?, path, true, true, &mut |_| Ok(()))
+    Entry::new(cache, create(path)?, path, Access::Write, true, &mut |_| {
+        Ok(())
+    })
 }
 
 /// Descriptors this process holds on files under `directory`.
@@ -125,7 +127,7 @@ fn released_leases_return_the_cache_to_capacity() -> io::Result<()> {
     assert_eq!(cache.cached(), 2, "a release flushes nothing");
     let path = directory.path().join("third");
     let (third, costs) =
-        charged(|charge| Entry::new(&cache, create(&path)?, &path, true, true, charge))?;
+        charged(|charge| Entry::new(&cache, create(&path)?, &path, Access::Write, true, charge))?;
     assert!(costs.contains(&Cost::Flush), "{costs:?}");
     assert_eq!(cache.cached(), 1, "the listing paid");
     drop(third);
@@ -165,7 +167,7 @@ fn a_lease_charges_the_cache_work_it_causes() -> io::Result<()> {
     let cache = private_cache(1);
     let path = directory.path().join("log");
     let (file, costs) =
-        charged(|charge| Entry::new(&cache, create(&path)?, &path, true, true, charge))?;
+        charged(|charge| Entry::new(&cache, create(&path)?, &path, Access::Write, true, charge))?;
     // The entry, its failure slot, its descriptor and its path: a ring
     // within its capacity never grows.
     assert_eq!(costs.len(), 4, "{costs:?}");
@@ -241,5 +243,71 @@ fn a_metered_lease_charges_its_meter() -> io::Result<()> {
     );
     assert_eq!(load(&meter.used_allocations), 1, "the descriptor");
     assert_eq!(load(&meter.memory), 0, "the cache keeps what it allocates");
+    Ok(())
+}
+
+fn open_directory(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    directory_options(&mut options);
+    options.open(path)
+}
+
+fn cached_directory(cache: &Arc<Cache<Native>>, path: &Path) -> io::Result<Arc<Entry<Native>>> {
+    Entry::new(
+        cache,
+        open_directory(path)?,
+        path,
+        Access::Directory,
+        false,
+        &mut |_| Ok(()),
+    )
+}
+
+#[test]
+fn a_cached_directory_reopens_only_as_the_very_directory() -> io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let root = std::fs::canonicalize(root.path())?;
+    let [replaced_path, kept_path, third_path, moved_path] =
+        ["replaced", "kept", "third", "moved"].map(|name| root.join(name));
+    for path in [&replaced_path, &kept_path, &third_path] {
+        std::fs::create_dir(path)?;
+    }
+    let cache = private_cache(1);
+    let replaced = cached_directory(&cache, &replaced_path)?;
+    let original = crate::file_identity(replaced.lease(&mut |_| Ok(()))?.file())?;
+    // Admitting `kept` closes `replaced`; another directory takes its name.
+    let kept = cached_directory(&cache, &kept_path)?;
+    std::fs::rename(&replaced_path, &moved_path)?;
+    std::fs::create_dir(&replaced_path)?;
+    assert_eq!(
+        replaced
+            .lease(&mut |_| Ok(()))
+            .map(drop)
+            .map_err(|error| error.kind()),
+        Err(io::ErrorKind::InvalidData)
+    );
+    // Admitting `third` closes `kept`, which reopens as itself.
+    let _third = cached_directory(&cache, &third_path)?;
+    let identity = crate::file_identity(&open_directory(&kept_path)?)?;
+    let lease = kept.lease(&mut |_| Ok(()))?;
+    assert!(lease.file().metadata()?.is_dir());
+    assert_eq!(crate::file_identity(lease.file())?, identity);
+    drop(lease);
+    #[cfg(unix)]
+    {
+        // A symbolic link to the very directory takes its name. Opened
+        // plainly, the link would pass the identity check; the cache never
+        // follows it.
+        std::fs::remove_dir(&replaced_path)?;
+        std::os::unix::fs::symlink(&moved_path, &replaced_path)?;
+        assert_eq!(
+            crate::file_identity(&File::open(&replaced_path)?)?,
+            original
+        );
+        assert!(replaced.lease(&mut |_| Ok(())).is_err());
+    }
+    #[cfg(not(unix))]
+    let _ = original;
     Ok(())
 }
