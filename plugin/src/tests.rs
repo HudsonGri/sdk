@@ -86,6 +86,13 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<(
         flags.first_chunk::<4>().ok_or("inline settings absent")?,
         &inline
     );
+    Ok(())
+}
+
+#[test]
+fn pi_package_sources_are_not_shadowed_by_local_filenames() -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let workspace = fixture.path();
     for source in [
         "npm:fixture-extension",
         "builtin:fixture",
@@ -137,6 +144,10 @@ fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result<()> 
     assert_eq!(policy, supplied);
     assert_eq!(roots, ["--add-dir", "workspace"]);
     let command = codex::child("codex", &flags, Path::new("view"), Some("resume-id"))?;
+    assert!(
+        codex::child("codex", &flags, Path::new("view"), Some("--unsafe")).is_err(),
+        "resume references cannot change native options"
+    );
     assert_eq!(command.get_current_dir(), Some(Path::new("view")));
     assert_eq!(
         command
@@ -203,6 +214,10 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
             Path::new("admitted-view"),
             Some("native-reference"),
         )?;
+        assert!(
+            codex::child(host, &flags, Path::new("admitted-view"), Some("--unsafe")).is_err(),
+            "resume references cannot change native options"
+        );
         assert_eq!(command.get_current_dir(), Some(Path::new("admitted-view")));
         let arguments = command
             .get_args()

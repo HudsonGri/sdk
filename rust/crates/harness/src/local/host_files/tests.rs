@@ -76,6 +76,23 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         let child = PathBuf::from(child["cwd"].as_str().unwrap());
         assert_eq!(workspace_root(&child)?, cwd);
         assert!(!child.join(DIRECTORY).join("owner.json").exists());
+        let task = serde_json::from_value(result["task"].clone()).map_err(storage)?;
+        // The reference fits a request, but the byte-array query encoding does
+        // not fit a response. The shared command consumer settles it without
+        // stranding the claim or terminating the workspace owner.
+        request(&cwd, HostAction::Hook {
+            host: "pi".into(), event: "NativeSession".into(),
+            input: serde_json::json!({"task":task,"native_session":{"id":"fixture","file":cwd.join("x".repeat(20_000))}}),
+        })?;
+        assert!(request(&cwd, HostAction::Query {
+            task, query: Query::File(FileKey::Task {
+                task: Component::new(task.to_string()).map_err(storage)?,
+                file: TaskFile::Context(Component::new("native-session").map_err(storage)?),
+            }),
+        }).is_err(), "oversized live queries must settle as omitted output");
+        assert_eq!(request(&cwd, HostAction::Open {
+            host: "codex".into(), session: "fixture-native-session".into(),
+        })?["task"], result["task"]);
         Ok::<_, Error>(result)
     })
     .await

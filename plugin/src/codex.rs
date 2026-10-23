@@ -121,6 +121,9 @@ pub(super) fn child(
     session: Option<&str>,
 ) -> Result<Command> {
     validate(host, args)?;
+    if session.is_some_and(|reference| reference.starts_with('-')) {
+        return Err("native resume reference cannot be an option".into());
+    }
     let mut command = Command::new(program(host)?);
     command
         .current_dir(cwd)

@@ -45,6 +45,8 @@ The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
 `resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
 `prompt`. They use the same child request, inbox, control, status, delivered
 and result files as GraphCoder. Wait completes after the accepted inputs settle.
+Live observations return the latest completed result; earlier results remain in
+the shared child files.
 Cancel stops and reaps the native child process tree before capturing partial
 writes. Resume re-launches the saved native session in the recreated view.
 Archive freezes the shared child reference permanently.
