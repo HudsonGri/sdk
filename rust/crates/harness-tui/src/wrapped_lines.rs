@@ -185,6 +185,106 @@ impl WrappedLines {
         self.replace_parts(&[source], changed);
     }
 
+    /// Replace logical lines while retaining layouts outside the edited range.
+    /// Search, when open, is updated from the first changed byte.
+    ///
+    /// # Panics
+    /// Panics for an invalid range or if the projection revision overflows.
+    pub fn replace_range(&mut self, range: Range<usize>, source: &[Line<'_>]) {
+        assert!(range.start <= range.end && range.end <= self.sources.len());
+        if range.is_empty() && source.is_empty() {
+            return;
+        }
+        self.append_layout();
+        let mut replacement = Self::default();
+        replacement.replace(source, 0);
+        let start = self
+            .sources
+            .get(range.start)
+            .map_or(self.text.len(), |line| line.offset);
+        let end = self
+            .sources
+            .get(range.end)
+            .map_or(self.text.len(), |line| line.offset);
+        let shift = isize::try_from(replacement.text.len()).unwrap_or(isize::MAX)
+            - isize::try_from(end - start).unwrap_or(isize::MAX);
+        self.text.replace_range(start..end, &replacement.text);
+        for line in &mut replacement.sources {
+            line.offset += start;
+        }
+        self.sources.splice(range.clone(), replacement.sources);
+        for line in self.sources.iter_mut().skip(range.start + source.len()) {
+            line.offset = line.offset.saturating_add_signed(shift);
+        }
+        assert!(self.revision < u64::MAX, "projection revision overflow");
+        self.revision += 1;
+        self.source_revision += 1;
+        let text = slice(&self.text, ..self.text.len().saturating_sub(1));
+        if let Some(index) = self.index.get_mut() {
+            index.replace_suffix(text, start.min(text.len()));
+        }
+        self.splice_layouts(range, source.len(), shift);
+    }
+
+    fn splice_layouts(&mut self, range: Range<usize>, count: usize, bytes: isize) {
+        let shift = isize::try_from(count).unwrap_or(isize::MAX)
+            - isize::try_from(range.len()).unwrap_or(isize::MAX);
+        self.window = RowWindow::default();
+        if range.end <= self.span.start {
+            self.span = self.span.start.saturating_add_signed(shift)
+                ..self.span.end.saturating_add_signed(shift);
+            for (line, _) in &mut self.origins {
+                *line = line.saturating_add_signed(shift);
+            }
+            for range in &mut self.ranges {
+                *range = range.start.saturating_add_signed(bytes)
+                    ..range.end.saturating_add_signed(bytes);
+            }
+            return;
+        }
+        if range.start >= self.span.end {
+            return;
+        }
+        if count > self.span.len().max(32) {
+            self.clear_span();
+            return;
+        }
+        let before = range.start.saturating_sub(self.span.start);
+        let after = range
+            .end
+            .saturating_sub(self.span.start)
+            .min(self.layouts.len());
+        let tail = self.layouts.split_off(after);
+        self.layouts.truncate(before);
+        for line in range.start..range.start + count {
+            self.layouts.push_back(self.layout(line));
+        }
+        self.layouts.extend(tail);
+        let start = self.span.start.min(range.start);
+        self.span = start..start + self.layouts.len();
+        self.repaint_span();
+    }
+
+    fn repaint_span(&mut self) {
+        self.starts.clear();
+        self.rows.clear();
+        self.ranges.clear();
+        self.origins.clear();
+        for (line, layout) in self.span.clone().zip(&self.layouts) {
+            let Some(source) = self.sources.get(line) else {
+                continue;
+            };
+            self.starts.push(self.rows.len());
+            paint(source, layout, &mut self.rows);
+            self.ranges.extend(
+                visible_rows(layout)
+                    .map(|(_, row)| source.offset + row.start..source.offset + row.end),
+            );
+            self.origins
+                .extend(visible_rows(layout).map(|(row, _)| (line, row)));
+        }
+    }
+
     /// Ingest a suffix from borrowed transcript parts without joining their rows.
     ///
     /// # Panics
@@ -907,3 +1007,7 @@ mod append_tests;
 #[cfg(test)]
 #[path = "wrapped_lines/search_storage_tests.rs"]
 mod search_storage_tests;
+
+#[cfg(test)]
+#[path = "wrapped_lines/range_tests.rs"]
+mod range_tests;

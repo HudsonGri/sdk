@@ -24,6 +24,8 @@ mod init_models;
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[path = "session_resume.rs"]
+mod resume;
 #[path = "session_state.rs"]
 mod state;
 #[path = "session_view.rs"]
@@ -46,6 +48,7 @@ pub struct CommandSession<P: ?Sized> {
     changes: files::ChangeStream,
     next_change: Option<files::Change>,
     generation: files::Generation,
+    cursor: files::Cursor,
     files: BTreeMap<files::FileKey, StateFile>,
     pending: VecDeque<files::FileValue>,
     pending_session: usize,
@@ -144,31 +147,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
-        let mut client = Self {
+        let mut client = Self::from_snapshot(
             volume,
             writer,
-            changes: observed.changes,
-            next_change: None,
-            generation: snapshot.generation,
-            files: BTreeMap::new(),
-            pending: VecDeque::new(),
-            pending_session: 0,
-            pending_tasks: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            activity_cursor: None,
-            catalog: CommandCatalog::builtins()?,
-            composer: None,
-            loaded_task: None,
-            observed_change: None,
-            #[cfg(test)]
-            settings_visits: 0,
             session,
             maximum_bytes,
             maximum_files,
-        };
-        for file in snapshot.files {
-            client.fold(file)?;
-        }
+            snapshot,
+            observed.changes,
+        )?;
         client.load_task_settings().await?;
         for (key, bytes) in [
             (
@@ -193,6 +180,44 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             ),
         ] {
             client.initialize_file::<true>(key, bytes).await?;
+        }
+        Ok(client)
+    }
+
+    fn from_snapshot(
+        volume: Arc<files::TaskVolume<P>>,
+        writer: Option<Arc<files::TaskFiles<P>>>,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+        snapshot: files::Snapshot,
+        changes: files::ChangeStream,
+    ) -> Result<Self> {
+        let mut client = Self {
+            volume,
+            writer,
+            changes,
+            next_change: None,
+            generation: snapshot.generation,
+            cursor: snapshot.cursor,
+            files: BTreeMap::new(),
+            pending: VecDeque::new(),
+            pending_session: 0,
+            pending_tasks: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            activity_cursor: None,
+            catalog: CommandCatalog::builtins()?,
+            composer: None,
+            loaded_task: None,
+            observed_change: None,
+            #[cfg(test)]
+            settings_visits: 0,
+            session,
+            maximum_bytes,
+            maximum_files,
+        };
+        for file in snapshot.files {
+            client.fold(file)?;
         }
         Ok(client)
     }
@@ -675,13 +700,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     async fn advance_visible(&mut self) -> Result<bool> {
         if self.next_change.is_none() {
-            self.next_change = Some(
-                self.changes
-                    .next()
-                    .await
-                    .ok_or_else(|| Error::Conflict("command follow ended; reopen snapshot".into()))?
-                    .map_err(storage)?,
-            );
+            let next = if let Some(change) = self.changes.next().await {
+                change
+            } else {
+                if self.resume_follow().await? {
+                    return Ok(true);
+                }
+                self.changes.next().await.ok_or_else(|| {
+                    Error::Conflict("resumed command follow ended without progress".into())
+                })?
+            };
+            self.next_change = Some(next.map_err(storage)?);
         }
         let visible = match self
             .next_change
@@ -701,6 +730,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             position: change.cursor.position,
             commit: change.cursor.commit,
         };
+        self.cursor = change.cursor;
         Ok(visible)
     }
 
