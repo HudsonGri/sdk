@@ -17,7 +17,8 @@ pub(super) struct MountDestinationGuard {
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
-    pub(super) registry_file: Option<MountLockFile>,
+    // This process's shared registry: mounts hold no descriptor of their own.
+    pub(super) registry_file: Option<crate::sync::native::Arc<registry::Registry>>,
     pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
     // Allocated and funded before shutdown; retained on a failed exact cleanup.
@@ -381,10 +382,9 @@ impl MountDestinationGuard {
         guard: &mut Option<Self>,
         native: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
-        let registry = registry::open(work)?;
-        lock_mount_file_with_work(&registry, true, work)?;
+        let registry = registry::shared(work)?;
+        let held = registry.lock(work)?;
         let file = crate::native_host::open_leaf(
             &parent_directory,
             Path::new(
@@ -398,7 +398,7 @@ impl MountDestinationGuard {
             lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory),
             fence_name: Some(name),
-            registry_file: Some(registry.into()),
+            registry_file: Some(crate::sync::native::Arc::clone(&registry)),
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,
@@ -426,15 +426,7 @@ impl MountDestinationGuard {
             )?;
             *guard = Some(admitted);
         }
-        let registry = guard
-            .as_ref()
-            .and_then(|guard| guard.registry_file.as_ref())
-            .ok_or(NativeMountError::ControlPending)?;
-        work.attempt_io(
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            || fence_io::unlock(registry),
-        )?;
-        Ok(())
+        held.unlock(work)
     }
 
     #[cfg(test)]
@@ -534,7 +526,7 @@ impl MountDestinationGuard {
         // Retirement owns its original cleanup credit while the OS waits.
         // Contention is one blocking syscall, not repeated charged attempts
         // which could exhaust birth credit before the fence is removed.
-        lock_mount_file_with_work(registry, true, &mut work)?;
+        let held = registry.lock(&mut work)?;
         // Completing the accepted retirement owns its birth credit even if
         // the caller stops waiting after registry acquisition.
         work.wait = None;
@@ -542,15 +534,11 @@ impl MountDestinationGuard {
         // The held lock must be released on every unlink outcome. Caller
         // cancellation can stop new work, but cannot revoke this accepted
         // physical release and strand all future starters behind the lock.
-        let unlocked = crate::native_host::NativeHostWork::attempt_io(
-            &mut NativeFenceReleaseWork {
-                credit: &unlock,
-                wait: None,
-                pending: None,
-            },
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            || fence_io::unlock(registry),
-        );
+        let unlocked = held.unlock(&mut NativeFenceReleaseWork {
+            credit: &unlock,
+            wait: None,
+            pending: None,
+        });
         match removed {
             Ok(()) => {}
             Err(crate::NativeTreeMaterializationError::Io(error))
@@ -594,15 +582,15 @@ impl MountDestinationGuard {
                     .ok_or(NativeMountError::InvalidDestination)?,
             ),
         };
-        let registry = registry::open(work)?;
-        lock_mount_file_with_work(&registry, true, work)?;
+        let registry = registry::shared(work)?;
+        let held = registry.lock(work)?;
         match crate::native_host::remove_leaf(directory, lock_name, false, work) {
             Ok(()) => {}
             Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {}
             Err(error) => return Err(error.into()),
         }
         self.file.take();
-        drop(registry);
+        drop(held);
         Ok(())
     }
 }
