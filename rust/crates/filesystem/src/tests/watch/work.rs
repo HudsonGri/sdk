@@ -199,6 +199,8 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
 -> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    crate::watch::initialize_native_watch_services()?;
     for cancel_birth in [false, true] {
         let directory = tempfile::tempdir()?;
         std::fs::create_dir(directory.path().join("child"))?;
@@ -208,7 +210,12 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         let mut watch = NativeWatch::open_with_profile_with_native_work(
             &directory.path().canonicalize()?,
             FilesystemProfile::Portable,
-            measured_watch_options(),
+            // FSEvents observes only whole trees; non-recursive registration
+            // is unavailable there by design.
+            NativeWatchOptions {
+                recursive: cfg!(target_os = "macos"),
+                ..measured_watch_options()
+            },
             &birth,
         )?;
         let child = crate::path::PortablePath::parse("/child", VolumeLimits::default())?;
