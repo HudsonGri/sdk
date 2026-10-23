@@ -311,3 +311,33 @@ fn a_cached_directory_reopens_only_as_the_very_directory() -> io::Result<()> {
     let _ = original;
     Ok(())
 }
+
+/// Work beyond the allowance waits for admission until held descriptors are
+/// returned, and work wanting more than the whole allowance is admitted alone
+/// rather than never.
+#[test]
+fn admission_waits_while_the_allowance_is_held() -> io::Result<()> {
+    use std::task::{Context, Poll, Waker};
+    let mut context = Context::from_waker(Waker::noop());
+    let capacity = admitted_descriptor_capacity();
+    let mut whole = std::pin::pin!(admit_descriptors(capacity + 1));
+    let Poll::Ready(whole) = whole.as_mut().poll(&mut context) else {
+        return Err(io::Error::other(
+            "an oversized admission must be admitted alone",
+        ));
+    };
+    let held = whole?;
+    let mut waiting = std::pin::pin!(admit_descriptors(1));
+    assert!(
+        waiting.as_mut().poll(&mut context).is_pending(),
+        "admission beyond the allowance must wait"
+    );
+    drop(held);
+    let Poll::Ready(admitted) = waiting.as_mut().poll(&mut context) else {
+        return Err(io::Error::other(
+            "returned descriptors must admit waiting work",
+        ));
+    };
+    drop(admitted?);
+    Ok(())
+}
