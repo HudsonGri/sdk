@@ -139,7 +139,7 @@ mod tests {
         for before in [true, false] {
             for index in (0..2048).rev() {
                 let path = NamespacePath::from_portable(
-                    &crate::PortablePath::parse(&format!("/file-{index:04}"), limits)?,
+                    &crate::path::PortablePath::parse(&format!("/file-{index:04}"), limits)?,
                     limits,
                 )?;
                 append(&mut paths, &path, None, before, &mut accounting, &cancel)?;
