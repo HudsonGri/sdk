@@ -218,9 +218,11 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
         let source = format!("{}{}{line}", fence.parser_opening, fence.pending);
         let mut text = String::new();
         let mut inside = false;
+        acyclic_markdown_work::record!(scan(source.len()));
         #[cfg(test)]
         references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         for event in Parser::new_ext(&source, options()) {
+            acyclic_markdown_work::record!(node());
             match event {
                 Event::Start(Tag::CodeBlock(_)) => inside = true,
                 Event::Text(content) if inside => text.push_str(&content),
@@ -240,12 +242,16 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
                 .is_empty()
         {
             let source = format!("{}{line}", fence.parser_opening);
+            acyclic_markdown_work::record!(scan(source.len()));
             #[cfg(test)]
             references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
             let text = Parser::new_ext(&source, options())
-                .filter_map(|event| match event {
-                    Event::Text(text) => Some(text.to_string()),
-                    _ => None,
+                .filter_map(|event| {
+                    acyclic_markdown_work::record!(node());
+                    match event {
+                        Event::Text(text) => Some(text.to_string()),
+                        _ => None,
+                    }
                 })
                 .collect::<String>();
             return FenceLine::Text(text.into());
@@ -259,9 +265,11 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
     let source = format!("{}{line}", fence.parser_opening);
     let mut inside = false;
     let mut text = String::new();
+    acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
     references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     for (event, range) in Parser::new_ext(&source, options()).into_offset_iter() {
+        acyclic_markdown_work::record!(node());
         match event {
             Event::Start(Tag::CodeBlock(_)) => inside = true,
             Event::Text(content) if inside => text.push_str(&content),

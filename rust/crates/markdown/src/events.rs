@@ -5,6 +5,7 @@ type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
 
 fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Option<Charges>) {
+    acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
@@ -42,6 +43,7 @@ fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Optio
                 *dest_url = "".into();
                 *title = "".into();
             }
+            acyclic_markdown_work::record!(node());
             #[cfg(test)]
             crate::work::event(&event);
             (event.into_static(), range)
@@ -63,6 +65,7 @@ pub(crate) fn scoped(
     options: pulldown_cmark::Options,
     mut budget: usize,
 ) -> (OwnedEvents, Charges) {
+    acyclic_markdown_work::record!(scan(source.len()));
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
@@ -88,6 +91,7 @@ pub(crate) fn scoped(
     let events = Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
         .into_offset_iter()
         .map(|(event, range)| {
+            acyclic_markdown_work::record!(node());
             #[cfg(test)]
             crate::work::event(&event);
             (event.into_static(), range)

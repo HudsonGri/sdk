@@ -186,6 +186,9 @@ impl Markdown {
                     self.plain_spaces += appended.len();
                 } else {
                     if let Some(span) = line.spans.last_mut() {
+                        acyclic_markdown_work::record!(span_copy(
+                            self.plain_spaces + visible.len()
+                        ));
                         #[cfg(test)]
                         {
                             work::copy(self.plain_spaces + visible.len());
@@ -328,6 +331,7 @@ impl Markdown {
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
     ) -> Vec<bool> {
+        acyclic_markdown_work::record!(scan(source.len()));
         #[cfg(test)]
         {
             // Charge the full newline-search input and each reverse-sweep event.
@@ -553,6 +557,7 @@ impl Markdown {
                 .unwrap_or_default()
                 .split_inclusive('\n')
                 .take_while(|row| {
+                    acyclic_markdown_work::record!(scan(row.len() * 2));
                     #[cfg(test)]
                     work::scan(row.len() * 2);
                     row.ends_with('\n')

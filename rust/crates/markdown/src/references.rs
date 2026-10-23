@@ -39,10 +39,12 @@ impl References {
     pub(crate) fn update(&mut self, source: &str, offset: usize, prefix: usize) -> HashSet<Key> {
         // Every definition opens with a `[` label: without one the tail has none.
         if !source.contains('[') {
+            acyclic_markdown_work::record!(scan(source.len()));
             #[cfg(test)]
             crate::work::scan(source.len());
             return self.replace_pending(HashMap::new());
         }
+        acyclic_markdown_work::record!(scan(source.len()));
         #[cfg(test)]
         PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         let parser = Parser::new_ext(source, crate::options());
@@ -50,6 +52,7 @@ impl References {
             .reference_definitions()
             .iter()
             .map(|(key, value)| {
+                acyclic_markdown_work::record!(node());
                 #[cfg(test)]
                 crate::work::copy(
                     value.dest.len() + value.title.as_ref().map_or(0, |title| title.len()),
@@ -145,13 +148,16 @@ impl Template {
             keys.insert(normalize(&link.reference));
             None
         };
+        acyclic_markdown_work::record!(scan(normalized.len()));
         #[cfg(test)]
         PARSED_BYTES.with(|work| work.set(work.get() + normalized.len()));
         for _ in Parser::new_with_broken_link_callback(
             &normalized,
             options(paragraph),
             Some(&mut callback),
-        ) {}
+        ) {
+            acyclic_markdown_work::record!(node());
+        }
         Self {
             source: normalized,
             paragraph,
