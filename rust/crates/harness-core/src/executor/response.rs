@@ -1,5 +1,7 @@
 use super::*;
 
+mod compaction_source;
+
 impl StockExecution<'_> {
     pub(super) async fn capture_response(
         &self,
@@ -235,8 +237,14 @@ impl StockExecution<'_> {
                     "compacted canonical source changed",
                 ));
             }
-            self.validate_compacted_checkpoint(journal, (input, step), projection, &retained, &proof)
-                .await?;
+            self.validate_compacted_checkpoint(
+                journal,
+                (input, step),
+                projection,
+                &retained,
+                &proof,
+            )
+            .await?;
             let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
             else {
                 return Err(stock_boundary(
@@ -320,26 +328,9 @@ impl StockExecution<'_> {
                     projection.context.messages =
                         crate::model::clone_messages(&prepared.request().messages, self.io)?;
                 }
-                let (source, pre_stage) = match &projection.canonical {
-                    Some(reference) => (retain_preparation(
-                        load_json::<crate::context::Context>(journal, reference, self.io).await?,
-                    )?, true),
-                    None if journal.working_checkpoint_authority().is_none() =>
-                        (crate::context::copy_context(&projection.context, self.io)?, false),
-                    None => {
-                        let (_, base, _) = self.response_base(journal, input, step, prior_messages).await?;
-                        let request = crate::model::PreparedModelRequest::prepare(
-                            self.request_from_context(&base)?, self.stock.limits, self.io,
-                        )?;
-                        let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io).await?;
-                        let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
-                        if policy.needs_compaction(accounting.capacity, tokens)? {
-                            (base, true)
-                        } else {
-                            (crate::context::copy_context(&projection.context, self.io)?, false)
-                        }
-                    },
-                };
+                let (source, pre_stage) = self
+                    .response_compaction_source(journal, turn, &projection, &accounting, policy)
+                    .await?;
                 let stage_messages = projection
                     .context
                     .messages
@@ -351,8 +342,14 @@ impl StockExecution<'_> {
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                self.compact_response(journal, (input, step, prior_messages.len()), projection, accounting, (source, pre_stage))
-                    .await
+                self.compact_response(
+                    journal,
+                    (input, step, prior_messages.len()),
+                    projection,
+                    accounting,
+                    (source, pre_stage),
+                )
+                .await
             }
             _ => Err(stock_boundary(
                 self.io,
@@ -373,8 +370,12 @@ impl StockExecution<'_> {
         let (input, step) = turn;
         let working_changed = retained.working != projection.working;
         if working_changed {
-            let reference = retained.working.as_ref().ok_or_else(|| self.invalid_working_cut())?;
-            self.validate_compacted_working_cut(journal, input, step, reference, proof).await?;
+            let reference = retained
+                .working
+                .as_ref()
+                .ok_or_else(|| self.invalid_working_cut())?;
+            self.validate_compacted_working_cut(journal, input, step, reference, proof)
+                .await?;
         }
         if let Some(checkpoint) = &retained.checkpoint {
             let envelope = retain_preparation(

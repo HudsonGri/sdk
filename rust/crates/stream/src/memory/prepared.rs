@@ -3,6 +3,7 @@ use crate::NativeProviderFuture;
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation,
 };
+use sha2::Digest as _;
 
 struct CapacityReservation {
     counters: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
@@ -294,11 +295,9 @@ impl PreparedCommit {
             self.provider.publish(bytes, || {
                 if conflicts.is_empty() {
                     let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-                    let time = state.last_committed_at_micros.max(
-                        self.provider
-                            .commit_clock
-                            .now_unix_millis()
-                            .saturating_mul(1_000),
+                    let time = crate::preparation::committed_time(
+                        state.last_committed_at_micros,
+                        self.provider.commit_clock.now_unix_millis(),
                     );
                     let id = commit_identity(decision, digest);
                     bind_body(&mut self.plan, body)?;

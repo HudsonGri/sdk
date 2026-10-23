@@ -17,6 +17,7 @@ impl StockExecution<'_> {
             .await;
         }
         self.ensure_started(journal, input).await?;
+        self.begin_working_history().await;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         let mut text = String::new();
@@ -34,6 +35,10 @@ impl StockExecution<'_> {
                     ModelPurpose::Response,
                 )?
                 .await?;
+            // The previous step's tools have settled. Retire before collecting
+            // this step so new invocation indexes address the retained tail,
+            // including when the model's next response is the final answer.
+            self.retire_working_history(&mut prior_messages).await?;
             let (calls, metadata) = self.collect_turn_events(
                 input,
                 step,

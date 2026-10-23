@@ -1,9 +1,61 @@
-//! Mutation facts used by the memory state machine.
+//! Shared mutation facts, identities and conditions for stream backends.
 use crate::AppendRecord;
 use crate::{
-    CommitId, CommitMutation, CommitRequest, CommittedAppend, ForkRequest, Record, StreamError,
-    StreamPath,
+    CommitCondition, CommitConflict, CommitId, CommitMutation, CommitRequest, CommittedAppend,
+    ForkRequest, Record, StreamError, StreamPath,
 };
+use sha2::{Digest, Sha256};
+
+/// Identity belongs to the global durable decision order, never a transient
+/// working set. Both warm and cold planners use the same domain and ordinal.
+pub(crate) fn commit_identity(decision: u64, digest: [u8; 32]) -> CommitId {
+    let mut hash = Sha256::new();
+    hash.update(b"acyclic.stream.commit.v1\0");
+    hash.update(decision.to_le_bytes());
+    hash.update(digest);
+    CommitId::from_bytes(hash.finalize().into())
+}
+
+pub(crate) fn committed_time(previous_micros: u64, sampled_millis: u64) -> u64 {
+    previous_micros.max(sampled_millis.saturating_mul(1_000))
+}
+
+/// Evaluate against the backend's authoritative head. The preceding commit is
+/// loaded lazily, only for a Head condition whose tail already matches.
+pub(crate) fn condition_conflict(
+    condition: &CommitCondition,
+    actual: Option<u64>,
+    preceding: impl FnOnce() -> Result<CommitId, StreamError>,
+) -> Result<Option<CommitConflict>, StreamError> {
+    let path = crate::request::condition_path(condition);
+    Ok(match condition {
+        CommitCondition::Tail { expected, .. } | CommitCondition::Head { expected, .. }
+            if actual != Some(*expected) =>
+        {
+            Some(CommitConflict::Tail {
+                path: path.clone(),
+                expected: *expected,
+                actual,
+            })
+        }
+        CommitCondition::Absent { .. } if actual.is_some() => {
+            Some(CommitConflict::Exists { path: path.clone() })
+        }
+        CommitCondition::Head { commit_id, .. } => {
+            #[cfg(all(acyclic_loom, feature = "local"))]
+            if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
+                return Ok(None);
+            }
+            let actual = preceding()?;
+            (actual != *commit_id).then(|| CommitConflict::Head {
+                path: path.clone(),
+                expected: *commit_id,
+                actual,
+            })
+        }
+        _ => None,
+    })
+}
 
 pub(crate) fn fork_cut(
     request: &ForkRequest,
@@ -81,3 +133,6 @@ pub(crate) fn records(
     }
     Ok(records)
 }
+
+#[cfg(test)]
+mod tests;

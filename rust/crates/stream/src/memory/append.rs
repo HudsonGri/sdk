@@ -60,9 +60,10 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        let time = state
-            .last_committed_at_micros
-            .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+        let time = crate::preparation::committed_time(
+            state.last_committed_at_micros,
+            self.commit_clock.now_unix_millis(),
+        );
         let (records, mut allocation) = self.records(&request.records, start, commit_id, time)?;
         let fact = crate::preparation::append_fact(request.path.clone(), start, records)?;
         let outcome = AppendOutcome::Committed(AppendReceipt {

@@ -18,6 +18,9 @@ impl crate::filesystem::PreparationRecord for ModelPrefix {
 }
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResultContent {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
+    }
     fn diagnostic_label_bytes() -> u64 {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
@@ -36,7 +39,7 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        self.payload_bytes()
+        self.retained_payload_bytes()
     }
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ToolResultContent
@@ -205,11 +208,16 @@ pub(crate) fn clone_file(file: &FileRef, io: Option<&PreparationIo>) -> Result<F
 pub(crate) fn clone_value(value: &Value, io: Option<&PreparationIo>) -> Result<Value> {
     with_history_io(io, |work| {
         let mut quota = CodecQuota::new(work, 0)?;
-        let value = crate::core::copy(value, &mut quota, |value: &serde_json::Value, _| {
-            crate::executor::json::json_value_logical_owned_bytes(value)
-        })?;
+        let value = copy_value(value, &mut quota)?;
         quota.transfer();
         Ok(value)
+    })
+}
+/// The same resident inventory funds every model JSON slot, including sparse
+/// object nodes. Retirement must take the custody that the copy actually owns.
+fn copy_value(value: &Value, quota: &mut CodecQuota<'_, '_>) -> Result<Value> {
+    crate::core::copy(value, quota, |value, _| {
+        crate::executor::json::json_value_retained_owned_bytes(value)
     })
 }
 pub(crate) fn clone_content(
@@ -278,9 +286,7 @@ impl ToolResultContent {
         history_step(quota.work(), 1)?;
         Ok(match self {
             Self::Json { value } => Self::Json {
-                value: crate::core::copy(value, quota, |value: &serde_json::Value, _| {
-                    crate::executor::json::json_value_logical_owned_bytes(value)
-                })?,
+                value: copy_value(value, quota)?,
             },
             Self::Parts { parts } => Self::Parts {
                 parts: copy_vector(parts, quota, |part, quota| {
@@ -327,17 +333,9 @@ impl ModelContentPart {
                 crate::model::ToolCall::new(
                     copy_text(call_id, quota)?,
                     copy_text(name, quota)?,
-                    crate::core::copy(arguments, quota, |value: &serde_json::Value, _| {
-                        crate::executor::json::json_value_logical_owned_bytes(value)
-                    })?,
+                    copy_value(arguments, quota)?,
                 )
-                .with_metadata(crate::core::copy(
-                    metadata,
-                    quota,
-                    |value: &serde_json::Value, _| {
-                        crate::executor::json::json_value_logical_owned_bytes(value)
-                    },
-                )?),
+                .with_metadata(copy_value(metadata, quota)?),
             ),
             Self::ToolResult {
                 call_id,

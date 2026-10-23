@@ -160,12 +160,20 @@ macro_rules! records {
 records!(
     crate::Capabilities => None,
     crate::context::SummarySource => SummarySource,
-    crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
+    crate::executor::ResponseProjection => ResponseProjection,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::fork::InheritedConversationPrefix => None, crate::core::ExtensionConfiguration => None,
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
+impl PreparationRecord for crate::model::ModelEvent {
+    fn json_value_schema() -> &'static Schema {
+        Schema::ModelEvent
+    }
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.retained_owned_bytes().map(Some)
+    }
+}
 impl PreparationRecord for crate::context::Context {
     fn json_value_schema() -> &'static Schema {
         Schema::Context
