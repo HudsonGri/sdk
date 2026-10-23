@@ -94,7 +94,10 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
             })
             .await?,
         );
-        phase(|| acyclic_harness::local::host_files::serve(local)).await?;
+        tokio::select! {
+            result = phase(|| acyclic_harness::local::host_files::serve(local)) => result?,
+            result = workspace_shutdown() => result?,
+        }
         return Ok(0);
     }
     let operation = args
@@ -141,6 +144,22 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
             .await
     };
     Ok(phase(|| connection.finish(outcome)).await?.exit_code())
+}
+
+// Drop the workspace owner while the runtime is still available so its native
+// mounts retire before process exit. The library does not install signal handlers.
+async fn workspace_shutdown() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 #[cfg(test)]
