@@ -39,6 +39,8 @@ An `allow` or `deny` settles the request; `ask` advances to the next stage.
 Exhausting the chain denies the action. Within one rule set, matching `deny`
 wins over `ask`, which wins over `allow`. Omitted or null selectors are
 wildcards; supplied arguments must equal the complete arguments object.
+An explicitly opaque subject exposes no tool metadata: only selector-free rules
+match it, and the configured fallback still applies.
 The policy identity, including stage order, is pinned at task admission and
 inherited by children. Reopening with another policy cannot resume that task.
 

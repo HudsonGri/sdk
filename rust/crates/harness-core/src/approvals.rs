@@ -146,9 +146,34 @@ impl ApprovalRule {
         tool: &str,
         arguments: &Value,
     ) -> RuleVerdict {
+        Self::decide(
+            rules.iter().filter(|rule| rule.matches(tool, arguments)),
+            fallback,
+        )
+    }
+
+    /// Applies selectors without inventing tool metadata for sealed actions.
+    /// Only rules with no selectors match an explicitly opaque subject.
+    pub fn evaluate_subject(
+        rules: &[Self],
+        fallback: RuleVerdict,
+        subject: &crate::interaction::ApprovalSubject,
+    ) -> RuleVerdict {
+        match subject {
+            crate::interaction::ApprovalSubject::Tool {
+                tool, arguments, ..
+            } => Self::evaluate(rules, fallback, tool, arguments),
+            crate::interaction::ApprovalSubject::Opaque {} => Self::decide(
+                rules
+                    .iter()
+                    .filter(|rule| rule.tool.is_none() && rule.arguments.is_none()),
+                fallback,
+            ),
+        }
+    }
+
+    fn decide<'a>(rules: impl Iterator<Item = &'a Self>, fallback: RuleVerdict) -> RuleVerdict {
         rules
-            .iter()
-            .filter(|rule| rule.matches(tool, arguments))
             .map(|rule| rule.verdict)
             .reduce(|left, right| match (left, right) {
                 (RuleVerdict::Deny, _) | (_, RuleVerdict::Deny) => RuleVerdict::Deny,

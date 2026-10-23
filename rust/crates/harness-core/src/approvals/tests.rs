@@ -117,3 +117,39 @@ fn approval_obligation_survives_registry_clone_and_composition() -> Result<()> {
     assert!(Bindings::local().build(None).is_ok());
     Ok(())
 }
+
+#[test]
+fn approval_rules_explicit_wildcards_govern_opaque_subjects() {
+    let opaque = crate::interaction::ApprovalSubject::Opaque {};
+    let selected = ApprovalRule {
+        tool: Some("write".into()),
+        arguments: None,
+        verdict: RuleVerdict::Allow,
+    };
+    for fallback in [RuleVerdict::Allow, RuleVerdict::Deny, RuleVerdict::Ask] {
+        let verdict =
+            ApprovalRule::evaluate_subject(std::slice::from_ref(&selected), fallback, &opaque);
+        let oracle = |actual| actual == fallback;
+        assert!(oracle(verdict));
+        // Negative control restores the unconditional ask for opaque requests.
+        assert_eq!(oracle(RuleVerdict::Ask), fallback == RuleVerdict::Ask);
+    }
+    let wildcard_deny = ApprovalRule {
+        tool: None,
+        arguments: None,
+        verdict: RuleVerdict::Deny,
+    };
+    assert_eq!(
+        ApprovalRule::evaluate_subject(&[selected, wildcard_deny], RuleVerdict::Allow, &opaque),
+        RuleVerdict::Deny
+    );
+    let selected_deny = ApprovalRule {
+        tool: Some("write".into()),
+        arguments: None,
+        verdict: RuleVerdict::Deny,
+    };
+    assert_eq!(
+        ApprovalRule::evaluate_subject(&[selected_deny], RuleVerdict::Allow, &opaque),
+        RuleVerdict::Allow
+    );
+}

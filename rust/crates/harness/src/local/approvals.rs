@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     approvals::{ApprovalReviewFile, Approver, RuleVerdict},
-    interaction::{ApprovalDecisionFile, ApprovalSubject, Interaction},
+    interaction::{ApprovalDecisionFile, Interaction},
     runtime::{TaskStateProvider, ToolPolicy},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile},
 };
@@ -266,14 +266,8 @@ impl LocalHarness {
                 let interaction: Interaction =
                     serde_json::from_slice(&request.bytes).map_err(storage)?;
                 let verdict = match &interaction {
-                    Interaction::Approval {
-                        subject:
-                            ApprovalSubject::Tool {
-                                tool, arguments, ..
-                            },
-                        ..
-                    } => {
-                        crate::approvals::ApprovalRule::evaluate(rules, *fallback, tool, arguments)
+                    Interaction::Approval { subject, .. } => {
+                        crate::approvals::ApprovalRule::evaluate_subject(rules, *fallback, subject)
                     }
                     _ => RuleVerdict::Ask,
                 };
