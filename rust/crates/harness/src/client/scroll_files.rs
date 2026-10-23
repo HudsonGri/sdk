@@ -91,7 +91,10 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
         if next == back {
             return Ok(());
         }
-        value["view_back"] = serde_json::json!(next);
+        value
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("layout must be an object".into()))?
+            .insert("view_back".into(), serde_json::json!(next));
     } else {
         let from = anchor(&value)?;
         let next = motions.into_iter().fold(from, |current, rows| {
@@ -101,8 +104,14 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
             return Ok(());
         }
         if let Some(next) = next {
-            value["transcript_top"] =
-                serde_json::to_value(next).map_err(|error| Error::Invalid(error.to_string()))?;
+            value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("layout must be an object".into()))?
+                .insert(
+                    "transcript_top".into(),
+                    serde_json::to_value(next)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                );
         } else {
             value
                 .as_object_mut()
@@ -122,12 +131,20 @@ pub(super) async fn seek_tui<P: StreamProvider + ?Sized>(
     next: Option<TranscriptAnchor>,
 ) -> Result<()> {
     let mut value = layout(files)?;
-    if modal(&value) || value["open_view"] == "feedback" || anchor(&value)? == next {
+    if modal(&value)
+        || value.get("open_view").and_then(serde_json::Value::as_str) == Some("feedback")
+        || anchor(&value)? == next
+    {
         return Ok(());
     }
     if let Some(next) = next {
-        value["transcript_top"] =
-            serde_json::to_value(next).map_err(|error| Error::Invalid(error.to_string()))?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("layout must be an object".into()))?
+            .insert(
+                "transcript_top".into(),
+                serde_json::to_value(next).map_err(|error| Error::Invalid(error.to_string()))?,
+            );
     } else {
         value
             .as_object_mut()

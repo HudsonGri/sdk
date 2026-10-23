@@ -144,10 +144,8 @@ async fn model<const BROKEN: bool>(motions: usize) {
     assert_eq!(
         crate::client::tui_anchor(&commands)
             .unwrap()
-            .unwrap()
-            .position
-            .line,
-        10000 - motions * 3
+            .map(|anchor| anchor.position.line),
+        Some(10000 - motions * 3)
     );
     // Matching the broad command query is insufficient: another task's UI
     // file is rejected by its fold and must not request a frame either.

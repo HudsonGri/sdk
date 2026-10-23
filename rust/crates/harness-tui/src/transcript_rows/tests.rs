@@ -47,7 +47,8 @@ fn check<const OMIT_TOOLS: bool>(
         answer.join("\n").len() + usize::from(!tools.is_empty())
     };
     for (index, matched) in expected.iter().enumerate() {
-        search.update(rows, query, index as i64, Style::default());
+        let selected_index = i64::try_from(index).unwrap();
+        search.update(rows, query, selected_index, Style::default());
         let expected = if !answer.is_empty() && matched.start <= left.text().len() {
             TranscriptAnchor {
                 part: TranscriptPart::Answer,
@@ -59,8 +60,8 @@ fn check<const OMIT_TOOLS: bool>(
                 position: right.position_of(matched.start - offset),
             }
         };
-        assert_eq!(search.selected_anchor(rows, index as i64), Some(expected));
-        assert_eq!(search.position(index as i64), index + 1);
+        assert_eq!(search.selected_anchor(rows, selected_index), Some(expected));
+        assert_eq!(search.position(selected_index), index + 1);
     }
     search.prepare(rows, 0, rows.len());
     let area = Rect::new(

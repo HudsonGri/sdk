@@ -15,28 +15,13 @@ pub async fn run(
     inline: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let authority = local.client_owner();
-    let mut client = client::TaskFileClient::observe_task(
-        local.task_files().as_ref(),
-        &authority,
-        acyclic_harness::TaskId::parse(&authority.id)?,
-        1024,
-        4 * 1024 * 1024,
-    )
-    .await?;
+    let task = acyclic_harness::TaskId::parse(&authority.id)?;
+    let mut client = observe_task(&local, &authority, task).await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
-    let mut tty = Tty::open()?;
-    // Synchronized output follows the probed modes in the session journal.
-    tty.negotiate(&Environment::capture())?;
-    tty.setup(if inline {
-        ScreenMode::Inline
-    } else {
-        ScreenMode::Alternate
-    })?;
-    let (tty, output) = tty.split();
+    let (tty, mut terminal) = open_terminal(inline)?;
     let terminal_size =
         || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
-    let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; the read presents one frame.
     let mut batch = client::InputBatch::new();
@@ -56,9 +41,7 @@ pub async fn run(
         client
             .follow_task(
                 local.task_files().as_ref(),
-                commands
-                    .active_task()
-                    .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
+                commands.active_task().unwrap_or(task),
             )
             .await?;
         renderer.update_files(&client, &authority);
@@ -134,6 +117,37 @@ pub async fn run(
         .await?;
         prompt_files.save(&mut commands, &mut input).await?;
     }
+}
+
+async fn observe_task(
+    local: &LocalHarness,
+    authority: &acyclic_harness::wire::Authority,
+    task: acyclic_harness::TaskId,
+) -> acyclic_harness::Result<client::TaskFileClient> {
+    client::TaskFileClient::observe_task(
+        local.task_files().as_ref(),
+        authority,
+        task,
+        1024,
+        4 * 1024 * 1024,
+    )
+    .await
+}
+
+fn open_terminal(inline: bool) -> std::io::Result<(Tty, FrameTerminal<tui::term::Output>)> {
+    let mut tty = Tty::open()?;
+    // Synchronized output follows the probed modes in the session journal.
+    tty.negotiate(&Environment::capture())?;
+    tty.setup(if inline {
+        ScreenMode::Inline
+    } else {
+        ScreenMode::Alternate
+    })?;
+    let (tty, output) = tty.split();
+    let terminal_size =
+        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
+    let terminal = FrameTerminal::new(output, terminal_size()?)?;
+    Ok((tty, terminal))
 }
 
 /// The presentation boundary shared by the executable and its file-backed Rig.
