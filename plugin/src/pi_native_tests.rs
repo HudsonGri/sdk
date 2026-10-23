@@ -314,12 +314,12 @@ fn windows_environment_keys_that_differ_only_in_case_are_one_variable() {
             .unwrap()
     );
     let examined = work.receipt().items_examined;
-    // Sorting by the folded key is O(n log n) comparisons of at most 9 bytes each.
+    // One pass examines each key's bytes once plus one comparison per key.
     // Negative control: the pairwise scan it replaces examines n(n-1)/2 pairs.
-    let sorted = KEYS * 9 * 2 * 10;
+    let linear = KEYS * 9 * 2;
     let pairwise = KEYS * (KEYS - 1) / 2 * 9;
     assert!(
-        examined < sorted && sorted < pairwise,
+        examined <= linear && linear < pairwise,
         "{examined} items for {KEYS} keys"
     );
     let mut folded = distinct;
@@ -334,4 +334,43 @@ fn windows_environment_keys_that_differ_only_in_case_are_one_variable() {
         .map(|(key, value)| (key.into(), value.into()))
         .into();
     assert_eq!(runtime(small).validate(&work).is_err(), cfg!(windows));
+}
+
+#[test]
+fn an_unpaid_case_folded_check_is_refused_before_it_folds_any_key() {
+    let root = root_path();
+    let environment: BTreeMap<String, String> = (0..64)
+        .map(|index| (format!("KEY_{index:04}"), "v".into()))
+        .collect();
+    let needed = environment
+        .keys()
+        .map(|key| key.len() as u64 + 1)
+        .sum::<u64>()
+        * 2;
+    let runtime = PiNativeHostRuntime {
+        version: PI_NATIVE_VERSION.into(),
+        executable: root.join("node"),
+        executable_prefix: vec![root.join("pi-cli.js").to_str().unwrap().into()],
+        extension: root.join("acyclic.ts"),
+        provider_extension: None,
+        environment,
+    };
+    let budget = |items_examined| {
+        NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                items_examined,
+                ..super::super::native_root_source::budget()
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap()
+    };
+    let short = budget(needed - 1);
+    assert!(runtime.case_folded_duplicate(&short).is_err());
+    // The refusal charged nothing: no key was folded before the check was admitted.
+    assert_eq!(short.receipt().items_examined, 0);
+    // Negative control: exactly the admitted cost completes the check.
+    let paid = budget(needed);
+    assert!(!runtime.case_folded_duplicate(&paid).unwrap());
+    assert_eq!(paid.receipt().items_examined, needed);
 }

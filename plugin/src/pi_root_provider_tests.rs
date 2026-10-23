@@ -1402,3 +1402,13 @@ async fn created_source_checks_reprove_only_live_state_after_one_full_observatio
             .is_err()
     );
 }
+
+#[test]
+fn a_provider_retains_only_plain_data_of_an_observed_allocation() {
+    assert!(!std::mem::needs_drop::<super::ObservedAllocation>());
+    // Negative control: retaining the allocation itself would keep its key, provider
+    // and generation strings alive outside every ledger.
+    assert!(std::mem::needs_drop::<
+        crate::pi_root_allocation::PiRootAllocation,
+    >());
+}
