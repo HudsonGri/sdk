@@ -463,6 +463,16 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
             self.assertEqual(envA['SCCACHE_DIR'],'/mnt/bb/sccache');self.assertEqual(envA['SCCACHE_IDLE_TIMEOUT'],'120')
         finally:job.stop_server(first);job.stop_server(second)
 
+    def test_cache_exit_during_pidfd_cleanup_is_already_stopped(self):
+        server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock'}
+        with patch.object(job,'identity',return_value='fixture'),patch.object(Path,'read_bytes',return_value=b'SCCACHE_SERVER_UDS=/mnt/bb/jobs/fixture.sock\0'):
+            with patch.object(job.os,'pidfd_open',side_effect=ProcessLookupError):
+                job.stop_server(server) # former unguarded open raised and prevented home cleanup
+            with patch.object(job.os,'pidfd_open',return_value=42),patch.object(job.signal,'pidfd_send_signal',side_effect=ProcessLookupError),patch.object(job.os,'close') as close:
+                job.stop_server(server);close.assert_called_once_with(42)
+            with patch.object(job.os,'pidfd_open',side_effect=PermissionError):
+                with self.assertRaises(PermissionError):job.stop_server(server) # unrelated failures stay visible
+
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()
         env={**os.environ,'SCCACHE_SERVER_PORT':str(port),'SCCACHE_DIR':'/mnt/bb/sccache','SCCACHE_IDLE_TIMEOUT':'30'}

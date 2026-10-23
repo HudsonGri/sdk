@@ -143,9 +143,12 @@ def stop_server(server):
     try: env=Path(f'/proc/{server["pid"]}/environ').read_bytes().split(b'\0')
     except FileNotFoundError: return
     if ('SCCACHE_SERVER_UDS='+server['endpoint']).encode() not in env: return
-    fd=os.pidfd_open(server['pid'])
+    try:fd=os.pidfd_open(server['pid'])
+    except ProcessLookupError:return
     try:
-        if identity(server['pid'])==server['identity']: signal.pidfd_send_signal(fd,signal.SIGTERM)
+        if identity(server['pid'])==server['identity']:
+            try:signal.pidfd_send_signal(fd,signal.SIGTERM)
+            except ProcessLookupError:pass
     finally: os.close(fd)
 
 def start_cache(job,env):
