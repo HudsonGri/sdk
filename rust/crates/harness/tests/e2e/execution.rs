@@ -45,9 +45,14 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         Ok(replay(journal.as_ref(), self.operation)
             .await?
             .into_iter()
-            .map(|event| match event["kind"].as_str() {
-                Some("model") => serde_json::json!({"kind": "model", "event": event["event"]}),
-                _ => serde_json::json!({"kind": event["kind"]}),
+            .map(|event| {
+                let kind = event.get("kind").unwrap_or(&Value::Null);
+                match kind.as_str() {
+                    Some("model") => serde_json::json!({
+                        "kind": "model", "event": event.get("event").unwrap_or(&Value::Null)
+                    }),
+                    _ => serde_json::json!({"kind": kind}),
+                }
             })
             .collect())
     }

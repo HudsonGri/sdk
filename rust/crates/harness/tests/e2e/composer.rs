@@ -156,67 +156,10 @@ impl Composer {
                     .await
             }
         };
-        if self.publish_files {
-            if let Ok(resolution) = &observed {
-                let mut snapshot = BTreeMap::new();
-                for (binding, prefix) in [
-                    (CommandFileRoot::Config, "config"),
-                    (CommandFileRoot::Session, "session"),
-                    (CommandFileRoot::Task, "task"),
-                ] {
-                    let mut files = BTreeMap::new();
-                    for name in [
-                        "settings.json",
-                        "layout.json",
-                        "theme.json",
-                        "attention.json",
-                    ] {
-                        match storage
-                            .read_delegated_path(
-                                storage.owner_scope(),
-                                "",
-                                &format!("{prefix}/{name}"),
-                                None,
-                            )
-                            .await
-                        {
-                            Ok((_, bytes)) => {
-                                files.insert(name.into(), serde_json::from_slice(&bytes)?);
-                            }
-                            Err(acyclic_harness::Error::NotFound(_)) => {}
-                            Err(error) => return Err(error.into()),
-                        }
-                    }
-                    snapshot.insert(binding, files);
-                }
-                let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")?;
-                for change in resolution.file_changes(&snapshot, operation)? {
-                    let prefix = match change.root {
-                        CommandFileRoot::Config => "config",
-                        CommandFileRoot::Session => "session",
-                        CommandFileRoot::Task => "task",
-                    };
-                    let path = format!("{prefix}/{}", change.path);
-                    if change.create_only {
-                        match storage
-                            .read_delegated_path(storage.owner_scope(), "", &path, None)
-                            .await
-                        {
-                            Err(acyclic_harness::Error::NotFound(_)) => {}
-                            _ => return Err("request file must be a new immutable creation".into()),
-                        }
-                    }
-                    storage
-                        .stage(
-                            change.operation,
-                            &path,
-                            &serde_json::to_vec(&change.contents)?,
-                            "application/json",
-                            path.rsplit('/').next().unwrap_or_default(),
-                        )
-                        .await?;
-                }
-            }
+        if self.publish_files
+            && let Ok(resolution) = &observed
+        {
+            publish_resolution(&storage, resolution).await?;
         }
         check_resolution(&self.expect, observed, &storage).await?;
         for (path, expected) in &self.expect.file_values {
@@ -230,6 +173,66 @@ impl Composer {
         }
         execution::check_files(&self.expect.files, &storage).await
     }
+}
+
+async fn publish_resolution(
+    storage: &MemoryHarnessStorage,
+    resolution: &CommandResolution,
+) -> TestResult {
+    let mut snapshot = BTreeMap::new();
+    for (binding, prefix) in [
+        (CommandFileRoot::Config, "config"),
+        (CommandFileRoot::Session, "session"),
+        (CommandFileRoot::Task, "task"),
+    ] {
+        let mut files = BTreeMap::new();
+        for name in [
+            "settings.json",
+            "layout.json",
+            "theme.json",
+            "attention.json",
+        ] {
+            match storage
+                .read_delegated_path(storage.owner_scope(), "", &format!("{prefix}/{name}"), None)
+                .await
+            {
+                Ok((_, bytes)) => {
+                    files.insert(name.into(), serde_json::from_slice(&bytes)?);
+                }
+                Err(acyclic_harness::Error::NotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        snapshot.insert(binding, files);
+    }
+    let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")?;
+    for change in resolution.file_changes(&snapshot, operation)? {
+        let prefix = match change.root {
+            CommandFileRoot::Config => "config",
+            CommandFileRoot::Session => "session",
+            CommandFileRoot::Task => "task",
+        };
+        let path = format!("{prefix}/{}", change.path);
+        if change.create_only {
+            match storage
+                .read_delegated_path(storage.owner_scope(), "", &path, None)
+                .await
+            {
+                Err(acyclic_harness::Error::NotFound(_)) => {}
+                _ => return Err("request file must be a new immutable creation".into()),
+            }
+        }
+        storage
+            .stage(
+                change.operation,
+                &path,
+                &serde_json::to_vec(&change.contents)?,
+                "application/json",
+                path.rsplit('/').next().unwrap_or_default(),
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn check_resolution(
