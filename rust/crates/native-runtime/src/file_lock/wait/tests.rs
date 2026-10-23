@@ -60,6 +60,68 @@ fn quiet_contention_has_no_periodic_lock_probes() {
 }
 
 #[test]
+fn a_contended_lock_leaves_its_original_file_readable() -> io::Result<()> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    for mode in [FileLockMode::Shared, FileLockMode::Exclusive] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("lock-and-data");
+        std::fs::write(&path, b"owned bytes")?;
+        let holder = FileLock::acquire(open(&path), FileLockMode::Exclusive)?;
+        let contender = FileLock::new(open(&path));
+        let budget = Arc::new(crate::tests::ReadBudgetMeter::new(100, 4096));
+        let meter: Arc<dyn NativeReadMeter> = budget.clone();
+        let observed = Arc::clone(&budget);
+        let (waiting, started) = mpsc::channel();
+        let worker = std::thread::spawn(move || -> io::Result<()> {
+            WAITING.with(|slot| *slot.borrow_mut() = Some(waiting));
+            let began = Instant::now();
+            contender.lock_until(mode, began + Duration::from_secs(2), None, Some(&meter))?;
+            let mut bytes = Vec::new();
+            let read = (&*contender).read_to_end(&mut bytes);
+            let write = if mode == FileLockMode::Exclusive && read.is_ok() {
+                let mut file = &*contender;
+                file.rewind()?;
+                file.write_all(b"saved bytes")
+            } else {
+                Ok(())
+            };
+            assert_eq!(
+                FileLock::try_acquire(open(&path), FileLockMode::Exclusive)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            contender.unlock()?;
+            eprintln!(
+                "LOCK_ORIGINAL mode={mode:?} read_ok={} elapsed_us={} reads={}",
+                read.is_ok(),
+                began.elapsed().as_micros(),
+                observed.read_attempts.load(Ordering::Acquire)
+            );
+            assert!(
+                read.is_ok(),
+                "a completed kernel lock must leave its original file readable: {read:?}"
+            );
+            assert!(
+                write.is_ok(),
+                "an exclusive lock must retain original write access: {write:?}"
+            );
+            assert_eq!(bytes, b"owned bytes");
+            Ok(())
+        });
+        started
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(io::Error::other)?;
+        holder.unlock()?;
+        worker
+            .join()
+            .map_err(|_| io::Error::other("original file lock access failed"))??;
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn cancellation_and_timeout_leave_no_accepted_acquisition() {
     for cancel in [false, true] {
         for mode in [FileLockMode::Shared, FileLockMode::Exclusive] {

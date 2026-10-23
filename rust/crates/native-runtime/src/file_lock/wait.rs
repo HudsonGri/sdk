@@ -141,21 +141,13 @@ pub(super) fn acquire(
     deadline: Instant,
     cancellation: Option<&FileLockCancellation>,
     meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> io::Result<RetainedLock> {
+) -> io::Result<()> {
     match try_file(file, mode, meter) {
-        Ok(()) => return Ok(RetainedLock::Original),
+        Ok(()) => return Ok(()),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
         Err(error) => return Err(error),
     }
-    #[cfg(unix)]
-    {
-        platform::acquire(file, mode, deadline, cancellation, meter)
-            .map(|()| RetainedLock::Original)
-    }
-    #[cfg(windows)]
-    {
-        platform::acquire(file, mode, deadline, cancellation, meter).map(RetainedLock::Overlapped)
-    }
+    platform::acquire(file, mode, deadline, cancellation, meter)
 }
 
 fn try_file(
@@ -186,50 +178,13 @@ fn try_file(
     }
 }
 
-pub(super) enum RetainedLock {
-    Original,
-    #[cfg(windows)]
-    Overlapped(windows::Held),
-}
-
-impl RetainedLock {
-    #[cfg(windows)]
-    pub(super) fn accept(self) -> Self {
-        match self {
-            Self::Original => Self::Original,
-            #[cfg(windows)]
-            Self::Overlapped(mut held) => {
-                // The caller already reserved its eventual held-lock release;
-                // retire admission-only rollback credit without double-counting it.
-                held.accept();
-                Self::Overlapped(held)
-            }
+pub(super) fn release_cancelled(original: &File, rollback: &mut Option<Credit>) -> io::Result<()> {
+    match rollback.as_mut() {
+        Some(credit) => {
+            let (result, recorded) = credit.attempt(|| original.unlock());
+            result.and(recorded)
         }
-    }
-    pub(super) fn release_cancelled(
-        self,
-        original: &File,
-        rollback: &mut Option<Credit>,
-    ) -> io::Result<()> {
-        match self {
-            Self::Original => match rollback.as_mut() {
-                Some(credit) => {
-                    let (result, recorded) = credit.attempt(|| original.unlock());
-                    result.and(recorded)
-                }
-                None => original.unlock(),
-            },
-            #[cfg(windows)]
-            Self::Overlapped(mut held) => held.release(),
-        }
-    }
-    #[cfg(windows)]
-    pub(super) fn release(self, original: &File) -> io::Result<()> {
-        match self {
-            Self::Original => original.unlock(),
-            #[cfg(windows)]
-            Self::Overlapped(mut held) => held.release(),
-        }
+        None => original.unlock(),
     }
 }
 

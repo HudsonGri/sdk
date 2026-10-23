@@ -70,17 +70,14 @@ impl Signal {
     }
 }
 
-pub(in crate::file_lock) struct Held {
+struct Held {
     handle: Handle,
     unlock: Option<Credit>,
     locked: bool,
 }
 
 impl Held {
-    pub(super) fn accept(&mut self) {
-        self.unlock.take();
-    }
-    pub(super) fn release(&mut self) -> io::Result<()> {
+    fn release(&mut self) -> io::Result<()> {
         if !std::mem::take(&mut self.locked) {
             return Ok(());
         }
@@ -184,6 +181,31 @@ impl Drop for Pending {
 }
 
 pub(super) fn acquire(
+    file: &File,
+    mode: FileLockMode,
+    deadline: Instant,
+    cancellation: Option<&FileLockCancellation>,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<()> {
+    loop {
+        check(deadline, cancellation, meter)?;
+        let mut ready = acquire_notification(file, mode, deadline, cancellation, meter)?;
+        // The overlapped description supplies readiness. Release it before
+        // acquiring through the original description used for caller I/O.
+        ready.release()?;
+        drop(ready);
+        check(deadline, cancellation, meter)?;
+        match try_file(file, mode, meter) {
+            Ok(()) => return Ok(()),
+            // Another real contender won the handoff. Wait for its release
+            // in the kernel under the same deadline and original ledger.
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn acquire_notification(
     file: &File,
     mode: FileLockMode,
     deadline: Instant,

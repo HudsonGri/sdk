@@ -43,8 +43,6 @@ pub struct FileLock {
 
 struct HeldLock {
     active: bool,
-    #[cfg(windows)]
-    retained: Option<wait::RetainedLock>,
 }
 
 impl FileLock {
@@ -53,11 +51,7 @@ impl FileLock {
     pub const fn new(file: File) -> Self {
         Self {
             file,
-            held: Mutex::new(HeldLock {
-                active: false,
-                #[cfg(windows)]
-                retained: None,
-            }),
+            held: Mutex::new(HeldLock { active: false }),
         }
     }
 
@@ -148,18 +142,14 @@ impl FileLock {
         Self::ensure_unheld(held.active)?;
         wait::check(deadline, cancellation, meter)?;
         let mut rollback = wait::rollback_credit(meter)?;
-        let retained = wait::acquire(&self.file, mode, deadline, cancellation, meter)?;
+        wait::acquire(&self.file, mode, deadline, cancellation, meter)?;
         held.active = true;
         // A cancellation racing the successful kernel completion must release
         // the acquired description before returning that original failure.
         if let Err(error) = wait::check(deadline, cancellation, meter) {
             held.active = false;
-            let _ = retained.release_cancelled(&self.file, &mut rollback);
+            let _ = wait::release_cancelled(&self.file, &mut rollback);
             return Err(error);
-        }
-        #[cfg(windows)]
-        {
-            held.retained = Some(retained.accept());
         }
         Ok(())
     }
@@ -203,10 +193,6 @@ impl FileLock {
             return Ok(());
         }
         held.active = false;
-        #[cfg(windows)]
-        if let Some(retained) = held.retained.take() {
-            return retained.release(&self.file);
-        }
         self.file.unlock()
     }
 
