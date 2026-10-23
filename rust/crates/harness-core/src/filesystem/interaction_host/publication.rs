@@ -144,6 +144,8 @@ where
         key[..32].copy_from_slice(&digest);
         key[32..].copy_from_slice(b"interaction-lock");
         let claims = self.stream.operation_claims();
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("interaction-writer-attempt", 1_u64));
         let writer = loop {
             if let Some(writer) = claims.claim(
                 key,

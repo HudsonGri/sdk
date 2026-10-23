@@ -283,9 +283,96 @@ fn approval_settlement_reconstructs_once_for_every_entry_point() -> Result<()> {
     Ok(())
 }
 
+async fn publish_writer_entry_point(
+    second: &Journal,
+    entry: usize,
+    id: InteractionId,
+    request: &Interaction,
+    human: &Scope,
+    file: Option<&FileValue>,
+) -> Result<()> {
+    use crate::runtime::InteractionResolver as _;
+    let host = second.interactions()?;
+    match entry {
+        0 => {
+            second
+                .write_approval_decision(
+                    file.ok_or_else(|| {
+                        Error::Invalid("writer fixture has no decision file".into())
+                    })?,
+                    human,
+                )
+                .await
+        }
+        1 => host
+            .resolve_approval(
+                OperationId::from_bytes([89; 16]),
+                human.copy(&mut None)?,
+                id,
+                1,
+                false,
+                None,
+            )
+            .await
+            .map(|_| ()),
+        2 => {
+            host.resolve_latest(
+                id,
+                InteractionResponse::Approval {
+                    approved: false,
+                    reason: None,
+                },
+                human,
+                None,
+            )
+            .await
+        }
+        _ => second.open_interaction(id, request, None)?.await,
+    }
+}
+
+async fn observe_writer_attempt<F: std::future::Future<Output = Result<()>>>(
+    mut publish: std::pin::Pin<&mut F>,
+    entry: usize,
+    released_cut: bool,
+) -> std::task::Poll<Result<()>> {
+    futures::future::poll_fn(|context| {
+        let (polled, trace) = differential::observe::<_, _, differential::Operation>(
+            || (),
+            |()| std::future::Future::poll(publish.as_mut(), context),
+        );
+        let count = |name| {
+            trace
+                .iter()
+                .filter(|(kind, _)| *kind == name)
+                .map(|(_, count)| count)
+                .sum::<u64>()
+        };
+        if count("interaction-writer-attempt") == 0 {
+            assert!(
+                polled.is_pending(),
+                "entry point bypassed transaction: entry={entry}"
+            );
+            return std::task::Poll::Pending;
+        }
+        assert_eq!(
+            count("interaction-writer-acquired"),
+            u64::from(released_cut),
+            "entry={entry}"
+        );
+        if !released_cut {
+            assert!(
+                polled.is_pending(),
+                "writer bypassed custody: entry={entry}"
+            );
+        }
+        std::task::Poll::Ready(polled)
+    })
+    .await
+}
+
 #[tokio::test]
 async fn approval_writers_share_one_claim_across_composed_hosts_and_entry_points() -> Result<()> {
-    use crate::runtime::InteractionResolver as _;
     for entry in 0..4 {
         for released_cut in [false, true] {
             let initialized = initialized("writer custody", None).await?;
@@ -335,61 +422,12 @@ async fn approval_writers_share_one_claim_across_composed_hosts_and_entry_points
             } else {
                 Some(first.interactions()?.transaction(None).await?)
             };
-            let publish = async {
-                match entry {
-                    0 => {
-                        second
-                            .write_approval_decision(file.as_ref().unwrap(), &human)
-                            .await
-                    }
-                    1 => host
-                        .resolve_approval(
-                            OperationId::from_bytes([89; 16]),
-                            human.copy(&mut None)?,
-                            id,
-                            1,
-                            false,
-                            None,
-                        )
-                        .await
-                        .map(|_| ()),
-                    2 => {
-                        host.resolve_latest(
-                            id,
-                            InteractionResponse::Approval {
-                                approved: false,
-                                reason: None,
-                            },
-                            &human,
-                            None,
-                        )
-                        .await
-                    }
-                    _ => second.open_interaction(id, &request, None)?.await,
-                }
-            };
+            let publish =
+                publish_writer_entry_point(&second, entry, id, &request, &human, file.as_ref());
             tokio::pin!(publish);
-            let (polled, trace) = differential::observe::<_, _, differential::Operation>(
-                || (),
-                |()| {
-                    std::future::Future::poll(
-                        publish.as_mut(),
-                        &mut std::task::Context::from_waker(futures::task::noop_waker_ref()),
-                    )
-                },
-            );
-            let acquired: u64 = trace
-                .iter()
-                .filter(|(kind, _)| *kind == "interaction-writer-acquired")
-                .map(|(_, count)| count)
-                .sum();
-            assert_eq!(acquired, u64::from(released_cut), "entry={entry}");
-            if !released_cut {
-                assert!(
-                    polled.is_pending(),
-                    "writer bypassed custody: entry={entry}"
-                );
-            }
+            // Drive cooperative yields until this path actually attempts the
+            // writer claim. Pending before that point says nothing about custody.
+            let polled = observe_writer_attempt(publish.as_mut(), entry, released_cut).await;
             drop(transaction);
             match polled {
                 std::task::Poll::Ready(result) => result?,
