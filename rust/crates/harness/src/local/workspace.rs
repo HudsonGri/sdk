@@ -59,6 +59,11 @@ pub struct LocalWorkspace {
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
+    /// Child task views, indexed apart from `state` so a child never waits on
+    /// this owner's running command.
+    pub(super) children: StateArc<
+        super::checkout_tools::child_views::ChildViews<super::checkout_tools::CheckoutTools>,
+    >,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
@@ -400,6 +405,7 @@ pub(super) async fn open(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
         state,
+        children: StateArc::new(Default::default()),
         context_line,
         mounts,
         processes,

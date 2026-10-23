@@ -24,6 +24,17 @@ mod results;
 mod stopping;
 
 impl LocalHarness {
+    // A settled child holds no native view. Its published status is durable,
+    // so a refused retirement keeps the view for the next settlement instead
+    // of failing the turn that already settled.
+    async fn retire_child_view(&self, child: TaskId) {
+        if let Some(workspace) = &self.workspace
+            && let Err(error) = workspace.settle_child(child).await
+        {
+            tracing::warn!(?error, ?child, "settled child view retirement deferred");
+        }
+    }
+
     pub(super) fn service_child<'a>(
         &'a self,
         files: Arc<Files>,
@@ -166,6 +177,7 @@ impl LocalHarness {
                     )
                     .await?
                     {
+                        self.retire_child_view(child).await;
                         return Ok((reference, generation.position));
                     }
                     continue;
@@ -269,6 +281,7 @@ impl LocalHarness {
                     )
                     .await?
                     {
+                        self.retire_child_view(child).await;
                         return Ok((reference, generation.position));
                     }
                     continue;
@@ -426,6 +439,7 @@ impl LocalHarness {
                 )
                 .await?
                 {
+                    self.retire_child_view(child).await;
                     return Ok((reference, generation.position));
                 }
             }
