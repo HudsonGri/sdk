@@ -8,8 +8,9 @@ async fn small_directory_move_with_unrelated_paths_preserves_boundary_budget()
     let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     unbounded!(seed, create_dir_all("/src"))?;
     seed.write_text("/src/file", "retained").await?;
+    unbounded!(seed, create_dir_all("/unrelated"))?;
     for index in 0..2048 {
-        seed.write_text(&format!("/unrelated-{index:04}"), "unrelated")
+        seed.write_text(&format!("/unrelated/file-{index:04}"), "unrelated")
             .await?;
     }
     let TransactionCommit::Committed(base) = commit(&mut seed).await? else {

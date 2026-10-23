@@ -165,13 +165,24 @@ async fn root_metadata_does_not_interrupt_file_diffs_or_replay() -> TestResult {
     view.apply(&snapshot, fixture.reader.as_ref(), LIMITS)
         .await?;
     let mut transaction = begin(&workspace).await?;
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Exact(base.id()),
+            acyclic_fs::model::CheckoutMode::read_only_pinned(),
+            BOUNDARY_BUDGET,
+            &cancel,
+        )
+        .await?
+        .value;
+    let mut root_metadata = checkout
+        .read_metadata("/", BOUNDARY_BUDGET, &cancel)
+        .await?
+        .value;
+    root_metadata.modified_ns = acyclic_fs::kernel::MetadataField::Value(1_700_000_000_000_000_000);
     transaction
         .set_metadata(
             "/",
-            acyclic_fs::kernel::FileMetadata {
-                modified_ns: acyclic_fs::kernel::MetadataField::Value(1_700_000_000_000_000_000),
-                ..Default::default()
-            },
+            root_metadata,
             BOUNDARY_BUDGET,
             &cancel,
         )

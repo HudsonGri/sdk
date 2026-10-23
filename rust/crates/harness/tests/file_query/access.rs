@@ -32,12 +32,17 @@ async fn retained_diff_snapshots_and_follow_recheck_disclosure_policy()
         let snapshot = fixture.source.observe_diff(base.id(), 16).await;
         let publication = changes.next().await.ok_or("missing diff publication")?;
         if revoke {
-            assert!(matches!(
-                snapshot,
-                Err(acyclic_harness::Error::FilesystemAccessConfiguration(
-                    "file query"
-                ))
-            ));
+            assert!(
+                matches!(
+                    &snapshot,
+                    Err(acyclic_harness::Error::TaskFiles(error))
+                        if matches!(error.as_ref(), task_volume::Error::FileRead(
+                            acyclic_harness::Error::FilesystemAccessConfiguration("file query")
+                        ))
+                ),
+                "{:?}",
+                snapshot.err()
+            );
             assert!(matches!(
                 publication,
                 Err(acyclic_harness::Error::FilesystemAccessConfiguration(
