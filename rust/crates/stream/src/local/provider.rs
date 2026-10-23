@@ -24,7 +24,6 @@ impl StreamProvider for LocalStream {
                 ..stream
             };
             let result = async {
-                work.reserve_durability(1)?;
                 stream.seal_accepted().await?;
                 Ok(((), None))
             }

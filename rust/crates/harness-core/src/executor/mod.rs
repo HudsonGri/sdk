@@ -51,6 +51,7 @@ mod composition;
 mod content;
 mod dispatch;
 mod model_observation;
+pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
 pub(crate) use model_observation::load as load_model_event;

@@ -357,6 +357,12 @@ impl LocalStream {
         self.check_available()?;
         let target = {
             let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
+            if journal.synced >= journal.appended {
+                return Ok(());
+            }
+            if let Some(work) = &self.work {
+                work.reserve_durability(1)?;
+            }
             journal.required = journal.appended;
             journal.appended
         };

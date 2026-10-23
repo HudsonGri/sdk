@@ -92,10 +92,9 @@ pub(crate) async fn load(
                     "inline model observation exceeds journal capability",
                 ));
             }
-            Some(retain_preparation(decode_json::<ModelEvent>(
-                event.as_bytes(),
-                io,
-            )?)?)
+            Some(retain_preparation(super::payload::decode_json::<
+                ModelEvent,
+            >(event.as_bytes(), io)?)?)
         }
         _ => None,
     })

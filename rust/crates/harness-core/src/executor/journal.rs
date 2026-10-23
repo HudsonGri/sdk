@@ -52,6 +52,23 @@ impl ExecutionRecordQuery<'_> {
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// All stores touched by a write phase can seal their accepted prefixes.
+    fn supports_deferred_durability(&self) -> bool {
+        false
+    }
+
+    /// Makes the phase durable before a dependent model or tool is dispatched.
+    fn durability_barrier<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no phase durability barrier",
+        ))
+    }
+
     /// Maximum canonical model-event bytes accepted inline; zero uses files.
     /// Inline payloads must retain the journal's original private-volume grants.
     fn inline_model_event_bytes(&self) -> u64 {

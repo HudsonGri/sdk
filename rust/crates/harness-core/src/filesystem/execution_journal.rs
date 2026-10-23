@@ -41,6 +41,9 @@ mod checkpoint_maps;
 mod chunks;
 mod configuration;
 mod content;
+mod durability;
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod durability_tests;
 mod indexed_publication;
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod inline_tests;

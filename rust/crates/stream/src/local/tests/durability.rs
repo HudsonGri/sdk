@@ -54,6 +54,14 @@ async fn native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_co
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let meter = Arc::new(Meter::local());
     let path = StreamPath::new("native-phase")?;
+    meter.deny_durability.store(true, Ordering::SeqCst);
+    drop(
+        provider
+            .native_durability_barrier(meter.original())
+            .await??,
+    );
+    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+    meter.deny_durability.store(false, Ordering::SeqCst);
     deferring_durability(async {
         let output = provider
             .native_append(keyed_append("native-phase", 0)?, meter.original())

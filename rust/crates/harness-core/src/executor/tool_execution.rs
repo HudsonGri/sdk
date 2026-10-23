@@ -452,16 +452,19 @@ impl StockExecution<'_> {
     ) -> Result<ToolInvocationOutcome> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        let claimed = self
-            .claim_tool_invocation(
-                journal,
-                (operation_id, step),
-                &record,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                context,
-                started,
-            )
-            .await?;
+        let claim = self.claim_tool_invocation(
+            journal,
+            (operation_id, step),
+            &record,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            context,
+            started,
+        );
+        let claimed = if started {
+            claim.await?
+        } else {
+            super::phase::run(journal, self.io, claim).await?
+        };
         let execution = if claimed {
             stock_tool_call(
                 context,
@@ -749,6 +752,22 @@ impl StockExecution<'_> {
     }
 
     async fn publish_tool_completion(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        call_id: &str,
+        result: &ToolResult,
+        projection: &Value,
+    ) -> Result<ToolSettlement<()>> {
+        super::phase::run(
+            journal,
+            self.io,
+            self.publish_tool_completion_inner(journal, identity, call_id, result, projection),
+        )
+        .await
+    }
+
+    async fn publish_tool_completion_inner(
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),

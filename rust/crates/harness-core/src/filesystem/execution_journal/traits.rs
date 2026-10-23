@@ -22,6 +22,17 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn supports_deferred_durability(&self) -> bool {
+        self.can_defer_durability()
+    }
+
+    fn durability_barrier<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.seal_phase(io))
+    }
+
     fn inline_model_event_bytes(&self) -> u64 {
         self.maximum_payload_bytes.min(512)
     }
