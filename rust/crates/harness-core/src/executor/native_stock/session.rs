@@ -6,7 +6,8 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
-    pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
+    pub(in crate::executor) summary: Option<(&'a ContextPipeline, Option<u32>)>,
+    pub(in crate::executor) selected_model: Option<&'a Model>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
 }
@@ -30,8 +31,50 @@ impl<'a> StockExecution<'a> {
             interactions: None,
             io: None,
             summary: None,
+            selected_model: None,
             compaction: once_cell::sync::OnceCell::new(),
         }
+    }
+    pub(in crate::executor) fn model(&self) -> &Model {
+        self.selected_model.unwrap_or(&self.stock.model)
+    }
+
+    pub(in crate::executor) fn for_model<'b>(&'b self, model: &'b Model) -> StockExecution<'b> {
+        StockExecution {
+            stock: self.stock,
+            context: self.context,
+            io: self.io,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            interactions: self.interactions,
+            summary: self.summary,
+            selected_model: Some(model),
+            compaction: once_cell::sync::OnceCell::new(),
+        }
+    }
+
+    pub(in crate::executor) fn selected_for_turn(
+        &self,
+        input: &TurnInput,
+        step: u32,
+    ) -> Result<&Model> {
+        if let Some(model) = self.selected_model {
+            return Ok(model);
+        }
+        self.stock.provider.model_for_turn(
+            &self.stock.model,
+            crate::model::ModelTurn {
+                operation_id: input.operation_id,
+                ordinal: u64::from(step),
+                role: self.stock.role.as_deref().unwrap_or("root"),
+            },
+            self.native_work(),
+        )
+    }
+
+    pub(in crate::executor) fn recorded_model(&self, recorded: &Model) -> Result<&Model> {
+        self.stock
+            .provider
+            .recorded_model(&self.stock.model, recorded, self.native_work())
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
         #[cfg(feature = "filesystem")]

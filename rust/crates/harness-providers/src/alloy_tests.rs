@@ -29,12 +29,17 @@ impl HttpTransport for Routing {
                 .split('/')
                 .nth(3)
                 .ok_or_else(|| invalid("fixture route"))?;
-            let fixtures: serde_json::Value =
-                serde_json::from_str(include_str!("fixtures/alloy-turns.json")).unwrap();
-            let body = fixtures[name]
-                .as_str()
-                .ok_or_else(|| invalid("fixture route"))?
-                .to_owned();
+            let body = if request.url.ends_with("/count") {
+                let tokens = if name == "responses" { 512 } else { 128 };
+                json!({"input_tokens":tokens}).to_string()
+            } else {
+                let fixtures: serde_json::Value =
+                    serde_json::from_str(include_str!("fixtures/alloy-turns.json")).unwrap();
+                fixtures[name]
+                    .as_str()
+                    .ok_or_else(|| invalid("fixture route"))?
+                    .to_owned()
+            };
             self.sent.lock().unwrap().push(request);
             Ok(HttpResponse {
                 retry_after: None,
@@ -109,6 +114,76 @@ fn required() -> ModelFeatures {
         tools: true,
         images: true,
     }
+}
+
+#[tokio::test]
+async fn alloy_preflight_counts_every_member_and_binds_the_maximum_to_the_policy() -> Result<()> {
+    let (registry, transport) = registry(&[8192, 4096, 16384, 32768]);
+    let alloy = registry.resolve_alloy(spec(AlloySelection::First), required())?;
+    let limits = Limits::default();
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: alloy.model().clone(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("preflight".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(64),
+        },
+        limits,
+        None,
+    )?;
+    let count = alloy.count_policy_tokens(&request, limits).await?;
+    assert_eq!(count.validate(&request, &mut None)?, 512);
+    let requests = transport.sent.lock().unwrap();
+    assert_eq!(requests.len(), MEMBERS.len());
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.ends_with("/count"))
+    );
+    Ok(())
+}
+
+#[test]
+fn named_alloy_catalog_is_admitted_atomically_with_its_default() {
+    let (mut registry, _) = registry(&[8192, 4096, 16384, 32768]);
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("catalog.json");
+    let write = |document: serde_json::Value| {
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    };
+    write(serde_json::json!({
+        "alloys": {"mixed": spec(AlloySelection::RoundRobin)},
+        "default_model": "mixed"
+    }));
+    registry.load_catalog(&path).unwrap();
+    assert_eq!(registry.default_model(), "mixed");
+    write(serde_json::json!({
+        "alloys": {"mixed": {"models": ["absent/model"], "select": "first"}},
+        "default_model": "mixed"
+    }));
+    assert!(registry.load_catalog(&path).is_err());
+    assert_eq!(registry.default_model(), "mixed");
+    assert_eq!(registry.alloys()["mixed"], spec(AlloySelection::RoundRobin));
+    let mut provider = registry.catalog()["anthropic"].as_ref().clone();
+    provider.models.clear();
+    assert!(registry.register("anthropic".into(), provider).is_err());
+    assert!(
+        registry.catalog()["anthropic"]
+            .models
+            .contains_key("fixture")
+    );
+    std::fs::write(&path, br#"{"alloys":{"mixed":{"models":["anthropic/fixture"],"select":"first"},"mixed":{"models":["responses/fixture"],"select":"first"}}}"#).unwrap();
+    assert!(
+        registry
+            .load_catalog(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate alloy name")
+    );
+    assert_eq!(registry.alloys()["mixed"], spec(AlloySelection::RoundRobin));
 }
 
 #[test]
@@ -299,8 +374,23 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         content: ModelContent::Text("work".into()),
     }];
     let mut ids = std::collections::BTreeSet::new();
+    let mut usage = serde_json::Value::Null;
     for ordinal in 0..5 {
-        let provider = alloy.select(turn(ordinal));
+        let key = turn(ordinal);
+        let selected = alloy.model_for_turn(
+            alloy.model(),
+            acyclic_harness_core::model::ModelTurn {
+                operation_id: key.operation_id,
+                ordinal,
+                role: key.role,
+            },
+            None,
+        )?;
+        assert_eq!(
+            alloy.recorded_model(alloy.model(), selected, None)?,
+            selected
+        );
+        let provider = alloy.select(key);
         assert_eq!(provider.model().provider, MEMBERS[(ordinal % 4) as usize].0);
         let request = ModelRequest {
             model: provider.model().clone(),
@@ -349,7 +439,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             step: ordinal as u32,
             request_digest: prepared.request_digest(),
         };
-        let events = provider
+        let events = alloy
             .generate(prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
@@ -389,6 +479,13 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
                     });
                     ModelContentPart::ToolCall(call)
                 }
+                ModelEvent::Completed { metadata } => {
+                    let member = format!("{}/{}", selected.provider, selected.name);
+                    assert_eq!(metadata["member"], member);
+                    assert!(metadata["members"].get(&member).is_some());
+                    acyclic_harness_core::model::accumulate_usage(&mut usage, metadata)?;
+                    continue;
+                }
                 _ => continue,
             };
             history.push(ModelMessage {
@@ -405,6 +502,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         });
     }
     assert_eq!(transport.sent.lock().unwrap().len(), 5);
+    assert_eq!(usage["members"].as_object().unwrap().len(), 4);
     Ok(())
 }
 

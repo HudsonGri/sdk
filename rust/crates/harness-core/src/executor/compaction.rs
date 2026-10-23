@@ -139,6 +139,7 @@ impl StockExecution<'_> {
             (compacted, request)
         };
         let compacted = ResponseProjection {
+            model: projection.model,
             context: compacted,
             canonical: projection.canonical,
             checkpoint,

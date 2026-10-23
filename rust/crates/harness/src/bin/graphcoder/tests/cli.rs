@@ -1,4 +1,5 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod alloys;
 mod catalog_compaction;
 mod goal_review;
 mod input_review;
@@ -76,7 +77,7 @@ async fn execute_with(
         Vec::new()
     };
     input.write_all(&request).unwrap();
-    let mut command = Command::new(build_metadata::EXECUTABLE);
+    let mut command = Command::new(build_metadata::executable());
     command
         .env("CODEX_HOME", settings.join("codex-home"))
         .env("HOME", settings)
@@ -477,7 +478,7 @@ fn catalog_parse_error_reports_field_and_line_through_binary() {
         "{\n  \"broken\": {\n    \"adapter\": 42\n  }\n}\n",
     )
     .unwrap();
-    let output = Command::new(build_metadata::EXECUTABLE)
+    let output = Command::new(build_metadata::executable())
         .env("CODEX_HOME", fixture.path())
         .env("XDG_DATA_HOME", fixture.path())
         .env_remove("GRAPHCODER_MODEL")
@@ -501,7 +502,7 @@ fn catalog_missing_file_and_unknown_model_fail_through_binary() {
         if let Some(document) = document {
             std::fs::write(&catalog, document).unwrap();
         }
-        let output = Command::new(build_metadata::EXECUTABLE)
+        let output = Command::new(build_metadata::executable())
             .env("CODEX_HOME", fixture.path())
             .env("XDG_DATA_HOME", fixture.path())
             .env_remove("GRAPHCODER_MODEL")
@@ -557,6 +558,26 @@ mod build_metadata {
         reason = "Cargo-provided executable metadata for this integration crate"
     )]
     pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
+
+    pub(super) fn executable() -> std::path::PathBuf {
+        if std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
+            // win-test exports the normal Cargo JSON executable beside the test.
+            // Its original Linux build path is not a Windows runtime fixture.
+            let path = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(format!("graphcoder{}", std::env::consts::EXE_SUFFIX));
+            assert!(
+                path.is_file(),
+                "missing exported GraphCoder executable: {}",
+                path.display()
+            );
+            path
+        } else {
+            EXECUTABLE.into()
+        }
+    }
 }
 
 // A process killed during a tool effect leaves the workspace usable by the next prompt.
@@ -580,7 +601,7 @@ fn graphcoder(
     operation: OperationId,
     prompt: Option<&str>,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    let mut command = Command::new(build_metadata::executable());
     command
         .current_dir(workspace)
         .arg("--workspace")
@@ -608,27 +629,54 @@ async fn run(
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     tokio::task::spawn_blocking(move || {
         let mut child = command.spawn().unwrap();
-        if let Some(effect) = kill_when {
-            while child.try_wait().unwrap().is_none() {
-                if effect.exists() {
-                    #[cfg(unix)]
-                    Command::new("kill")
-                        .args(["-KILL", "--", &format!("-{}", child.id())])
-                        .status()
-                        .unwrap();
-                    #[cfg(not(unix))]
-                    child.kill().unwrap();
-                    let output = child.wait_with_output().unwrap();
-                    return Err(format!(
-                        "killed\nstdout: {}\nstderr: {}",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    ));
+        std::thread::scope(|scope| {
+            use std::io::Read as _;
+            // The kill point may follow a full JSONL snapshot. Drain both pipes
+            // while waiting so pipe capacity cannot prevent reaching that point.
+            let mut stdout = child.stdout.take().unwrap();
+            let out = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes).unwrap();
+                bytes
+            });
+            let mut stderr = child.stderr.take().unwrap();
+            let err = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).unwrap();
+                bytes
+            });
+            let mut killed = false;
+            if let Some(effect) = kill_when {
+                while child.try_wait().unwrap().is_none() {
+                    if effect.exists() {
+                        #[cfg(unix)]
+                        Command::new("kill")
+                            .args(["-KILL", "--", &format!("-{}", child.id())])
+                            .status()
+                            .unwrap();
+                        #[cfg(not(unix))]
+                        child.kill().unwrap();
+                        killed = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                std::thread::sleep(Duration::from_millis(5));
             }
-        }
-        Ok(child.wait_with_output().unwrap())
+            let output = std::process::Output {
+                status: child.wait().unwrap(),
+                stdout: out.join().unwrap(),
+                stderr: err.join().unwrap(),
+            };
+            if killed {
+                Err(format!(
+                    "killed\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+            } else {
+                Ok(output)
+            }
+        })
     })
     .await
     .unwrap()

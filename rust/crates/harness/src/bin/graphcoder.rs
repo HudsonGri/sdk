@@ -67,15 +67,31 @@ async fn open(
     if args.settings_root.is_some() {
         settings = settings.codex_home(home.join(".codex"));
     }
+    let models = settings.configured_models(|name| registry.alloys().contains_key(name))?;
+    let alloys = models
+        .alloys
+        .into_iter()
+        .map(|(name, spec)| serde_json::from_value(spec).map(|spec| (name, spec)))
+        .collect::<Result<_, _>>()?;
+    registry.register_alloys(alloys)?;
     let selection = match &args.model {
         Some(selection) => selection.clone(),
-        None => settings
-            .configured_model()?
+        None => models
+            .selection
             .unwrap_or_else(|| registry.default_model().into()),
     };
-    let provider = Arc::new(registry.resolve(&selection)?);
+    let provider = Arc::new(registry.resolve_selection(
+        &selection,
+        acyclic_harness_providers::ModelFeatures {
+            tools: true,
+            images: false,
+        },
+    )?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
-    config = config.settings(settings).web_tools();
+    config = config
+        .agent_roles(models.roles.root, models.roles.child)?
+        .settings(settings)
+        .web_tools();
     Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
 }
 

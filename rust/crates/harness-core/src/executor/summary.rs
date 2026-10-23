@@ -78,16 +78,15 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
+        let pipeline = ContextPipeline::summary_source(source, revision, self.io)?;
         let executor = StockExecution {
             stock: self.stock,
             context: self.context,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             interactions: self.interactions,
             io: self.io,
-            summary: Some((
-                ContextPipeline::summary_source(source, revision, self.io)?,
-                summary_output,
-            )),
+            summary: Some((&pipeline, summary_output)),
+            selected_model: self.selected_model,
             compaction: once_cell::sync::OnceCell::new(),
         };
         let input = TurnInput {

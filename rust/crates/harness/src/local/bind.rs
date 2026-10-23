@@ -219,6 +219,8 @@ impl BoundComposition {
             issuer: None,
             signed,
             model,
+            root_role: config.root_role,
+            child_role: config.child_role,
             provider,
             context_manifest: config.context_manifest,
             skill_cache: context::skills::cache(),

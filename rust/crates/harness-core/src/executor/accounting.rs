@@ -149,7 +149,11 @@ impl StockExecution<'_> {
                 "summary output exceeds selected model capacity",
             ));
         }
-        let prepared = executor.prepare_request(input, step, &[]).await?;
+        let selected = executor.selected_for_turn(input, step)?;
+        let prepared = executor
+            .for_model(selected)
+            .prepare_request(input, step, &[])
+            .await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;

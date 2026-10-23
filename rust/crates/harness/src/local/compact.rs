@@ -98,7 +98,7 @@ impl LocalHarness {
                 .provider
                 .bind_content(self.context_reader()?, self.limits.file_bytes)
                 .unwrap_or_else(|| self.provider.clone());
-            let count = provider.count_tokens(&request).await?;
+            let count = provider.count_policy_tokens(&request, self.limits).await?;
             summary_output_budget(
                 capacity.context_tokens,
                 ceiling,
@@ -106,6 +106,7 @@ impl LocalHarness {
             )?
         };
         let command = ModelTaskCommand {
+            role: Some(self.root_role.clone()),
             input,
             context_manifest: manifest,
             summary_source: Some(Box::new(source)),

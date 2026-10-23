@@ -52,7 +52,7 @@ pub(crate) use preparation::{
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;
-pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
+pub use provider::{ModelDispatch, ModelEvent, ModelProvider, ModelTurn};
 pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
 pub use request::{ModelRequest, PreparedModelRequest};
 pub use tool_call::ToolCall;

@@ -438,6 +438,7 @@ pub(super) async fn worker_restart_with_options(
                     })
                 } else {
                     serde_json::to_value(ModelTaskCommand {
+                        role: None,
                         summary_source: None,
                         context_manifest: acyclic_harness::context::ContextManifest::new(
                             Default::default(), Vec::new(), &tools,

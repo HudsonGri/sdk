@@ -4,6 +4,12 @@ use acyclic_stream::BoxProviderFuture;
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
+pub(super) struct TurnScope<'a> {
+    pub(super) limits: Limits,
+    pub(super) output: Option<&'a VolumeRef>,
+    pub(super) role: &'a str,
+}
+
 impl LocalHarness {
     /// Stock command bindings using retained task inheritance.
     pub(super) async fn stock_commands(
@@ -296,7 +302,16 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)
+            .stage_turn_with_output_using(
+                operation,
+                prompt,
+                TurnScope {
+                    limits: self.limits,
+                    output: None,
+                    role: &self.root_role,
+                },
+                publisher,
+            )
             .await?;
         Ok((receive, model))
     }
@@ -309,7 +324,15 @@ impl LocalHarness {
         limits: Limits,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let (receive, model, _) = self
-            .stage_turn_with_output(operation, prompt, limits, None)
+            .stage_turn_with_output(
+                operation,
+                prompt,
+                TurnScope {
+                    limits,
+                    output: None,
+                    role: &self.root_role,
+                },
+            )
             .await?;
         Ok((receive, model))
     }
@@ -318,15 +341,14 @@ impl LocalHarness {
         &self,
         operation: OperationId,
         prompt: &str,
-        limits: Limits,
-        output: Option<&VolumeRef>,
+        scope: TurnScope<'_>,
     ) -> Result<(
         WorkflowCommand,
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
-        let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
-        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref())
+        let publisher = self.input_publisher_with_limit(scope.limits.file_bytes)?;
+        self.stage_turn_with_output_using(operation, prompt, scope, publisher.as_ref())
             .await
     }
 
@@ -334,8 +356,7 @@ impl LocalHarness {
         &self,
         operation: OperationId,
         prompt: &str,
-        limits: Limits,
-        output: Option<&VolumeRef>,
+        scope: TurnScope<'_>,
         publisher: &dyn ContentPublisher,
     ) -> Result<(
         WorkflowCommand,
@@ -344,14 +365,7 @@ impl LocalHarness {
     )> {
         let manifest = self.turn_manifest(operation, prompt, publisher).await?;
         let (receive, model) = self
-            .stage_bound_turn_using(
-                operation,
-                prompt,
-                limits,
-                output,
-                manifest.clone(),
-                publisher,
-            )
+            .stage_bound_turn_using(operation, prompt, scope, manifest.clone(), publisher)
             .await?;
         Ok((receive, model, manifest))
     }
@@ -378,19 +392,33 @@ impl LocalHarness {
         manifest: crate::conversation::FileRef,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        self.stage_bound_turn_using(operation, prompt, self.limits, None, manifest, publisher)
-            .await
+        self.stage_bound_turn_using(
+            operation,
+            prompt,
+            TurnScope {
+                limits: self.limits,
+                output: None,
+                role: &self.root_role,
+            },
+            manifest,
+            publisher,
+        )
+        .await
     }
 
     async fn stage_bound_turn_using(
         &self,
         operation: OperationId,
         prompt: &str,
-        limits: Limits,
-        output: Option<&VolumeRef>,
+        scope: TurnScope<'_>,
         manifest: crate::conversation::FileRef,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let TurnScope {
+            limits,
+            output,
+            role,
+        } = scope;
         context::binding::retain(
             &self.task_files.inner,
             crate::runtime::task_id_for_admission(operation),
@@ -399,6 +427,7 @@ impl LocalHarness {
         )
         .await?;
         let model = crate::filesystem::ModelTaskCommand {
+            role: Some(role.to_owned()),
             summary_source: None,
             context_manifest: manifest,
             input: self

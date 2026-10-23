@@ -174,8 +174,10 @@ impl StockExecution<'_> {
         let (step, prior_messages, purpose) = turn;
         let request = match retained_request {
             Some(recorded) => {
+                let selected = self.recorded_model(&recorded.request().model)?;
                 if purpose == ModelPurpose::Summary
                     && self
+                        .for_model(selected)
                         .prepare_request(input, step, prior_messages)
                         .await?
                         .request_digest()
@@ -191,7 +193,12 @@ impl StockExecution<'_> {
                 self.prepared_response(journal, input, step, prior_messages)
                     .await?
             }
-            None => self.prepare_request(input, step, prior_messages).await?,
+            None => {
+                let selected = self.selected_for_turn(input, step)?;
+                self.for_model(selected)
+                    .prepare_request(input, step, prior_messages)
+                    .await?
+            }
         };
         self.verify_model_request_content(journal, &request).await?;
         Ok(request)

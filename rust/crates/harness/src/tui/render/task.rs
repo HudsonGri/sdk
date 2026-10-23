@@ -48,6 +48,7 @@ pub(super) struct TaskRows {
     state: serde_json::Value,
     completions: Vec<HeadFile>,
     usage: serde_json::Value,
+    members: Vec<Line<'static>>,
     owner: AnswerOwner,
     details: bool,
 }
@@ -88,10 +89,11 @@ impl TaskRows {
         }
     }
     pub(super) fn notices(&self) -> Vec<Line<'static>> {
-        self.state["reason"]
-            .as_str()
-            .map(|text| vec![Line::raw(text.escape_debug().to_string())])
-            .unwrap_or_default()
+        let mut rows = self.members.clone();
+        if let Some(text) = self.state["reason"].as_str() {
+            rows.push(Line::raw(text.escape_debug().to_string()));
+        }
+        rows
     }
     #[cfg(test)]
     pub(super) fn work(&self) -> usize {
@@ -155,6 +157,15 @@ impl TaskRows {
         let completions: Vec<_> = task.completions().map(|(_, file)| file).collect();
         if !self.completions.iter().eq(completions.iter().copied()) {
             self.usage = serde_json::Value::Null;
+            self.members.clear();
+            for (step, file) in task.completions() {
+                if let Some(value) = metadata(file) {
+                    if let Some(member) = value.get("member").and_then(serde_json::Value::as_str) {
+                        self.members
+                            .push(Line::raw(format!("Turn {step}: {}", member.escape_debug())));
+                    }
+                }
+            }
             for value in completions.iter().filter_map(|file| metadata(file)) {
                 if let Err(error) = crate::model::accumulate_usage(&mut self.usage, value) {
                     self.usage = serde_json::json!({"error":error.to_string()});
@@ -257,3 +268,6 @@ impl TaskRows {
         changed
     }
 }
+
+#[cfg(test)]
+mod alloy_tests;

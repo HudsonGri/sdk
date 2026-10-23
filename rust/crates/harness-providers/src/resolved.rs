@@ -10,6 +10,7 @@ use acyclic_stream::BoxProviderStream;
 use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
+#[derive(Clone)]
 pub struct ResolvedModel {
     pub(crate) files: crate::files::Files,
     /// Calibration shared by every reader-bound copy of this selection.
