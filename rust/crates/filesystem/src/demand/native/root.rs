@@ -42,6 +42,13 @@ impl Drop for CancelWorkerOnDrop {
 }
 
 impl NativeDemandSource {
+    /// Initializes process-global source services before bounded native work.
+    pub fn initialize_services() -> Result<(), DemandError> {
+        #[cfg(target_os = "macos")]
+        crate::fsevents::EventStream::initialize_services()?;
+        Ok(())
+    }
+
     /// Returns the stable identity of the already-open native root.
     #[must_use]
     pub fn root_identity(&self) -> crate::NativeRootIdentity {

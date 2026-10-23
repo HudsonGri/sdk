@@ -234,7 +234,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         for (position, (key, event)) in positions.iter_mut().zip(keys.iter().zip(events)) {
             let mut custody = CodecQuota::new(work, 0)?;
             let Some((digest, existing, revision, commit_id)) =
-                read_intent(&self.client, key, Some(self.revision), custody.work()).await?
+                self.read_indexed_intent(key, custody.work()).await?
             else {
                 continue;
             };

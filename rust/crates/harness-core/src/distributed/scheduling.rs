@@ -145,8 +145,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 ));
             }
             if let Some((key, fingerprint)) = &identity
-                && let Some((_, event, _, _)) =
-                    read_intent(&self.client, key.as_str(), Some(self.revision), work).await?
+                && let Some((_, event, _, _)) = self.read_indexed_intent(key.as_str(), work).await?
             {
                 let SchedulerEvent::Admitted {
                     operation_id,

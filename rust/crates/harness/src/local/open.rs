@@ -142,6 +142,15 @@ impl Opening {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
         #[cfg(feature = "native-execution")]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+        if matches!(self.config.project, LocalProject::Workspace(_)) {
+            #[cfg(all(test, target_os = "macos"))]
+            let initialize = !tests::cold_source::skip_initialization();
+            #[cfg(not(all(test, target_os = "macos")))]
+            let initialize = true;
+            if initialize {
+                acyclic_fs::demand::native::NativeDemandSource::initialize_services().map_err(storage)?;
+            }
+        }
         #[cfg(feature = "native-execution")]
         if self.native_mounts {
             workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;

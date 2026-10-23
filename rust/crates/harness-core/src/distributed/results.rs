@@ -59,13 +59,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         reducers: Option<&ReducerRegistry>,
     ) -> Result<bool> {
         self.refresh(&mut None).await?;
-        if let Some((_, event, ..)) = read_intent(
-            &self.client,
-            idempotency_key.as_str(),
-            Some(self.revision),
-            &mut None,
-        )
-        .await?
+        if let Some((_, event, ..)) = self
+            .read_indexed_intent(idempotency_key.as_str(), &mut None)
+            .await?
         {
             return if matches!(event, SchedulerEvent::Orchestrated { operation_id, .. } if operation_id == parent)
             {

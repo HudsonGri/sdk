@@ -21,7 +21,9 @@ use crate::storage::{
 };
 use crate::sync::{Mutex, MutexGuard};
 use acyclic_stream::OwnedBytes;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
 use std::pin::pin;
@@ -105,12 +107,12 @@ pub struct ObjectCacheStats {
 
 struct CacheEntry {
     bytes: OwnedBytes,
-    touched: u64,
+    recency: u64,
 }
 
 struct DecodedCacheEntry {
     value: DecodedCacheValue,
-    touched: u64,
+    recency: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -122,7 +124,9 @@ enum RecencyKey {
 struct CacheState {
     entries: BTreeMap<ObjectId, CacheEntry>,
     decoded: BTreeMap<DecodedCacheKey, DecodedCacheEntry>,
-    recency: BTreeSet<(u64, RecencyKey)>,
+    recency: lru::Recency,
+    #[cfg(test)]
+    historical_recency: Option<BTreeSet<(u64, RecencyKey)>>,
     flights: BTreeMap<ObjectId, Arc<Flight>>,
     resident_bytes: u64,
     resident_canonical_bytes: u64,
@@ -140,7 +144,9 @@ impl Default for CacheState {
         Self {
             entries: BTreeMap::new(),
             decoded: BTreeMap::new(),
-            recency: BTreeSet::new(),
+            recency: lru::Recency::default(),
+            #[cfg(test)]
+            historical_recency: None,
             flights: BTreeMap::new(),
             resident_bytes: 0,
             resident_canonical_bytes: 0,
@@ -420,7 +426,7 @@ impl<S> CachedObjectStore<S> {
         let mut state = self.lock_state()?;
         state.entries.clear();
         state.decoded.clear();
-        state.recency.clear();
+        state.clear_recency();
         state.resident_bytes = 0;
         state.resident_canonical_bytes = 0;
         state.resident_decoded_bytes = 0;
@@ -442,15 +448,8 @@ impl<S> CachedObjectStore<S> {
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         if let Some(entry) = state.entries.get_mut(&object_id) {
-            let prior = entry.touched;
-            entry.touched = tick;
             let bytes = entry.bytes.clone();
-            state
-                .recency
-                .remove(&(prior, RecencyKey::Canonical(object_id)));
-            state
-                .recency
-                .insert((tick, RecencyKey::Canonical(object_id)));
+            state.touch_recent(RecencyKey::Canonical(object_id), tick)?;
             state.hits = increment(state.hits)?;
             return Ok(ReadPlan::Hit(bytes));
         }
@@ -490,18 +489,11 @@ impl<S> CachedObjectStore<S> {
     fn cached_contains(&self, object_id: ObjectId) -> Result<bool, ObjectStoreError> {
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
-        let Some(entry) = state.entries.get_mut(&object_id) else {
+        if !state.entries.contains_key(&object_id) {
             state.misses = increment(state.misses)?;
             return Ok(false);
-        };
-        let prior = entry.touched;
-        entry.touched = tick;
-        state
-            .recency
-            .remove(&(prior, RecencyKey::Canonical(object_id)));
-        state
-            .recency
-            .insert((tick, RecencyKey::Canonical(object_id)));
+        }
+        state.touch_recent(RecencyKey::Canonical(object_id), tick)?;
         state.hits = increment(state.hits)?;
         Ok(true)
     }
@@ -540,12 +532,10 @@ impl<S> CachedObjectStore<S> {
             object_id,
             CacheEntry {
                 bytes,
-                touched: tick,
+                recency: tick,
             },
         );
-        state
-            .recency
-            .insert((tick, RecencyKey::Canonical(object_id)));
+        state.append_recent(RecencyKey::Canonical(object_id), tick)?;
         Ok(true)
     }
 
@@ -557,6 +547,13 @@ impl<S> CachedObjectStore<S> {
     }
 
     fn decoded_get_matching<const MATCH_IDENTITY: bool>(
+        &self,
+        key: DecodedCacheKey,
+    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
+        self.decoded_get_mode::<MATCH_IDENTITY, true>(key)
+    }
+
+    fn decoded_get_mode<const MATCH_IDENTITY: bool, const TOUCH: bool>(
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
@@ -572,11 +569,10 @@ impl<S> CachedObjectStore<S> {
         else {
             return Ok(None);
         };
-        let prior = entry.touched;
-        entry.touched = tick;
         let value = entry.value.clone();
-        state.recency.remove(&(prior, RecencyKey::Decoded(key)));
-        state.recency.insert((tick, RecencyKey::Decoded(key)));
+        if TOUCH {
+            state.touch_recent(RecencyKey::Decoded(key), tick)?;
+        }
         state.hits = increment(state.hits)?;
         state.decoded_hits = increment(state.decoded_hits)?;
         Ok(Some(value))
@@ -625,10 +621,10 @@ impl<S> CachedObjectStore<S> {
             key,
             DecodedCacheEntry {
                 value: value.clone(),
-                touched: tick,
+                recency: tick,
             },
         );
-        state.recency.insert((tick, RecencyKey::Decoded(key)));
+        state.append_recent(RecencyKey::Decoded(key), tick)?;
         Ok(DecodedCacheAdmission::Shared(value))
     }
 
@@ -668,8 +664,7 @@ fn next_tick(state: &mut CacheState) -> Result<u64, ObjectStoreError> {
 }
 
 fn evict_oldest(state: &mut CacheState) -> Result<(), ObjectStoreError> {
-    let &(touched, key) = state.recency.first().ok_or(ObjectStoreError::Corrupt)?;
-    state.recency.remove(&(touched, key));
+    let key = state.pop_oldest()?;
     let removed_bytes = match key {
         RecencyKey::Canonical(object_id) => {
             let bytes = state
@@ -742,6 +737,7 @@ fn shared_read(bytes: OwnedBytes, maximum: u64) -> Result<ObjectRead, ObjectStor
     })
 }
 
+mod lru;
 mod reads;
 
 mod provider;
@@ -759,3 +755,6 @@ mod decoded_model;
 #[cfg(not(acyclic_fs_loom))]
 #[path = "cache/decoded_properties.rs"]
 mod decoded_properties;
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod lru_tests;

@@ -1,6 +1,9 @@
 use super::*;
+use crate::sync::{Mutex, MutexGuard};
 
 pub(super) struct DependencyLedger {
+    // Lock order: proof -> allocation ledger / data custody / original work.
+    // Original-work callbacks must never acquire this proof lock.
     pub(super) proof: Arc<Mutex<Proof>>,
     pub(super) observing: bool,
     pub(super) data_custody: Arc<ProofDataCustody>,
@@ -181,3 +184,7 @@ impl DependencyLedger {
         )
     }
 }
+
+#[cfg(all(test, acyclic_fs_loom))]
+#[path = "proof_model.rs"]
+mod model_checking;
