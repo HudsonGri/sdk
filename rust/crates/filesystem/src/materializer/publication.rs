@@ -1,6 +1,25 @@
 use super::*;
 use std::sync::Arc;
 
+// Keep construction scratch for each publication phase out of the caller's
+// active poll frame. The same operation retains custody of the boxed future.
+pub(super) async fn publication_step<T, E, F>(
+    work: &NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<T, NativeWorkspacePublicationError>
+where
+    F: Future<Output = Result<T, E>>,
+    NativeWorkspacePublicationError: From<E>,
+{
+    let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
+    let allocation = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+    let mut future = crate::heap_future::in_heap(create);
+    let result = future.as_mut().await;
+    drop(future);
+    drop(allocation);
+    result.map_err(NativeWorkspacePublicationError::from)
+}
+
 /// Authenticated generation publication through the existing journal.
 pub struct NativeWorkspacePublication<'a> {
     /// Physical checkout root.
@@ -184,7 +203,8 @@ where
         work.set_original_work(journal.work);
         journal
     } else {
-        let (plan, custody) = generation_plan(from, to, &request, work).await?;
+        let (plan, custody) =
+            publication_step(work, || generation_plan(from, to, &request, work)).await?;
         let parent = super::directory_preparation::prepare_publication_parent(
             &operation,
             work,
@@ -217,14 +237,14 @@ where
         journal
     };
     if journal.preparation_progress.is_some() {
-        journal = NativeTreeMaterializationBackend::prepare_allocations(
+        journal = publication_step(work, || NativeTreeMaterializationBackend::prepare_allocations(
             &store,
             journal,
             &root,
             &operation,
             work,
             before_effect,
-        )
+        ))
         .await?;
     }
     let backend = NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
@@ -253,8 +273,8 @@ where
                 maximum_extent_spans: request.options.maximum_extent_spans,
                 transfer_bytes: request.options.transfer_bytes,
             };
-            journal = materializer
-                .stage_generation(to, &selections, &options, journal, work, before_effect)
+            journal = publication_step(work, || materializer
+                .stage_generation(to, &selections, &options, journal, work, before_effect))
                 .await?;
         }
     }
