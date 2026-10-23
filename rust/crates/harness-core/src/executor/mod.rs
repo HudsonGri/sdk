@@ -560,6 +560,7 @@ pub(crate) struct ResponseProjection {
     pub(crate) context: crate::context::Context,
     pub(crate) canonical: Option<FileRef>,
     pub(crate) checkpoint: Option<FileRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) working: Option<FileRef>,
 }
 

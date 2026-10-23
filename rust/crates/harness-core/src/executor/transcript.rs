@@ -142,6 +142,7 @@ struct ProjectionView<'a> {
     current_input_index: Option<u32>,
     canonical: &'a Option<FileRef>,
     checkpoint: &'a Option<FileRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     working: &'a Option<FileRef>,
 }
 
@@ -154,6 +155,7 @@ pub(crate) struct StoredProjection {
     current_input_index: Option<u32>,
     canonical: Option<FileRef>,
     checkpoint: Option<FileRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     working: Option<FileRef>,
 }
 
@@ -684,11 +686,19 @@ pub(super) async fn working_reference(
     let stored = retain_preparation(load_json::<StoredProjection>(journal, reference, io).await?)?;
     #[cfg(feature = "filesystem")]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    let working = stored.working.as_ref().map(|file| crate::model::clone_file(file, io)).transpose()?;
+    let working = stored
+        .working
+        .as_ref()
+        .map(|file| crate::model::clone_file(file, io))
+        .transpose()?;
     drop(stored);
     #[cfg(feature = "filesystem")]
     {
-        let retained = io.map_or(Ok(0), |io| io.owned_bytes()?.checked_sub(before).ok_or_else(|| invalid(Some(io))))?;
+        let retained = io.map_or(Ok(0), |io| {
+            io.owned_bytes()?
+                .checked_sub(before)
+                .ok_or_else(|| invalid(Some(io)))
+        })?;
         scope.finish(retained)?;
     }
     Ok(working)

@@ -122,10 +122,23 @@ impl StockExecution<'_> {
             )
             .await?;
         let working = if pre_stage && journal.working_checkpoint_authority().is_some() {
-            Some(self.stage_working_cut(journal, working_tail::WorkingCompaction {
-                input, step, prior, source: &context, retained: &compacted, compaction: &compaction,
-            }).await?)
-        } else { projection.working };
+            Some(
+                self.stage_working_cut(
+                    journal,
+                    working_tail::WorkingCompaction {
+                        input,
+                        step,
+                        prior,
+                        source: &context,
+                        retained: &compacted,
+                        compaction: &compaction,
+                    },
+                )
+                .await?,
+            )
+        } else {
+            projection.working
+        };
         let (compacted, request) = if pre_stage {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
             let (compacted, request) = self
