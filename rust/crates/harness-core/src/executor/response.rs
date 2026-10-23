@@ -31,7 +31,7 @@ impl StockExecution<'_> {
             None
         };
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let (mut projection, prepared) = self
+        let (projection, prepared) = self
             .prepare_transformed_request(&context_input, base)
             .await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
@@ -42,10 +42,6 @@ impl StockExecution<'_> {
         } else {
             None
         };
-        if self.io.is_none() {
-            projection.messages =
-                crate::model::clone_messages(&prepared.request().messages, self.io)?;
-        }
         let projection = ResponseProjection {
             context: projection,
             canonical,
@@ -214,11 +210,13 @@ impl StockExecution<'_> {
             ));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let (retained, request) = retain_preparation(
+            let (mut retained, request) = retain_preparation(
                 transcript::load_prepared_projection(journal, retained, self.stock.limits, self.io)
                     .await?,
             )?;
             self.validate_response_request(&request)?;
+            retained.context.messages =
+                crate::model::clone_messages(&request.request().messages, self.io)?;
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
             )?;
@@ -280,7 +278,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        projection: ResponseProjection,
+        mut projection: ResponseProjection,
         accounting: Option<ContextAccounting>,
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
@@ -298,6 +296,14 @@ impl StockExecution<'_> {
                 }
                 let input_tokens =
                     with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+                let compacted = records.iter().any(|record| {
+                    matches!(record.event,
+                    ExecutionEvent::ContextCompacted { step: recorded, .. } if recorded == step)
+                });
+                if compacted {
+                    projection.context.messages =
+                        crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                }
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, records)
                     .await?
@@ -306,9 +312,13 @@ impl StockExecution<'_> {
                 }
                 let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
                 let possible_message_pressure = projection.canonical.is_some()
-                    && projection.context.messages.len() > self.compaction_message_limit(true, 0);
+                    && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
+                }
+                if !compacted {
+                    projection.context.messages =
+                        crate::model::clone_messages(&prepared.request().messages, self.io)?;
                 }
                 let source = match &projection.canonical {
                     Some(reference) => retain_preparation(

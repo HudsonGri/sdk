@@ -140,9 +140,7 @@ impl StockExecution<'_> {
         base: crate::context::Context,
     ) -> Result<crate::context::Context> {
         let (mut context, prepared) = self.prepare_transformed_request(input, base).await?;
-        if self.io.is_none() {
-            context.messages = prepared.into_messages();
-        }
+        context.messages = prepared.into_messages();
         Ok(context)
     }
 
@@ -204,11 +202,7 @@ impl StockExecution<'_> {
         if prefix_count != 0 || self.context_pipeline().has_optional() {
             crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
         }
-        request.messages = if self.io.is_some() {
-            crate::model::clone_messages(&context.messages, self.io)?
-        } else {
-            std::mem::take(&mut context.messages)
-        };
+        request.messages = std::mem::take(&mut context.messages);
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         Ok((context, prepared))

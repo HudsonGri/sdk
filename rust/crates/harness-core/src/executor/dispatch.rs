@@ -107,17 +107,13 @@ impl StockExecution<'_> {
                 _continuation_hold = None;
             }
             if !started {
-                super::phase::run(
+                super::phase::claim(self.claim_model_dispatch(
                     journal,
-                    io,
-                    self.claim_model_dispatch(
-                        journal,
-                        input,
-                        (step, purpose, purpose_key),
-                        &request,
-                        dispatch,
-                    ),
-                )
+                    input,
+                    (step, purpose, purpose_key),
+                    &request,
+                    dispatch,
+                ))
                 .await?;
             } else if replayed.is_empty()
                 && !self.stock.reconciliation_only

@@ -45,7 +45,7 @@ async fn load<'a>(
     };
     #[cfg(feature = "filesystem")]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    let mut projection = ResponseProjection {
+    let projection = ResponseProjection {
         context: crate::context::copy_context(&context, io)?,
         canonical: stored
             .canonical
@@ -58,11 +58,12 @@ async fn load<'a>(
             .map(|file| crate::model::clone_file(file, io))
             .transpose()?,
     };
-    if let Some(request) = &request {
-        projection.context.messages =
-            crate::model::clone_messages(&request.request().messages, io)?;
-    }
-    crate::context::validate_projected_context(&projection.context, limits, io)?;
+    let messages = request
+        .as_ref()
+        .map_or(projection.context.messages.as_slice(), |request| {
+            request.request().messages.as_slice()
+        });
+    crate::context::validate_projected_messages(&projection.context, messages, limits, io)?;
     #[cfg(feature = "filesystem")]
     let hold = {
         let retained = io.map_or(Ok(0), |io| {

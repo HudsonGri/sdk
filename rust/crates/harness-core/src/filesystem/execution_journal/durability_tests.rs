@@ -8,7 +8,11 @@ type Journal = FilesystemExecutionJournal<
     acyclic_fs::MemoryObjectBackend,
 >;
 
-async fn fixture(root: &std::path::Path, operation: OperationId) -> Result<Journal> {
+async fn fixture(
+    root: &std::path::Path,
+    operation: OperationId,
+    io: Option<&PreparationIo>,
+) -> Result<Journal> {
     let stream = Arc::new(
         acyclic_stream::LocalStream::open(root.join("journal"), Default::default())
             .await
@@ -39,30 +43,18 @@ async fn fixture(root: &std::path::Path, operation: OperationId) -> Result<Journ
     )
     .await?;
     let owner = fixture.running(80).await?;
-    let request = crate::model::PreparedModelRequest::prepare(
-        crate::model::ModelRequest {
-            model: crate::model::Model::new(
-                "test".into(),
-                "phase".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
-            messages: vec![crate::model::ModelMessage {
-                role: crate::model::ModelRole::User,
-                content: ModelContent::Text("input".into()),
-            }],
-            tools: Vec::new(),
-            max_output_tokens: None,
-        },
-        Limits::default(),
-        None,
-    )?;
+    let request = phase_request()?;
     let (task, fence) = owner.task_binding();
     use crate::runtime::DurableTaskHost;
     fixture
         .host
         .claim_model_dispatch(task, operation, 0, request.request_digest(), fence.clone())
         .await?;
+    let owner = if io.is_some() {
+        fixture.host.journal_owner(task, fence, io).await?
+    } else {
+        owner
+    };
     let journal = fixture.execution(owner, operation)?;
     let files = crate::task_volume::TaskFiles::open(
         stream,
@@ -102,76 +94,116 @@ async fn fixture(root: &std::path::Path, operation: OperationId) -> Result<Journ
     Ok(journal)
 }
 
+fn phase_request() -> Result<crate::model::PreparedModelRequest> {
+    crate::model::PreparedModelRequest::prepare(
+        crate::model::ModelRequest {
+            model: crate::model::Model::new(
+                "test".into(),
+                "phase".into(),
+                "1".into(),
+                serde_json::Value::Null,
+            )?,
+            messages: vec![crate::model::ModelMessage {
+                role: crate::model::ModelRole::User,
+                content: ModelContent::Text("input".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: None,
+        },
+        Limits::default(),
+        None,
+    )
+}
+
 #[tokio::test]
 async fn phase_keeps_deltas_live_and_seals_successful_and_failed_prefixes() -> Result<()> {
-    use crate::task_volume::Query;
-    for defer in [false, true] {
-        for fail in [false, true] {
-            let directory =
-                tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-            let operation = OperationId::new();
-            let journal = fixture(directory.path(), operation).await?;
-            assert!(journal.supports_deferred_durability());
-            let path = journal.path(operation)?.path().clone();
-            let baseline = journal.stream.watermarks(path.clone()).await?;
-            let mut observer = journal
-                .task_files
-                .as_ref()
-                .unwrap()
-                .inner
-                .observe(Query::Root, None, 16)
-                .await?;
-            assert!(observer.changes.next().now_or_never().is_none());
-            let future = async {
-                crate::executor::append_model_event(
-                    &journal,
-                    operation,
-                    "model:0:0",
-                    (0, ModelPurpose::Response),
-                    &ModelEvent::Content {
-                        delta: "visible".into(),
-                    },
-                    None,
-                )
-                .await?;
-                let watermarks = journal.stream.watermarks(path.clone()).await?;
-                assert_eq!(watermarks.accepted, baseline.accepted + 1);
-                // Negative control executes the former, individually durable append.
-                assert_eq!(
-                    watermarks.durable,
-                    if defer {
-                        baseline.durable
-                    } else {
-                        watermarks.accepted
-                    }
-                );
-                let mut visible = false;
-                while let Some(Some(change)) = observer.changes.next().now_or_never() {
-                    let change = change?;
-                    visible |= change
-                        .file
-                        .into_iter()
-                        .chain(change.files)
-                        .any(|file| file.bytes.as_ref() == b"visible");
-                }
-                assert!(visible, "phase buffered live publication");
-                if fail {
-                    Err(Error::Conflict("fixture stream failure".into()))
-                } else {
-                    Ok(())
-                }
-            };
-            let result = if defer {
-                crate::executor::phase::run(&journal, None, future).await
-            } else {
-                future.await
-            };
-            assert_eq!(result.is_err(), fail);
-            assert_eq!(
-                journal.stream.watermarks(path.clone()).await?.durable,
-                baseline.accepted + 1
-            );
+    for mode in 0..3 {
+        for defer in [false, true] {
+            for fail in [false, true] {
+                check_phase(mode, defer, fail).await?;
+            }
         }
     }
     Ok(())
+}
+
+async fn check_phase(mode: u8, defer: bool, fail: bool) -> Result<()> {
+    use crate::task_volume::Query;
+    let io = phase_io(mode)?;
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let operation = OperationId::new();
+    let journal = fixture(directory.path(), operation, io.as_ref()).await?;
+    assert!(journal.supports_deferred_durability());
+    let path = journal.path(operation)?.path().clone();
+    let baseline = journal.stream.watermarks(path.clone()).await?;
+    let mut observer = journal
+        .task_files
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("phase fixture lacks task files".into()))?
+        .inner
+        .observe(Query::Root, None, 16)
+        .await?;
+    assert!(observer.changes.next().now_or_never().is_none());
+    let future = async {
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "model:0:0",
+            (0, ModelPurpose::Response),
+            &ModelEvent::Content {
+                delta: "visible".into(),
+            },
+            io.as_ref(),
+        )
+        .await?;
+        let watermarks = journal.stream.watermarks(path.clone()).await?;
+        assert_eq!(watermarks.accepted, baseline.accepted + 1);
+        // Negative control executes the former, individually durable append.
+        assert_eq!(
+            watermarks.durable,
+            if defer {
+                baseline.durable
+            } else {
+                watermarks.accepted
+            }
+        );
+        let mut visible = false;
+        while let Some(Some(change)) = observer.changes.next().now_or_never() {
+            let change = change?;
+            visible |= change
+                .file
+                .into_iter()
+                .chain(change.files)
+                .any(|file| file.bytes.as_ref() == b"visible");
+        }
+        assert!(visible, "phase buffered live publication");
+        if fail {
+            Err(Error::Conflict("fixture stream failure".into()))
+        } else {
+            Ok(())
+        }
+    };
+    let result = if defer {
+        crate::executor::phase::run(&journal, io.as_ref(), future).await
+    } else {
+        future.await
+    };
+    assert_eq!(result.is_err(), fail);
+    assert_eq!(
+        journal.stream.watermarks(path.clone()).await?.durable,
+        baseline.accepted + 1
+    );
+    Ok(())
+}
+
+fn phase_io(mode: u8) -> Result<Option<PreparationIo>> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    Ok(match mode {
+        0 => None,
+        1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+        _ => Some(PreparationIo::from_native_work(&work)?),
+    })
 }

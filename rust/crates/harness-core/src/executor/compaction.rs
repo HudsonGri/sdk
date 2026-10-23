@@ -122,13 +122,9 @@ impl StockExecution<'_> {
             .await?;
         let (compacted, request) = if checkpoint.is_some() {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
-            let (mut compacted, request) = self
+            let (compacted, request) = self
                 .prepare_transformed_request(&context_input, compacted)
                 .await?;
-            if self.io.is_none() {
-                compacted.messages =
-                    crate::model::clone_messages(&request.request().messages, self.io)?;
-            }
             (compacted, request)
         } else {
             let request = crate::model::PreparedModelRequest::prepare(

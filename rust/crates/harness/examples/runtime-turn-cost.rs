@@ -1,6 +1,8 @@
 //! Credential-free timing of the real local driver between consecutive tools.
 //! Run alone on bb2: cargo run --locked -p acyclic-harness --all-features
 //! --example runtime-turn-cost -- 1000
+#[path = "runtime_turn_cost/profile.rs"]
+mod profile;
 use acyclic_harness::{
     Error, LocalHarness, Result,
     context::{CompactionPolicy, ModelContextCapacity, ModelTokenCount},
@@ -23,6 +25,7 @@ struct Timing {
     tool_finished: Option<(Instant, u64)>,
     intervals: Vec<(Duration, u64)>,
     stream_flushes: Arc<AtomicU64>,
+    profile: profile::Profile,
 }
 
 struct FlushCounter(Arc<AtomicU64>);
@@ -53,6 +56,7 @@ impl Timing {
                 "tool-to-model ending at turn {end}: {:.3} ms/turn; {flushes} stream flushes/{count} turns",
                 (total / count).as_secs_f64() * 1000.0,
             );
+            self.profile.report(end);
         }
     }
 }
@@ -146,9 +150,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let checkout = root.path().join("checkout");
     std::fs::create_dir(&checkout)?;
-    let timing = Arc::new(Mutex::new(Timing::default()));
+    let profile = profile::Profile::from_arguments();
+    let timing = Arc::new(Mutex::new(Timing {
+        profile: profile.clone(),
+        ..Default::default()
+    }));
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
+        .with(profile)
         .with(FlushCounter(
             timing
                 .lock()

@@ -81,7 +81,11 @@ async fn recovery_encoding(
     if keep {
         let ((projection, request), _hold) =
             load_prepared_projection(journal, reference, Limits::default(), io).await?;
-        assert_eq!(projection.context.messages, expected.request().messages);
+        assert!(
+            projection.context.messages.is_empty(),
+            "recovery duplicated the admitted history"
+        );
+        assert_eq!(projection.context.current_input_index, Some(0));
         assert_eq!(request.bytes(), expected.bytes());
     } else {
         // Former recovery: discard the already-admitted bytes, then prepare

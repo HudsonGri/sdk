@@ -460,11 +460,7 @@ impl StockExecution<'_> {
             context,
             started,
         );
-        let claimed = if started {
-            claim.await?
-        } else {
-            super::phase::run(journal, self.io, claim).await?
-        };
+        let claimed = super::phase::claim(claim).await?;
         let execution = if claimed {
             stock_tool_call(
                 context,

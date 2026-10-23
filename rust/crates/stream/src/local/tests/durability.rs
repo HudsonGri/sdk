@@ -1,6 +1,63 @@
 use super::*;
 
 #[tokio::test]
+async fn dispatch_publication_admits_durability_before_accepting_a_start()
+-> Result<(), Box<dyn std::error::Error>> {
+    for guarded in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let meter = Arc::new(Meter::local());
+        let path = StreamPath::new("dispatch")?;
+        provider.append(keyed_append("dispatch", 0)?).await?;
+        meter.deny_durability.store(true, Ordering::SeqCst);
+        for denied in [true, false] {
+            meter.deny_durability.store(denied, Ordering::SeqCst);
+            let key = IdempotencyKey::new(OwnedBytes::from_static(b"dispatch"))?;
+            let append = keyed_append("dispatch", 1)?;
+            let result = deferring_durability(requiring_durability(async {
+                if guarded {
+                    provider
+                        .native_commit_guarded::<NativeGuardFailure, _, _>(
+                            CommitRequest {
+                                conditions: vec![crate::CommitCondition::Tail {
+                                    path: path.clone(),
+                                    expected: 1,
+                                }],
+                                mutations: vec![crate::CommitMutation::Append {
+                                    path: path.clone(),
+                                    records: vec![OwnedBytes::from_static(b"started")],
+                                }],
+                                idempotency_key: key,
+                            },
+                            None,
+                            meter.original(),
+                            || async { Ok(()) },
+                        )
+                        .await
+                        .map(|output| output.map(drop))
+                } else {
+                    provider
+                        .native_append(append, meter.original())
+                        .await
+                        .map(|output| output.map(drop).map_err(NativeGuardFailure::from))
+                }
+            }))
+            .await;
+            if denied {
+                let error = result.err().ok_or("unfunded dispatch was accepted")?;
+                assert_original_denial(&error, "durability");
+                assert_eq!(provider.tail(path.clone()).await?, 1);
+            } else {
+                result??;
+                assert_eq!(provider.watermarks(path.clone()).await?.durable, 2);
+            }
+            meter.assert_refunded();
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     for defer in [false, true] {

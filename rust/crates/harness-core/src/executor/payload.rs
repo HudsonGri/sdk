@@ -70,6 +70,8 @@ pub(crate) fn retain_preparation<T>(
 
 #[doc(hidden)]
 pub fn preparation_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _span = tracing::debug_span!("acyclic.harness.preparation.digest").entered();
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     #[cfg(feature = "filesystem")]

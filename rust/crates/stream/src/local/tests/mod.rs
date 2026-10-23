@@ -13,4 +13,5 @@ mod wakeups;
 
 mod compaction;
 mod durability;
+mod durability_retries;
 mod watermarks;

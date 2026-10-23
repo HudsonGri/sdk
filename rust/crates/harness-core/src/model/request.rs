@@ -18,6 +18,8 @@ pub struct ModelRequest {
 }
 impl ModelRequest {
     pub(super) fn validate(&mut self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _span = tracing::debug_span!("acyclic.harness.request.validate").entered();
         with_history_io(io, |work| limits.validate(work))?;
         charge_items(io, 1)?;
         charge_items(
@@ -312,6 +314,8 @@ impl PreparedModelRequest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _span = tracing::debug_span!("acyclic.harness.request.prepare").entered();
         #[cfg(all(
             any(test, feature = "test-support"),
             feature = "filesystem",

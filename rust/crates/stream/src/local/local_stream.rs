@@ -347,6 +347,11 @@ impl LocalStream {
                 .journal
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
+            if journal.synced < journal.appended
+                && let Some(work) = &self.work
+            {
+                work.reserve_durability(1)?;
+            }
             journal.required = journal.appended;
         }
         Ok(())
