@@ -45,7 +45,6 @@ pub struct ClientRenderer {
     reasoning_visible: bool,
     wrapped_transcript: super::WrappedLines,
     wrapped_tools: super::WrappedLines,
-    tools_changed: usize,
     wrapped_reasoning: super::WrappedLines,
     wrapped_goal: super::WrappedLines,
     wrapped_plans: super::WrappedLines,
@@ -185,9 +184,6 @@ impl ClientRenderer {
     }
 
     fn project_rows(&mut self, old_prefix: usize, archive_changed: usize, task_changed: usize) {
-        if self.task.tools_changed() {
-            self.tools_changed = 0;
-        }
         let prefix = self.archive.rows().len();
         let changed = if archive_changed < old_prefix || prefix != old_prefix {
             archive_changed
@@ -209,8 +205,16 @@ impl ClientRenderer {
             self.wrapped_transcript
                 .replace_parts(&[self.archive.rows(), self.task.rows()], changed);
         }
-        self.wrapped_tools
-            .replace(self.task.tools(), self.tools_changed);
+        if self.task.tools_full() {
+            self.wrapped_tools.replace(self.task.tools(), 0);
+        } else {
+            for (old, new) in self.task.tool_edits() {
+                self.wrapped_tools.replace_range(
+                    old.clone(),
+                    self.task.tools().get(new.clone()).unwrap_or_default(),
+                );
+            }
+        }
         let (changed, rows) = self.task.reasoning();
         if changed + 1 == rows.len()
             && self.wrapped_reasoning.source_len() == rows.len()
@@ -220,7 +224,6 @@ impl ClientRenderer {
         } else {
             self.wrapped_reasoning.replace(rows, changed);
         }
-        self.tools_changed = self.task.tools().len();
     }
 
     fn documents(&mut self, views: &ClientViews) {

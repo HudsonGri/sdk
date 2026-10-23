@@ -3,7 +3,7 @@ use crate::{
     client::TaskQueryView,
     task_volume::{Channel, Component, FileKey, HeadFile, Query, TaskFile},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
 #[derive(Default)]
 struct ToolRows {
@@ -42,7 +42,9 @@ pub(super) struct TaskRows {
     fallback: Archive,
     streamed: bool,
     tool_rows: Vec<Line<'static>>,
-    tools_changed: bool,
+    tool_ranges: BTreeMap<(u64, Component), Range<usize>>,
+    tool_edits: Vec<(Range<usize>, Range<usize>)>,
+    tools_full: bool,
     #[cfg(test)]
     tool_copies: usize,
     #[cfg(test)]
@@ -84,8 +86,11 @@ impl TaskRows {
     pub(super) fn tools(&self) -> &[Line<'static>] {
         &self.tool_rows
     }
-    pub(super) fn tools_changed(&self) -> bool {
-        self.tools_changed
+    pub(super) fn tools_full(&self) -> bool {
+        self.tools_full
+    }
+    pub(super) fn tool_edits(&self) -> &[(Range<usize>, Range<usize>)] {
+        &self.tool_edits
     }
     #[cfg(test)]
     pub(super) fn tool_copies(&self) -> usize {
@@ -133,6 +138,7 @@ impl TaskRows {
                 self.rows().len()
             };
             *self = Self::default();
+            self.tools_full = true;
             return changed;
         };
         let mut changed = self.rows().len();
@@ -181,7 +187,7 @@ impl TaskRows {
         }) {
             self.update_usage(&task);
         }
-        let tool_changed = self.update_tools(&task, details_changed);
+        self.update_tools(&task, details_changed);
         self.cut = task.cursor.position;
         let streamed = self.stream.has_text();
         // Command text is a fallback only when the canonical task has no chunks
@@ -199,17 +205,6 @@ impl TaskRows {
             changed = changed.min(fallback);
         }
         self.streamed = streamed;
-        self.tools_changed = tool_changed;
-        if tool_changed {
-            self.tool_rows.clear();
-            for tool in self.tools.values() {
-                #[cfg(test)]
-                {
-                    self.tool_copies += tool.rows.len();
-                }
-                self.tool_rows.extend_from_slice(&tool.rows);
-            }
-        }
         if owner == AnswerOwner::Archived {
             return 0;
         }
@@ -231,9 +226,11 @@ impl TaskRows {
         }
     }
 
-    fn update_tools(&mut self, task: &TaskQueryView<'_>, details_changed: bool) -> bool {
+    fn update_tools(&mut self, task: &TaskQueryView<'_>, details_changed: bool) {
         let changes = task.changes_since(self.cut);
-        let full = changes.is_none() || details_changed;
+        let full = self.cut == 0 || changes.is_none() || details_changed;
+        self.tools_full = full;
+        self.tool_edits.clear();
         let keys: std::collections::BTreeSet<_> = if full {
             task.tools()
                 .map(|tool| (tool.turn, tool.call.clone()))
@@ -251,11 +248,10 @@ impl TaskRows {
                 })
                 .collect()
         };
-        let previous = self.tools.len();
         if full {
             self.tools.retain(|key, _| keys.contains(key));
         }
-        let mut tool_changed = previous != self.tools.len();
+        let mut changed = Vec::new();
         for (turn, call) in &keys {
             #[cfg(test)]
             {
@@ -264,10 +260,12 @@ impl TaskRows {
             let tool = task.tool(*turn, call);
             let key = (*turn, call.clone());
             if !tool.exists() {
-                tool_changed |= self.tools.remove(&key).is_some();
+                if self.tools.remove(&key).is_some() {
+                    changed.push(key);
+                }
                 continue;
             }
-            let cached = self.tools.entry(key).or_default();
+            let cached = self.tools.entry(key.clone()).or_default();
             let stdout = cached.stdout.update_tool(&tool, false, 20);
             let stderr = cached
                 .stderr
@@ -308,9 +306,74 @@ impl TaskRows {
                 cached.request = request.cloned();
                 cached.result = result.cloned();
                 cached.streamed = streamed;
-                tool_changed = true;
+                changed.push(key);
             }
         }
-        tool_changed
+        self.splice_tools(&changed, full);
+    }
+
+    fn splice_tools(&mut self, changed: &[(u64, Component)], full: bool) {
+        if !full && changed.is_empty() {
+            return;
+        }
+        if full {
+            self.tool_rows.clear();
+            for tool in self.tools.values() {
+                self.tool_rows.extend_from_slice(&tool.rows);
+                #[cfg(test)]
+                {
+                    self.tool_copies += tool.rows.len();
+                }
+            }
+        } else {
+            // Descending edits keep every old range valid until it is applied.
+            for key in changed.iter().rev() {
+                let old = self.tool_ranges.get(key).cloned().unwrap_or_else(|| {
+                    let at = self
+                        .tool_ranges
+                        .range(..key.clone())
+                        .next_back()
+                        .map_or(0, |(_, range)| range.end);
+                    at..at
+                });
+                let rows = self
+                    .tools
+                    .get(key)
+                    .map_or(&[][..], |tool| tool.rows.as_slice());
+                #[cfg(test)]
+                {
+                    self.tool_copies += rows.len();
+                }
+                self.tool_rows.splice(old.clone(), rows.iter().cloned());
+                let shift = isize::try_from(rows.len()).unwrap_or(isize::MAX)
+                    - isize::try_from(old.len()).unwrap_or(isize::MAX);
+                self.tool_ranges.remove(key);
+                for (_, range) in self
+                    .tool_ranges
+                    .range_mut((std::ops::Bound::Excluded(key), std::ops::Bound::Unbounded))
+                {
+                    *range = range.start.saturating_add_signed(shift)
+                        ..range.end.saturating_add_signed(shift);
+                }
+                if !rows.is_empty() {
+                    self.tool_ranges
+                        .insert(key.clone(), old.start..old.start + rows.len());
+                }
+                self.tool_edits.push((old, 0..0));
+            }
+        }
+        // Only offsets are rebased; unchanged styled rows and layouts survive.
+        if full {
+            self.tool_ranges.clear();
+            let mut at = 0;
+            for (key, tool) in &self.tools {
+                self.tool_ranges
+                    .insert(key.clone(), at..at + tool.rows.len());
+                at += tool.rows.len();
+            }
+        }
+        for (key, (_, new)) in changed.iter().rev().zip(&mut self.tool_edits) {
+            *new = self.tool_ranges.get(key).cloned().unwrap_or(0..0);
+        }
     }
 }
