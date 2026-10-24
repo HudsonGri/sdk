@@ -16,7 +16,7 @@ use windows_sys::Win32::Foundation::{
     unsafe_code,
     reason = "classify a native executable with GetBinaryTypeW"
 )]
-pub fn resolve_native_executable(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn resolve_native_executable(path: &Path) -> io::Result<PathBuf> {
     let path = path.canonicalize()?;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut kind = 0;
