@@ -471,9 +471,9 @@ async fn approvals_prompt_mode_drives_admission_and_default_policy() {
     server.abort();
     let _ = server.await;
 }
-#[derive(Default)]
 struct Followed {
-    request: Option<FileValue>,
+    root: Component,
+    requests: std::collections::BTreeMap<(Component, Component), FileValue>,
     submitted: bool,
     saw_decision: bool,
 }
@@ -481,12 +481,14 @@ impl Followed {
     fn observe(&mut self, case: Case, file: FileValue, stdin: &mut impl std::io::Write) {
         match &file.key {
             FileKey::Task {
-                file: TaskFile::ApprovalRequest(_),
-                ..
-            } => self.request = Some(file),
+                task,
+                file: TaskFile::ApprovalRequest(request),
+            } => {
+                self.requests.insert((task.clone(), request.clone()), file);
+            }
             FileKey::Task {
-                file: TaskFile::ApprovalReview { .. },
-                ..
+                task,
+                file: TaskFile::ApprovalReview { request, .. },
             } if case.human() && !self.submitted => {
                 if String::from_utf8_lossy(&file.bytes).contains("awaiting authenticated decision")
                 {
@@ -500,7 +502,7 @@ impl Followed {
                         "human"
                     };
                     let mut decision = decision(
-                        self.request.as_ref().unwrap(),
+                        self.requests.get(&(task.clone(), request.clone())).unwrap(),
                         principal,
                         !matches!(case, Case::HumanDeny | Case::ChildHumanDeny),
                     );
@@ -514,15 +516,31 @@ impl Followed {
                 }
             }
             FileKey::Task {
-                file: TaskFile::ApprovalDecision { .. },
-                ..
+                task,
+                file: TaskFile::ApprovalDecision { request, .. },
             } => {
-                self.saw_decision = true;
+                let request = self.requests.get(&(task.clone(), request.clone())).unwrap();
                 let value: ApprovalDecisionFile = serde_json::from_slice(&file.bytes).unwrap();
+                let descriptor = acyclic_harness::conversation::FileDescriptor::from_bytes(
+                    &request.bytes,
+                    "application/json",
+                    &mut None,
+                )
+                .unwrap();
+                assert!(
+                    value.binds(descriptor.sha256(), 1),
+                    "{case:?}: {:?}",
+                    file.key
+                );
+                let root_tool = (case.parent() || case.child_human()) && task == &self.root;
+                if !root_tool {
+                    self.saw_decision = true;
+                }
                 assert_eq!(
                     value.approved(),
-                    case.parent() || case.allowed(),
-                    "{case:?}"
+                    root_tool || case.allowed(),
+                    "{case:?}: {:?}",
+                    file.key
                 );
             }
             _ => {}
@@ -539,7 +557,15 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
     )
     .unwrap();
     let mut reader = BufReader::new(process.stdout.take().unwrap());
-    let mut followed = Followed::default();
+    let mut followed = Followed {
+        root: Component::new(
+            acyclic_harness::runtime::task_id_for_admission(operation).to_string(),
+        )
+        .unwrap(),
+        requests: std::collections::BTreeMap::new(),
+        submitted: false,
+        saw_decision: false,
+    };
     let mut lines = Vec::new();
     loop {
         let mut line = String::new();
@@ -612,7 +638,7 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
             "disconnected descendant must remain indeterminate"
         );
     }
-    if !case.parent() && !case.child_human() {
+    if !matches!(case, Case::ChildHumanDisconnected) {
         assert_eq!(
             followed.saw_decision,
             !case.forged(),
