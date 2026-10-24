@@ -9,6 +9,9 @@ use acyclic_stream::BoxProviderStream;
 use futures::StreamExt as _;
 use std::{borrow::Cow, collections::BTreeMap};
 
+mod exchange;
+pub(crate) use exchange::Exchange;
+
 pub(crate) fn generate(
     provider: &ResolvedModel,
     request: PreparedModelRequest,
@@ -39,56 +42,20 @@ pub(crate) fn generate_encoded<'a>(
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let input_bytes = body.len();
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut auth = auth;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut recovery = Recovery::default();
-        let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch);
-        let mut output = false;
-        loop {
-            let (failure, retry_after) = match send(provider, body.clone(), dispatch, request.request().conversation_id, auth.0.as_deref(), auth.1.as_deref()).await {
-                Err(error) => (Some(error), None),
-                Ok(response) if !(200..300).contains(&response.status) => {
-                    let retry_after = response.retry_after;
-                    (Some(crate::http_failure(response).await), retry_after)
-                }
-                Ok(response) => {
-                    let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                    let mut events = crate::stream::events_named(provider.config.adapter, response.body,
-                        provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
-                    let mut failure = None;
-                    while let Some(event) = events.next().await {
-                        match event {
-                            Ok(event) => {
-                                output = true;
-                                if let ModelEvent::Completed { metadata } = &event {
-                                    provider.observe(request, input_bytes, metadata)?;
-                                }
-                                yield event;
-                            }
-                            Err(error) => { failure = Some(error); break; }
-                        }
-                    }
-                    (failure, None)
-                }
-            };
-            let Some(error) = failure else { break; };
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(login) = &provider.codex_login {
-                recovery.output = output;
-                if recovery.retry(&error) {
-                    drop(error);
-                    let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
-                    auth = (Some(Cow::Owned(key)), account);
-                    continue;
-                }
+        let exchange = Exchange { provider, request, dispatch, body, auth, auth_custody: None, work: None };
+        let first = exchange.send().await;
+        let events = exchange.run(first, |response, key, account| {
+            let origin = provider.reasoning_origin(key, account);
+            Ok(crate::stream::events_named(provider.config.adapter, response.body,
+                provider.config.max_event_bytes, dispatch, Some(&names), Some(origin)))
+        });
+        futures::pin_mut!(events);
+        while let Some(event) = events.next().await {
+            let event = event?;
+            if let ModelEvent::Completed { metadata } = &event {
+                provider.observe(request, input_bytes, metadata)?;
             }
-            if let Some(wait) = redelivery.next(&error, retry_after, output) {
-                drop(error);
-                crate::deadline::timer(provider.transport.as_ref(), wait, None)?.await?;
-                continue;
-            }
-            Err(error)?;
+            yield event;
         }
 
     })

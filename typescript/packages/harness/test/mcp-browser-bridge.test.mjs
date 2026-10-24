@@ -49,7 +49,7 @@ test("browser I/O feeds the Rust JSON/SSE decoder at every chunk width", async (
         assert.equal(JSON.parse(result).content[0].text, "hello 🦀");
         assert.equal(captured.headers.get("mcp-session-id"), "session");
         assert.equal(captured.credentials, "omit");
-        assert.equal(captured.redirect, "manual");
+        assert.equal(captured.redirect, "error");
         assert.equal(captured.signal.aborted, true);
         assert.equal(await transport.reconcileJson(operation), undefined);
         assert.equal(calls, 1);
@@ -100,5 +100,54 @@ test("truncation, expired session and overflow retain explicit failure with no r
       assert.equal(await transport.reconcileJson(operation), undefined);
       assert.equal(calls, 1);
     } finally { transport.free(); }
+  }
+});
+
+
+test("MCP uses owned split deadlines through the full u32 range", async () => {
+  const originalSet = globalThis.setTimeout;
+  const originalClear = globalThis.clearTimeout;
+  const timers = new Map();
+  const intervals = [];
+  globalThis.setTimeout = (callback, milliseconds) => {
+    const handle = {};
+    intervals.push(milliseconds);
+    timers.set(handle, callback);
+    return handle;
+  };
+  globalThis.clearTimeout = handle => timers.delete(handle);
+  let exchange;
+  let transport;
+  try {
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    let calls = 0;
+    const provider = createBrowserMcpHttpProvider((_url, options) => {
+      calls++;
+      started();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, 2 ** 32 - 1);
+    exchange = provider(operation, transport.initializationRequest(operation, "fixture", "1"));
+    const rejected = assert.rejects(exchange.response);
+    await ready;
+    while (timers.size) {
+      assert.equal(timers.size, 1);
+      const [handle, callback] = timers.entries().next().value;
+      timers.delete(handle);
+      callback();
+    }
+    await rejected;
+    assert.deepEqual(intervals, [2 ** 31 - 1, 2 ** 31 - 1, 1]);
+    assert.equal(calls, 1);
+    exchange.cancel();
+    assert.equal(timers.size, 0);
+  } finally {
+    exchange?.cancel();
+    transport?.free();
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
   }
 });
