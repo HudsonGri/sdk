@@ -356,7 +356,7 @@ impl ProcessTree {
     }
 
     /// Advances queued stdin once without waiting. True means all bytes were
-    /// delivered and EOF sent; a peer closing early returns BrokenPipe.
+    /// delivered and EOF sent; a peer closing early returns `BrokenPipe`.
     pub fn pump_stdin(&mut self) -> io::Result<bool> {
         let Some(mut input) = self.queued_stdin.take() else {
             return Ok(true);
