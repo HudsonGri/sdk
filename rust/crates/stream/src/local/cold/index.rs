@@ -143,7 +143,7 @@ fn edge(
 }
 
 pub(super) fn get(
-    io: &mut impl PageIo,
+    io: &mut impl PageRead,
     root: Option<PageRef>,
     key: &[u8],
 ) -> Result<Option<PageRef>, LocalStreamError> {
@@ -284,7 +284,7 @@ pub(super) fn remove(
 }
 
 fn first(
-    io: &mut impl PageIo,
+    io: &mut impl PageRead,
     mut reference: PageRef,
     mut previous: Option<usize>,
 ) -> Result<Leaf, LocalStreamError> {
@@ -305,7 +305,7 @@ fn first(
 
 /// The first key strictly after `after`, or the first key when it is absent.
 pub(super) fn next(
-    io: &mut impl PageIo,
+    io: &mut impl PageRead,
     root: Option<PageRef>,
     after: Option<&[u8]>,
 ) -> Result<Option<Leaf>, LocalStreamError> {

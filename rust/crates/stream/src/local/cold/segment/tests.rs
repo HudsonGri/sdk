@@ -9,7 +9,7 @@ struct Active<'a> {
     segment: &'a mut Segment,
     work: Option<Arc<crate::memory::Work>>,
 }
-impl PageIo for Active<'_> {
+impl PageRead for Active<'_> {
     fn work(&self) -> Option<&Arc<crate::memory::Work>> {
         self.work.as_ref()
     }
@@ -25,6 +25,8 @@ impl PageIo for Active<'_> {
         }
         page::read(&self.segment.file, reference, self.work())
     }
+}
+impl PageIo for Active<'_> {
     fn append(&mut self, kind: PageKind, body: &[u8]) -> Result<PageRef, LocalStreamError> {
         self.segment.append(kind, body, self.work.as_ref())
     }
