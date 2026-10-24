@@ -374,6 +374,11 @@ enum WasmModelEvent {
         #[tsify(type = "WasmModelJsonValue")]
         metadata: serde_json::Value,
     },
+    Failed {
+        message: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        metadata: serde_json::Value,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
@@ -723,7 +728,7 @@ export type WasmModelContentInput = string | WasmModelContentPartInput | readonl
 type WasmModelCamelEvent<Event extends WasmModelEvent> =
     Event extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
-        : Event extends { readonly kind: "completed" }
+        : Event extends { readonly kind: "completed" | "failed" }
             ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
         : Event;
 export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
@@ -2579,7 +2584,8 @@ pub fn admit_model_event(
         ModelEvent::Reasoning { .. }
         | ModelEvent::ReasoningBlock { .. }
         | ModelEvent::ToolCall { .. }
-        | ModelEvent::Completed { .. } => prior_text_bytes,
+        | ModelEvent::Completed { .. }
+        | ModelEvent::Failed { .. } => prior_text_bytes,
     };
     if text_bytes > limits.file_bytes {
         return Err(JsValue::from_str("assistant output exceeds file limit"));
@@ -2605,6 +2611,9 @@ pub fn admit_model_event(
                 arguments,
             },
             ModelEvent::Completed { metadata } => WasmModelEvent::Completed { metadata },
+            ModelEvent::Failed { message, metadata } => {
+                WasmModelEvent::Failed { message, metadata }
+            }
         },
         state,
     };

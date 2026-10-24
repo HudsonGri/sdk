@@ -1067,6 +1067,9 @@ impl Executor for StockExecutor {
                             ));
                         }
                         ModelEvent::Completed { metadata } => completed = Some(metadata),
+                        ModelEvent::Failed { message, .. } => {
+                            return Err(Error::Invalid(message));
+                        }
                         ModelEvent::ReasoningBlock { block } => {
                             assistant_parts.push(ModelContentPart::Reasoning { block });
                         }
@@ -1241,6 +1244,14 @@ impl ModelEventAdmission {
                 }
             }
             ModelEvent::Completed { .. } => self.completed = true,
+            ModelEvent::Failed { message, .. } => {
+                if message.is_empty() || message.len() > 4096 {
+                    return Err(Error::Invalid(
+                        "model failure diagnostic is empty or exceeds 4096 bytes".into(),
+                    ));
+                }
+                self.completed = true;
+            }
             ModelEvent::ReasoningBlock { block } => block.validate_limits(limits)?,
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
         }
@@ -1678,6 +1689,121 @@ mod tests {
             base.with_limits(changed).execute(input, &journal).await,
             Err(Error::Conflict(_))
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_failure_is_durable_and_never_dispatches_partial_calls() -> Result<()> {
+        struct FailedModel(AtomicUsize, String, Value);
+        impl ModelProvider for FailedModel {
+            fn generate(
+                &self,
+                _: ModelRequest,
+            ) -> futures::stream::BoxStream<'_, Result<ModelEvent>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(stream::iter([
+                    Ok(ModelEvent::Content {
+                        delta: "partial".into(),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "one".into(),
+                        name: "example.echo".into(),
+                        arguments: json!({}),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "two".into(),
+                        name: "example.echo".into(),
+                        arguments: json!({}),
+                    }),
+                    Ok(ModelEvent::Failed {
+                        message: self.1.clone(),
+                        metadata: self.2.clone(),
+                    }),
+                ]))
+            }
+            fn reconcile(&self, _: ModelAttempt) -> BoxFuture<'_, Result<Option<Vec<ModelEvent>>>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(Error::Invalid("failed attempts must not reconcile".into())) })
+            }
+        }
+        let make = |message: &str, metadata: &Value| -> Result<_> {
+            let model = Arc::new(FailedModel(
+                AtomicUsize::new(0),
+                message.into(),
+                metadata.clone(),
+            ));
+            let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+            let mut tools = ToolRegistry::new();
+            tools.register(crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "Echo".into(),
+                    input_schema: json!({"type":"object"}),
+                    output_schema: json!({"type":"object"}),
+                },
+                executor: tool.clone(),
+                projection: Arc::new(Projection),
+            })?;
+            let executor = StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                None,
+            )?;
+            Ok((executor, model, tool))
+        };
+        for (diagnostic, metadata) in [
+            (
+                "model generation failed",
+                json!({"usage":{"input_tokens":11,"output_tokens":7},"finish_reason":"content_filter"}),
+            ),
+            (
+                "model completion usage missing; accounting unavailable",
+                json!({"usage":null,"error":{"code":"missing_usage"}}),
+            ),
+        ] {
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("go".into()),
+                selected_context: None,
+                max_steps: 4,
+            };
+            let (executor, model, tool) = make(diagnostic, &metadata)?;
+            assert!(matches!(executor.execute(input.clone(), &journal).await,
+            Err(Error::Invalid(message)) if message == diagnostic));
+            assert_eq!(model.0.load(Ordering::SeqCst), 1);
+            assert_eq!(tool.0.load(Ordering::SeqCst), 0);
+            let records = journal.replay(input.operation_id).await?;
+            assert!(
+                !records
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+            );
+            let Some(ExecutionEvent::Model { event, .. }) =
+                records.last().map(|record| &record.event)
+            else {
+                return Err(Error::Invalid("failure was not journaled".into()));
+            };
+            assert!(
+                matches!(load_json::<ModelEvent>(&journal, event).await?, ModelEvent::Failed { metadata: observed, .. }
+            if observed == metadata)
+            );
+            drop(executor);
+            let (cold, cold_model, cold_tool) = make(diagnostic, &metadata)?;
+            assert!(matches!(cold.execute(input, &journal).await,
+            Err(Error::Invalid(message)) if message == diagnostic));
+            assert_eq!(cold_model.0.load(Ordering::SeqCst), 0);
+            assert_eq!(cold_tool.0.load(Ordering::SeqCst), 0);
+        }
         Ok(())
     }
 

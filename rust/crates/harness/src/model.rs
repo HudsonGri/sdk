@@ -309,6 +309,15 @@ pub enum ModelEvent {
         /// Provider-owned usage and finish metadata.
         metadata: Value,
     },
+    /// Model terminated unsuccessfully. This terminal observation is durable and must never
+    /// authorize tool execution or a successful turn, including during journal replay.
+    Failed {
+        /// Nonempty diagnostic, at most 4096 UTF-8 bytes. This failure is terminal,
+        /// including during recovery; it does not authorize redispatch.
+        message: String,
+        /// Provider-owned usage and failure metadata, retained even when generation fails.
+        metadata: Value,
+    },
 }
 
 /// Durable identity and observed prefix of one interrupted model attempt.

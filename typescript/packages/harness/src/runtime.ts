@@ -2335,6 +2335,9 @@ export class AgentHarness {
           else if (admittedEvent.kind === "completed") {
             receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
           }
+          else if (admittedEvent.kind === "failed") {
+            throw new Error(admittedEvent.message);
+          }
         }
         if (!admission.completed) throw new Error("model attempt ended without completion");
         previousAdmission = admission;

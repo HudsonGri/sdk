@@ -86,6 +86,16 @@ test("Rust model event admission rejects duplicate tool identities and accepts c
   expect(() => contracts.admitModelEvent({ kind: "tool_call", callId: "bad/name", name: "lookup", arguments: {} }, limits)).toThrow("identity");
 });
 
+test("terminal failure preserves metadata and forbids further events", () => {
+  const event = { kind: "failed" as const, message: "accounting unavailable", metadata: { usage: null, error: { code: "refused" } } };
+  const admitted = contracts.admitModelEvent(event, DEFAULT_LIMITS);
+  expect(admitted.event).toEqual(event);
+  expect(admitted.state.completed).toBe(true);
+  expect(() => contracts.admitModelEvent({ kind: "completed", metadata: {} }, DEFAULT_LIMITS, admitted.state)).toThrow("after completion");
+  expect(() => contracts.admitModelEvent({ ...event, message: "" }, DEFAULT_LIMITS)).toThrow("diagnostic");
+  expect(() => contracts.admitModelEvent({ ...event, message: "é".repeat(2049) }, DEFAULT_LIMITS)).toThrow("4096");
+});
+
 test("canonical opaque reasoning survives WASM admission and remains bounded private context", () => {
   const block = { kind: "encrypted" as const, text: null,
     origin: { provider: "openai-responses", model: "gpt-6.1-sol", credential_scope: Array(32).fill(7) },

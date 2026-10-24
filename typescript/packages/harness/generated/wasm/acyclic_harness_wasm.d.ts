@@ -197,7 +197,7 @@ export type WasmModelContentInput = string | WasmModelContentPartInput | readonl
 type WasmModelCamelEvent<Event extends WasmModelEvent> =
 Event extends { readonly kind: "tool_call"; readonly call_id: string }
     ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
-    : Event extends { readonly kind: "completed" }
+    : Event extends { readonly kind: "completed" | "failed" }
     ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
     : Event;
 export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
@@ -459,7 +459,7 @@ export type WasmModelContent = string | WasmModelContentPart | WasmModelContentP
 
 export type WasmModelContentPart = { kind: "reasoning"; block: ReasoningBlock } | { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
 
-export type WasmModelEvent = { kind: "reasoning_block"; block: ReasoningBlock } | { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+export type WasmModelEvent = { kind: "reasoning_block"; block: ReasoningBlock } | { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue } | { kind: "failed"; message: string; metadata: WasmModelJsonValue };
 
 export type WasmModelRole = "system" | "user" | "assistant" | "tool";
 

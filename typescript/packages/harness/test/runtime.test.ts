@@ -1747,6 +1747,22 @@ describe("typed agent runtime", () => {
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
   });
 
+  test("terminal model failure never runs partial parallel calls or reports success", async () => {
+    let executions = 0;
+    const tool = defineTool<number, number>({ name: "echo", revision: "1", description: "echo", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (_context, input) => { executions++; return input; });
+    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+      async *generate() {
+        yield { kind: "content" as const, delta: "partial" };
+        yield { kind: "tool_call" as const, callId: "first", name: "echo", arguments: 1 };
+        yield { kind: "tool_call" as const, callId: "second", name: "echo", arguments: 2 };
+        yield { kind: "failed" as const, message: "model generation failed", metadata: { usage: { input_tokens: 11, output_tokens: 7 } } };
+      },
+      async reconcile() { throw new Error("failure must not retry"); },
+    }).build();
+    await expect(runtime.run("go")).rejects.toThrow("model generation failed");
+    expect(executions).toBe(0);
+  });
+
   test("canonical reasoning and parallel calls remain ordered before tool outputs", async () => {
     const block = (value: number) => ({ kind: "encrypted" as const, text: null,
       origin: { provider: "openai-responses", model: "gpt-6.1-sol", credential_scope: Array(32).fill(7) },
