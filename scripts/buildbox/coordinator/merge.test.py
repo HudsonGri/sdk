@@ -182,10 +182,11 @@ class MergeFence(unittest.TestCase):
                 (tools/'merge-hold.txt').write_text('')
                 (tools/'gate-prepare.py').write_text('raise SystemExit(0)\n')
                 (tools/'gate-merge.py').symlink_to(HERE/'gate-merge.py')
+                (tools/'gate-queue.py').symlink_to(HERE/'gate-queue.py')
                 record = f'python "{HERE}/gate-merge.py" record "$@" --repo "{self.repo}" --worktree "{self.repo}" --state "$GATE_STATE"\n'
                 (tools/'pr-gate.sh').write_text(('if [ "$#" -gt 1 ]; then exit 1; fi\n' if bisect else '')+record)
                 gh = bins/'gh'
-                gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo OPEN; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; [ "$3" != 1 ]; fi\n')
+                gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo READY; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; [ "$3" != 1 ]; fi\n')
                 gh.chmod(0o755)
                 (bins/'python').symlink_to(sys.executable)
                 env = {**os.environ, 'GATE_LANES':str(tools), 'GATE_STATE':str(state),

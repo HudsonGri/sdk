@@ -192,7 +192,7 @@ test('executor failure cannot inherit a successful Cargo payload verdict',()=>{
  try{
   fs.mkdirSync(path.join(cwd,'.codex-fleet'));
   const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
-  const block=source.slice(source.indexOf('# A successful payload'),source.indexOf('# A new strict target'));
+  const block=source.slice(source.indexOf('# A successful payload'),source.indexOf('# Validate an owned preflight'));
   assert.ok(block.includes('executor exited rc='));
   for(const [remote,payload,negative,expected] of [[1,0,false,4],[224,0,false,4],[224,101,false,4],[1,101,false,4],[-9,101,false,4],[101,101,false,0],[0,0,false,0],[1,0,true,0]]){
    const log=path.join(cwd,'gate.log');fs.writeFileSync(log,`GATE_DONE rc=${payload}\n`);
@@ -234,7 +234,7 @@ test('a cut-off executor is INFRA before any target-specific or source verdict',
   const source=fs.readFileSync(path.join(here,'coordinator/pr-gate.sh'),'utf8');
   const block=source.slice(source.indexOf('# An ended client stream'),source.indexOf('# A successful payload'));
   assert.ok(block.includes('executor/stream ended before payload completion'));
-  assert.ok(source.indexOf(block)<source.indexOf('windows_reason='));
+  assert.ok(source.indexOf(block)<source.indexOf('phase_reason='));
   for(const [payload,negative,expected] of [[false,false,4],[true,false,0],[false,true,0]]){
    const log=path.join(cwd,'gate.log');fs.writeFileSync(log,'test source_failure ... FAILED\n'+(payload?'GATE_DONE rc=101\n':''));
    const result=spawnSync('bash',['-c',`rc=1;n=1;log=${log}\n${negative?'':block}\nexit 0\n`],{encoding:'utf8',env:{...process.env,HOME:cwd}});
