@@ -16,6 +16,17 @@ impl Drop for Running {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn mounts_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(4))
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.starts_with(root))
+        .collect()
+}
+
 #[test]
 fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
     for signal in ["TERM", "INT"] {
@@ -74,6 +85,14 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
         std::fs::write(view.join("native-write.txt"), "captured before shutdown").unwrap();
         let child: TaskId = serde_json::from_value(child.get("task").unwrap().clone()).unwrap();
         host_files::request(&checkout, HostAction::Capture { task: child }).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let active = mounts_in(fixture.path());
+            assert!(
+                active.contains(&view),
+                "shutdown qualification requires a live child mount: {view:?}; active={active:?}"
+            );
+        }
         assert!(
             Command::new("kill")
                 .args(["-s", signal, &owner.0.id().to_string()])
@@ -96,8 +115,16 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        // This fails with ENOTCONN when process exit leaves a dead FUSE mount.
-        // It also checks root/private mounts, not only the child project mount.
+        #[cfg(target_os = "linux")]
+        {
+            let remaining = mounts_in(fixture.path());
+            assert!(
+                remaining.is_empty(),
+                "native workspace mount outlived its owner: {remaining:?}"
+            );
+        }
+        // Check kernel mount ownership before traversing directories, including
+        // root/private mounts as well as the child project mount.
         std::fs::remove_dir_all(&checkout).unwrap();
     }
 }
