@@ -204,12 +204,7 @@ impl CheckoutTools {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
-        std::fs::create_dir_all(&self.workspace.mount_directory).map_err(storage)?;
-        let path = self
-            .workspace
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
+        let (path, options) = task_view_destination(&self.workspace.mount_directory)?;
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -228,22 +223,15 @@ impl CheckoutTools {
             mount_directory: self.workspace.mount_directory.clone(),
             view,
             mounted: None,
-            identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
+            // Captured from the mounted root below, before any use.
+            identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
             filesystem: self.workspace.filesystem.clone(),
             store: self.workspace.store.clone(),
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
         let initial_view = selected.workspace().id();
-        let mounted = Arc::new(
-            selected
-                .mount(
-                    &path,
-                    MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-                )
-                .await
-                .map_err(storage)?,
-        );
+        let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
         workspace.path = path;
         workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
         workspace.mounted = Some(mounted);
@@ -305,20 +293,8 @@ impl CheckoutTools {
             return Ok(workspace.clone());
         }
         owner.verify_owner(None)?.await?;
-        std::fs::create_dir_all(&self.workspace.mount_directory).map_err(storage)?;
-        let path = self
-            .workspace
-            .mount_directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::create_dir(&path).map_err(storage)?;
-        let mounted = Arc::new(
-            view.mount(
-                &path,
-                MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-            )
-            .await
-            .map_err(storage)?,
-        );
+        let (path, options) = task_view_destination(&self.workspace.mount_directory)?;
+        let mounted = Arc::new(view.mount(&path, options).await.map_err(storage)?);
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -371,4 +347,28 @@ pub(super) async fn from_selected<T, V>(
     create: impl AsyncFnOnce(&V) -> Result<T>,
 ) -> Result<T> {
     create(active.unwrap_or(original)).await
+}
+
+/// A fresh destination for one task view's mount. On Linux every task view
+/// in the process is a namespace of the one shared native instance, so a
+/// view costs no mount, thread or descriptor of its own; elsewhere each view
+/// mounts its own instance on a fresh directory.
+fn task_view_destination(
+    mount_directory: &std::path::Path,
+) -> Result<(std::path::PathBuf, MountOptions)> {
+    let options = MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual);
+    let name = crate::identity::fresh_uuid().to_string();
+    #[cfg(target_os = "linux")]
+    {
+        let _ = mount_directory;
+        let root = acyclic_fs::shared_view_root().map_err(storage)?;
+        Ok((root.join(name), options.shared()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::fs::create_dir_all(mount_directory).map_err(storage)?;
+        let path = mount_directory.join(name);
+        std::fs::create_dir(&path).map_err(storage)?;
+        Ok((path, options))
+    }
 }

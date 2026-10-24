@@ -23,6 +23,9 @@ pub(super) struct FuseSessionState {
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
     pub(super) failure: Option<NativeMountError>,
+    /// This view's place in a shared instance; a shared view owns no mount,
+    /// device, worker or invalidator of its own.
+    pub(super) shared: Option<super::shared_instance::SharedFuseView>,
     pub(super) _allocation: NativeAllocation,
 }
 
@@ -52,6 +55,7 @@ impl FuseDevice {
 impl FuseSessionState {
     pub(super) fn is_retired(&self) -> bool {
         self.worker.is_none()
+            && self.shared.is_none()
             && !self.mount.pending()
             && self.before.is_none()
             && self
@@ -76,6 +80,13 @@ impl FuseSessionState {
             }
             Ok(())
         };
+        if let Some(mut view) = self.shared.take() {
+            // Retirement drains the view's admitted requests; dropping the
+            // last view of an instance unmounts it.
+            started(WriteOperations.delta(1))?;
+            view.retire();
+            drop(view);
+        }
         if self.mount.pending() {
             started(WriteOperations.delta(1))?;
             core.stop();
@@ -149,6 +160,9 @@ impl FuseSession {
                 "volume root is not a directory",
             ));
         }
+        if request.shared {
+            return Self::start_shared_into(request, source, work, out, retirement, root, stamp);
+        }
         let metadata = crate::native_host::unix_name(
             request.destination.as_os_str(),
             &mut &*work,
@@ -161,6 +175,7 @@ impl FuseSession {
             request.writable,
             metadata.st_uid,
             metadata.st_gid,
+            0,
             work,
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
@@ -197,6 +212,7 @@ impl FuseSession {
             retirement: None,
             cleanup,
             failure: None,
+            shared: None,
             _allocation: allocation,
         }));
         let job = (Arc::clone(&core), Arc::clone(&state));
@@ -277,6 +293,90 @@ impl FuseSession {
         result
     }
 
+    /// Lists the view in the shared instance at the destination's parent.
+    /// The view owns no mount, so it takes no destination fence; the shared
+    /// root holds the one fence.
+    fn start_shared_into(
+        request: &NativeMountRequest,
+        source: Arc<dyn MountFilesystem>,
+        work: &NativeMaterializationWork,
+        out: &mut Option<Self>,
+        retirement: &mut Option<NativeMountRetirement>,
+        root: MountLookup,
+        stamp: Option<ViewStamp>,
+    ) -> Result<(), NativeMountError> {
+        let _services = crate::native_mount::adapter::CallbackRuntime::existing()?;
+        work.state.lock().check()?;
+        let parent = request
+            .destination
+            .parent()
+            .ok_or(NativeMountError::InvalidDestination)?;
+        let metadata =
+            crate::native_host::unix_name(parent.as_os_str(), &mut &*work, fuse_recovery_stat)?;
+        let allocation = work.claim(
+            std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        )?;
+        let cleanup = work.reserve_work(WorkCounters {
+            backend_write_operations: 1,
+            backend_read_operations: 3,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let close_root = work.reserve_cleanup_write()?;
+        let bytes = request.destination.as_os_str().as_bytes();
+        let mut path = fuse_vec(bytes.len().checked_add(1).ok_or(WorkError::Overflow)?, work)?;
+        work.admit(Copy.delta(bytes.len() as u64))?;
+        path.extend_from_slice(bytes);
+        path.push(0);
+        work.record_admitted(Copy.delta(bytes.len() as u64))?;
+        let mut startup = None;
+        // The core observes its source before the view is listed, as a
+        // standalone mount's core does before it mounts.
+        let view = super::shared_instance::SharedFuseView::start(&request.destination, |base| {
+            let core = ProjectionCore::new(
+                source,
+                root,
+                stamp,
+                request.writable,
+                metadata.st_uid,
+                metadata.st_gid,
+                base,
+                work,
+            )?;
+            startup = Some(NativeMountWorkScope::new(&core, work)?);
+            let observer: Arc<dyn ViewObserver> = core.clone();
+            core.source
+                .observe_view_with_meter(Arc::downgrade(&observer), work)?;
+            Ok(core)
+        })?;
+        let core = Arc::clone(view.core());
+        let (directory, identity) =
+            crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
+        close_root.attempt(|| drop(directory)).1?;
+        let state = Arc::new(Mutex::new(FuseSessionState {
+            path,
+            before: None,
+            mount: super::mount::Mount::default(),
+            worker: None,
+            device: None,
+            notifier: None,
+            identity: Some(identity),
+            retirement: retirement.take(),
+            cleanup,
+            failure: None,
+            shared: Some(view),
+            _allocation: allocation,
+        }));
+        *out = Some(Self {
+            core,
+            state,
+            invalidator: None,
+        });
+        drop(startup);
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn prepare_destination_cleanup(
         &mut self,
         destination: &std::path::Path,
@@ -305,7 +405,9 @@ impl FuseSession {
     }
     pub(in crate::native_mount) fn native_root_identity(&self) -> Option<NativeRootIdentity> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.device.as_ref().and(state.identity)
+        (state.device.is_some() || state.shared.is_some())
+            .then_some(state.identity)
+            .flatten()
     }
     pub(in crate::native_mount) fn take_callback_failure(
         &self,
@@ -316,11 +418,8 @@ impl FuseSession {
         self.core.completed_callback_work()
     }
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .before
-            .is_none()
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.before.is_none() && state.shared.is_none()
     }
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -380,7 +479,7 @@ pub(super) const DYNAMIC_THRESHOLD: &str = "ACYCLIC_FS_TEST_DYNAMIC_MMAP_THRESHO
 /// resident whole, and kept by the process after their session ends. A fixed
 /// threshold keeps each buffer a mapping that only the requests the kernel
 /// writes into make resident, returned whole when its session ends.
-fn map_read_buffers() {
+pub(super) fn map_read_buffers() {
     #[cfg(test)]
     if std::env::var_os(DYNAMIC_THRESHOLD).is_some() {
         return;

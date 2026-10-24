@@ -72,6 +72,7 @@ fn scratch_mount_owner() -> TestResult {
                 volume_id: source.volume_id()?,
                 destination: PathBuf::from(root).join(SCRATCH_PATH),
                 writable: true,
+                shared: false,
             },
             source,
         )?;

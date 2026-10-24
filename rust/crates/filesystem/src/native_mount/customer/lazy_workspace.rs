@@ -177,6 +177,7 @@ where
             volume_id,
             destination: session_destination.0,
             writable: options.writable,
+            shared: options.shared,
         };
         let source = Arc::new(
             match LazyMountSource::new(
