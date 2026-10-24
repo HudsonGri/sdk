@@ -146,3 +146,35 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
     );
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_publication_witness_retains_only_its_domain_after_host_drop() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let file = storage
+        .stage(OperationId::new(), "custody", b"data", "text/plain", "custody")
+        .await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let baseline = work.live_allocation_bytes();
+    let host = FilesystemHost::new(
+        storage.host.filesystem.clone(),
+        file.volume().provider(),
+        Some(&io),
+    )?;
+    let reference = host.seal_publication(file, None)?;
+    let with_host = work.live_allocation_bytes();
+    assert!(with_host > baseline);
+    assert_eq!(io.owned_bytes()?, 0, "each output owns its transferred storage");
+    drop(io);
+    assert_eq!(work.live_allocation_bytes(), with_host);
+    drop(host);
+    let with_witness = work.live_allocation_bytes();
+    assert!(with_witness > baseline, "the witness keeps its domain funded");
+    assert!(with_witness < with_host, "host metadata retires independently");
+    drop(reference);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}

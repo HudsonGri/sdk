@@ -61,7 +61,7 @@ impl<A, O> FilesystemHost<A, O> {
                     .observer()?
                     .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
             }
-            let publication_domain = PublicationDomain::new(io)?;
+            let publication_domain = PublicationDomain::new(quota.work())?;
             let _native_custody = quota.into_custody()?;
             Ok(Arc::new(Self {
                 filesystem,
@@ -202,20 +202,19 @@ pub use volumes::{
 pub use directory::DirectoryOptions;
 
 impl PublicationDomain {
-    fn new(io: Option<&PreparationIo>) -> Result<Arc<Self>> {
+    fn new(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Arc<Self>> {
         let bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64;
-        if let Some(io) = io {
-            io.retain_owned(bytes)?;
-            io.allocation_attempt(bytes)?;
+        // The domain can outlive its host through a publication witness. Give
+        // it a separate quota so either construction failure releases only
+        // that owner's charges, and success transfers exactly its storage.
+        let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+        if quota.work().is_some() {
+            quota.observer()?.allocation_attempt(bytes)?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = io
-            .filter(|io| io.original_native_work().is_some())
-            .map(|io| io.take_native_custody(bytes))
-            .transpose()?;
+        let _custody = quota.into_custody()?;
         Ok(Arc::new(Self {
             #[cfg(not(target_arch = "wasm32"))]
-            _custody: custody,
+            _custody,
         }))
     }
 }
