@@ -190,9 +190,9 @@ impl CheckoutTools {
                 accounting,
                 acyclic_fs::lineage::LazyFork {
                     parent: view,
-                    destination: &name,
+
                     cut,
-                    key,
+
                     permit: PublicationPermit::Unrestricted,
                 },
                 |result| result.0.workspace(),

@@ -108,21 +108,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(LazyWorkspaceError::Concurrent);
         }
         drop(original);
-        let mut ready = false;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = self
-                .store
-                .load_lazy_workspace(child.id(), ctx)
-                .await?
-                .ok_or(LazyWorkspaceError::Concurrent)?;
-            let origin = self.fork_origin(&state, child.id(), operation)?;
-            if origin.snapshot != cut {
-                return Err(LazyWorkspaceError::Concurrent);
-            }
-            if origin.phase == LazyForkPhase::Committed {
-                ready = true;
-                break;
-            }
+        let state = self
+            .store
+            .load_lazy_workspace(child.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::Concurrent)?;
+        let origin = self.fork_origin(&state, child.id(), operation)?;
+        if origin.snapshot != cut {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        if origin.phase == LazyForkPhase::Prepared {
             let revision = state.revision;
             let next = LazyWorkspaceState {
                 revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
@@ -132,17 +127,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 }),
                 ..state
             };
-            if self
+            if !self
                 .store
                 .compare_and_swap_lazy_workspace(child.id(), revision, next, ctx)
                 .await?
             {
-                ready = true;
-                break;
+                // The immutable intent has one legal successor. A CAS loser
+                // authenticates that successor; it never republishes a changed
+                // pending intent at a newer revision.
+                let winner = self
+                    .store
+                    .load_lazy_workspace(child.id(), ctx)
+                    .await?
+                    .ok_or(LazyWorkspaceError::Concurrent)?;
+                let winner = self.fork_origin(&winner, child.id(), operation)?;
+                if winner.snapshot != cut || winner.phase != LazyForkPhase::Committed {
+                    return Err(LazyWorkspaceError::Concurrent);
+                }
             }
-        }
-        if !ready {
-            return Err(LazyWorkspaceError::Concurrent);
         }
         ctx.charge(WorkCounters {
             bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
@@ -184,45 +186,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(LazyWorkspaceError::Concurrent);
         }
         self.validate_snapshot(cut, ctx).await?;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
-                let origin = self.fork_origin(&state, id, operation)?;
-                return if origin.snapshot == cut {
-                    Ok(cut)
-                } else {
-                    Err(LazyWorkspaceError::Concurrent)
-                };
-            }
-            let hold = accounted!(ctx, |work, cancel| self
-                .workspace
-                .volume
-                .fs
-                .make_generation_durable(
-                    &self.workspace.volume,
-                    cut.authored_generation,
-                    work,
-                    cancel
-                ))?;
-            let state = LazyWorkspaceState {
-                parent_workspace_id: Some(self.workspace.id()),
-                fork_origin: Some(LazyForkOrigin {
-                    operation_id: operation,
-                    snapshot: cut,
-                    config: self.workspace.volume.config,
-                    phase: LazyForkPhase::Prepared,
-                }),
-                ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
+        if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
+            let origin = self.fork_origin(&state, id, operation)?;
+            return if origin.snapshot == cut {
+                Ok(cut)
+            } else {
+                Err(LazyWorkspaceError::Concurrent)
             };
-            let swapped = self
-                .store
-                .compare_and_swap_lazy_workspace(id, 0, state, ctx)
-                .await;
-            drop(hold);
-            if swapped? {
-                return Ok(cut);
-            }
         }
-        Err(LazyWorkspaceError::Concurrent)
+        let hold = accounted!(ctx, |work, cancel| self
+            .workspace
+            .volume
+            .fs
+            .make_generation_durable(
+                &self.workspace.volume,
+                cut.authored_generation,
+                work,
+                cancel
+            ))?;
+        let state = LazyWorkspaceState {
+            parent_workspace_id: Some(self.workspace.id()),
+            fork_origin: Some(LazyForkOrigin {
+                operation_id: operation,
+                snapshot: cut,
+                config: self.workspace.volume.config,
+                phase: LazyForkPhase::Prepared,
+            }),
+            ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
+        };
+        let swapped = self
+            .store
+            .compare_and_swap_lazy_workspace(id, 0, state, ctx)
+            .await;
+        drop(hold);
+        if swapped? {
+            return Ok(cut);
+        }
+        // A failed create CAS must have an authenticated winner. Absence is
+        // not permission to attempt another create under the same operation.
+        let winner = self
+            .store
+            .load_lazy_workspace(id, ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::Concurrent)?;
+        if self.fork_origin(&winner, id, operation)?.snapshot == cut {
+            Ok(cut)
+        } else {
+            Err(LazyWorkspaceError::Concurrent)
+        }
     }
     fn fork_origin(
         &self,

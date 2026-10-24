@@ -40,7 +40,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         self.apply_candidate(options, &candidate, permit).await
     }
 
-    /// Applies caller-selected immutable sides after validating that they
+    /// Applies caller-selected immutable sides after validating the exact conflict set.
     pub async fn apply_sides(
         &self,
         options: ApplyOptions,
@@ -60,14 +60,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         else {
             return Ok(initial);
         };
-        if truncated
-            || conflicts.len() != selections.len()
-            || conflicts
-                .iter()
-                .any(|conflict| !selections.contains_key(conflict))
-        {
-            return Err(DrivenJoinError::StaleCandidate);
-        }
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        validate_join_side_selections(&conflicts, truncated, &selections, &mut accounting)?;
         let resolutions = selections
             .into_iter()
             .map(|(conflict, side)| (conflict, side_resolution(side)))

@@ -1,6 +1,49 @@
 use super::*;
 use acyclic_stream::ProviderTask;
 
+/// Immutable creation inputs issued only after the graph records its intent.
+/// Canonical creators consume the graph's destination and operation identity
+/// instead of accepting a second, independently supplied set of bindings.
+///
+/// ```compile_fail
+/// use acyclic_fs::{Generation, IdempotencyKey};
+/// use acyclic_fs::lineage::WorkspaceForkCreation;
+/// fn forge<A, O>(generation: Generation<A, O>) {
+///     let _ = WorkspaceForkCreation {
+///         generation,
+///         destination: "unregistered-child",
+///         key: IdempotencyKey::new(),
+///     };
+/// }
+/// ```
+pub struct WorkspaceForkCreation<'a, A, O> {
+    pub(super) generation: crate::Generation<A, O>,
+    pub(super) destination: &'a str,
+    pub(super) key: IdempotencyKey,
+}
+
+impl<'a, A, O> WorkspaceForkCreation<'a, A, O> {
+    /// Borrows the graph's original authenticated parent generation.
+    pub const fn generation(&self) -> &crate::Generation<A, O> {
+        &self.generation
+    }
+
+    /// Borrows the exact destination recorded in the durable intent.
+    pub const fn destination(&self) -> &'a str {
+        self.destination
+    }
+
+    /// Returns the exact operation identity recorded in the durable intent.
+    pub const fn key(&self) -> IdempotencyKey {
+        self.key
+    }
+
+    /// Moves the generation and its immutable creation bindings together.
+    pub fn into_parts(self) -> (crate::Generation<A, O>, &'a str, IdempotencyKey) {
+        (self.generation, self.destination, self.key)
+    }
+}
+
 /// The physical creation phase inside a durable graph fork.
 ///
 /// Implementations borrow the original accounting for the complete future.
@@ -10,7 +53,7 @@ pub trait WorkspaceForkCreator<A: AsyncAuthorityStore, O: AsyncObjectStore, T, E
     /// Creates or reopens the child from the graph's immutable parent cut.
     fn create(
         self,
-        generation: crate::Generation<A, O>,
+        creation: WorkspaceForkCreation<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> impl Future<Output = Result<T, E>> + ProviderTask;
 }
@@ -19,10 +62,6 @@ pub trait WorkspaceForkCreator<A: AsyncAuthorityStore, O: AsyncObjectStore, T, E
 pub struct GenerationFork<'a, A, O> {
     /// Parent authenticated by the graph.
     pub parent: &'a Workspace<A, O>,
-    /// Canonical child name.
-    pub destination: &'a str,
-    /// Stable creation identity.
-    pub key: IdempotencyKey,
     /// Authority used for physical publication.
     pub permit: crate::PublicationPermit,
 }
@@ -53,7 +92,7 @@ pub struct GuardedGenerationFork<'a, A, O, G> {
 
 async fn create_generation<A, O, G, E>(
     fork: GenerationFork<'_, A, O>,
-    generation: crate::Generation<A, O>,
+    creation: WorkspaceForkCreation<'_, A, O>,
     paths: Option<Vec<String>>,
     guard: G,
     accounting: &mut KernelAccounting<'_>,
@@ -65,7 +104,8 @@ where
     G::Error: Into<E>,
     E: From<crate::FsError> + From<WorkspaceError> + Send,
 {
-    let options = crate::ForkOptions::from_generation(generation, fork.key);
+    let (generation, destination, key) = creation.into_parts();
+    let options = crate::ForkOptions::from_generation(generation, key);
     let options = match paths {
         Some(paths) => options.inherit_paths(paths),
         None => options,
@@ -73,7 +113,7 @@ where
     crate::accounted_fs!(accounting, E, |work, cancellation| fork
         .parent
         .fork::<_, _, E>(
-            fork.destination,
+            destination,
             options,
             fork.permit,
             work,
@@ -87,10 +127,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<WorkspaceError>>
 {
     async fn create(
         self,
-        generation: crate::Generation<A, O>,
+        creation: WorkspaceForkCreation<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Workspace<A, O>, E> {
-        create_generation::<_, _, _, WorkspaceError>(self, generation, None, (), accounting)
+        create_generation::<_, _, _, WorkspaceError>(self, creation, None, (), accounting)
             .await
             .map_err(E::from)
     }
@@ -107,10 +147,10 @@ where
 {
     async fn create(
         self,
-        generation: crate::Generation<A, O>,
+        creation: WorkspaceForkCreation<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Workspace<A, O>, E> {
-        create_generation(self.fork, generation, self.paths, self.guard, accounting).await
+        create_generation(self.fork, creation, self.paths, self.guard, accounting).await
     }
 }
 
@@ -118,12 +158,8 @@ where
 pub struct LazyFork<'a, A, O, D, S> {
     /// Parent sparse view authenticated by the graph.
     pub parent: &'a crate::LazyWorkspace<A, O, D, S>,
-    /// Canonical child name.
-    pub destination: &'a str,
     /// Persisted parent cut, including its source and overlay.
     pub cut: crate::LazySnapshotRef,
-    /// Stable creation identity.
-    pub key: IdempotencyKey,
     /// Authority used for physical publication.
     pub permit: crate::PublicationPermit,
 }
@@ -140,22 +176,17 @@ where
 {
     async fn create(
         self,
-        generation: crate::Generation<A, O>,
+        creation: WorkspaceForkCreation<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(crate::LazyWorkspace<A, O, D, S>, crate::LazySnapshotRef), E> {
+        let (generation, destination, key) = creation.into_parts();
         if generation.workspace_id() != self.cut.workspace_id
             || generation.id() != self.cut.authored_generation
         {
             return Err(crate::LazyWorkspaceError::OriginalSnapshotUnavailable.into());
         }
         self.parent
-            .fork_snapshot(
-                self.destination,
-                self.cut,
-                self.key,
-                self.permit,
-                accounting,
-            )
+            .fork_snapshot(destination, self.cut, key, self.permit, accounting)
             .await
             .map_err(E::from)
     }

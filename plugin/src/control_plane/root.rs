@@ -75,7 +75,13 @@ impl ControlPlane {
                 return Err("pending root workspace identity changed".to_owned());
             }
             WorkspaceGraph::new(self.store.clone())
-                .register_root(&workspace)
+                .register_root(
+                    &workspace,
+                    &mut acyclic_fs::facade::FsWork::accounting(
+                        &acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    ),
+                )
                 .await
                 .map_err(display)?;
             WorkspaceContextRegistry::new(self.store.clone())
@@ -399,7 +405,13 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
                 WorkspaceGraph::new(self.store.clone())
-                    .register_root(workspace.workspace())
+                    .register_root(
+                        workspace.workspace(),
+                        &mut acyclic_fs::facade::FsWork::accounting(
+                            &acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        ),
+                    )
                     .await
                     .map_err(display)?;
                 let key = root_key(root_id);
@@ -517,7 +529,13 @@ impl ControlPlane {
             return Err("injected failure after root registration intent".to_owned());
         }
         WorkspaceGraph::new(store.clone())
-            .register_root(workspace.workspace())
+            .register_root(
+                workspace.workspace(),
+                &mut acyclic_fs::facade::FsWork::accounting(
+                    &acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                ),
+            )
             .await
             .map_err(display)?;
         WorkspaceContextRegistry::new(store.clone())

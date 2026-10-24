@@ -114,9 +114,9 @@ impl ControlPlane {
                             &mut accounting,
                             acyclic_fs::lineage::LazyFork {
                                 parent: &parent_lazy,
-                                destination: &child_name,
+
                                 cut,
-                                key,
+
                                 permit: acyclic_fs::PublicationPermit::Unrestricted,
                             },
                             |result| result.0.workspace(),

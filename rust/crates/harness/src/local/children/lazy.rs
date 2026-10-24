@@ -121,7 +121,11 @@ impl
 {
     async fn create(
         self,
-        _generation: acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
+        creation: acyclic_fs::lineage::WorkspaceForkCreation<
+            '_,
+            LocalAuthorityBackend,
+            LocalObjectBackend,
+        >,
         accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
     ) -> Result<(ForkReport, workspace::View)> {
         let Self {
@@ -135,6 +139,16 @@ impl
             destination,
             operation,
         } = self;
+        if creation.destination() != destination
+            || creation.key().into_bytes() != operation.into_bytes()
+            || creation.generation().workspace_id() != selected.workspace_id
+            || creation.generation().id() != selected.authored_generation
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "prepared child differs from its durable fork intent",
+            });
+        }
         let report = preparer
             .prepare_for_task(request, preparation, Some(io))
             .await?;

@@ -41,28 +41,21 @@ impl ControlPlane {
                 "cannot discard an agent subtree while filesystem tools are active".to_owned(),
             );
         }
-        let subtree_contexts = subtree
-            .iter()
-            .filter_map(|agent_id| self.state.routes.get(agent_id))
-            .map(|route| WorkspaceContextId::from_bytes(route.context_id))
-            .collect::<BTreeSet<_>>();
-        for operation_id in
-            <LocalCoreStateStore as acyclic_fs::MultiRootPublicationStore>::list_operations(
+        for member in &subtree {
+            let member_route = self
+                .state
+                .routes
+                .get(member)
+                .ok_or_else(|| "discard subtree route disappeared".to_owned())?;
+            let parent = self.context_for_agent(&member_route.parent_agent_id)?;
+            if acyclic_fs::multi_root::context_has_publication(
                 &self.store,
+                WorkspaceContextId::from_bytes(member_route.context_id),
+                Some(parent),
             )
             .await
             .map_err(display)?
-        {
-            let publication = <LocalCoreStateStore as acyclic_fs::MultiRootPublicationStore>::load(
-                &self.store,
-                operation_id,
-            )
-            .await
-            .map_err(display)?;
-            if publication.is_some_and(|publication| {
-                subtree_contexts.contains(&publication.candidate.plan.child_context_id)
-                    || subtree_contexts.contains(&publication.candidate.plan.parent_context_id)
-            }) {
+            {
                 return Err(
                     "cannot discard an agent subtree while publication recovery is pending"
                         .to_owned(),

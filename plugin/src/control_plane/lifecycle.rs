@@ -324,11 +324,8 @@ impl ControlPlane {
 async fn wait_for_standalone_release(
     barriers: Vec<acyclic_native_runtime::OwnershipReleaseBarrier>,
 ) -> Result<(), String> {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while barriers.iter().any(|barrier| !barrier.is_released()) {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .map_err(|_| "standalone control retained filesystem or core-state handles".to_owned())
+    for barrier in barriers {
+        wait_for_root_release(Some(barrier)).await?;
+    }
+    Ok(())
 }

@@ -12,7 +12,9 @@ use std::future::Future;
 use thiserror::Error;
 
 mod creators;
-pub use creators::{GenerationFork, GuardedGenerationFork, LazyFork, WorkspaceForkCreator};
+pub use creators::{
+    GenerationFork, GuardedGenerationFork, LazyFork, WorkspaceForkCreation, WorkspaceForkCreator,
+};
 
 const LINEAGE_VERSION: u32 = 2;
 
@@ -218,46 +220,46 @@ impl<S> WorkspaceGraph<S> {
 }
 
 impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
-    /// Registers a root workspace with no publication parent.
+    /// Registers a root workspace with no publication parent. Reads, copies and
+    /// durable publication use the original accounting; returned metadata keeps
+    /// its allocation custody until retired by that same accounting context.
     pub async fn register_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &self,
         workspace: &Workspace<A, O>,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
         if let Some(existing) = self
             .store
-            .load(workspace.id())
-            .await
-            .map_err(WorkspaceLineageError::Store)?
+            .load_accounted(workspace.id(), accounting)
+            .await?
         {
-            if lineage_shape_is_valid(&existing)
-                && existing.ready
-                && existing.workspace_id == workspace.id()
-                && existing.workspace_name == workspace.name().as_str()
-                && existing.parent_workspace_id.is_none()
-                && existing.parent_workspace_name.is_none()
-            {
+            let valid = lineage_shape_accounted(&existing.value, accounting).map(|valid| {
+                valid
+                    && existing.value.ready
+                    && existing.value.workspace_id == workspace.id()
+                    && existing.value.workspace_name == workspace.name().as_str()
+                    && existing.value.parent_workspace_id.is_none()
+                    && existing.value.parent_workspace_name.is_none()
+            });
+            if matches!(valid, Ok(true)) {
                 return Ok(existing);
             }
+            existing.retire(accounting)?;
+            valid?;
             return Err(WorkspaceLineageError::ConflictingRegistration);
         }
-        let generation = workspace
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        self.register(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: workspace.id(),
-            workspace_name: workspace.name().as_str().to_owned(),
-            parent_workspace_id: None,
-            parent_workspace_name: None,
-            creation_operation: None,
-            fork_generation: generation.id(),
-            initial_generation: generation.id(),
-        })
-        .await
+        let generation = crate::accounted_fs!(
+            accounting,
+            WorkspaceLineageError<S::Error>,
+            |work, cancellation| workspace.head(work, cancellation)
+        )?;
+        let record = work::new_root(workspace, generation.id(), accounting)?;
+        let registered = self.register(&record.value, accounting).await;
+        if let Err(error) = registered {
+            record.retire(accounting)?;
+            return Err(error);
+        }
+        Ok(record)
     }
 
     /// Executes an SDK-owned creator between durable intent and lineage publication.
@@ -295,7 +297,16 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 )
             )
             .map_err(E::from)?;
-            let output = create.create(generation, accounting).await?;
+            let output = create
+                .create(
+                    WorkspaceForkCreation {
+                        generation,
+                        destination: &planned.value.workspace_name,
+                        key: idempotency_key,
+                    },
+                    accounting,
+                )
+                .await?;
             self.finish_fork(
                 parent,
                 workspace(&output),
@@ -322,6 +333,22 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         selected: Option<GenerationId>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Owned<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+        // Physical existence alone cannot turn an unregistered workspace, or
+        // an interrupted parent's creation, into an admitted fork parent.
+        // Observe its ready registration before creating any child intent.
+        let registered = self
+            .store
+            .load_accounted(parent.id(), accounting)
+            .await?
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        let valid = lineage_shape_accounted(&registered.value, accounting);
+        let exact_parent = registered.value.ready
+            && registered.value.workspace_id == parent.id()
+            && registered.value.workspace_name == parent.name().as_str();
+        registered.retire(accounting)?;
+        if !valid? || !exact_parent {
+            return Err(WorkspaceLineageError::IncompatibleState);
+        }
         let (destination, child_id) =
             parent
                 .volume
@@ -535,67 +562,55 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
 
     async fn register(
         &self,
-        record: WorkspaceLineageRecord,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        if !lineage_shape_is_valid(&record) {
+        record: &WorkspaceLineageRecord,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), WorkspaceLineageError<S::Error>> {
+        if !lineage_shape_accounted(record, accounting)? {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
         if let Some(existing) = self
             .store
-            .load(record.workspace_id)
-            .await
-            .map_err(WorkspaceLineageError::Store)?
+            .load_accounted(record.workspace_id, accounting)
+            .await?
         {
-            if lineage_shape_is_valid(&existing) && same_lineage(&existing, &record) {
-                if record.ready && !existing.ready {
-                    return self.promote_ready(record).await;
+            let valid = lineage_shape_accounted(&existing.value, accounting)
+                .map(|valid| valid && same_lineage(&existing.value, record));
+            let pending = !existing.value.ready;
+            existing.retire(accounting)?;
+            if valid? {
+                if record.ready && pending {
+                    return work::promote(self, record, record.initial_generation, accounting)
+                        .await;
                 }
-                return Ok(existing);
+                return Ok(());
             }
             return Err(WorkspaceLineageError::ConflictingRegistration);
         }
         if self
             .store
-            .compare_and_swap(record.workspace_id, 0, record.clone())
-            .await
-            .map_err(WorkspaceLineageError::Store)?
+            .compare_accounted(record.workspace_id, 0, record, accounting)
+            .await?
         {
-            return Ok(record);
+            return Ok(());
         }
         let existing = self
             .store
-            .load(record.workspace_id)
-            .await
-            .map_err(WorkspaceLineageError::Store)?
+            .load_accounted(record.workspace_id, accounting)
+            .await?
             .ok_or(WorkspaceLineageError::IncompatibleState)?;
-        if lineage_shape_is_valid(&existing)
-            && same_lineage(&existing, &record)
-            && existing.ready == record.ready
-        {
-            Ok(existing)
-        } else if lineage_shape_is_valid(&existing)
-            && same_lineage(&existing, &record)
-            && record.ready
-            && !existing.ready
-        {
-            self.promote_ready(record).await
+        let valid = lineage_shape_accounted(&existing.value, accounting)
+            .map(|valid| valid && same_lineage(&existing.value, record));
+        let ready = existing.value.ready;
+        existing.retire(accounting)?;
+        if !valid? {
+            Err(WorkspaceLineageError::ConflictingRegistration)
+        } else if ready == record.ready {
+            Ok(())
+        } else if record.ready && !ready {
+            work::promote(self, record, record.initial_generation, accounting).await
         } else {
             Err(WorkspaceLineageError::ConflictingRegistration)
         }
-    }
-
-    async fn promote_ready(
-        &self,
-        ready: WorkspaceLineageRecord,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        if !ready.ready || !lineage_shape_is_valid(&ready) {
-            return Err(WorkspaceLineageError::IncompatibleState);
-        }
-        use crate::facade::FsWork as _;
-        let cancellation = CancellationToken::new();
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-        work::promote(self, &ready, ready.initial_generation, &mut accounting).await?;
-        self.required(ready.workspace_id).await
     }
 }
 

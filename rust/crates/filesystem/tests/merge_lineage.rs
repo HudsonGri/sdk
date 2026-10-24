@@ -387,7 +387,15 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    graph.register_root(&root).await?;
+    graph
+        .register_root(
+            &root,
+            &mut acyclic_fs::facade::FsWork::accounting(
+                &acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ),
+        )
+        .await?;
     use acyclic_fs::facade::FsWork as _;
     let cancellation = CancellationToken::new();
     let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -401,8 +409,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
             &mut accounting,
             acyclic_fs::lineage::GenerationFork {
                 parent: &root,
-                destination: "graph-child",
-                key: child_key,
+
                 permit: acyclic_fs::PublicationPermit::Unrestricted,
             },
             |child| child,
@@ -418,8 +425,7 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
             &mut accounting,
             acyclic_fs::lineage::GenerationFork {
                 parent: &child,
-                destination: "graph-grandchild",
-                key: grandchild_key,
+
                 permit: acyclic_fs::PublicationPermit::Unrestricted,
             },
             |child| child,

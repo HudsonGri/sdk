@@ -88,7 +88,7 @@ pub(super) fn reverse_sort(
     allocation: &mut KernelOwnedAllocation,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    crate::kernel::sort_by_with_accounting(records, accounting, |left, right| {
+    crate::kernel::sort_by_accounted(records, accounting, |left, right| {
         left.0.cmp(&right.0)
     })?;
     let mut retained = 0_usize;
@@ -121,7 +121,7 @@ pub(super) fn reverse_sort(
     }
     records.truncate(retained);
     for (_, entries) in records {
-        crate::kernel::sort_by_with_accounting(entries, accounting, |left, right| {
+        crate::kernel::sort_by_accounted(entries, accounting, |left, right| {
             left.0.cmp(&right.0)
         })?;
     }

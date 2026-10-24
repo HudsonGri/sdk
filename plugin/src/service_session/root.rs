@@ -246,7 +246,10 @@ impl PiSession {
                 .ok_or_else(|| invalid("Pi created root disappeared"))?;
             drop(
                 WorkspaceGraph::new(self.resources.store.materialization(work.clone()))
-                    .register_root(handle.workspace.workspace())
+                    .register_root(
+                        handle.workspace.workspace(),
+                        &mut acyclic_fs::facade::FsWork::accounting(&work, work.cancellation()),
+                    )
                     .await
                     .map_err(|source| match source {
                         acyclic_fs::WorkspaceLineageError::Workspace(source) => source.into(),

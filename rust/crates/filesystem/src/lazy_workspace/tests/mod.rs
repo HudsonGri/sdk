@@ -3,6 +3,8 @@ use crate::demand::{DemandFile, SourceDirectoryEntry, SourceDirectoryPage, Sourc
 use crate::kernel::{NameEncoding, OwnedSourceChunk};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+mod fork_admission;
+
 macro_rules! accounting {
     () => {
         &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -323,3 +325,4 @@ mod mount;
 mod policy;
 mod recovery;
 mod snapshot;
+mod source_deletion;

@@ -35,9 +35,15 @@ impl NativeWorkspaceGraph {
         workspace: &NativeWorkspace,
     ) -> Result<NativeWorkspaceLineageRecord> {
         self.inner
-            .register_root(&workspace.inner)
+            .register_root(
+                &workspace.inner,
+                &mut acyclic_fs::facade::FsWork::accounting(
+                    &acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                ),
+            )
             .await
-            .map(native_workspace_lineage_record)
+            .map(|record| native_workspace_lineage_record(record.value))
             .map_err(napi_error)
     }
 
@@ -122,7 +128,7 @@ async fn fork_accounted<'original>(
     graph.fork::<_, _, _, acyclic_fs::WorkspaceLineageError<acyclic_fs::LocalCoreStateStoreError>, _>(
         &parent.inner, destination, key, None, accounting,
         acyclic_fs::lineage::GenerationFork {
-            parent: &parent.inner, destination, key,
+            parent: &parent.inner,
             permit: acyclic_fs::PublicationPermit::Unrestricted,
         },
         |child| child,

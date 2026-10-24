@@ -50,6 +50,8 @@ mod rebase;
 mod regular_mutation;
 mod retention;
 mod search;
+mod sort;
+pub(crate) use sort::sort_by_accounted;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 mod source_state;
 mod transfer;
@@ -81,7 +83,7 @@ pub(crate) use merge::{
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
-pub(crate) use persistent_batch::{IndexedKey, sort_by_with_accounting, sort_indexed};
+pub(crate) use persistent_batch::{IndexedKey, sort_indexed};
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };

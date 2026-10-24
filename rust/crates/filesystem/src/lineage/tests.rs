@@ -47,6 +47,16 @@ async fn guarded_graph_fork_retains_issued_guard_paths_and_original_cut() {
         parent.write_text("/selected", "original").await.unwrap();
         parent.write_text("/excluded", "private").await.unwrap();
         let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        graph
+            .register_root(
+                &parent,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
+            )
+            .await
+            .unwrap();
         #[cfg(not(target_arch = "wasm32"))]
         let original = native.then(|| {
             crate::NativeMaterializationWork::new(
@@ -72,8 +82,7 @@ async fn guarded_graph_fork_retains_issued_guard_paths_and_original_cut() {
                     &mut accounting,
                     GenerationFork {
                         parent: &parent,
-                        destination: "guard-child",
-                        key,
+
                         permit: crate::PublicationPermit::Unrestricted,
                     }
                     .guarded(
@@ -124,6 +133,107 @@ async fn guarded_graph_fork_retains_issued_guard_paths_and_original_cut() {
     }
 }
 
+#[tokio::test]
+async fn graph_fork_requires_the_exact_ready_parent_before_admitting_child_intent() {
+    for native in [false, true] {
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let parent = fs
+            .create_workspace("parent-admission", WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value;
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        for state in 0..4 {
+            if state != 0 {
+                let head = parent
+                    .head(WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .unwrap()
+                    .value;
+                let root = WorkspaceLineageRecord {
+                    version: LINEAGE_VERSION,
+                    revision: state,
+                    ready: state != 1,
+                    workspace_id: parent.id(),
+                    workspace_name: if state == 2 {
+                        "another-parent".into()
+                    } else {
+                        parent.name().as_str().into()
+                    },
+                    parent_workspace_id: None,
+                    parent_workspace_name: None,
+                    creation_operation: None,
+                    fork_generation: head.id(),
+                    initial_generation: head.id(),
+                };
+                assert!(
+                    graph
+                        .store()
+                        .compare_and_swap(parent.id(), state - 1, root)
+                        .await
+                        .unwrap()
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let original = native.then(|| {
+                crate::NativeMaterializationWork::new(
+                    crate::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .unwrap()
+            });
+            let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = &original {
+                accounting = KernelAccounting::native(original, &cancellation);
+            }
+            let called = std::sync::atomic::AtomicBool::new(false);
+            let key = IdempotencyKey::from_bytes([91; 16]);
+            let result: Result<_, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>> = graph
+                .fork(
+                    &parent,
+                    "parent-admission-child",
+                    key,
+                    None,
+                    &mut accounting,
+                    TestFork {
+                        parent: &parent,
+                        destination: "parent-admission-child",
+                        key,
+                        cut: None,
+                        interrupted: None,
+                        called: Some(&called),
+                        refuse: false,
+                    },
+                    |child| child,
+                )
+                .await;
+            if state == 3 {
+                result.unwrap();
+                assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(WorkspaceLineageError::IncompatibleState)
+                ));
+                assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+                let child_id = fs.workspace_id("parent-admission-child").unwrap();
+                assert!(graph.store().load(child_id).await.unwrap().is_none());
+                assert!(
+                    fs.open_workspace(
+                        "parent-admission-child",
+                        WorkBudget::UNBOUNDED,
+                        &cancellation
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+        }
+    }
+}
+
 fn workspace(name: &str) -> WorkspaceId {
     WorkspaceId::derive(
         [9; 16],
@@ -139,6 +249,81 @@ fn workspace(name: &str) -> WorkspaceId {
     )
     .expect("unbounded workspace identity")
     .value
+}
+
+#[tokio::test]
+async fn root_registration_cannot_reset_its_original_admission_budget() {
+    for native in [false, true] {
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let root = fs
+            .create_workspace("budget-root", WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value;
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        let mut budget = crate::performance::BOUNDARY_BUDGET;
+        budget.items_examined = 0;
+        let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+        #[cfg(not(target_arch = "wasm32"))]
+        let original =
+            native.then(|| crate::NativeMaterializationWork::new(budget, &cancellation).unwrap());
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = &original {
+            accounting = KernelAccounting::native(original, &cancellation);
+        }
+        assert!(
+            graph.register_root(&root, &mut accounting).await.is_err(),
+            "native={native}"
+        );
+        assert!(graph.store().load(root.id()).await.unwrap().is_none());
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = &original {
+            assert_eq!(original.receipt().backend_write_operations, 0);
+            assert_eq!(
+                original.live_allocation_bytes(),
+                crate::NativeMaterializationWork::accounting_state_bytes()
+            );
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn root_registration_retains_exact_native_metadata_custody_through_reopen() {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let root = fs
+        .create_workspace("owned-root", WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .unwrap()
+        .value;
+    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    let original =
+        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
+            .unwrap();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let baseline = original.live_allocation_bytes();
+    let registered = graph.register_root(&root, &mut accounting).await.unwrap();
+    let initial = registered.value.initial_generation;
+    let bytes = root.name().as_str().len() as u64;
+    let retained = MemoryWorkspaceLineageStore::node_bytes() + bytes;
+    assert_eq!(
+        original.live_allocation_bytes(),
+        baseline + retained + bytes
+    );
+    registered.retire(&mut accounting).unwrap();
+    assert_eq!(original.live_allocation_bytes(), baseline + retained);
+    root.write_text("/later", "newer head").await.unwrap();
+    let loaded = graph.register_root(&root, &mut accounting).await.unwrap();
+    assert_eq!(loaded.value.initial_generation, initial);
+    assert_eq!(
+        original.live_allocation_bytes(),
+        baseline + retained + bytes
+    );
+    loaded.retire(&mut accounting).unwrap();
+    drop(graph);
+    assert_eq!(original.live_allocation_bytes(), baseline);
 }
 
 fn generation(byte: u8) -> GenerationId {
@@ -208,7 +393,12 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
     };
 
     assert!(matches!(
-        graph.register(malformed).await,
+        graph
+            .register(
+                &malformed,
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            )
+            .await,
         Err(WorkspaceLineageError::IncompatibleState)
     ));
 }
@@ -220,42 +410,48 @@ async fn direct_parent_authorization_and_recursive_walk_are_durable() {
     let child = workspace("child");
     let grandchild = workspace("grandchild");
     graph
-        .register(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: root,
-            workspace_name: "root".to_owned(),
-            parent_workspace_id: None,
-            parent_workspace_name: None,
-            creation_operation: None,
-            fork_generation: generation(1),
-            initial_generation: generation(1),
-        })
+        .register(
+            &WorkspaceLineageRecord {
+                version: LINEAGE_VERSION,
+                revision: 1,
+                ready: true,
+                workspace_id: root,
+                workspace_name: "root".to_owned(),
+                parent_workspace_id: None,
+                parent_workspace_name: None,
+                creation_operation: None,
+                fork_generation: generation(1),
+                initial_generation: generation(1),
+            },
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+        )
         .await
         .expect("root registration");
     for (workspace_id, parent_workspace_id, byte) in [(child, root, 2), (grandchild, child, 3)] {
         graph
-            .register(WorkspaceLineageRecord {
-                version: LINEAGE_VERSION,
-                revision: 1,
-                ready: true,
-                workspace_id,
-                workspace_name: if workspace_id == child {
-                    "child".to_owned()
-                } else {
-                    "grandchild".to_owned()
+            .register(
+                &WorkspaceLineageRecord {
+                    version: LINEAGE_VERSION,
+                    revision: 1,
+                    ready: true,
+                    workspace_id,
+                    workspace_name: if workspace_id == child {
+                        "child".to_owned()
+                    } else {
+                        "grandchild".to_owned()
+                    },
+                    parent_workspace_id: Some(parent_workspace_id),
+                    parent_workspace_name: Some(if parent_workspace_id == root {
+                        "root".to_owned()
+                    } else {
+                        "child".to_owned()
+                    }),
+                    creation_operation: Some(crate::OperationId::from_bytes([byte; 16])),
+                    fork_generation: generation(byte),
+                    initial_generation: generation(byte),
                 },
-                parent_workspace_id: Some(parent_workspace_id),
-                parent_workspace_name: Some(if parent_workspace_id == root {
-                    "root".to_owned()
-                } else {
-                    "child".to_owned()
-                }),
-                creation_operation: Some(crate::OperationId::from_bytes([byte; 16])),
-                fork_generation: generation(byte),
-                initial_generation: generation(byte),
-            })
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+            )
             .await
             .expect("child registration");
     }
@@ -294,7 +490,16 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         .map_err(|failure| failure.error)
         .expect("root");
     let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
-    graph.register_root(&parent).await.expect("register root");
+    graph
+        .register_root(
+            &parent,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("register root");
     let parent_head = parent
         .head(
             crate::WorkBudget::UNBOUNDED,
@@ -321,7 +526,13 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         fork_generation: parent_head.id(),
         initial_generation: parent_head.id(),
     };
-    graph.register(planned).await.expect("persist fork intent");
+    graph
+        .register(
+            &planned,
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+        )
+        .await
+        .expect("persist fork intent");
     assert!(matches!(
         graph.resolve(child_id).await,
         Err(WorkspaceLineageError::IncompatibleState)
@@ -373,6 +584,16 @@ async fn recovered_fork_keeps_creation_identity_after_both_heads_advance() {
         .unwrap()
         .value;
     let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    graph
+        .register_root(
+            &parent,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
     let key = IdempotencyKey::from_bytes([51; 16]);
     let child = fork_workspace(&graph, &parent, "replay-child", key)
         .await
@@ -436,7 +657,16 @@ async fn dropped_external_creator_cannot_publish_lineage_or_change_the_recovery_
         .unwrap()
         .value;
     let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
-    graph.register_root(&parent).await.unwrap();
+    graph
+        .register_root(
+            &parent,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
     let key = IdempotencyKey::from_bytes([61; 16]);
     let child_id = fs.workspace_id("external-child").unwrap();
     let cut = parent
@@ -521,8 +751,6 @@ async fn fork_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             &mut accounting,
             GenerationFork {
                 parent,
-                destination,
-                key,
                 permit: crate::PublicationPermit::Unrestricted,
             },
             |child| child,
@@ -541,6 +769,16 @@ async fn fork_refuses_the_original_work_budget_before_any_creator_or_durable_int
         .unwrap()
         .value;
     let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    graph
+        .register_root(
+            &parent,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
     let mut budget = crate::performance::work_budget(4096, 8 * 1024 * 1024);
     budget.items_examined = 0;
     let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
@@ -702,7 +940,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore>
 {
     async fn create(
         self,
-        generation: crate::Generation<A, O>,
+        creation: WorkspaceForkCreation<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Workspace<A, O>, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>> {
         if let Some(called) = self.called {
@@ -712,18 +950,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore>
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
         if let Some(cut) = self.cut {
-            assert_eq!(generation.id(), cut);
+            assert_eq!(creation.generation().id(), cut);
         }
+        assert_eq!(creation.destination(), self.destination);
+        assert_eq!(creation.key(), self.key);
         let child: Result<
             Workspace<A, O>,
             WorkspaceLineageError<MemoryWorkspaceLineageStoreError>,
         > = GenerationFork {
             parent: self.parent,
-            destination: self.destination,
-            key: self.key,
+
             permit: crate::PublicationPermit::Unrestricted,
         }
-        .create(generation, accounting)
+        .create(creation, accounting)
         .await;
         let child = child?;
         if let Some(interrupted) = self.interrupted {

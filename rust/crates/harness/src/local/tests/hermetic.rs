@@ -226,10 +226,7 @@ async fn retained_store_lifetime(order: Vec<usize>, retain: bool) -> Result<bool
         drop(stores[index].take());
     }
     // Existing ownership barriers observe completion of provider work without polling.
-    acyclic_native_runtime::run_blocking_io(move || released.wait(), None)
-        .map_err(super::super::storage)?
-        .await
-        .map_err(super::super::storage)?;
+    released.wait_async().await;
     Ok(valid && !root.exists())
 }
 

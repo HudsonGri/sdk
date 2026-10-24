@@ -104,42 +104,25 @@ impl ControlPlane {
             let mut paths = Vec::new();
             for (path, deleted) in tombstones {
                 let beneath = format!("{path}/");
-                if child_head
-                    .stat(
-                        &path,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .is_ok()
-                    || view
-                        .current_source_version(&path, &mut accounting)
-                        .await
-                        .map_err(display)?
-                        != Some(deleted)
-                    || changed
-                        .range(beneath.clone()..)
-                        .next()
-                        .is_some_and(|changed| changed.starts_with(&beneath))
+                if changed
+                    .range(beneath.clone()..)
+                    .next()
+                    .is_some_and(|changed| changed.starts_with(&beneath))
                 {
                     continue;
                 }
-                if let Some(parent_view) = &parent_view {
-                    let lookup = parent_view.lookup(&path, &mut accounting).await;
-                    let same_version = matches!(
-                        &lookup,
-                        Ok((acyclic_fs::LazyLookup::Source { node, .. }, _)) if node.version == deleted
-                    );
-                    if let Ok(lookup) = lookup {
-                        parent_view
-                            .retire_lookup(lookup, &mut accounting)
-                            .map_err(display)?;
-                    }
-                    if !same_version {
-                        continue;
-                    }
+                if !view
+                    .source_deletion_is_unmodified(
+                        &path,
+                        deleted,
+                        &child_head,
+                        parent_view.as_ref(),
+                        &mut accounting,
+                    )
+                    .await
+                    .map_err(display)?
+                {
+                    continue;
                 }
                 paths.push(path);
             }

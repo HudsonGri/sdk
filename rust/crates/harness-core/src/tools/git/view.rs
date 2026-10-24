@@ -147,9 +147,9 @@ impl<'a> View<'a> {
                         accounting,
                         acyclic_fs::lineage::LazyFork {
                             parent: view,
-                            destination,
+
                             cut,
-                            key,
+
                             permit,
                         },
                         |result| result.0.workspace(),
@@ -166,8 +166,7 @@ impl<'a> View<'a> {
                     accounting,
                     acyclic_fs::lineage::GenerationFork {
                         parent: view,
-                        destination,
-                        key,
+
                         permit,
                     },
                     |child| child,

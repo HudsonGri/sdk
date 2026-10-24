@@ -19,7 +19,16 @@ async fn graph_lazy_creator_rejects_another_cut_before_creating_a_child() {
     let current = root.snapshot(accounting!()).await.unwrap();
     assert_ne!(old.authored_generation, current.authored_generation);
     let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
-    graph.register_root(root.workspace()).await.unwrap();
+    graph
+        .register_root(
+            root.workspace(),
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
     let destination = "graph-lazy-cut";
     let key = IdempotencyKey::from_bytes([91; 16]);
     let cancellation = CancellationToken::new();
@@ -34,9 +43,9 @@ async fn graph_lazy_creator_rejects_another_cut_before_creating_a_child() {
                 accounting,
                 crate::lineage::LazyFork {
                     parent: &root,
-                    destination,
+
                     cut,
-                    key,
+
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 |result| result.0.workspace(),

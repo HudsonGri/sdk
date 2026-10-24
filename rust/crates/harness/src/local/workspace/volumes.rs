@@ -144,7 +144,13 @@ pub(super) async fn attach(
         #[cfg(windows)]
         recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
-            .register_root(&source)
+            .register_root(
+                &source,
+                &mut acyclic_fs::facade::FsWork::accounting(
+                    &acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                ),
+            )
             .await?;
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),

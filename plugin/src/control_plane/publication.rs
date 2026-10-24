@@ -66,38 +66,18 @@ impl ControlPlane {
         &self,
         parent_context_id: WorkspaceContextId,
     ) -> Result<Option<OperationId>, String> {
-        let mut found = None;
-        for operation_id in
-            <LocalCoreStateStore as acyclic_fs::MultiRootPublicationStore>::list_operations(
-                &self.store,
-            )
-            .await
-            .map_err(display)?
-        {
-            let Some(publication) =
-                <LocalCoreStateStore as acyclic_fs::MultiRootPublicationStore>::load(
-                    &self.store,
-                    operation_id,
-                )
+        let publication =
+            acyclic_fs::multi_root::parent_publication(&self.store, parent_context_id)
                 .await
-                .map_err(display)?
-            else {
-                continue;
-            };
-            if publication.candidate.plan.parent_context_id == parent_context_id
-                && matches!(
+                .map_err(display)?;
+        Ok(publication
+            .filter(|publication| {
+                matches!(
                     publication.phase,
-                    MultiRootPublicationPhase::Conflicted | MultiRootPublicationPhase::Aborting
+                    MultiRootPublicationPhase::Conflicted | MultiRootPublicationPhase::Aborting,
                 )
-                && found.replace(operation_id).is_some()
-            {
-                return Err(
-                    "parent context has multiple unresolved merge records; recovery is required"
-                        .to_owned(),
-                );
-            }
-        }
-        Ok(found)
+            })
+            .map(|publication| publication.candidate.plan.operation_id))
     }
 
     pub(crate) fn parent_repository_id(

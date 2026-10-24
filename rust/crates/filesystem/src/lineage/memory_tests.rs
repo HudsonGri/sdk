@@ -100,3 +100,58 @@ fn funding_only_strings_cannot_publish_an_unfunded_index_node() {
     drop(old);
     assert_eq!(control.live_allocation_bytes(), control_baseline);
 }
+
+#[test]
+fn denied_lineage_node_retires_partial_storage_on_the_original_standalone_ledger() {
+    for final_examination in [false, true] {
+        let cancellation = CancellationToken::new();
+        let store = MemoryWorkspaceLineageStore::new();
+        let value = record(2, 17, 1);
+        let mut budget = crate::performance::work_budget(256, 64 * 1024);
+        if final_examination {
+            assert!(
+                store
+                    .compare_and_swap(record(1, 3, 1).workspace_id, 0, record(1, 3, 1))
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap()
+            );
+            // One lookup and one record copy succeed; insertion's examination
+            // is denied after both the strings and the node have been funded.
+            budget.items_examined = 2;
+        } else {
+            // The copied record fits; allocation of its enclosing node does not.
+            budget.allocation_operations = 1;
+        }
+        let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+        let mut work = crate::WorkCounters::UNCHARGED;
+        {
+            let mut accounting = KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                budget,
+                &cancellation,
+            );
+            assert!(
+                store
+                    .compare_accounted(value.workspace_id, 0, &value, &mut accounting)
+                    .now_or_never()
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        assert!(
+            store
+                .load(value.workspace_id)
+                .now_or_never()
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            ledger.live_bytes(),
+            0,
+            "a rejected node has no physical owner"
+        );
+    }
+}

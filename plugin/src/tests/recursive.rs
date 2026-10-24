@@ -440,3 +440,69 @@ fn root_registration_recovers_intent_and_fences_identity_changes() {
         assert!(error.contains("identity"), "{error}");
     });
 }
+
+#[tokio::test]
+async fn discard_refuses_the_parent_claim_before_its_publication_journal_exists() {
+    let fixture = Fixture::new();
+    let mut control = Box::pin(ControlPlane::open(fixture.data.clone()))
+        .await
+        .unwrap();
+    Box::pin(control.session_start(json!({"session_id":"session","cwd":fixture.root})))
+        .await
+        .unwrap();
+    control
+        .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+        .unwrap();
+    Box::pin(control.pre_tool(json!({
+        "session_id":"session","turn_id":"root-turn", "tool_use_id":"spawn",
+        "tool_name":"spawn_agent","tool_input":{},
+    })))
+    .await
+    .unwrap();
+    Box::pin(control.subagent_start(json!({
+        "session_id":"session","turn_id":"child-turn","agent_id":"child",
+    })))
+    .await
+    .unwrap();
+    let parent = control
+        .context_for_agent(&control.state.root_agent_id)
+        .unwrap();
+    let child = WorkspaceContextId::from_bytes(control.state.routes["child"].context_id);
+    let operation = OperationId::from_bytes([0xd7; 16]);
+    assert!(
+        acyclic_fs::MultiRootPublicationStore::claim_parent(&control.store, parent, operation,)
+            .await
+            .unwrap()
+    );
+    // The former enumeration saw no record at this crash boundary.
+    assert!(
+        acyclic_fs::MultiRootPublicationStore::list_operations(&control.store)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let result = Box::pin(control.agent_discard(json!({
+        "agent":"child","_caller_turn_id":"root-turn",
+    })))
+    .await
+    .unwrap_err();
+    assert_eq!(
+        result,
+        "cannot discard an agent subtree while publication recovery is pending"
+    );
+    assert!(control.state.pending_discards.is_empty());
+    assert!(control.state.routes.contains_key("child"));
+    assert!(control.mounts.contains_key("child"));
+    assert!(
+        WorkspaceContextRegistry::new(control.store.clone())
+            .resolve(child)
+            .await
+            .is_ok()
+    );
+    assert!(
+        acyclic_fs::MultiRootPublicationStore::release_parent(&control.store, parent, operation,)
+            .await
+            .unwrap()
+    );
+    Box::pin(control.shutdown()).await.unwrap();
+}

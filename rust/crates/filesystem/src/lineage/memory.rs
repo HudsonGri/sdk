@@ -181,21 +181,41 @@ impl WorkspaceLineageStore for MemoryWorkspaceLineageStore {
             return Ok(false);
         }
         let record = work::copy(replacement, accounting)?;
-        let allocation = accounting.claim_owned(std::mem::size_of::<Node>() as u64, 1)?;
-        let node = pointer(record, allocation);
+        let allocation = match accounting.claim_owned(std::mem::size_of::<Node>() as u64, 1) {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                record.retire(accounting)?;
+                return Err(error.into());
+            }
+        };
+        let mut pending = Some(pointer(record, allocation));
         // The same locked key follows exactly the path just observed. Admit
         // those comparisons before changing links, then record actual work.
-        accounting.perform(
+        let inserted = accounting.perform(
             crate::WorkCounters {
                 items_examined: probes,
                 ..crate::WorkCounters::UNCHARGED
             },
             || {
+                let node = pending
+                    .take()
+                    .ok_or(WorkspaceLineageError::IncompatibleState)?;
                 let (root, previous) = ordered_tree::insert::<Node>(records.take(), node);
                 *records = Some(root);
                 drop(previous);
+                Ok::<_, WorkspaceLineageError<Self::Error>>(())
             },
-        )?;
+        );
+        if let Some(Pointer {
+            value,
+            _allocation: mut allocation,
+        }) = pending
+        {
+            let Node { record, .. } = *value;
+            record.retire(accounting)?;
+            accounting.release_owned(&mut allocation, std::mem::size_of::<Node>() as u64)?;
+        }
+        inserted??;
         Ok(true)
     }
 }

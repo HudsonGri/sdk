@@ -8,9 +8,8 @@ pub(crate) async fn wait_for_root_release(
     let Some(barrier) = barrier else {
         return Ok(());
     };
-    tokio::task::spawn_blocking(move || barrier.wait())
-        .await
-        .map_err(|error| format!("filesystem release barrier failed: {error}"))
+    barrier.wait_async().await;
+    Ok(())
 }
 
 /// A parent checkout root and the child's fork view of the same tree.

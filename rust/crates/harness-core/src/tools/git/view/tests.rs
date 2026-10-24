@@ -18,7 +18,13 @@ async fn fixture() -> TestResult<(
         .await?
         .value;
     WorkspaceGraph::new(store.clone())
-        .register_root(&workspace)
+        .register_root(
+            &workspace,
+            &mut acyclic_fs::facade::FsWork::accounting(
+                &acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ),
+        )
         .await?;
     Ok((directory, filesystem, store, workspace))
 }

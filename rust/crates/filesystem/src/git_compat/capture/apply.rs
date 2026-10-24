@@ -124,8 +124,7 @@ async fn fork_capture_workspace<
             accounting,
             crate::lineage::GenerationFork {
                 parent: source,
-                destination,
-                key,
+
                 permit: crate::PublicationPermit::Unrestricted,
             },
             |child| child,

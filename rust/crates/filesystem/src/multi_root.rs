@@ -773,6 +773,8 @@ mod publisher;
 mod publisher_helpers;
 use helpers::*;
 mod coordinator;
+mod lookup;
+pub use lookup::{PublicationLookupError, context_has_publication, parent_publication};
 mod validation;
 use validation::is_pristine_unclaimed;
 pub(crate) use validation::{validate_candidate, validate_journal};

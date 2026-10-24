@@ -24,7 +24,15 @@ async fn interrupted_fork_retains_its_original_content_through_collection_and_re
             .value
             .id();
         let graph = WorkspaceGraph::new(crate::LocalCoreStateStore::new(&state));
-        graph.register_root(&parent).await?;
+        graph
+            .register_root(
+                &parent,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
+            )
+            .await?;
         // Stop after intent publication, before even creating a child authority.
         // Recovery must not depend on a live Generation or a physical fork pin.
         let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -83,7 +91,7 @@ async fn interrupted_fork_retains_its_original_content_through_collection_and_re
             .local_root_release_barrier()
             .ok_or("missing release barrier")?;
         drop(fs);
-        acyclic_native_runtime::run_blocking_io(move || released.wait(), None)?.await?;
+        released.wait_async().await;
     }
 
     let fs = Fs::local(options).await?;
@@ -104,8 +112,7 @@ async fn interrupted_fork_retains_its_original_content_through_collection_and_re
             &mut accounting,
             crate::lineage::GenerationFork {
                 parent: &parent,
-                destination: "child",
-                key,
+
                 permit: crate::PublicationPermit::Unrestricted,
             },
             |child| child,
@@ -140,7 +147,11 @@ impl
 {
     async fn create(
         self,
-        _generation: crate::Generation<LocalAuthorityBackend, LocalObjectBackend>,
+        _creation: crate::lineage::WorkspaceForkCreation<
+            '_,
+            LocalAuthorityBackend,
+            LocalObjectBackend,
+        >,
         _accounting: &mut KernelAccounting<'_>,
     ) -> Result<
         crate::Workspace<LocalAuthorityBackend, LocalObjectBackend>,

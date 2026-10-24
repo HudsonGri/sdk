@@ -29,7 +29,7 @@ pub(super) fn sort_and_coalesce(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), WorkspaceError> {
     let count = paths.0.len();
-    crate::kernel::sort_by_with_accounting(&mut paths.0, accounting, |left, right| {
+    crate::kernel::sort_by_accounted(&mut paths.0, accounting, |left, right| {
         left.path.components().cmp(right.path.components())
     })?;
     let mut retained = 0_usize;

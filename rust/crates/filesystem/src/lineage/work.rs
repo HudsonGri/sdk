@@ -46,6 +46,30 @@ pub(crate) fn copy<E: std::error::Error + 'static>(
     )
 }
 
+pub(super) fn new_root<E: std::error::Error + 'static, A, O>(
+    workspace: &Workspace<A, O>,
+    generation: GenerationId,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<WorkspaceLineageRecord>, WorkspaceLineageError<E>> {
+    record(
+        workspace.name().as_str(),
+        None,
+        |workspace_name, parent_workspace_name| WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: true,
+            workspace_id: workspace.id(),
+            workspace_name,
+            parent_workspace_id: None,
+            parent_workspace_name,
+            creation_operation: None,
+            fork_generation: generation,
+            initial_generation: generation,
+        },
+        accounting,
+    )
+}
+
 pub(super) fn new_child<E: std::error::Error + 'static, A, O>(
     parent: &Workspace<A, O>,
     destination: &crate::WorkspaceName,
