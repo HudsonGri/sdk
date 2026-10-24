@@ -23,6 +23,7 @@ fuzz_target!(|bytes: &[u8]| {
             value: bytes.to_vec().into(),
             commit_id: CommitId::default(),
             committed_at_micros: 0,
+            headers: Default::default(),
         });
     }
     if let Ok(request) = wire::CommitRequest::decode(bytes)
