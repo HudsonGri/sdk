@@ -18,10 +18,6 @@
 use std::fs::File;
 use std::io;
 use std::sync::Mutex;
-use std::time::Instant;
-
-mod wait;
-pub use wait::FileLockCancellation;
 
 /// Which whole-file lock to take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,13 +32,10 @@ pub enum FileLockMode {
 ///
 /// Dropping a held lock unlocks it before the file closes. Contention is
 /// reported as [`io::ErrorKind::WouldBlock`] on every platform.
+#[derive(Debug)]
 pub struct FileLock {
     file: File,
-    held: Mutex<HeldLock>,
-}
-
-struct HeldLock {
-    active: bool,
+    held: Mutex<bool>,
 }
 
 impl FileLock {
@@ -51,7 +44,7 @@ impl FileLock {
     pub const fn new(file: File) -> Self {
         Self {
             file,
-            held: Mutex::new(HeldLock { active: false }),
+            held: Mutex::new(false),
         }
     }
 
@@ -88,12 +81,12 @@ impl FileLock {
             .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self::ensure_unheld(held.active)?;
+        Self::ensure_unheld(*held)?;
         match mode {
             FileLockMode::Shared => self.file.lock_shared(),
             FileLockMode::Exclusive => self.file.lock(),
         }?;
-        held.active = true;
+        *held = true;
         Ok(())
     }
 
@@ -111,46 +104,9 @@ impl FileLock {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
         };
-        Self::ensure_unheld(held.active)?;
+        Self::ensure_unheld(*held)?;
         Self::try_lock_file(&self.file, mode)?;
-        held.active = true;
-        Ok(())
-    }
-
-    /// Waits for the kernel lock until the original deadline or cancellation.
-    ///
-    /// An unsuccessful wait leaves no pending acquisition and no held lock.
-    /// The caller's original meter funds admission, notification and cleanup.
-    ///
-    /// # Errors
-    ///
-    /// Returns `TimedOut`, `Interrupted`, an admission error or the OS error.
-    pub fn lock_until(
-        &self,
-        mode: FileLockMode,
-        deadline: Instant,
-        cancellation: Option<&FileLockCancellation>,
-        meter: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
-    ) -> io::Result<()> {
-        let mut held = match self.held.try_lock() {
-            Ok(held) => held,
-            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(io::ErrorKind::WouldBlock.into());
-            }
-        };
-        Self::ensure_unheld(held.active)?;
-        wait::check(deadline, cancellation, meter)?;
-        let mut rollback = wait::rollback_credit(meter)?;
-        wait::acquire(&self.file, mode, deadline, cancellation, meter)?;
-        held.active = true;
-        // A cancellation racing the successful kernel completion must release
-        // the acquired description before returning that original failure.
-        if let Err(error) = wait::check(deadline, cancellation, meter) {
-            held.active = false;
-            let _ = wait::release_cancelled(&self.file, &mut rollback);
-            return Err(error);
-        }
+        *held = true;
         Ok(())
     }
 
@@ -189,20 +145,20 @@ impl FileLock {
             .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !held.active {
+        if !*held {
             return Ok(());
         }
-        held.active = false;
+        *held = false;
         self.file.unlock()
     }
 
     /// Whether this handle currently holds its lock.
     #[must_use]
     pub fn is_held(&self) -> bool {
-        self.held
+        *self
+            .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active
     }
 
     fn try_lock_file(file: &File, mode: FileLockMode) -> io::Result<()> {
@@ -229,22 +185,6 @@ impl std::ops::Deref for FileLock {
 
     fn deref(&self) -> &File {
         &self.file
-    }
-}
-
-impl std::fmt::Debug for FileLock {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("FileLock")
-            .field("file", &self.file)
-            .field("held", &self.held)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for HeldLock {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.active.fmt(formatter)
     }
 }
 

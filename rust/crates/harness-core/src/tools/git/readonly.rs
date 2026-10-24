@@ -146,18 +146,12 @@ where
         {
             after = after.capture_native(view, &work, &cancellation).await?;
         }
-        let value = if from == Some(to) {
-            json!({ "from": hex::encode(after.id().digest().as_bytes()),
-                "to": hex::encode(after.id().digest().as_bytes()), "fileChanges": 0, "bindingChanges": 0 })
-        } else if let Some(from) = from {
-            let mut before = self
+        let value = if let Some(from) = from {
+            // The committed side stays immutable even when its reference equals
+            // the workspace generation. Only the working side captures native edits.
+            let before = self
                 .inspected_tree(*from, &work, &cancellation, Some(&after))
                 .await?;
-            if let Some((working, view)) = self.inspection
-                && working == *from
-            {
-                before = before.capture_native(view, &work, &cancellation).await?;
-            }
             let changes = before
                 .diff_to(&after, &self.repository, tracked, &cancellation)
                 .await?;

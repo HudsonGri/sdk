@@ -484,7 +484,6 @@ mod action_publication;
 mod contexts;
 mod freeze;
 mod journal;
-mod lock_wait;
 mod log;
 #[cfg(target_os = "linux")]
 mod logical_release;
