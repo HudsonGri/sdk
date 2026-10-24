@@ -211,15 +211,17 @@ fn response(head_state: Rc<State>, fetch: Function, url: String, init: RequestIn
                 .map_err(|_| failure())?
                 .dyn_into::<Response>()
                 .map_err(|_| failure())?;
-            if head_state.abort.signal().aborted() {
-                return Err(failure());
-            }
             if let Some(body) = response.body() {
                 let reader = body
                     .get_reader()
                     .dyn_into::<ReadableStreamDefaultReader>()
                     .map_err(|_| failure())?;
                 *head_state.reader.borrow_mut() = Some(reader);
+            }
+            // Fetch hosts can return an independently owned body after abort.
+            // Admit it before observing cancellation so the same cleanup owns it.
+            if head_state.abort.signal().aborted() {
+                return Err(failure());
             }
             let headers = Object::new();
             let entries = js_sys::try_iter(response.headers().as_ref())

@@ -28,6 +28,9 @@ export function httpFixture(mode) {
       if (mode === 'complete') { controller.close(); controller = undefined; }
     }, cancel() { state.cancelled = true; controller = undefined; } });
     state.stream = stream;
+    if (mode === 'late_head') {
+      return new Promise(resolve => { state.completeHead = () => resolve(new Response(stream)); });
+    }
     return Promise.resolve(new Response(stream, { status: mode === 'error' ? 503 : 200 }));
   };
   return state;
@@ -232,6 +235,41 @@ async fn dropping_pending_headers_aborts_the_owned_exchange() -> std::result::Re
     assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(false));
     drop(exchange);
     assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
+    Ok(())
+}
+
+#[wasm_bindgen_test]
+async fn cancelled_headers_retain_late_body_custody() -> std::result::Result<(), JsValue> {
+    let fixture = http_fixture("late_head");
+    let exchange = acyclic_harness_core::http::browser::start(
+        field(&fixture, "fetch")?.dyn_into::<Function>()?,
+        acyclic_harness_core::http::browser::Request {
+            method: "POST".into(),
+            url: "https://example.test/v1/responses".into(),
+            headers: BTreeMap::new(),
+            body: Bytes::from_static(b"{}"),
+            timeout_ms: None,
+        },
+        None,
+    )
+    .map_err(js_error)?;
+    JsFuture::from(Promise::resolve(&field(&fixture, "ready")?)).await?;
+    field(&exchange, "cancel")?
+        .dyn_into::<Function>()?
+        .call0(&exchange)?;
+    field(&fixture, "completeHead")?
+        .dyn_into::<Function>()?
+        .call0(&fixture)?;
+    assert!(
+        JsFuture::from(Promise::resolve(&field(&exchange, "response")?))
+            .await
+            .is_err()
+    );
+    assert_eq!(field(&fixture, "cancelled")?.as_bool(), Some(true));
+    assert_eq!(
+        field(&field(&fixture, "stream")?, "locked")?.as_bool(),
+        Some(false)
+    );
     Ok(())
 }
 

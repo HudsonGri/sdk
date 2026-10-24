@@ -27,7 +27,7 @@ test("browser transport rejects lossy byte and deadline bounds before I/O", () =
 
 test("browser I/O feeds the Rust JSON/SSE decoder at every chunk width", async () => {
   for (const sse of [false, true]) {
-    const bytes = new TextEncoder().encode(sse ? `data: ${message}\r\n\r\n` : message);
+    const bytes = new TextEncoder().encode(sse ? `data: ${message}\r\n\r\n: heartbeat` : message);
     for (let width = 1; width <= bytes.length; width++) {
       let calls = 0;
       let captured;
@@ -180,5 +180,32 @@ test("MCP cancellation owns the reader independently of the injected fetch signa
       exchange?.cancel();
       transport.free();
     }
+  }
+});
+
+test("MCP cancellation retains a body returned after abort", async () => {
+  let completeHead;
+  let started;
+  let cancelled = false;
+  const ready = new Promise(resolve => { started = resolve; });
+  const stream = new ReadableStream({ cancel() { cancelled = true; } });
+  const provider = createBrowserMcpHttpProvider(() => new Promise(resolve => {
+    completeHead = () => resolve(new Response(stream));
+    started();
+  }));
+  const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, 1000);
+  let exchange;
+  try {
+    exchange = provider(operation, transport.initializationRequest(operation, "fixture", "1"));
+    const rejected = assert.rejects(exchange.response);
+    await ready;
+    exchange.cancel();
+    completeHead();
+    await rejected;
+    assert.equal(cancelled, true);
+    assert.equal(stream.locked, false);
+  } finally {
+    exchange?.cancel();
+    transport.free();
   }
 });
