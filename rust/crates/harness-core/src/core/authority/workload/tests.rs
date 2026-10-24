@@ -109,6 +109,39 @@ fn authentication_owner_replaces_its_only_retained_chain() -> Result<()> {
     assert!(old.upgrade().is_none());
     Ok(())
 }
+
+#[test]
+fn immutable_scope_facts_are_shared_by_verification_and_recording() -> Result<()> {
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    let scope = issuer.issue(
+        "root",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let trust = issuer.public_workload_trust()?;
+    let first = authenticate(&verifier.public, &trust, &scope, now(), &mut None)?;
+    verifier.verify(&scope, &mut None)?;
+    verifier
+        .admission
+        .record("owner", issuer.audience(), &scope, [7; 32], &mut None)?;
+    let second = authenticate(&verifier.public, &trust, &scope, now(), &mut None)?;
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    assert!(std::ptr::eq(
+        first.attributes.as_slice(),
+        second.attributes.as_slice()
+    ));
+    // The old per-use derivation allocates and parses the same immutable facts again.
+    let (rebuilt, _) = admission::scope_facts(&first.capability, false)?;
+    assert_eq!(first.attributes, rebuilt);
+    assert!(!std::ptr::eq(
+        first.attributes.as_slice(),
+        rebuilt.as_slice()
+    ));
+    Ok(())
+}
 #[test]
 fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_audience()
 -> Result<()> {
@@ -266,5 +299,117 @@ fn an_offline_deadline_cannot_be_widened_by_a_later_child() -> Result<()> {
             )
             .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn historical_owner_reuses_only_exact_proof_and_rechecks_each_binding() -> Result<()> {
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    let scope = issuer.issue(
+        "root",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let encoded =
+        verifier
+            .admission
+            .record("owner", issuer.audience(), &scope, [7; 32], &mut None)?;
+    let expected = RecordedScope::from_wire(
+        scope.id.clone(),
+        scope.capabilities.clone(),
+        scope.issuer.clone(),
+        scope.agent,
+    );
+    let first = verify_record(
+        &verifier,
+        &encoded,
+        [7; 32],
+        Some(&expected),
+        &["event:append"],
+        &mut None,
+    )?;
+    let second = verify_record(
+        &verifier,
+        &encoded,
+        [7; 32],
+        Some(&expected),
+        &[],
+        &mut None,
+    )?;
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    let fresh = AuthorityVerifier::from_public(
+        "owner".into(),
+        issuer.audience().clone(),
+        issuer.public_workload_trust()?,
+        verifier.public_checkpoint_key(),
+    )?;
+    let rebuilt = verify_record(&fresh, &encoded, [7; 32], Some(&expected), &[], &mut None)?;
+    // Former per-use authentication fails this single-proof ownership oracle.
+    assert!(!std::sync::Arc::ptr_eq(&first, &rebuilt));
+    assert!(verify_record(&verifier, &encoded, [8; 32], None, &[], &mut None).is_err());
+    assert!(
+        verify_record(
+            &verifier,
+            &encoded,
+            [7; 32],
+            None,
+            &["effect:run"],
+            &mut None
+        )
+        .is_err()
+    );
+    for field in 0..4 {
+        let mut changed = expected.clone();
+        match field {
+            0 => changed.id.push_str("-forged"),
+            1 => changed.capabilities = Capabilities::new(["effect:run"]),
+            2 => changed.issuer.push_str("-foreign"),
+            _ => changed.agent = Some(AgentId::from_bytes([9; 16])),
+        }
+        assert!(
+            verify_record(&verifier, &encoded, [7; 32], Some(&changed), &[], &mut None).is_err()
+        );
+    }
+    let mut other = verifier.clone();
+    other.audience.id.push_str("-other");
+    assert!(verify_record(&other, &encoded, [7; 32], None, &[], &mut None).is_err());
+    let mut forged = encoded.clone();
+    forged[20] ^= 1;
+    assert!(verify_record(&verifier, &forged, [7; 32], None, &[], &mut None).is_err());
+    issuer.revoke_workload(&scope)?;
+    assert!(verify_record(&verifier, &encoded, [7; 32], None, &[], &mut None).is_err());
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    Ok(())
+}
+
+#[test]
+fn historical_owner_replaces_its_only_retained_record() -> Result<()> {
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    let scope = issuer.issue(
+        "root",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let first_bytes =
+        verifier
+            .admission
+            .record("owner", issuer.audience(), &scope, [7; 32], &mut None)?;
+    let next_bytes =
+        verifier
+            .admission
+            .record("owner", issuer.audience(), &scope, [8; 32], &mut None)?;
+    let first = verify_record(&verifier, &first_bytes, [7; 32], None, &[], &mut None)?;
+    let old = std::sync::Arc::downgrade(&first);
+    verify_record(&verifier, &next_bytes, [8; 32], None, &[], &mut None)?;
+    let replaced = verify_record(&verifier, &first_bytes, [7; 32], None, &[], &mut None)?;
+    assert!(!std::sync::Arc::ptr_eq(&first, &replaced));
+    drop(first);
+    assert!(old.upgrade().is_none());
     Ok(())
 }

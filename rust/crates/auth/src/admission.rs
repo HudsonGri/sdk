@@ -144,6 +144,21 @@ impl AuthenticatedAdmission {
         request: &Request<'_>,
         payload: [u8; 32],
     ) -> Result<VerifiedCapability, VerifyError> {
+        self.check_request(trust, request, payload)?;
+        Ok(self.workload)
+    }
+
+    /// Reauthorize this immutable proof without consuming its owner's evidence.
+    /// No decision is retained: current trust and every request binding are checked.
+    ///
+    /// # Errors
+    /// Rejects changed bindings, future admission times and revoked trust.
+    pub fn check_request(
+        &self,
+        trust: &dyn Trust,
+        request: &Request<'_>,
+        payload: [u8; 32],
+    ) -> Result<(), VerifyError> {
         if self.admitted > request.now_unix_seconds {
             return Err(VerifyError::Time);
         }
@@ -163,7 +178,7 @@ impl AuthenticatedAdmission {
             },
             PolicyDecision::Allow,
         )?;
-        Ok(self.workload)
+        Ok(())
     }
 }
 
