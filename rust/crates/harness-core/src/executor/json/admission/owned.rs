@@ -46,7 +46,7 @@ impl<'a, 'c> Frame<'a, 'c> {
         layout: Option<Placement<'c>>,
     ) -> Self {
         if let (Some(layout), Some(text)) = (layout, value.as_str()) {
-            layout.string(text.len());
+            layout.string(text.as_bytes(), true);
         }
         Self {
             entries: (value.is_array() || value.is_object())
@@ -118,7 +118,7 @@ fn tree<'c>(
         let placement = frame.entries.as_mut().and_then(|entries| {
             entries.count += 1;
             if object {
-                entries.key(key.len());
+                entries.key(key.as_bytes(), true);
             }
             entries.child(object.then_some(key.as_bytes()), index)
         });
@@ -140,7 +140,7 @@ fn tree<'c>(
             && let Some(text) = field.as_str()
         {
             if let Some(placement) = placement {
-                placement.string(text.len());
+                placement.string(text.as_bytes(), true);
             }
             charge.borrow_mut()(JsonCodecCharge::Inspect {
                 items: text.len() as u64,

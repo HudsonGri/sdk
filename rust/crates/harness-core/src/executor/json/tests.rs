@@ -749,14 +749,122 @@ fn converted_names_reserve_their_shared_copies() {
     let plans: Vec<crate::task_volume::PlanName> = (0..256)
         .map(|index| crate::task_volume::PlanName::try_from(format!("p{}", index % 10)).unwrap())
         .collect();
-    let (_, component_peak) = assert_layout_covers_decode(&components);
+    assert_layout_covers_decode(&components);
     assert_layout_covers_decode(&plans);
-    // Negative control: charging each name as the `String` it decodes from
-    // reserves less than the converted decode really holds.
+    // Negative control: the same conversion laid out as the `String` it
+    // decodes from reserves less than its decode really holds.
+    #[derive(serde::Deserialize, crate::HeapLayout)]
+    #[serde(try_from = "String")]
+    #[heap_layout(as = String)]
+    struct AsString(#[allow(dead_code)] std::sync::Arc<str>);
+    impl TryFrom<String> for AsString {
+        type Error = std::convert::Infallible;
+        fn try_from(text: String) -> std::result::Result<Self, Self::Error> {
+            Ok(Self(std::sync::Arc::from(text)))
+        }
+    }
     let bytes = serde_json::to_vec(&components).unwrap();
-    let as_strings = layout_reservation::<Vec<String>>(&bytes).unwrap();
+    let as_string = layout_reservation::<Vec<AsString>>(&bytes).unwrap();
+    let peak = acyclic_test_support::measure(|| {
+        serde_json::from_slice::<Vec<AsString>>(&bytes).unwrap();
+    })
+    .bytes_max as u64;
     assert!(
-        as_strings < component_peak,
-        "{as_strings} reserved as strings / {component_peak} decode peak"
+        as_string < peak,
+        "{as_string} reserved as strings / {peak} decode peak"
     );
+}
+
+// An untagged enum buffers its value as `Content` and decodes a variant by
+// copying out of that buffer, and an untagged enum nested inside it clones
+// the buffer again, at the same JSON position. Every escaped string and key
+// is owned by each buffer holding it, besides the `String` the decode keeps.
+#[test]
+fn buffered_escaped_strings_reserve_every_copy() {
+    use crate::model::{ModelContent, ModelContentPart};
+    use std::collections::BTreeMap;
+    macro_rules! nested {
+        ($($outer:ident($inner:ty)),*) => {$(
+            #[derive(Serialize, serde::Deserialize, crate::HeapLayout)]
+            #[serde(untagged)]
+            enum $outer {
+                Value($inner),
+            }
+        )*};
+    }
+    nested!(
+        L1(Vec<String>),
+        L2(L1),
+        L3(L2),
+        L4(L3),
+        L5(L4),
+        L6(L5),
+        L7(L6),
+        L8(L7)
+    );
+    #[derive(Serialize, serde::Deserialize, crate::HeapLayout)]
+    #[serde(untagged)]
+    enum Keyed {
+        Map(BTreeMap<String, u8>),
+    }
+    let part = |text: &str| ModelContentPart::Text {
+        text: text.to_owned(),
+    };
+    let long = "\"quoted\\path\"\n".repeat(4096);
+    let short = "\"quoted\\path\"\n".repeat(64);
+    let shorts = || (0..64).map(|_| short.clone()).collect::<Vec<_>>();
+    let one = ModelContent::Parts(vec![part(&long)]);
+    let many = ModelContent::Parts((0..64).map(|_| part(&short)).collect());
+    let parts: Vec<ModelContentPart> = (0..64).map(|_| part(&short)).collect();
+    let deep = L8::Value(L7::Value(L6::Value(L5::Value(L4::Value(L3::Value(
+        L2::Value(L1::Value(shorts())),
+    ))))));
+    let keyed = Keyed::Map(
+        (0..64)
+            .map(|index| (format!("{index}{short}"), 0))
+            .collect(),
+    );
+    assert_layout_covers_decode(&one);
+    let (_, many_peak) = assert_layout_covers_decode(&many);
+    assert_layout_covers_decode(&parts);
+    let (_, deep_peak) = assert_layout_covers_decode(&deep);
+    let (_, keyed_peak) = assert_layout_covers_decode(&keyed);
+    // Negative controls: counting at most one buffer per position leaves the
+    // nested clones unreserved, and counting none leaves the copies the
+    // outer buffer owns unreserved.
+    fn capped<T: crate::HeapLayout>(cap: u64, value: &impl Serialize) -> u64 {
+        let bytes = serde_json::to_vec(value).unwrap();
+        super::layout::tests::COPY_CAP.set(cap);
+        let reserved = layout_reservation::<T>(&bytes);
+        super::layout::tests::COPY_CAP.set(u64::MAX);
+        reserved.unwrap()
+    }
+    for (reserved, peak) in [
+        (capped::<L8>(1, &deep), deep_peak),
+        (capped::<ModelContent>(0, &many), many_peak),
+        (capped::<Keyed>(0, &keyed), keyed_peak),
+    ] {
+        assert!(reserved < peak, "{reserved} reserved / {peak} decode peak");
+    }
+}
+
+// A variant that rejects a string formats it, escaped, into its error, which
+// lives while the buffer is still held: the reservation covers that message.
+#[test]
+fn rejected_strings_reserve_their_error_message() {
+    #[derive(Serialize, serde::Deserialize, crate::HeapLayout)]
+    #[serde(untagged)]
+    enum Choice {
+        Count(u64),
+        Text(String),
+    }
+    let value = Choice::Text("\u{1}\"\n".repeat(16_384));
+    let (_, peak) = assert_layout_covers_decode(&value);
+    // Negative control: without the message the reservation falls short.
+    let bytes = serde_json::to_vec(&value).unwrap();
+    super::layout::tests::MESSAGES.set(false);
+    let reserved = layout_reservation::<Choice>(&bytes);
+    super::layout::tests::MESSAGES.set(true);
+    let reserved = reserved.unwrap();
+    assert!(reserved < peak, "{reserved} reserved / {peak} decode peak");
 }

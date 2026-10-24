@@ -168,8 +168,9 @@ struct Candidates {
     nodes: [Option<&'static JsonLayout>; CANDIDATES],
     /// Largest chain of boxes allocated before the value.
     once: u64,
-    /// Some alternative buffers the value as `Content`.
-    tagged: bool,
+    /// Most `Content` buffers one chain of alternatives nests at this value:
+    /// an untagged enum inside another buffers it again.
+    buffers: u64,
     /// More candidates or deeper chains than admission resolves.
     overflow: bool,
     /// Copies of the value alive together, relative to its container.
@@ -179,19 +180,27 @@ impl Candidates {
     const NONE: Self = Self {
         nodes: [None; CANDIDATES],
         once: 0,
-        tagged: false,
+        buffers: 0,
         overflow: false,
         scale: 1,
     };
     fn add(&mut self, layout: &'static JsonLayout, once: u64, depth: u32) {
+        self.add_within(layout, once, depth, 0);
+    }
+    /// Adds `layout`, reached inside `buffers` buffering alternatives.
+    fn add_within(&mut self, layout: &'static JsonLayout, once: u64, depth: u32, buffers: u64) {
         if depth > RESOLUTION_DEPTH {
             self.overflow = true;
             return;
         }
         match layout {
-            JsonLayout::Scalar => self.once = self.once.max(once),
-            JsonLayout::Node { .. } => {
+            JsonLayout::Scalar => {
                 self.once = self.once.max(once);
+                self.buffers = self.buffers.max(buffers);
+            }
+            JsonLayout::Node { tagged, .. } => {
+                self.once = self.once.max(once);
+                self.buffers = self.buffers.max(buffers + u64::from(*tagged));
                 if self.nodes().any(|node| std::ptr::eq(node, layout)) {
                     return;
                 }
@@ -201,17 +210,16 @@ impl Candidates {
                 }
             }
             JsonLayout::Boxed { bytes, inner } => {
-                self.add(inner, once.saturating_add(*bytes), depth + 1);
+                self.add_within(inner, once.saturating_add(*bytes), depth + 1, buffers);
             }
             JsonLayout::Any { tagged, of } => {
-                self.tagged |= *tagged;
                 for layout in *of {
-                    self.add(layout, once, depth + 1);
+                    self.add_within(layout, once, depth + 1, buffers + u64::from(*tagged));
                 }
             }
             JsonLayout::Scaled { times, inner } => {
                 self.scale = self.scale.max(*times);
-                self.add(inner, once, depth + 1);
+                self.add_within(inner, once, depth + 1, buffers);
             }
         }
     }
@@ -223,10 +231,7 @@ impl Candidates {
     }
     /// The value is buffered as `Content` before its type decodes it.
     fn buffers(&self) -> bool {
-        self.tagged
-            || self
-                .nodes()
-                .any(|node| matches!(node, JsonLayout::Node { tagged: true, .. }))
+        self.buffers > 0
     }
     /// Every member layout named `key`, or the `"*"` layouts of candidates
     /// without such a member.
@@ -301,6 +306,9 @@ pub(crate) struct LayoutCost {
     strings: u64,
     /// Longest decoded string, the bound on the decoder's escape scratch.
     longest: u64,
+    /// Longest debug rendering of a string or key: a variant that rejects a
+    /// string formats it into its error, which lives until the next try.
+    message: u64,
     /// `Content` buffers of the tagged subtree being walked.
     buffering: u64,
     /// Largest `Content` buffers of one tagged subtree.
@@ -320,6 +328,11 @@ impl LayoutCost {
         self.kept
             .saturating_add(self.strings)
             .saturating_add(vec_bytes(1, self.longest))
+            .saturating_add(if self.message == 0 || !messages_counted() {
+                0
+            } else {
+                vec_bytes(1, self.message.saturating_add(MESSAGE_FRAME))
+            })
             .saturating_add(self.buffered)
             .saturating_add(self.moving)
     }
@@ -327,11 +340,26 @@ impl LayoutCost {
     pub(crate) const fn longest(self) -> u64 {
         self.longest
     }
-    fn string(&mut self, bytes: u64, owned: bool, scale: u64) {
+    fn string(&mut self, text: &[u8], owned: bool, scale: u64) {
+        let bytes = text.len() as u64;
         if owned {
             self.strings = self.strings.saturating_add(bytes.saturating_mul(scale));
         }
         self.longest = self.longest.max(bytes);
+        self.message = self.message.max(debug_bytes(text));
+    }
+    /// The copies of an escaped string the `Content` buffers around it own.
+    /// Each buffer holds one, and every enclosing buffer that replays the
+    /// value into another clones it again. An unescaped string borrows the
+    /// document and owns nothing there. A string no open subtree encloses is
+    /// its own buffered subtree and closes at once.
+    fn buffered_string(&mut self, bytes: u64, copies: u64, closes: bool, scale: u64) {
+        let owned = bytes.saturating_mul(copies).saturating_mul(scale);
+        if closes {
+            self.buffered = self.buffered.max(self.buffering.saturating_add(owned));
+        } else {
+            self.buffering = self.buffering.saturating_add(owned);
+        }
     }
     fn add(&mut self, placement: &Placement<'_>, map: bool, entries: u64) {
         let candidates = &placement.candidates;
@@ -360,11 +388,11 @@ impl LayoutCost {
         }
         self.kept = self.kept.saturating_add(kept);
         self.buffering = self.buffering.saturating_add(
-            content_bytes(map, entries, placement.buffered, tagged).saturating_mul(placement.scale),
+            content_bytes(map, entries, placement.copies()).saturating_mul(placement.scale),
         );
         // This container's visit ends after its subtree's: a buffered
         // subtree's root closes the subtree.
-        if !placement.buffered && tagged {
+        if placement.buffers == 0 && tagged {
             self.buffered = self.buffered.max(self.buffering);
             self.buffering = 0;
         }
@@ -389,6 +417,24 @@ fn vec_growth(slot: u64, entries: u64) -> (u64, u64) {
     }
     (slot.saturating_mul(capacity), slot.saturating_mul(previous))
 }
+/// Bytes of an error message around a rendered string: its type and the
+/// expectation of the type that rejected it.
+const MESSAGE_FRAME: u64 = 256;
+/// An upper bound on the bytes `{:?}` renders `text` as, quotes included: an
+/// escaped ASCII character takes two bytes, a control character six
+/// (`\u{1f}`), and a non-ASCII character at most `\u{10ffff}`, under four per
+/// byte it spans.
+fn debug_bytes(text: &[u8]) -> u64 {
+    text.iter()
+        .map(|byte| match byte {
+            b'\t' | b'\r' | b'\n' | b'\\' | b'"' | b'\'' => 2,
+            0..0x20 | 0x7f => 6,
+            0x80.. => 4,
+            _ => 1,
+        })
+        .sum::<u64>()
+        .saturating_add(2)
+}
 /// Peak bytes of a growing vector: its last two buffers together.
 fn vec_bytes(slot: u64, entries: u64) -> u64 {
     let (last, previous) = vec_growth(slot, entries);
@@ -411,10 +457,9 @@ fn tree_bytes(slot: u64, entries: u64) -> u64 {
         .saturating_add(leaf.saturating_add(96).saturating_mul(leaves - 1))
 }
 /// A tagged enum buffers its whole subtree as `Content`, one vector per
-/// container, and collects its own entries again when an enclosing buffer
-/// replays it. Values move out of buffers without copying.
-fn content_bytes(map: bool, entries: u64, buffered: bool, tagged: bool) -> u64 {
-    let copies = u64::from(buffered) + u64::from(tagged);
+/// container, and every enclosing buffer that replays it collects its entries
+/// again: `copies` buffers hold the container at once.
+fn content_bytes(map: bool, entries: u64, copies: u64) -> u64 {
     if copies == 0 {
         return 0;
     }
@@ -430,7 +475,8 @@ fn content_bytes(map: bool, entries: u64, buffered: bool, tagged: bool) -> u64 {
 #[derive(Clone, Copy)]
 pub(super) struct Placement<'a> {
     candidates: Candidates,
-    buffered: bool,
+    /// Enclosing `Content` buffers that hold this value.
+    buffers: u64,
     /// Copies of this value alive together.
     scale: u64,
     cost: &'a RefCell<LayoutCost>,
@@ -438,7 +484,7 @@ pub(super) struct Placement<'a> {
 impl<'a> Placement<'a> {
     fn new(
         candidates: Candidates,
-        buffered: bool,
+        buffers: u64,
         scale: u64,
         cost: &'a RefCell<LayoutCost>,
     ) -> Self {
@@ -450,7 +496,7 @@ impl<'a> Placement<'a> {
         charged.refused |= candidates.overflow;
         Self {
             candidates,
-            buffered,
+            buffers,
             scale,
             cost,
         }
@@ -458,14 +504,30 @@ impl<'a> Placement<'a> {
     pub(super) fn root(layout: &'static JsonLayout, cost: &'a RefCell<LayoutCost>) -> Self {
         let mut candidates = Candidates::NONE;
         candidates.add(layout, 0, 0);
-        Self::new(candidates, false, 1, cost)
+        Self::new(candidates, 0, 1, cost)
+    }
+    /// `Content` buffers holding this value: the enclosing ones, and each one
+    /// its type nests around it before choosing a variant.
+    fn copies(&self) -> u64 {
+        let copies = self.buffers.saturating_add(self.candidates.buffers);
+        #[cfg(test)]
+        let copies = copies.min(tests::COPY_CAP.get());
+        copies
     }
     /// A string value. Enum labels and identifiers own no bytes, but a string
-    /// is charged at every position as though it decodes to a `String`.
-    pub(super) fn string(self, bytes: usize) {
-        self.cost
-            .borrow_mut()
-            .string(bytes as u64, true, self.scale);
+    /// is charged at every position as though it decodes to a `String`, and
+    /// an `escaped` one is also owned by every buffer holding it.
+    pub(super) fn string(self, text: &[u8], escaped: bool) {
+        let mut cost = self.cost.borrow_mut();
+        cost.string(text, true, self.scale);
+        if escaped {
+            cost.buffered_string(
+                text.len() as u64,
+                self.copies(),
+                self.buffers == 0,
+                self.scale,
+            );
+        }
     }
     /// A `serde_json::Value` decodes here, which expands a raw JSON member.
     pub(super) fn decodes_value(self) -> bool {
@@ -478,7 +540,7 @@ impl<'a> Placement<'a> {
     pub(super) fn expanded(self) -> Self {
         let mut candidates = Candidates::NONE;
         candidates.add(<serde_json::Value as HeapLayout>::LAYOUT, 0, 0);
-        Self::new(candidates, self.buffered, self.scale, self.cost)
+        Self::new(candidates, self.buffers, self.scale, self.cost)
     }
 }
 /// Counts one container's entries and charges it however its visit ends.
@@ -495,20 +557,20 @@ impl<'a> Entries<'a> {
             count: 0,
         }
     }
-    /// An object key. Map keys and keys buffered as content own their bytes;
-    /// struct field names only select a field.
-    pub(super) fn key(&self, bytes: usize) {
+    /// An object key. Map keys own their bytes, and an `escaped` key is also
+    /// owned by every buffer holding its object; struct field names only
+    /// select a field. The object's own visit closes its buffered subtree.
+    pub(super) fn key(&self, key: &[u8], escaped: bool) {
         if let Some(placement) = self.placement {
             let candidates = &placement.candidates;
-            let owned = placement.buffered
-                || candidates.buffers()
-                || candidates.nodes().any(|node| {
-                    matches!(node, JsonLayout::Node { map: Some(alloc), .. } if *alloc != Alloc::INLINE)
-                });
-            placement
-                .cost
-                .borrow_mut()
-                .string(bytes as u64, owned, placement.scale);
+            let owned = candidates.nodes().any(|node| {
+                matches!(node, JsonLayout::Node { map: Some(alloc), .. } if *alloc != Alloc::INLINE)
+            });
+            let mut cost = placement.cost.borrow_mut();
+            cost.string(key, owned, placement.scale);
+            if escaped {
+                cost.buffered_string(key.len() as u64, placement.copies(), false, placement.scale);
+            }
         }
     }
     pub(super) fn child(&self, key: Option<&[u8]>, index: usize) -> Option<Placement<'a>> {
@@ -520,7 +582,7 @@ impl<'a> Entries<'a> {
             }
             Placement::new(
                 children,
-                placement.buffered || placement.candidates.buffers(),
+                placement.copies(),
                 placement.scale,
                 placement.cost,
             )
@@ -540,3 +602,24 @@ impl Drop for Entries<'_> {
 
 mod std_layouts;
 pub use std_layouts::markers;
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::cell::Cell;
+    thread_local! {
+        /// Most `Content` buffers counted at one position; a negative control
+        /// lowers it to reproduce a model that counts too few copies.
+        pub(in crate::executor::json) static COPY_CAP: Cell<u64> = const { Cell::new(u64::MAX) };
+        /// Whether rejected strings' error messages are reserved; a negative
+        /// control clears it.
+        pub(in crate::executor::json) static MESSAGES: Cell<bool> = const { Cell::new(true) };
+    }
+}
+#[cfg(test)]
+fn messages_counted() -> bool {
+    tests::MESSAGES.get()
+}
+#[cfg(not(test))]
+const fn messages_counted() -> bool {
+    true
+}
