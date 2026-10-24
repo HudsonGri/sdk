@@ -27,17 +27,56 @@ function namespaceRecord() {
   const record = read(`/mnt/bb/jobs/${ns.replaceAll(/[^0-9]/g, '')}.pid-namespace.json`);
   return record?.namespace === ns && record.init_identity === processIdentity(1) ? record : null;
 }
-function endedNamespace(m) {
+// Recovery consumes historical files, including records cut off by a killed
+// writer. All such reads pass this parser; invalid data never grants custody.
+export function recoveryRecord(file, type = 'meta') {
+  const invalid = reason => ({kind: 'invalid', reason});
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return invalid('invalid-path');
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (error) { return {kind: error.code === 'ENOENT' ? 'missing' : 'invalid', reason: error.code === 'ENOENT' ? 'missing-record' : 'unreadable-json'}; }
+  const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+  const absolute = x => typeof x === 'string' && path.isAbsolute(x);
+  if (!object(value)) return invalid('record-not-object');
+  if (type === 'meta' || type === 'parent' || type === 'terminal') {
+    if (!absolute(value.receipt_file)) return invalid('invalid-receipt-path');
+  }
+  if (type === 'meta') {
+    if (!Array.isArray(value.argv) || value.argv.some(x => typeof x !== 'string')) return invalid('invalid-argv');
+    if (typeof value.admission_start !== 'string' || !Number.isFinite(Date.parse(value.admission_start))) return invalid('invalid-admission-start');
+    if (!object(value.owner) || !Number.isSafeInteger(value.owner.pid) || value.owner.pid <= 0) return invalid('invalid-owner');
+    if (typeof value.owner.identity !== 'string' || !value.owner.identity) return invalid('invalid-owner-identity');
+    if (value.owner.pid_namespace != null && typeof value.owner.pid_namespace !== 'string') return invalid('invalid-owner-namespace');
+    for (const name of ['ledger', 'job_prefix']) if (value[name] != null && !absolute(value[name])) return invalid('invalid-' + name);
+    if (value.namespace_scope != null) {
+      const s = value.namespace_scope;
+      if (!object(s) || typeof s.namespace !== 'string' || typeof s.epoch !== 'string' || !s.epoch ||
+          !absolute(s.parent_receipt_meta) || !absolute(s.registration_file)) return invalid('invalid-namespace-scope');
+    }
+  }
+  if (type === 'registration' && (typeof value.epoch !== 'string' || !absolute(value.parent_receipt_meta))) return invalid('invalid-registration');
+  if (type === 'terminal' && (value.receipt_file !== file || !Number.isInteger(value.exit_status) ||
+      !['command','infra','cancelled','interrupted'].includes(value.termination))) return invalid('invalid-terminal');
+  return {kind: 'valid', value};
+}
+function namespaceOutcome(m) {
   // An outer wrapper waits for namespace init. Only a registered namespace and
   // its completed owner can prove that invisible child PIDs have exited.
   const scope = m.namespace_scope;
-  if (!scope || scope.namespace !== m.owner?.pid_namespace || !scope.parent_receipt_meta) return false;
-  const parent = read(scope.parent_receipt_meta), registered = read(scope.registration_file);
-  const terminal = parent?.receipt_file && read(parent.receipt_file);
-  return Boolean(parent?.receipt_file && terminal && registered?.epoch && registered.epoch === scope.epoch &&
+  if (!scope) return 'held-no-namespace-scope';
+  if (scope.namespace !== m.owner?.pid_namespace) return 'held-namespace-mismatch';
+  const p = recoveryRecord(scope.parent_receipt_meta, 'parent');
+  if (p.kind !== 'valid') return 'held-parent-' + p.kind;
+  const r = recoveryRecord(scope.registration_file, 'registration');
+  if (r.kind !== 'valid') return 'held-registration-' + r.kind;
+  const t = recoveryRecord(p.value.receipt_file, 'terminal');
+  if (t.kind !== 'valid') return 'held-terminal-' + t.kind;
+  const parent = p.value, registered = r.value, terminal = t.value;
+  return registered.epoch === scope.epoch &&
     registered.parent_receipt_meta === scope.parent_receipt_meta &&
-    terminal.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1');
+    terminal.receipt_file === parent.receipt_file && terminal.namespace_custody === 'pidns-v1' ? 'ended' : 'held-unproven-custody';
 }
+function endedNamespace(m) { return namespaceOutcome(m) === 'ended'; }
 export function processIdentity(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ');
@@ -46,6 +85,17 @@ export function processIdentity(pid) {
   } catch { return null; }
 }
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+function requireMeta(file) {
+  const result = recoveryRecord(file);
+  if (result.kind !== 'valid') throw new Error(`receipt metadata INFRA: ${result.kind}:${result.reason}: ${file}`);
+  return result.value;
+}
+function completedReceipt(file) {
+  const result = recoveryRecord(file, 'terminal');
+  if (result.kind === 'missing') return null;
+  if (result.kind !== 'valid') throw new Error(`receipt terminal INFRA: ${result.reason}: ${file}`);
+  return result.value;
+}
 export function arm(file, meta, pid = process.pid) {
   const scope = namespaceRecord();
   atomic(file, { exec_start: null, toolchain: null, ...meta,
@@ -90,20 +140,20 @@ function kernelWriter(file, operation, value) {
   return JSON.parse(writer.stdout);
 }
 export function finish(metaFile, rc, category, extra = {}) {
-  const m = read(metaFile);
-  if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
-  if (fs.existsSync(m.receipt_file)) return read(m.receipt_file);
+  const m = requireMeta(metaFile), terminal = completedReceipt(m.receipt_file);
+  if (terminal) return terminal;
   return kernelWriter(m.receipt_file, 'locked-finish', {metaFile, rc, category, extra});
 }
 function finishLocked(metaFile, rc, category, extra = {}) {
-  const m = read(metaFile);
-  if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
+  const m = requireMeta(metaFile);
   const file = m.receipt_file;
-  if (fs.existsSync(file)) return read(file);
+  const terminal = completedReceipt(file);
+  if (terminal) return terminal;
   const foreignEnded = !canObserveOwner(m.owner) && category === 'interrupted' && endedNamespace(m);
   if (!canObserveOwner(m.owner) && !foreignEnded) return null;
   {
-    if (fs.existsSync(file)) return read(file);
+    const existing = completedReceipt(file);
+    if (existing) return existing;
     const runtimeFile = metaFile + '.runtime';
     let runtime, cleanupAllowed = true;
     if (!foreignEnded && m.side === 'bb2' && category !== 'command' && read(metaFile + '.job')) {
@@ -150,8 +200,10 @@ function finishLocked(metaFile, rc, category, extra = {}) {
       let children = '';
       try { children = fs.readFileSync(JSON.parse(entry) + '.children','utf8'); } catch {}
       for (const child of children.split('\n').filter(Boolean)) {
-        const childFile = JSON.parse(child), metadata = read(childFile);
-        if (metadata && endedNamespace(metadata)) finish(childFile,137,'interrupted',{reason:'enclosing PID namespace ended'});
+        let childFile;
+        try { childFile = JSON.parse(child); } catch { continue; }
+        const metadata = recoveryRecord(childFile);
+        if (metadata.kind === 'valid' && endedNamespace(metadata.value)) finish(childFile,137,'interrupted',{reason:'enclosing PID namespace ended'});
       }
     }
     return out;
@@ -172,11 +224,12 @@ function ledgerRecordLocked(ledger, out) {
   return true;
 }
 export async function watch(metaFile, interval = 1000) {
-  const m = read(metaFile);
-  if (!canObserveOwner(m?.owner)) return;
+  const parsed = recoveryRecord(metaFile);
+  if (parsed.kind !== 'valid' || !canObserveOwner(parsed.value.owner)) return;
+  const m = parsed.value;
   for (;;) {
     if (fs.existsSync(m.receipt_file)) {
-      if (m.ledger) ledgerRecord(m.ledger, read(m.receipt_file));
+      if (m.ledger) ledgerRecord(m.ledger, completedReceipt(m.receipt_file));
       return;
     }
     if (processIdentity(m.owner.pid) !== m.owner.identity) {
@@ -198,10 +251,26 @@ export async function watch(metaFile, interval = 1000) {
 }
 export function recover(dir) {
   const seen = new Map();
+  const outcomes = [];
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.receipt-meta.v2.json') && !name.endsWith('.receipt-meta.json')) continue;
-    const file = path.join(dir, name), m = read(file);
-    const terminal = m?.receipt_file && read(m.receipt_file);
+    const file = path.join(dir, name), parsed = recoveryRecord(file);
+    if (parsed.kind !== 'valid') {
+      outcomes.push({file, outcome: parsed.kind, reason: parsed.reason});
+      process.stderr.write('[buildbox] receipt recovery ' + JSON.stringify(outcomes.at(-1)) + '\n');
+      continue;
+    }
+    // A failed ledger disk write or damaged record is local to this record.
+    // It must not prevent another job from arming its own terminal receipt.
+    try {
+    const m = parsed.value, t = recoveryRecord(m.receipt_file, 'terminal');
+    const terminal = t.kind === 'valid' ? t.value : null;
+    if (t.kind === 'invalid') {
+      const outcome = {file, outcome:'invalid-terminal', reason:t.reason};
+      outcomes.push(outcome);
+      process.stderr.write('[buildbox] receipt recovery ' + JSON.stringify(outcome) + '\n');
+      continue;
+    }
     if (terminal && m.ledger && canObserveOwner(m.owner)) {
       if (!seen.has(m.ledger)) {
         let records = [];
@@ -217,15 +286,24 @@ export function recover(dir) {
       const job = read(file + '.job');
       if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
         const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
-        p.unref(); continue;
+        p.unref(); outcomes.push({file, outcome:'watching'}); continue;
       }
       const result = finish(file, 137, 'interrupted', { reason: 'receipt owner absent during recovery' });
       if (result && m.job_prefix) {
         const tmp = m.job_prefix + '.rc.receipt-tmp';
         fs.writeFileSync(tmp, '137\n'); fs.renameSync(tmp, m.job_prefix + '.rc');
       }
+      outcomes.push({file, outcome:result ? 'interrupted' : 'held-unproven-custody'});
+    } else {
+      outcomes.push({file, outcome:terminal ? 'terminal' : canObserveOwner(m.owner) ? 'active' : namespaceOutcome(m)});
+    }
+    } catch (error) {
+      const outcome = {file, outcome:'record-infra', reason:String(error.message)};
+      outcomes.push(outcome);
+      process.stderr.write('[buildbox] receipt recovery ' + JSON.stringify(outcome) + '\n');
     }
   }
+  return outcomes;
 }
 // Native bb2 entry point, including scripts which invoke build-slot recursively.
 // Children retain a parent_log_id so cost readers never sum parent and child time.

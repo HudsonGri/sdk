@@ -51,7 +51,9 @@ test('killed namespace descendants get receipts only after their registered oute
   fs.rmSync(terminal);
   const scope=JSON.parse(fs.readFileSync(child)).namespace_scope;
   fs.writeFileSync(parent+'.pid-namespaces',JSON.stringify(scope.registration_file)+'\n');
-  fs.writeFileSync(parent,JSON.stringify({receipt_file:terminal,namespace_custody:'pidns-v1',owner:{pid:process.pid,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},argv:[],admission_start:new Date().toISOString()}));
+  const stat=fs.readFileSync(`/proc/${process.pid}/stat`,'utf8').split(') ').pop().split(' ');
+  const identity=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()+':'+stat[19];
+  fs.writeFileSync(parent,JSON.stringify({receipt_file:terminal,namespace_custody:'pidns-v1',owner:{pid:process.pid,identity,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},argv:[],admission_start:new Date().toISOString()}));
   run(module,`r.finish(${JSON.stringify(parent)},0,'command');`);
   assert.equal(fs.existsSync(childTerminal),true,JSON.stringify(fs.readdirSync(root).map(name=>[name,fs.readFileSync(path.join(root,name),'utf8')])));
   const receipt=JSON.parse(fs.readFileSync(childTerminal));
@@ -86,7 +88,7 @@ test('killed kernel writer releases custody and concurrent completions append on
  const {root,module}=fixture();
  try{
   const file=path.join(root,'meta.json'),receipt=file+'.terminal',ledger=path.join(root,'jobs.jsonl');
-  run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,pid_namespace:r.pidNamespace()},receipt_file:${JSON.stringify(receipt)},ledger:${JSON.stringify(ledger)},argv:[],admission_start:new Date().toISOString()});`);
+  run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()},receipt_file:${JSON.stringify(receipt)},ledger:${JSON.stringify(ledger)},argv:[],admission_start:new Date().toISOString()});`);
   const holder=spawn('flock',['--exclusive','--no-fork',receipt+'.writer-lock',process.execPath,'-e',"process.stdout.write('READY');setInterval(()=>{},1000)"],{stdio:['ignore','pipe','pipe']});
   await new Promise((resolve,reject)=>{holder.stdout.once('data',resolve);holder.once('error',reject);});
   const close=new Promise(resolve=>holder.once('close',resolve));holder.kill('SIGKILL');await close;
@@ -97,4 +99,61 @@ test('killed kernel writer releases custody and concurrent completions append on
   assert.equal(fs.readFileSync(ledger,'utf8').trim().split('\n').length,1);
   assert.equal(JSON.parse(fs.readFileSync(receipt)).exit_status,0);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('recovery classifies damaged historical records without failing unrelated work',()=>{
+ const {root,module}=fixture();
+ try {
+  run(module,`const root=${JSON.stringify(root)};
+   const metadata=name=>root+'/'+name+'.receipt-meta.v2.json';
+   const owner={pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()};
+   const base={owner,argv:[],admission_start:new Date().toISOString()};
+   const scope={namespace:'pid:[foreign]',epoch:'cut-off',registration_file:root+'/registration',parent_receipt_meta:root+'/missing-parent'};
+   r.atomic(metadata('missing-parent'),{...base,owner:{...owner,pid_namespace:scope.namespace},namespace_scope:scope,receipt_file:root+'/missing.terminal'});
+   r.atomic(metadata('no-scope'),{...base,owner:{...owner,pid_namespace:'pid:[foreign]'},receipt_file:root+'/legacy.terminal'});
+   r.atomic(metadata('healthy'),{...base,receipt_file:root+'/healthy.terminal'});
+   r.atomic(metadata('invalid-path'),{...base,receipt_file:{bad:true}});
+   const fs=await import('node:fs');fs.writeFileSync(metadata('unparseable'),'{');
+   const outcomes=r.recover(root);console.log(JSON.stringify(outcomes));
+   if(outcomes.find(x=>x.file===metadata('missing-parent')).outcome!=='held-parent-missing')throw Error('missing parent classification');
+   if(outcomes.find(x=>x.file===metadata('no-scope')).outcome!=='held-no-namespace-scope')throw Error('legacy classification');
+   if(outcomes.find(x=>x.file===metadata('unparseable')).reason!=='unreadable-json')throw Error('invalid JSON classification');
+   if(outcomes.find(x=>x.file===metadata('invalid-path')).reason!=='invalid-receipt-path')throw Error('schema classification');
+   if(outcomes.find(x=>x.file===metadata('healthy')).outcome!=='active')throw Error('unrelated record blocked');
+   r.finish(metadata('healthy'),0,'command');
+  `);
+  assert.equal(JSON.parse(fs.readFileSync(root+'/healthy.terminal')).exit_status,0);
+  assert.equal(fs.existsSync(root+'/missing.terminal'),false);
+  assert.equal(fs.existsSync(root+'/legacy.terminal'),false);
+  // The pre-guard implementation dereferences a missing parent and aborts
+  // recovery before the unrelated admission can arm its receipt.
+  const mutant=path.join(root,'missing-parent-mutant.mjs');
+  fs.writeFileSync(mutant,fs.readFileSync(module,'utf8').replace("if (p.kind !== 'valid') return 'held-parent-' + p.kind;","if (p.kind !== 'valid') return p.value.receipt_file;").replace("} catch (error) {\n      const outcome", "} catch (error) { throw error;\n      const outcome"));
+  const bad=spawnSync(process.execPath,[mutant,'recover',root],{encoding:'utf8'});
+  assert.notEqual(bad.status,0);assert.match(bad.stderr,/receipt_file/);
+  const unscoped=path.join(root,'unscoped-mutant.mjs');
+  fs.writeFileSync(unscoped,fs.readFileSync(module,'utf8').replace("if (!scope) return 'held-no-namespace-scope';","if (!scope) return 'ended';"));
+  run(unscoped,`r.recover(${JSON.stringify(root)});`);
+  assert.equal(fs.existsSync(root+'/legacy.terminal'),true,'inventing namespace custody wrongly terminates a legacy owner');
+  const unvalidated=path.join(root,'schema-mutant.mjs');
+  fs.writeFileSync(unvalidated,fs.readFileSync(module,'utf8').replace("if (!absolute(value.receipt_file)) return invalid('invalid-receipt-path');",''));
+  const schema=run(unvalidated,`console.log(JSON.stringify(r.recoveryRecord(${JSON.stringify(root+'/invalid-path.receipt-meta.v2.json')})));`);
+  assert.equal(JSON.parse(schema.stdout).kind,'valid','old missing schema admits an unusable receipt path');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('direct completion refuses a malformed terminal instead of returning a forged PASS',()=>{
+ const {root,module}=fixture();
+ try {
+  const file=root+'/job.receipt-meta.v2.json',receipt=root+'/terminal';
+  run(module,`r.atomic(${JSON.stringify(file)},{owner:{pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()},argv:[],admission_start:new Date().toISOString(),receipt_file:${JSON.stringify(receipt)}});r.atomic(${JSON.stringify(receipt)},{exit_status:0});`);
+  const failed=spawnSync(process.execPath,[module,'finish',file,'101','command'],{encoding:'utf8'});
+  assert.notEqual(failed.status,0);assert.match(failed.stderr,/receipt terminal INFRA/);
+  const recovered=run(module,`r.recover(${JSON.stringify(root)});`);
+  assert.match(recovered.stderr,/invalid-terminal/,'damaged terminals must be visible to CLI and admission operators');
+  const mutant=root+'/unchecked-terminal.mjs';
+  fs.writeFileSync(mutant,fs.readFileSync(module,'utf8').replace("if (result.kind !== 'valid') throw new Error(`receipt terminal INFRA: ${result.reason}: ${file}`);",'if (result.kind !== "valid") return read(file);'));
+  const old=spawnSync(process.execPath,[mutant,'finish',file,'101','command'],{encoding:'utf8'});
+  assert.equal(old.status,0,'old unchecked terminal falsely overrides failed command');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
