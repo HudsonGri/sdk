@@ -702,7 +702,6 @@ trap 'exit 129' HUP
 mkdir -p /mnt/bb/locks/wt-sdk
 exec 6>${leaseFile}
 flock -s 6
-echo $$ > $J.wpid
 while [ "$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)" -lt 24 ] || [ "$(awk -F'[= ]' '/^some/{print int($3)}' /proc/pressure/memory 2>/dev/null || echo 0)" -gt 10 ]; do sleep 5; done
 # Warm restore (2026-10-18, crit-bslot): after a fresh /mnt/bb, bb-warm restore copies sccache back from the persistent disk
 # /mnt/bbp first; jobs wait for it (max 10 min) so no sccache server starts on a half-copied dir.
@@ -805,7 +804,8 @@ echo ${Buffer.from(admitted).toString('base64')} | base64 -d > $J.admitted
 echo ${Buffer.from(wrapper).toString('base64')} | base64 -d > $J.wrap
 touch $J.t0 $J.hb $J.out $J.err
 setsid nohup bash $J.wrap > /dev/null 2>&1 < /dev/null &
-for i in $(seq 50); do [ -s $J.wpid ] && break; sleep 0.1; done
+# The launcher owns publication; constructor progress cannot precede its PID.
+echo $! > $J.wpid
 echo launched`;
 }
 

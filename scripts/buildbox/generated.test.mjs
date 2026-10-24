@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
@@ -7,6 +7,45 @@ import test from 'node:test';
 import {copyBackDestination} from './buildbox.mjs';
 import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('launch acknowledgement always has a published wrapper owner',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'launch-owner-'));
+ try{
+  const file=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(file,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport {launchScript};\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {launchScript}=await import(file);
+  const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
+  const generated=launchScript('/mnt/bb/wt-sdk/fixture','sdk/fixture','.', ['bash','fixture'], '/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv:['bash','fixture']});
+  const launch=generated.slice(generated.indexOf('touch $J.t0'));
+  assert.ok(launch.includes('echo $! > $J.wpid'));
+  for(const negative of [false,true]){
+   const root=path.join(cwd,String(negative));fs.mkdirSync(root);
+   assert.equal(spawnSync('mkfifo',[path.join(root,'ready'),path.join(root,'release')]).status,0);
+   // Delay initialization with an owned FIFO, independently of elapsed time.
+   fs.writeFileSync(path.join(root,'job.wrap'),'printf "%s\\n" "$$" > "$FIX/ready"\nread -r release < "$FIX/release"\n');
+   const body=negative?launch.replace('echo $! > $J.wpid','for i in $(seq 50); do [ -s $J.wpid ] && break; sleep 0.1; done'):launch;
+   // Advance the former polling cadence virtually: no constructor progress
+   // occurs during any of its fifty observations.
+   const child=spawn('bash',['-c','J="$FIX/job"\nsleep(){ :; }\n'+body+'\nread -r owner < "$FIX/ready"\nprintf "fixture_owner=%s\\n" "$owner"\nwait "$owner"\n'],{env:{...process.env,FIX:root},stdio:['ignore','pipe','pipe']});
+   let output='',errors='',observed=false,published=false;
+   child.stderr.on('data',data=>{errors+=data;});
+   child.stdout.on('data',data=>{
+    output+=data;
+    const match=output.match(/^fixture_owner=(\d+)$/m);
+    if(match&&!observed){
+     observed=true;
+     const ownerFile=path.join(root,'job.wpid');
+     published=fs.existsSync(ownerFile)&&fs.readFileSync(ownerFile,'utf8').trim()===match[1];
+     fs.writeFileSync(path.join(root,'release'),'complete\n');
+    }
+   });
+   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
+   assert.equal(code,0,errors);assert.ok(observed,output);
+   assert.equal(published,!negative,'the former launcher acknowledges an unobservable owner');
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
 
 test('remote completion follows the live owner rather than expiring the job age',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'remote-completion-'));
