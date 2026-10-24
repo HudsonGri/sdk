@@ -90,31 +90,60 @@ pub(super) fn finish_projection_cleanup(
         }
         drop(files.pop());
     }
+    credit.started_io(WriteOperations.delta(1), None)?;
+    delete_root_tag(root_handle).map_err(NativeMountError::from)
+}
+
+/// Removes the ProjFS reparse tag from a virtualization root opened for
+/// writing, which detaches the root from every provider.
+pub(super) fn delete_root_tag(root_handle: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
     let tag = windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS.to_le_bytes();
     let mut packet = [0_u8; 8];
     packet[..4].copy_from_slice(&tag);
     let mut returned = 0;
-    credit.started_io(WriteOperations.delta(1), None)?;
-    (|| {
-        use std::os::windows::io::AsRawHandle;
-        // SAFETY: the authenticated root handle and fixed reparse header remain live.
-        unsafe {
-            windows::Win32::System::IO::DeviceIoControl(
-                windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
-                windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
-                Some(packet.as_ptr().cast()),
-                u32::try_from(packet.len())
-                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
-                None,
-                0,
-                Some(&raw mut returned),
-                None,
-            )
+    // SAFETY: the root handle and fixed reparse header remain live.
+    unsafe {
+        windows::Win32::System::IO::DeviceIoControl(
+            windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
+            windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
+            Some(packet.as_ptr().cast()),
+            u32::try_from(packet.len())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+            None,
+            0,
+            Some(&raw mut returned),
+            None,
+        )
+    }
+    .map_err(std::io::Error::from)
+}
+
+/// Detaches a virtualization root by path, if it is one: the provider that
+/// served it is gone (stopped, or its process died).
+pub(in crate::native_mount) fn detach_root_by_path(root: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    // Backup semantics open the directory itself; no reparse follows.
+    let handle = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(
+            windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS.0
+                | windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT.0,
+        )
+        .open(root)?;
+    const ERROR_NOT_A_REPARSE_POINT: u32 = 4390;
+    match delete_root_tag(&handle) {
+        // Already detached; the control reports the Win32 code as an HRESULT.
+        Err(error)
+            if error.raw_os_error().is_some_and(|code| {
+                code as u32 == ERROR_NOT_A_REPARSE_POINT
+                    || code as u32 == 0x8007_0000 | ERROR_NOT_A_REPARSE_POINT
+            }) =>
+        {
+            Ok(())
         }
-        .map_err(std::io::Error::from)
-    })()
-    .map_err(NativeMountError::from)?;
-    Ok(())
+        result => result,
+    }
 }
 
 fn collect_projection(
@@ -198,4 +227,25 @@ fn collect_projection(
         }
     }
     Ok(())
+}
+
+/// Detaches and removes a dead process's shared root, which its ProjFS
+/// instance left tagged, holding whatever its views held, with its staging
+/// directory beside it. The instance takes no fence: the owner lock alone
+/// was its liveness. False leaves the root for the next start.
+pub(in crate::native_mount) fn detach_dead_shared_root(root: &std::path::Path) -> bool {
+    if let Err(error) = detach_root_by_path(root) {
+        tracing::warn!(%error, root = %root.display(), "a dead shared root was not detached");
+        return false;
+    }
+    for path in [super::staging_path(root).as_path(), root] {
+        match std::fs::remove_dir_all(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!(%error, path = %path.display(), "a dead shared root was not removed");
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
 }
