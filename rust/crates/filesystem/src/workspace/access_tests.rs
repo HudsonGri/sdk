@@ -15,6 +15,7 @@ async fn workspace() -> Result<
                 access_policy: Some(INITIAL_POLICY),
             },
             OperationId::new(),
+            &[],
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,
