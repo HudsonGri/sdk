@@ -109,6 +109,7 @@ pub struct LocalFileClient {
     initial: bool,
     submitted: bool,
     host: Pin<Box<dyn Future<Output = Result<()>>>>,
+    attachment: Option<futures::channel::oneshot::Sender<()>>,
     host_done: bool,
     host_error: Option<Error>,
     drain_through: u64,
@@ -153,16 +154,20 @@ impl LocalFileClient {
             },
         )
         .await?;
+        let mut subscription = crate::package::harness::CommandSubscription::start(
+            local.clone(),
+            &acyclic_stream::runtime::PlatformExecutor,
+            operation,
+            true,
+        );
+        let attachment = subscription.take_attachment();
         Ok(Self {
             approvals: approvals::follow(
                 local.clone(),
                 crate::runtime::task_id_for_admission(operation),
             ),
-            host: Box::pin(super::commands::run_local_command_files(
-                local.clone(),
-                operation,
-                true,
-            )),
+            host: Box::pin(subscription),
+            attachment,
             local,
             operation,
             query,
@@ -183,6 +188,7 @@ impl LocalFileClient {
                 .query
                 .file(&key(self.operation, TaskFile::Request)?)
                 .is_some();
+        let mut settlement = Ok(());
         if requested && !self.host_done && self.outcome()?.is_none() && outcome.is_err() {
             // Refused input must still retire a live invocation. Cancellation
             // uses the existing task owner and publishes status to its follows.
@@ -199,9 +205,10 @@ impl LocalFileClient {
             match futures::future::select(Box::pin(cancel), self.host.as_mut()).await {
                 futures::future::Either::Left((result, _)) => {
                     if matches!(result, Err(Error::NotFound(_))) {
-                        // No task has been admitted, so there is no invocation
-                        // to drain and no permission to start one during cleanup.
-                        self.host_done = true;
+                        // Admission can still be queued on the runtime owner.
+                        // Stop its attachment and join below even without a
+                        // task to cancel; an observation is never settlement.
+                        drop(self.attachment.take());
                     } else {
                         result?;
                         let _ = self.host.as_mut().await;
@@ -225,7 +232,14 @@ impl LocalFileClient {
         {
             // The one-request headless owner returns after saving its outcome.
             // Keep polling it until native work and publication have settled.
-            let _ = self.host.as_mut().await;
+            settlement = self.host.as_mut().await;
+            self.host_done = true;
+        }
+        // Even a published outcome precedes worker teardown. Stop idle follow
+        // and join before the process can shut down its executor.
+        drop(self.attachment.take());
+        if !self.host_done {
+            settlement = self.host.as_mut().await;
         }
         let Self {
             local,
@@ -238,7 +252,15 @@ impl LocalFileClient {
         drop(query);
         drop(approvals);
         super::disconnect_local(local).await?;
-        outcome
+        match outcome {
+            Err(error) => Err(error),
+            Ok(HeadlessOutcome::Indeterminate)
+                if matches!(settlement, Err(Error::Indeterminate(_))) =>
+            {
+                Ok(HeadlessOutcome::Indeterminate)
+            }
+            Ok(value) => settlement.map(|()| value),
+        }
     }
 
     fn initial(&mut self, output: &mut impl Write) -> Result<()> {

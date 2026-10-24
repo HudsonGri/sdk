@@ -25,20 +25,14 @@ pub(super) struct Configuration<'a> {
 }
 
 pub(super) async fn open(
+    code: &crate::package::harness::HarnessCode,
     config: Configuration<'_>,
 ) -> Result<(
     Arc<LocalTaskRuntime>,
     Scope,
     Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
 )> {
-    let stock = Arc::new(StockTurnMachine::new());
-    let preparation = Arc::new(ForkPreparationMachine::new());
-    let child = Arc::new(crate::filesystem::ChildAgentMachine::new());
-    let definition = stock.definition()?;
-    let child_definition = child.definition()?;
-    let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
     let mut grants = vec![
-        "task:spawn:acyclic.direct_tool@1".to_owned(),
         "model:generate".to_owned(),
         crate::contract::capability::INTERACTION_ROUTE.to_owned(),
         "interaction:open".to_owned(),
@@ -53,22 +47,11 @@ pub(super) async fn open(
         "mail:send".to_owned(),
         "fork:publish".to_owned(),
         "project:merge".to_owned(),
-        format!(
-            "task:spawn:{}@{}",
-            child_definition.identity().name,
-            child_definition.identity().version
-        ),
-        format!(
-            "task:spawn:{}@{}",
-            definition.identity().name,
-            definition.identity().version
-        ),
-        format!(
-            "task:spawn:{}@{}",
-            fork.identity().name,
-            fork.identity().version
-        ),
     ];
+    grants.extend(
+        code.actors()
+            .map(|actor| format!("task:spawn:{}@{}", actor.name, actor.version)),
+    );
     for volume in [config.project, config.scratch] {
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             grants.push(volume.capability(operation, &mut None)?);
@@ -141,15 +124,7 @@ pub(super) async fn open(
         config.issuer,
         None,
     )?);
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    tasks.register(child_definition)?;
-    tasks.register(fork)?;
-    let mut machines = MachineRegistry::default();
-    LocalHarness::register_commands(&mut tasks, &mut machines)?;
-    machines.register(stock, &mut None)?;
-    machines.register(child, &mut None)?;
-    machines.register(preparation, &mut None)?;
+    let machines = code.registry()?;
     let mut runtime = LocalTaskRuntime::open(
         config.stream,
         config.files.clone(),
@@ -158,7 +133,7 @@ pub(super) async fn open(
         config.verifier,
         &signed,
         &scope,
-        &tasks,
+        code.tasks(),
         &machines,
         config.tools,
         config.session_limits,

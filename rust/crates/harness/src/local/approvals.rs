@@ -14,7 +14,7 @@ mod owner;
 mod parent;
 pub(super) use owner::bind_owner;
 
-pub(in crate::local) struct Inbox {
+pub(crate) struct Inbox {
     pub files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     pub reference: Component,
     pub parent_done: acyclic_fs::CancellationToken,
@@ -505,7 +505,7 @@ impl LocalHarness {
         Ok((settled, parent_waiting))
     }
 
-    pub(super) fn service_approvals<'a>(
+    pub(crate) fn service_approvals<'a>(
         &'a self,
         task: TaskId,
         commands: &'a dyn crate::filesystem::TaskCommandHost,
@@ -575,6 +575,12 @@ impl LocalHarness {
                     }
                 };
                 tokio::select! {
+                    () = crate::package::harness::subscription::approval_attachment_closed(), if !parent_waiting => {
+                        // No effect is running in this task: its command has
+                        // suspended and the immutable human review is published.
+                        // Leave that request resumable instead of cancelling it.
+                        return Err(Error::Indeterminate(OperationId::from_bytes(task.into_bytes())));
+                    }
                     () = async {
                         match inbox {
                             Some(inbox) => inbox.parent_done.cancelled().await,

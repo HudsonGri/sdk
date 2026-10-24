@@ -61,27 +61,33 @@ impl LocalHarness {
                 drained: drained.clone(),
             };
             let parent = async {
-                self.advance_while(task, &scoped, control.as_ref(), || async {
-                    if cancellation.is_cancelled()
-                        || commands
-                            .invocation_cancellation()
-                            .is_some_and(|token| token.is_cancelled())
-                    {
-                        return Ok(false);
-                    }
-                    match &control {
-                        None => Ok(true),
-                        Some(crate::local::approvals::Inbox {
-                            files, reference, ..
-                        }) => Ok(super::super::commands::state(
-                            files,
-                            reference,
-                            usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                        )
-                        .await?
-                            == ChildState::Running),
-                    }
-                })
+                crate::package::harness::worker::advance_while(
+                    self,
+                    task,
+                    &scoped,
+                    control.as_ref(),
+                    || async {
+                        if cancellation.is_cancelled()
+                            || commands
+                                .invocation_cancellation()
+                                .is_some_and(|token| token.is_cancelled())
+                        {
+                            return Ok(false);
+                        }
+                        match &control {
+                            None => Ok(true),
+                            Some(crate::local::approvals::Inbox {
+                                files, reference, ..
+                            }) => Ok(super::super::commands::state(
+                                files,
+                                reference,
+                                usize::try_from(self.limits.render_bytes).map_err(storage)?,
+                            )
+                            .await?
+                                == ChildState::Running),
+                        }
+                    },
+                )
                 .await?;
                 match self.runtime.task_host().terminal_status(task).await? {
                     Some(crate::Outcome::Indeterminate {
