@@ -230,6 +230,20 @@ async fn approval_live_window_matches_snapshot_after_settlement() {
         historical.len() > 8,
         "the raw historical follow must exceed the live bound"
     );
+    // A durable settlement covers its earlier request in the same prefix.
+    // Reopening publication must confirm that receipt, not append a request
+    // after its decision and resurrect it in the live view.
+    let replay = FileValue::new(
+        key(&task, TaskFile::ApprovalRequest(component("request-0"))),
+        b"value".to_vec(),
+    );
+    super::super::publish_durable(&volume, &replay, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        volume.snapshot(&query, 8).await.unwrap().generation,
+        generation
+    );
     assert_eq!(
         volume
             .snapshot(
