@@ -65,7 +65,11 @@ impl<'a> StockExecution<'a> {
             crate::model::ModelTurn {
                 operation_id: input.operation_id,
                 ordinal: u64::from(step),
-                role: self.stock.role.as_deref().unwrap_or("root"),
+                role: if self.summary.is_some() {
+                    "summary"
+                } else {
+                    self.stock.role.as_deref().unwrap_or("root")
+                },
             },
             self.native_work(),
         )

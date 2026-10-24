@@ -213,6 +213,9 @@ impl ModelRequest {
                 };
                 match (tool, content) {
                     (_, ToolResultContent::Error { .. }) => {}
+                    // A stored result is supplied history, just like an error. Its bounded
+                    // shape and immutable readable reference are independently validated.
+                    (Ok(_), ToolResultContent::Stored { .. }) => {}
                     (Ok(tool), content) => Self::validate_tool_result(tool, content, io)?,
                     (Err(refused), _) => return Err(refused),
                 }

@@ -612,6 +612,13 @@ fn project_text(
 
 fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<String> {
     match content {
+        ToolResultContent::Stored { file, preview } => {
+            let reference = files.project(
+                file,
+                &acyclic_harness_core::model::FileProjectionPolicy::Reference,
+            )?;
+            Ok(format!("{preview}\n{reference}"))
+        }
         ToolResultContent::Json { value } => {
             serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
         }

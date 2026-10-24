@@ -149,6 +149,7 @@ pub(super) fn result_bound(
 ) -> Result<()> {
     if work.is_some() {
         match content {
+            ToolResultContent::Stored { preview, .. } => history_step(work, preview.len() as u64)?,
             ToolResultContent::Json { value } => inspect_value(value, maximum, work)?,
             ToolResultContent::Parts { parts } => {
                 for part in parts {
@@ -276,6 +277,10 @@ impl ToolResultContent {
     fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         history_step(quota.work(), 1)?;
         Ok(match self {
+            Self::Stored { file, preview } => Self::Stored {
+                file: file.clone_in_quota(quota)?,
+                preview: copy_text(preview, quota)?,
+            },
             Self::Json { value } => Self::Json {
                 value: crate::core::copy(value, quota, |value: &serde_json::Value, _| {
                     crate::executor::json::json_value_logical_owned_bytes(value)

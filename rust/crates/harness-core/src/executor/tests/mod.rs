@@ -739,6 +739,7 @@ mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
 mod summary_file;
+mod summary_role;
 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_hooks;
 #[cfg(not(target_arch = "wasm32"))]

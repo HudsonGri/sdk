@@ -182,7 +182,7 @@ impl StockExecution<'_> {
             } => {
                 self.replay_tool_output(
                     journal,
-                    operation_id,
+                    (operation_id, step),
                     &invocation,
                     result,
                     projection,
@@ -745,6 +745,15 @@ impl StockExecution<'_> {
                         .map(Err);
                 }
             };
+        let content = self
+            .bounded_tool_content(
+                operation_id,
+                step,
+                &invocation.call_id,
+                &projection,
+                content,
+            )
+            .await?;
         Ok(Ok((projection, content)))
     }
 
@@ -817,13 +826,14 @@ impl StockExecution<'_> {
     async fn replay_tool_output(
         &self,
         journal: &dyn ExecutionJournal,
-        _operation: OperationId,
+        identity: (OperationId, u32),
         _invocation: &ToolInvocation,
         result: &FileRef,
         projection: &FileRef,
         tool: &crate::tool::Tool,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<crate::model::ToolResultContent> {
+        let (_operation, step) = identity;
         let result = load_json::<ToolResult>(journal, result, self.io).await?;
         with_history_io(self.io, |work| {
             validate_json_schema_value(
@@ -850,7 +860,14 @@ impl StockExecution<'_> {
                 .await?;
             self.append_hook_context(_hook_context, feedback)?;
         }
-        Ok(content)
+        self.bounded_tool_content(
+            _operation,
+            step,
+            &_invocation.call_id,
+            &projection.0,
+            content,
+        )
+        .await
     }
 }
 
