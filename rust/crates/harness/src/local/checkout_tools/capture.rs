@@ -144,7 +144,9 @@ impl CheckoutTools {
 
     /// Captures a file publication's physical write under the write's own
     /// operation while its staged generation is still the head, then clears
-    /// the debt. Once the head has moved on nothing is left to capture.
+    /// the debt. Its durable receipt also acknowledges a clean capture whose
+    /// generation did not change. Neither that receipt nor a moved head leaves
+    /// anything for a replay to capture.
     pub(in crate::local) async fn finish_owed_write(
         &self,
         selected: (&LocalWorkspace, &workspace::View),
@@ -156,17 +158,35 @@ impl CheckoutTools {
             return Ok(());
         };
         let (operation, staged) = owed;
+        let cancellation = CancellationToken::new();
+        let operation = OperationId::from_bytes(operation.into_bytes());
+        let completed = view
+            .workspace()
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    capture_operation(operation, 1).into_bytes(),
+                ),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .is_some();
         let head = view
             .workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .head(WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(storage)?
             .value;
-        if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+        if !completed
+            && staged.workspace_id == view.workspace().id()
+            && head.id() == staged.generation
+        {
             self.capture_changes(
                 selected,
                 slot,
-                OperationId::from_bytes(operation.into_bytes()),
+                operation,
                 1,
                 permit,
                 Some(staged.generation.digest()),

@@ -565,7 +565,9 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
         .map_err(storage)?
         .value
         .ok_or_else(|| Error::Invalid("clean capture lost its completion receipt".into()))?;
-    assert_ne!(captured.id(), before.id());
+    // A clean completion records its operation without changing tree identity.
+    // Recovery must consult the receipt even while the staged head still holds.
+    assert_eq!(captured.id(), before.id());
     std::fs::write(directory.path().join("later.txt"), b"user edit").map_err(storage)?;
     publisher
         .tools
