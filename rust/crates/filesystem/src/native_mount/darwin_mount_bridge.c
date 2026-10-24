@@ -1,6 +1,8 @@
 /* Darwin high-level mount bridge. Filesystem truth remains in Rust. */
 
 #include <fuse.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <DiskArbitration/DiskArbitration.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -9,6 +11,61 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <time.h>
+
+struct retirement_result {
+  int completed;
+  int dissent;
+};
+
+static void retirement_completed(DADiskRef disk, DADissenterRef dissent, void *context) {
+  (void)disk;
+  struct retirement_result *result = context;
+  result->dissent = dissent == NULL ? 0 : DADissenterGetStatus(dissent);
+  result->completed = 1;
+}
+
+static double monotonic_seconds(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
+
+/* The caller holds the authenticated destination fence. Unlike diskutil's
+   StorageKit path discovery, DADiskCreateFromVolumePath uses the cached mount
+   table for an exact canonical mountpoint; it never opens the dead NFS root.
+   Only this thread runs this private mode. Unscheduling the session before
+   releasing it makes the callback context's lifetime local to this call. */
+int acyclic_fs_darwin_retire_mount(const char *destination, double timeout, int *dissent) {
+  int error = ENOMEM;
+  DASessionRef session = DASessionCreate(NULL);
+  if (session == NULL) return error;
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+      NULL, (const UInt8 *)destination, (CFIndex)strlen(destination), true);
+  DADiskRef disk = url == NULL ? NULL : DADiskCreateFromVolumePath(NULL, session, url);
+  if (disk != NULL) {
+    CFRunLoopRef loop = CFRunLoopGetCurrent();
+    CFStringRef mode = CFSTR("acyclic.fs.mount-retirement");
+    DASessionScheduleWithRunLoop(session, loop, mode);
+    struct retirement_result result = {0, 0};
+    const double deadline = monotonic_seconds() + timeout;
+    DADiskUnmount(disk, kDADiskUnmountOptionForce, retirement_completed, &result);
+    while (!result.completed) {
+      const double remaining = deadline - monotonic_seconds();
+      if (remaining <= 0) break;
+      CFRunLoopRunInMode(mode, remaining, true);
+    }
+    DASessionUnscheduleFromRunLoop(session, loop, mode);
+    *dissent = result.dissent;
+    error = !result.completed ? ETIMEDOUT : result.dissent == 0 ? 0 : EACCES;
+    CFRelease(disk);
+  } else if (url != NULL) {
+    error = ENOENT;
+  }
+  if (url != NULL) CFRelease(url);
+  CFRelease(session);
+  return error;
+}
 
 struct acyclic_fs_native_stat {
   uint64_t inode;

@@ -40,6 +40,8 @@ fn build_darwin_mount() {
     // The whole vendored tree, so a changed header also rebuilds.
     println!("cargo:rerun-if-changed=vendor/darwinfuse");
     println!("cargo:rerun-if-changed=src/native_mount/darwin_mount_bridge.c");
+    println!("cargo:rustc-link-lib=framework=CoreFoundation");
+    println!("cargo:rustc-link-lib=framework=DiskArbitration");
     cc::Build::new()
         .files(SOURCES)
         .include("vendor/darwinfuse/include")
