@@ -90,14 +90,13 @@ pub(crate) use root::*;
 mod held_files;
 #[cfg(feature = "native-watch")]
 mod search;
-#[cfg(feature = "native-watch")]
-pub(crate) use search::file_identity;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", acyclic_fs_native_loom))]
 pub(crate) use held_files::models as held_record_models;
 #[cfg(test)]
-#[cfg(target_os = "linux")]
 pub(crate) use held_files::publish_probe;
+#[cfg(feature = "native-watch")]
+pub(crate) use search::file_identity;
 #[cfg(all(unix, any(test, feature = "native-mount")))]
 mod unix_metadata;
 #[cfg(all(unix, any(test, feature = "native-mount")))]
@@ -161,6 +160,10 @@ mod bounded_record_tests;
 #[path = "tests_bounded_source.rs"]
 mod bounded_source_tests;
 #[cfg(test)]
+#[cfg(target_os = "linux")]
+#[path = "tests_interrupted_sync.rs"]
+mod interrupted_sync_tests;
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 #[path = "tests_macos_metadata.rs"]
 mod macos_metadata_tests;
@@ -168,10 +171,6 @@ mod macos_metadata_tests;
 #[cfg(unix)]
 #[path = "tests_unix.rs"]
 mod tests;
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-#[path = "tests_interrupted_sync.rs"]
-mod interrupted_sync_tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests_windows_clone.rs"]

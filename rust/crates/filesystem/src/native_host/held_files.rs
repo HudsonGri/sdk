@@ -328,7 +328,6 @@ pub(crate) mod publish_probe {
     use std::cell::Cell;
 
     /// The steps a kill can follow: created, half written, synced, renamed.
-    #[cfg(target_os = "linux")]
     pub(crate) const STEPS: usize = 4;
     const KILLED: &str = "killed during record publication";
 
@@ -390,13 +389,11 @@ pub(crate) mod publish_probe {
     }
 
     /// Kills the next publication on this thread after `step`.
-    #[cfg(target_os = "linux")]
     pub(crate) fn kill_at(step: Option<usize>) {
         KILL_AT.set(step);
     }
 
     /// Negative control: publish by writing the record in place.
-    #[cfg(target_os = "linux")]
     pub(crate) fn tear(torn: bool) {
         TORN.set(torn);
     }

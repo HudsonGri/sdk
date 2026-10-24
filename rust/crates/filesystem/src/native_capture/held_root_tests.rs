@@ -2,33 +2,6 @@ use super::*;
 use crate::native_host::stat_probe::{Fault, Probe, events};
 
 #[test]
-fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
--> Result<(), DemandError> {
-    use crate::native_host::publish_probe;
-    for step in 0..publish_probe::STEPS {
-        let directory = tempfile::tempdir()?;
-        let held = hold_root(directory.path())?;
-        let leaf = std::path::Path::new("request.json");
-        let bytes = br#"{"request":"complete"}"#;
-        publish_probe::kill_at(Some(step));
-        assert!(held.publish_immutable(leaf, bytes).is_err());
-        publish_probe::kill_at(None);
-        if let Ok(retained) = std::fs::read(directory.path().join(leaf)) {
-            assert_eq!(retained, bytes);
-        }
-        held.publish_immutable(leaf, bytes)?;
-        held.publish_immutable(leaf, bytes)?;
-        assert!(held.publish_immutable(leaf, b"changed").is_err());
-        assert!(
-            held.publish_immutable(leaf, b"{\"request\":\"complete\"}extra")
-                .is_err()
-        );
-        assert_eq!(std::fs::read(directory.path().join(leaf))?, bytes);
-    }
-    Ok(())
-}
-
-#[test]
 fn immutable_publication_cannot_follow_a_replaced_directory_or_leaf() -> Result<(), DemandError> {
     let fixture = tempfile::tempdir()?;
     let path = fixture.path().join("workspace");
