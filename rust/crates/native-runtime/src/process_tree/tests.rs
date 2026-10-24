@@ -388,7 +388,7 @@ fn process_tree_helper() {
             }
             std::process::exit(0);
         }
-        "stdin-stall" | "stdin-handshake" => stdin_helper(&mode, &root),
+        "stdin-stall" | "stdin-handshake" | "stdin-save" => stdin_helper(&mode, &root),
         "stream-notify" => {
             let mut peer = std::net::TcpStream::connect(root.to_string_lossy().as_ref())
                 .expect("connect stream observer");
@@ -415,6 +415,13 @@ fn process_tree_helper() {
 
 fn stdin_helper(mode: &str, root: &std::path::Path) {
     match mode {
+        "stdin-save" => {
+            let mut input = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut input)
+                .expect("prompt EOF");
+            fs::write(root.join("stdin-captured"), input).expect("captured prompt");
+        }
         "stdin-stall" => {
             std::io::stdout()
                 .write_all(b"stdin-stall-marker")
@@ -655,6 +662,130 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     assert_eq!(failure.error.kind(), std::io::ErrorKind::Interrupted);
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
     assert!(failure.cleanup_completed && tree.is_reaped());
+}
+
+#[test]
+fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut command = command("stdin-save", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn prompt reader");
+    let input: Vec<u8> = (0..BULK_BYTES)
+        .map(|n| u8::try_from(n % 251).unwrap())
+        .collect();
+    tree.queue_stdin(input.clone()).expect("queue prompt");
+    assert!(
+        tree.take_stdin().is_none(),
+        "queued pipe cannot be transferred"
+    );
+    assert_eq!(
+        tree.queue_stdin(vec![b'x']).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    while !tree.pump_stdin().expect("nonblocking prompt progress") {
+        thread::yield_now();
+    }
+    tree.require_stdin_complete().expect("prompt delivered");
+    ready(temporary.path(), "stdin-captured", || {
+        tree_exited(&mut tree)
+    });
+    assert_eq!(
+        fs::read(temporary.path().join("stdin-captured")).unwrap(),
+        input
+    );
+    tree.terminate(None).expect("reap prompt reader");
+}
+
+#[test]
+fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut command = command("stdin-stall", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
+    ready(temporary.path(), "stdin-stall-ready", || {
+        tree_exited(&mut tree)
+    });
+    tree.queue_stdin(vec![b'x'; BULK_BYTES])
+        .expect("queue blocked prompt");
+    assert!(!tree.pump_stdin().expect("one bounded nonblocking write"));
+    assert_eq!(
+        tree.require_stdin_complete().unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    let failure = tree
+        .wait_with_output(
+            Duration::from_secs(5),
+            4096,
+            None,
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            None,
+            None,
+        )
+        .expect_err("capture cannot replace a queued-input owner");
+    assert_eq!(failure.error.kind(), io::ErrorKind::AlreadyExists);
+    assert!(!failure.cleanup_completed && !tree.is_reaped());
+    tree.terminate(None)
+        .expect("the queued owner cancels and reaps");
+    assert!(tree.is_reaped());
+}
+
+#[test]
+fn queued_stdin_refuses_a_second_capture_before_any_capture_turn() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut command = command("stdin-stall", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn queued owner");
+    tree.queue_stdin(vec![b'x'; BULK_BYTES])
+        .expect("queue prompt");
+    let result = super::pump::Pump::new(
+        &mut tree,
+        Duration::from_secs(5).into(),
+        4096,
+        None,
+        None,
+        [Vec::new(), Vec::new()],
+    );
+    let Err(failure) = result else {
+        panic!("capture replaced the queued owner")
+    };
+    assert_eq!(failure.error.kind(), io::ErrorKind::AlreadyExists);
+    tree.terminate(None).expect("reap queued owner");
+}
+
+#[test]
+fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
+    for required in [true, false] {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("exit-code", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn early exit");
+        while !tree_exited(&mut tree) {
+            thread::yield_now();
+        }
+        let input = vec![b'x'; BULK_BYTES];
+        tree.queue_stdin(input.clone()).expect("queue prompt");
+        if !required {
+            // Actual optional capture semantics are the negative control:
+            // permitting partial delivery must not settle a host prompt.
+            tree.queued_stdin = Some(
+                super::PendingStdin::owned(crate::OwnedCaptureInput::Literal(input))
+                    .expect("optional input control"),
+            );
+        }
+        let result = loop {
+            match tree.pump_stdin() {
+                Ok(false) => thread::yield_now(),
+                result => break result,
+            }
+        };
+        if required {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        } else {
+            assert!(result.expect("optional capture accepts the same closed peer"));
+        }
+        tree.terminate(None).expect("reap closed reader");
+    }
 }
 
 #[test]

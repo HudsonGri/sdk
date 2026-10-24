@@ -164,7 +164,7 @@ fn issue_destination(root: &Path, claim: bool) -> Result<IssuedDestination, Nati
     })
 }
 
-/// One allocator for default and sandbox-admitted task views. Only ProjFS
+/// One allocator for default and sandbox-admitted task views. Only `ProjFS`
 /// needs an in-flight path claim: its callbacks identify views by pathname.
 pub(crate) fn shared_view_destination(
     admission: Option<&crate::HeldRoot>,

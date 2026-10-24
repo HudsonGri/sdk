@@ -68,6 +68,7 @@ pub(super) struct PendingStdin<'a> {
     pub(super) complete: bool,
     stopped: bool,
     terminate_on_completion: bool,
+    require_delivery: bool,
 }
 
 impl<'a> PendingStdin<'a> {
@@ -110,6 +111,7 @@ impl<'a> PendingStdin<'a> {
             complete: !terminate_on_completion,
             stopped: false,
             terminate_on_completion,
+            require_delivery: false,
         })
     }
 
@@ -158,7 +160,7 @@ impl<'a> PendingStdin<'a> {
             let (written, recorded_operation) = transfer?;
             recorded_operation?;
             if written == Some(0) {
-                if self.terminate_on_completion {
+                if self.terminate_on_completion || self.require_delivery {
                     return Err(io::ErrorKind::BrokenPipe.into());
                 }
                 self.written = self.bytes.len();
@@ -201,7 +203,18 @@ impl<'a> PendingStdin<'a> {
             complete: !terminate_on_completion,
             stopped: false,
             terminate_on_completion,
+            require_delivery: false,
         })
+    }
+
+    pub(super) fn required_literal(bytes: Vec<u8>) -> io::Result<Self> {
+        let mut input = Self::owned(super::OwnedCaptureInput::Literal(bytes))?;
+        input.require_delivery = true;
+        Ok(input)
+    }
+
+    pub(super) fn finished(&self) -> bool {
+        self.stopped
     }
 
     /// Whether queued input still waits for room in the pipe.

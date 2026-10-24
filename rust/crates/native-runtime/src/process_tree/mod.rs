@@ -89,6 +89,9 @@ pub struct ProcessTree {
     exit_fd: Option<std::os::fd::OwnedFd>,
     /// Owner of overlapped stdin writes, created by the first write.
     writer: platform::Writer,
+    /// Input owned by an incremental native-session supervisor. The writer
+    /// drops before this storage, including a pending overlapped operation.
+    queued_stdin: Option<PendingStdin<'static>>,
     /// The process-event hub every wait of this tree arms, held from before
     /// its child is created.
     _events: events::Events,
@@ -328,7 +331,51 @@ impl ProcessTree {
 
     /// Transfers the input pipe to a host-owned streaming protocol.
     pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        if self.queued_stdin.is_some() {
+            return None;
+        }
         self.child.as_mut()?.stdin.take()
+    }
+
+    /// Queues one literal prompt without transferring the pipe or starting a
+    /// writer thread. Uses the same partial-write/EOF pump as process capture.
+    pub fn queue_stdin(&mut self, bytes: Vec<u8>) -> io::Result<()> {
+        if self.queued_stdin.is_some() || self.output_taken {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        if self
+            .child
+            .as_ref()
+            .and_then(|child| child.stdin.as_ref())
+            .is_none()
+        {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.queued_stdin = Some(PendingStdin::required_literal(bytes)?);
+        Ok(())
+    }
+
+    /// Advances queued stdin once without waiting. True means all bytes were
+    /// delivered and EOF sent; a peer closing early returns BrokenPipe.
+    pub fn pump_stdin(&mut self) -> io::Result<bool> {
+        let Some(mut input) = self.queued_stdin.take() else {
+            return Ok(true);
+        };
+        let result = input.poll(self, None);
+        let complete = input.finished();
+        if !complete {
+            self.queued_stdin = Some(input);
+        }
+        result?;
+        Ok(complete)
+    }
+
+    /// Refuses completion of a session whose queued prompt was not delivered.
+    pub fn require_stdin_complete(&self) -> io::Result<()> {
+        if self.queued_stdin.is_some() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(())
     }
 
     /// Transfers stdout to a host-owned reader, which owns its output bounds.

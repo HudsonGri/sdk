@@ -224,6 +224,7 @@ fn spawn_in_job(
         cleanup_on_drop: meter.is_none(),
         custody: None,
         writer: Writer::default(),
+        queued_stdin: None,
         _events: super::events::Events::start()?,
     });
     let initialized = custody

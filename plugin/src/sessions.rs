@@ -11,32 +11,17 @@ use std::{
 
 struct Running {
     tree: ProcessTree,
-    input: Option<std::thread::JoinHandle<io::Result<()>>>,
     turn: u64,
     events: EventLines,
     answer: String,
     session: Option<String>,
 }
-fn spawn_input(
-    mut input: impl io::Write + Send + 'static,
-    prompt: Vec<u8>,
-) -> io::Result<std::thread::JoinHandle<io::Result<()>>> {
-    std::thread::Builder::new().spawn(move || input.write_all(&prompt))
-}
 impl Running {
     fn finish_input(&mut self) -> Result<()> {
-        if let Some(input) = self.input.take() {
-            input
-                .join()
-                .map_err(|_| io::Error::other("native input writer panicked"))??;
-        }
-        Ok(())
+        self.tree.require_stdin_complete().map_err(Into::into)
     }
     fn check_input(&mut self) -> Result<()> {
-        if self.input.as_ref().is_some_and(|input| input.is_finished()) {
-            self.finish_input()?;
-        }
-        Ok(())
+        self.tree.pump_stdin().map(|_| ()).map_err(Into::into)
     }
 }
 struct EventLines(acyclic_native_runtime::lines::LineBuffer);
@@ -149,24 +134,21 @@ impl Sessions {
                 .env("ACYCLIC_WORKSPACE", &cwd)
                 .env("ACYCLIC_TASK", task.to_string());
             let mut tree = ProcessTree::spawn_in_custody(&mut command, &self.custody)?;
-            let input = tree.take_stdin().ok_or("native stdin absent")?;
             let prompt = turn
                 .get("prompt")
                 .and_then(Value::as_str)
                 .ok_or("native prompt absent")?
                 .as_bytes()
                 .to_vec();
-            // Native startup may not read stdin yet. Keep cancellation responsive.
-            let input = spawn_input(input, prompt)?;
-            Ok((tree, input))
+            tree.queue_stdin(prompt)?;
+            Ok(tree)
         })();
         match launched {
-            Ok((tree, input)) => {
+            Ok(tree) => {
                 self.children.insert(
                     reference.into(),
                     Running {
                         tree,
-                        input: Some(input),
                         turn: number,
                         events: EventLines::default(),
                         answer: String::new(),
@@ -288,6 +270,14 @@ impl Sessions {
                 .and_then(|_| running.tree.try_wait(None).map_err(Into::into));
             if matches!(&exited, Ok(Some(_))) {
                 running.tree.terminate_descendants()?;
+                match running.tree.pump_stdin() {
+                    Ok(false) => {
+                        self.children.insert(reference, running);
+                        continue;
+                    }
+                    Ok(true) => {}
+                    Err(error) => exited = Err(error.into()),
+                }
                 match self.output(&reference, &mut running) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -561,33 +551,6 @@ fn catalog() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn native_stdin_never_runs_on_the_supervisor_thread() -> io::Result<()> {
-        struct WorkerOnly(std::thread::ThreadId, mpsc::Sender<usize>);
-        impl io::Write for WorkerOnly {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                if std::thread::current().id() == self.0 {
-                    return Err(io::Error::other(
-                        "native stdin ran on the supervisor thread",
-                    ));
-                }
-                self.1.send(bytes.len()).map_err(io::Error::other)?;
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let (written, received) = mpsc::channel();
-        spawn_input(
-            WorkerOnly(std::thread::current().id(), written),
-            vec![b'x'; 32_768],
-        )?
-        .join()
-        .map_err(|_| io::Error::other("native input writer panicked"))??;
-        assert_eq!(received.try_recv().map_err(io::Error::other)?, 32_768);
-        Ok(())
-    }
     #[test]
     fn oversized_native_tool_output_does_not_kill_or_wedge_the_host() {
         let mut events = EventLines::default();

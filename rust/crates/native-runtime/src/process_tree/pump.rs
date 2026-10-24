@@ -123,6 +123,12 @@ impl<'a> Pump<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
         output: [Vec<u8>; 2],
     ) -> Result<Self, ProcessCaptureFailure> {
+        if tree.queued_stdin.is_some() {
+            return Err(ProcessCaptureFailure::before_capture(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "queued stdin already belongs to the native session",
+            )));
+        }
         let now = capture_now();
         let deadline = now.checked_add(schedule.timeout).ok_or_else(|| {
             ProcessCaptureFailure::before_capture(io::Error::new(

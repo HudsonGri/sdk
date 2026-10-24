@@ -257,6 +257,7 @@ pub(super) fn spawn_controlled(
             #[cfg(target_os = "linux")]
             exit_fd: None,
             writer: Writer,
+            queued_stdin: None,
             _events: events,
         });
         Ok(())
@@ -375,6 +376,7 @@ pub(super) fn spawn_closed_with_arguments(
             #[cfg(target_os = "linux")]
             exit_fd: None,
             writer: Writer,
+            queued_stdin: None,
             _events: events,
         });
         owner.spawn_resources = retained;
@@ -493,6 +495,7 @@ impl SpawnObjects {
                             #[cfg(target_os = "linux")]
                             exit_fd: None,
                             writer: Writer,
+                            queued_stdin: None,
                             _events: events,
                         });
                     }
