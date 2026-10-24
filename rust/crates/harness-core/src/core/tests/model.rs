@@ -78,6 +78,50 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn transition_work_with_resident_suffixes(
+    predecessor: &Reducer,
+    event: Event,
+    retained_events: usize,
+    retained_terminal_effects: usize,
+    budget: acyclic_fs::WorkBudget,
+) -> Result<(acyclic_fs::WorkCounters, Event)> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+
+    // Eviction changes only optional caches. Keep the revision, active effect,
+    // authority and exact authenticated input of the continuing execution.
+    let mut state = predecessor.copy(&mut None)?;
+    while state.events.len() > retained_events {
+        state.events.pop_front();
+    }
+    while state.projection.indexed_terminal_effects.len() > retained_terminal_effects {
+        let id = state
+            .projection
+            .indexed_terminal_effects
+            .pop_front()
+            .expect("terminal cache entry");
+        state.projection.effects.remove(&id);
+    }
+    let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
+    let ApplyResult::Applied { event } =
+        state.apply_committed(event, &mut Some(&mut io.history_io()))?
+    else {
+        panic!("fresh model input replayed")
+    };
+    state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io.history_io()))?;
+    drop(io);
+    let receipt = query.receipt();
+    drop(state);
+    query
+        .admit_retained(
+            budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes(),
+        )
+        .map_err(Error::from)?;
+    Ok((receipt, event))
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_component_model_transition_work_grows_linearly_with_bounded_residency() -> Result<()>
 {
@@ -153,9 +197,6 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
     const WARMUP: u64 = 16;
     const TRANSITIONS: u64 = WARMUP + 10 * N;
     let mut recent = VecDeque::new();
-    let mut total = acyclic_fs::WorkCounters::default();
-    let mut input_bytes = 0_u64;
-    let mut small = None;
     for index in 0_u64..TRANSITIONS {
         let mut id = [0_u8; 16];
         id[..8].copy_from_slice(&(index / 4 + 1).to_le_bytes());
@@ -211,18 +252,29 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         else {
             panic!("fresh model event replayed")
         };
-        if index >= WARMUP {
-            input_bytes += serde_json::to_vec(&(
-                &owner.audience,
-                event.revision,
-                event.operation_id,
-                event.intent_digest,
-                &event.scope,
-                &event.causal_parent,
-                &event.payload,
-            ))
-            .expect("signed input")
-            .len() as u64;
+        // Reuse one owned input, including its buffer capacities, throughout
+        // the comparisons and the continuing application.
+        let (independent, mut event) =
+            transition_work_with_resident_suffixes(&state, event, 0, 0, budget)?;
+        // Exhaust every legal cache suffix with this same signed event. Fresh
+        // admission entropy and JSON fragment boundaries cannot change one side
+        // of the comparison. No history-size-dependent copy may hide behind an
+        // average over different inputs.
+        for retained_events in 0..=state.events.len() {
+            for retained_effects in 0..=state.projection.indexed_terminal_effects.len() {
+                let (receipt, returned_event) = transition_work_with_resident_suffixes(
+                    &state,
+                    event,
+                    retained_events,
+                    retained_effects,
+                    budget,
+                )?;
+                event = returned_event;
+                assert_eq!(
+                    receipt, independent,
+                    "transition {index}, events={retained_events}, terminal effects={retained_effects}",
+                );
+            }
         }
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -235,15 +287,7 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
         state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io.history_io()))?;
         drop(io);
         let receipt = query.receipt();
-        if index >= WARMUP {
-            total = total.checked_add(receipt).expect("work counters fit");
-        }
-        if index + 1 == WARMUP + N {
-            small = Some((
-                serde_json::to_value(total).expect("work counters"),
-                input_bytes,
-            ));
-        }
+        assert_eq!(receipt, independent, "continuing transition {index}");
         assert_eq!(&state, reference.reducer(), "transition {index}");
         assert!(state.events.len() <= 4);
         assert!(
@@ -259,21 +303,10 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
             }
         }
     }
-    let (small, small_bytes) = small.expect("small workload");
-    let input_bound = input_bytes.max(10 * small_bytes);
-    let large = serde_json::to_value(total).expect("work counters");
-    for (counter, value) in small.as_object().expect("work counters") {
-        assert!(
-            u128::from(
-                large
-                    .get(counter)
-                    .and_then(serde_json::Value::as_u64)
-                    .expect("counter")
-            ) * u128::from(small_bytes)
-                <= u128::from(value.as_u64().expect("counter")) * u128::from(input_bound),
-            "{counter} grows faster than the signed input: {small:?} -> {large:?}"
-        );
-    }
+    // This model proves that prior history cannot increase transition work.
+    // Input-size growth is bounded separately by the production-buffer property
+    // `relocation_is_linear_for_every_fragmentation`: copies <= 2 * emitted bytes.
+    // Comparing work densities of different authenticated inputs proves neither.
     assert_eq!(state.revision(), TRANSITIONS + 1);
     let mut oldest = [0_u8; 16];
     oldest[..8].copy_from_slice(&1_u64.to_le_bytes());
