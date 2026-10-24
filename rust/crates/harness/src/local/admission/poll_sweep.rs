@@ -715,7 +715,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
         let indices =
             coverage::partition_indices(cuts.len(), RESUME_PARTITIONS, selected, |index| {
                 let (_, _, _, cut, admission) = cuts[index];
-                cut < admission
+                cut.checked_add(1) == Some(admission)
             })?;
         cuts = indices.into_iter().map(|index| cuts[index]).collect();
         coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _, _)| *scenario))?;
@@ -730,6 +730,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
     // than multiplying native filesystem contention by the partition count.
     let workers = std::thread::available_parallelism().unwrap().get().min(64)
         / partition.map_or(1, |_| RESUME_PARTITIONS.len());
+    eprintln!("replay workers: {}", workers.max(1).min(cuts.len()));
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..workers.max(1).min(cuts.len()))
             .map(|_| {
@@ -749,7 +750,8 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
                             return Ok(());
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&(scenario, baseline, seed, cut, _)) = cuts.get(index) else {
+                        let Some(&(scenario, baseline, seed, cut, admission)) = cuts.get(index)
+                        else {
                             assert_eq!(
                                 io_threads.load(Ordering::Relaxed),
                                 0,
@@ -774,6 +776,12 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
                                 failed.store(true, Ordering::Relaxed);
                                 error
                             })?;
+                        if partition.is_some() && cut.checked_add(1) == Some(admission) {
+                            assert!(
+                                coverage.unadmitted,
+                                "admission witness missed the crash window"
+                            );
+                        }
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
                         interrupted.fetch_add(usize::from(coverage.interrupted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
@@ -830,6 +838,12 @@ resume_sweep_tests! {
     3 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_3,
     4 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_4,
     5 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_5,
+    6 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_6,
+    7 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_7,
+    8 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_8,
+    9 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_9,
+    10 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_10,
+    11 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_11,
 }
 
 #[test]
