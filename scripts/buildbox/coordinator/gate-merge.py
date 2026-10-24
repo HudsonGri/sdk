@@ -57,7 +57,7 @@ def merge(repo, worktree, state, prs, alerts):
         # disappearing or immediately retrying an unchanged refused head.
         g = preparation.Gate(repo, worktree, state, alerts)
         for pr, reason in failed:
-            g.park(pr, 'merge-failed', reason)
+            g.park(pr, 'merge-failed', reason, head=pin['heads'][str(pr)])
             with (state/'held-pending.txt').open('a', encoding='utf-8') as queue:
                 queue.write(str(pr)+'\n'); queue.flush(); os.fsync(queue.fileno())
             g.alert('GATE_MERGE_HELD', f'#{pr} head={pin["heads"][str(pr)]}: {reason}; held until a changed head or coordinator recovery')

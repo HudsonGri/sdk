@@ -106,9 +106,12 @@ class Gate:
         self.checked(self.worktree, 'merge', '--abort')
         return True
 
-    def park(self, pr, kind, reason):
+    def park(self, pr, kind, reason, *, head=None):
         holds = self.read('head-holds.json', {})
-        key = {'head': self.oid(self.repo, f'refs/pr-gate/{pr}'), 'base': self.base, 'kind': kind, 'reason': reason}
+        # A delayed merge verdict belongs to its tested head. A queue producer
+        # may already have fetched a newer head into the shared mutable ref.
+        head = self.oid(self.repo, f'refs/pr-gate/{pr}') if head is None else head
+        key = {'head': head, 'base': self.base, 'kind': kind, 'reason': reason}
         fresh = holds.get(str(pr)) != key
         holds[str(pr)] = key
         self.write('head-holds.json', holds)
