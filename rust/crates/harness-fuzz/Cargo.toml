@@ -27,7 +27,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "c
 
 [features]
 default = ["runtime"]
-runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:acyclic-native-runtime"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
@@ -56,7 +56,7 @@ serde.workspace = true
 uuid = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["test-util"], optional = true }
 tokio-util = { workspace = true, features = ["codec"], optional = true }
-which = { version = "=8.0.6", optional = true }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 
 [[bin]]
 name = "mock_model_script"

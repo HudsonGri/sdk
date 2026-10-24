@@ -19,10 +19,10 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
@@ -76,13 +76,19 @@ mod directory;
 pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
+mod command;
+#[cfg(windows)]
+mod executable;
 mod service;
 mod shell;
+pub use command::ExecutableSearch;
+mod expansion;
+pub use expansion::{EnvironmentReference, expand_environment};
 pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
-pub use shell::shell_command;
+pub use shell::{platform_shell, shell_command};
 mod meter;
 pub use meter::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
@@ -119,3 +125,9 @@ use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;
+
+/// Cross-platform process incarnation decisions and native identity queries.
+pub mod process_identity;
+
+/// Portable platform contracts are also available without native effects.
+pub use acyclic_host_platform::{paths, shell as shell_spec};

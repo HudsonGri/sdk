@@ -24,7 +24,8 @@ fn program(root: &Path) -> Command {
     #[cfg(unix)]
     {
         let pid = root.join("pid");
-        let mut command = crate::shell_command(PUBLISHING_PROGRAM, Some("sh"));
+        let mut command =
+            crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
         command
             .arg("sh")
             .arg(pid)
@@ -441,7 +442,8 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
         let mut command = crate::shell_command(
             &format!(r#"sleep 3600 & echo $! > "$1"; {script}"#),
             Some("sh"),
-        );
+        )
+        .expect("resolve fixture shell");
         command
             .arg("sh")
             .arg(&pid)
@@ -497,7 +499,7 @@ fn a_second_owner_in_one_process_shares_the_live_custody() {
     let processes = root.path().join("processes");
     let first = ProcessCustody::acquire(&processes).expect("first owner");
     #[cfg(unix)]
-    let mut command = crate::shell_command("sleep 30", Some("sh"));
+    let mut command = crate::shell_command("sleep 30", Some("sh")).expect("resolve fixture shell");
     #[cfg(windows)]
     let mut command = {
         let mut command = Command::new("ping");
@@ -528,7 +530,8 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
     let processes = root.path().join("processes");
     let custody = ProcessCustody::open(&processes).expect("custody");
     let pid = root.path().join("pid");
-    let mut command = crate::shell_command(PUBLISHING_PROGRAM, Some("sh"));
+    let mut command =
+        crate::shell_command(PUBLISHING_PROGRAM, Some("sh")).expect("resolve fixture shell");
     command.arg("sh").arg(&pid);
     command
         .stdin(Stdio::null())
@@ -569,7 +572,8 @@ fn escaping_program(pid: &Path) -> Command {
     let mut command = crate::shell_command(
         r#"setsid sh -c 'echo $$ > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 3600' sh "$1" & wait"#,
         Some("sh"),
-    );
+    )
+    .expect("resolve fixture shell");
     command.arg("sh").arg(pid);
     command
         .stdin(Stdio::null())
