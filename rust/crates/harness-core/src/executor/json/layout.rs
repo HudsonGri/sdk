@@ -660,21 +660,6 @@ mod std_layouts;
 pub use std_layouts::markers;
 
 #[cfg(test)]
-pub(super) mod tests {
-    use std::cell::Cell;
-    thread_local! {
-        /// Most `Content` buffers counted at one position; a negative control
-        /// lowers it to reproduce a model that counts too few copies.
-        pub(in crate::executor::json) static COPY_CAP: Cell<u64> = const { Cell::new(u64::MAX) };
-        /// Whether rejected strings' error messages are reserved; a negative
-        /// control clears it.
-        pub(in crate::executor::json) static MESSAGES: Cell<bool> = const { Cell::new(true) };
-        /// Whether flattened collections are reserved; a negative control
-        /// clears it.
-        pub(in crate::executor::json) static FLATTENED: Cell<bool> = const { Cell::new(true) };
-    }
-}
-#[cfg(test)]
 fn flattened_counted() -> bool {
     tests::FLATTENED.get()
 }
@@ -689,4 +674,20 @@ fn messages_counted() -> bool {
 #[cfg(not(test))]
 const fn messages_counted() -> bool {
     true
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::cell::Cell;
+    thread_local! {
+        /// Most `Content` buffers counted at one position; a negative control
+        /// lowers it to reproduce a model that counts too few copies.
+        pub(in crate::executor::json) static COPY_CAP: Cell<u64> = const { Cell::new(u64::MAX) };
+        /// Whether rejected strings' error messages are reserved; a negative
+        /// control clears it.
+        pub(in crate::executor::json) static MESSAGES: Cell<bool> = const { Cell::new(true) };
+        /// Whether flattened collections are reserved; a negative control
+        /// clears it.
+        pub(in crate::executor::json) static FLATTENED: Cell<bool> = const { Cell::new(true) };
+    }
 }

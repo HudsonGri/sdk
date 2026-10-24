@@ -48,7 +48,6 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
             "journal",
             config,
             operation,
-            &[],
             budget,
             &cancellation,
             None,
@@ -62,8 +61,7 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             "journal",
             config,
-            operation,
-            &files,
+            crate::CreationOperation::populated(operation, &files),
             budget,
             &cancellation,
             None,
@@ -91,8 +89,7 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             "journal",
             config,
-            operation,
-            &files,
+            crate::CreationOperation::populated(operation, &files),
             read_only,
             &cancellation,
             None,
@@ -127,8 +124,7 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 "journal",
                 config,
-                operation,
-                files,
+                crate::CreationOperation::populated(operation, files),
                 read_only,
                 &cancellation,
                 None,
@@ -166,8 +162,7 @@ async fn recovery_pages_a_root_larger_than_one_directory_page() -> Result<(), Bo
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             "journal",
             config,
-            operation,
-            &files,
+            crate::CreationOperation::populated(operation, &files),
             budget()?,
             &cancellation,
             None,
@@ -178,8 +173,7 @@ async fn recovery_pages_a_root_larger_than_one_directory_page() -> Result<(), Bo
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             "journal",
             config,
-            operation,
-            &files,
+            crate::CreationOperation::populated(operation, &files),
             read_only()?,
             &cancellation,
             None,
@@ -191,8 +185,7 @@ async fn recovery_pages_a_root_larger_than_one_directory_page() -> Result<(), Bo
         .create_workspace_with_operation::<_, (), WorkspaceError>(
             "journal",
             config,
-            operation,
-            &files[..4],
+            crate::CreationOperation::populated(operation, &files[..4]),
             read_only()?,
             &cancellation,
             None,

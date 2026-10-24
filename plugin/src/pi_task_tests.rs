@@ -916,13 +916,6 @@ fn native_reply_validation_borrows_body_and_rejects_tampering() {
 
 #[test]
 fn an_owned_recovery_decode_is_charged_by_its_own_nodes() {
-    fn nodes(value: &Value) -> u64 {
-        1 + match value {
-            Value::Array(items) => items.iter().map(nodes).sum(),
-            Value::Object(fields) => fields.values().map(|value| 1 + nodes(value)).sum(),
-            _ => 0,
-        }
-    }
     let input = serde_json::to_value(PiTaskInput::<PiTaskBinding, PiRootIntent> {
         binding: binding(),
         execution: PiTaskExecution::Child {

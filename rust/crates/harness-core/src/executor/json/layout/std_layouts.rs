@@ -160,16 +160,14 @@ const fn keeps_only_its_string(layout: &JsonLayout) -> bool {
     match layout {
         JsonLayout::Scalar | JsonLayout::Node { .. } => true,
         JsonLayout::Boxed { .. } | JsonLayout::Scaled { .. } => false,
-        JsonLayout::Any { of, .. } => {
-            let mut index = 0;
-            while index < of.len() {
-                if !keeps_only_its_string(of[index]) {
-                    return false;
-                }
-                index += 1;
-            }
-            true
-        }
+        JsonLayout::Any { of, .. } => all_keep_only_their_strings(of),
+    }
+}
+/// Whether every alternative in `layouts` keeps only its string.
+const fn all_keep_only_their_strings(layouts: &[&JsonLayout]) -> bool {
+    match layouts {
+        [] => true,
+        [first, rest @ ..] => keeps_only_its_string(first) && all_keep_only_their_strings(rest),
     }
 }
 impl<T: HeapLayout, const N: usize> HeapLayout for [T; N] {

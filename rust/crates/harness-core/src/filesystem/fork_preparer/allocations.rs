@@ -291,6 +291,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let conversation = parent
             .conversation()
             .ok_or_else(|| Error::Invalid("fork parent has no conversation state".into()))?;
+        self.require_inherited_prefix(seed, verifier, conversation, parent_agent)
+            .await?;
+        let digest = seed_digest(seed, MAX_REPORT_BYTES, None)?;
+        self.require_seed_volumes(seed, source_project).await?;
+        self.record_seed_claim(seed, digest).await
+    }
+
+    /// Requires the seed's inherited conversation to be exactly the parent
+    /// prefix it selects.
+    async fn require_inherited_prefix(
+        &self,
+        seed: &ForkSeed,
+        verifier: &AuthorityVerifier,
+        conversation: &crate::conversation::ConversationState,
+        parent_agent: crate::AgentId,
+    ) -> Result<()> {
         if let Some(file) = seed.inherited_context.first() {
             let bytes = self
                 .read_pinned_io(file, file.descriptor().byte_length(), None)
@@ -325,7 +341,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
         }
-        let digest = seed_digest(seed, MAX_REPORT_BYTES, None)?;
+        Ok(())
+    }
+
+    /// Requires every child volume to belong to this provider and to have
+    /// been created by this seed's own operation, so two operations can never
+    /// claim the same volume.
+    async fn require_seed_volumes(
+        &self,
+        seed: &ForkSeed,
+        source_project: &VolumeRef,
+    ) -> Result<()> {
         if source_project.provider() != &self.provider
             || seed_creation_volumes(seed)?.any(|volume| volume.provider() != &self.provider)
         {
@@ -339,6 +365,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             self.require_seed_creation(seed.operation_id, role, volume)
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Records the seed's allocation as its journal's creation commit, then
+    /// requires the retained claim and seed binding to be this seed's.
+    async fn record_seed_claim(&self, seed: &ForkSeed, digest: [u8; 32]) -> Result<()> {
         let claim = AllocationClaim {
             operation_id: seed.operation_id,
             preparation_digest: digest,

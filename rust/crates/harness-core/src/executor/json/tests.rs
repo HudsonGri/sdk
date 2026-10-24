@@ -95,7 +95,7 @@ mod digest_properties {
                     Ok(())
                 }));
             });
-            prop_assert_eq!(copied.unwrap().unwrap(), value.clone());
+            prop_assert_eq!(&copied.unwrap().unwrap(), &value);
             prop_assert!(operations >= measured.count_total);
             prop_assert!(operations <= measured.count_total + map_slack(&value));
             // Negative control: the previous buffer/string-only charges omit
@@ -754,21 +754,28 @@ fn converted_names_reserve_their_shared_copies() {
     // Negative control: the same conversion laid out as the `String` it
     // decodes from reserves less than its decode really holds.
     #[derive(serde::Deserialize, crate::HeapLayout)]
-    #[serde(try_from = "String")]
+    #[serde(from = "String")]
     #[heap_layout(as = String)]
-    struct AsString(#[allow(dead_code)] std::sync::Arc<str>);
-    impl TryFrom<String> for AsString {
-        type Error = std::convert::Infallible;
-        fn try_from(text: String) -> std::result::Result<Self, Self::Error> {
-            Ok(Self(std::sync::Arc::from(text)))
+    struct AsString(std::sync::Arc<str>);
+    impl From<String> for AsString {
+        fn from(text: String) -> Self {
+            Self(std::sync::Arc::from(text))
         }
     }
     let bytes = serde_json::to_vec(&components).unwrap();
     let as_string = layout_reservation::<Vec<AsString>>(&bytes).unwrap();
+    let mut decoded = Vec::new();
     let peak = acyclic_test_support::measure(|| {
-        serde_json::from_slice::<Vec<AsString>>(&bytes).unwrap();
+        decoded = serde_json::from_slice::<Vec<AsString>>(&bytes).unwrap();
     })
     .bytes_max as u64;
+    // The decoded names are the components the conversion holds.
+    assert!(
+        decoded
+            .iter()
+            .zip(&components)
+            .all(|(name, component)| *name.0 == *component.as_str())
+    );
     assert!(
         as_string < peak,
         "{as_string} reserved as strings / {peak} decode peak"

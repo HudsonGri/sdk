@@ -234,10 +234,12 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
                 config: acyclic_fs::VolumeConfig::portable(lifecycle),
                 access_policy: Some(crate::filesystem::access::INITIAL_POLICY),
             },
-            acyclic_fs::OperationId::from_bytes(
-                operation_key(key, Some(operation_io))?.into_bytes(),
+            acyclic_fs::CreationOperation::populated(
+                acyclic_fs::OperationId::from_bytes(
+                    operation_key(key, Some(operation_io))?.into_bytes(),
+                ),
+                files,
             ),
-            files,
             operation_io,
             operation_io.cancellation(),
             guard.as_mut(),

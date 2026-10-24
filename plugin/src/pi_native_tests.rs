@@ -418,7 +418,7 @@ fn the_case_folded_check_holds_exactly_the_bytes_it_claims() {
         // control bytes, so one or two keys overran the charge.
         let table = acyclic_test_support::measure(|| {
             let set: std::collections::HashSet<(u64, &str)> =
-                std::collections::HashSet::with_capacity(keys as usize);
+                std::collections::HashSet::with_capacity(usize::try_from(keys).unwrap());
             drop(set);
         });
         assert_eq!(

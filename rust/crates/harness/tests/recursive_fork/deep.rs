@@ -400,14 +400,10 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             // they were created under this seed's operation.
             let mut sharing = seed.clone();
             sharing.operation_id = OperationId::from_bytes([77; 16]);
+            let verifier = issuer.verifier(&mut None)?;
             assert!(matches!(
-                host.claim_fork_seed(
-                    &sharing,
-                    aggregate.reducer(),
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    &grant_scope,
-                )
-                .await,
+                host.claim_fork_seed(&sharing, aggregate.reducer(), &verifier, &grant_scope)
+                    .await,
                 Err(acyclic_harness::Error::Conflict(_))
             ));
             let unbound = issuer

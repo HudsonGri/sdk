@@ -234,11 +234,11 @@ async fn two_operations_creating_one_volume_have_exactly_one_winner() -> Result<
             winners, 1,
             "seed {seed}: creation must admit exactly one operation"
         );
-        interleavings += usize::from(interleaved);
+        interleavings += u64::from(interleaved);
     }
     // The schedule is not vacuous: most seeds genuinely interleave both operations.
     assert!(
-        interleavings * 2 > SEEDS as usize,
+        interleavings * 2 > SEEDS,
         "only {interleavings} seeds interleaved"
     );
     Ok(())

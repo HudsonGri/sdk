@@ -23,6 +23,37 @@ impl<'a> VolumeInitialization<'a> {
     }
 }
 
+/// One creation of a volume: the operation a retry repeats, and the files its
+/// creation commit publishes in the initial generation. Files belong to a
+/// named creation, so only a creation with an operation can hold them.
+#[derive(Clone, Copy, Debug)]
+pub struct CreationOperation<'a> {
+    /// The creation's operation identity.
+    pub operation_id: OperationId,
+    /// Files the creation commit publishes, each a child of the root.
+    pub files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
+}
+
+impl<'a> CreationOperation<'a> {
+    /// A creation whose initial generation holds exactly `files`.
+    pub const fn populated(
+        operation_id: OperationId,
+        files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
+    ) -> Self {
+        Self {
+            operation_id,
+            files,
+        }
+    }
+}
+
+impl From<OperationId> for CreationOperation<'_> {
+    /// A creation of an empty initial generation.
+    fn from(operation_id: OperationId) -> Self {
+        Self::populated(operation_id, &[])
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a fresh volume and its authenticated empty generation.
     pub async fn create_volume(
@@ -51,7 +82,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     access_policy: None,
                 },
                 None,
-                &[],
                 &mut accounting,
                 cancellation,
                 None::<&mut ()>,
@@ -136,14 +166,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         measured(result, &accounting)
     }
     /// Publishes the creation commit whose initial generation holds exactly
-    /// `files`: every volume and workspace is created here, an empty one being
-    /// the case without files.
+    /// the creation's files: every volume and workspace is created here, an
+    /// empty one being the case without files.
     pub(super) async fn create_volume_operation<E, G>(
         &self,
         volume_id: VolumeId,
         initialization: VolumeInitialization<'_>,
-        operation_id: Option<OperationId>,
-        files: &[(&str, acyclic_stream::OwnedBytes)],
+        creation: Option<CreationOperation<'_>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
         guard: Option<&mut G>,
@@ -161,12 +190,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .initial_generation_root(
                 volume_id,
                 initialization,
-                operation_id,
-                files,
+                creation,
                 accounting,
                 cancellation,
             )
             .await?;
+        let operation_id = creation.map(|creation| creation.operation_id);
         let proof = self
             .publication_proof(
                 generation_root,
@@ -330,16 +359,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// The initial generation a creation publishes: the empty generation when
-    /// `files` is empty, else that generation's one checkpoint creating each
-    /// file. It is a function of the volume, its configuration, the creation
-    /// operation and `files` alone, so a retried creation rebuilds exactly the
-    /// generation the original published.
+    /// it has no files, else that generation's one checkpoint creating each
+    /// file. It is a function of the volume, its configuration and the
+    /// creation alone, so a retried creation rebuilds exactly the generation
+    /// the original published.
     pub(super) async fn initial_generation_root(
         &self,
         volume_id: VolumeId,
         initialization: VolumeInitialization<'_>,
-        operation_id: Option<OperationId>,
-        files: &[(&str, acyclic_stream::OwnedBytes)],
+        creation: Option<CreationOperation<'_>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
@@ -347,12 +375,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let [.., empty] = self
             .build_empty_generation(volume_id, initialization, accounting, cancellation)
             .await?;
-        if files.is_empty() {
+        // Populated files are authored by the creation itself, under the
+        // operation a retry repeats.
+        let Some(creation) = creation.filter(|creation| !creation.files.is_empty()) else {
             return Ok(empty);
-        }
-        // Populated files are authored by the creation itself; only a named
-        // creation has an operation that a retry can repeat.
-        let operation_id = operation_id.ok_or(FsError::CreationRejected)?;
+        };
         // The checkout and its transaction run in an admitted heap frame, so
         // no caller's future embeds them.
         let mut frame_allocation = None;
@@ -367,8 +394,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     volume_id,
                     config,
                     empty,
-                    operation_id,
-                    files,
+                    creation,
                     accounting,
                     cancellation,
                 )
@@ -463,7 +489,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .await?;
                 let start = usize::try_from(offset).map_err(|_| WorkError::Overflow)?;
                 let end = usize::try_from(offset + length).map_err(|_| WorkError::Overflow)?;
-                if read.bytes.as_ref() != &expected[start..end] {
+                if expected.get(start..end) != Some(read.bytes.as_ref()) {
                     return Ok(false);
                 }
                 offset += length;
@@ -510,11 +536,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume_id: VolumeId,
         config: VolumeConfig,
         empty: ObjectId,
-        operation_id: OperationId,
-        files: &[(&str, acyclic_stream::OwnedBytes)],
+        creation: CreationOperation<'_>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
+        let CreationOperation {
+            operation_id,
+            files,
+        } = creation;
         let volume = Volume {
             fs: self.clone(),
             id: volume_id,

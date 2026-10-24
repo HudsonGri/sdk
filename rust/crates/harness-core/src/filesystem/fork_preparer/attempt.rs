@@ -376,11 +376,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let prior = write_once_alongside(
             &self.preparer.host,
             journal,
-            ("/report.json", report),
+            OnceRecord {
+                path: "/report.json",
+                value: report,
+                maximum: self.journal_limit(MAX_REPORT_BYTES),
+                key: &key,
+                operation: request.operation_id,
+            },
             companions,
-            self.journal_limit(MAX_REPORT_BYTES),
-            &key,
-            request.operation_id,
             self.io,
             self.task_preparation,
         )

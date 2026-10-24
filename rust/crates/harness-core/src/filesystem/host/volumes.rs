@@ -277,7 +277,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     access_policy: Some(access::INITIAL_POLICY),
                 },
                 acyclic_fs::OperationId::from_bytes(operation),
-                &[],
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
                 None,

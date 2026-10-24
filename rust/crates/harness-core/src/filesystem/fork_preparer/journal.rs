@@ -125,14 +125,23 @@ pub(super) async fn write_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
+/// One record a journal holds at most once: written by the first attempt,
+/// then only ever read back.
+pub(super) struct OnceRecord<'a, T> {
+    pub(super) path: &'a str,
+    pub(super) value: &'a T,
+    /// Bound on the record's encoded bytes, written and read back.
+    pub(super) maximum: u64,
+    pub(super) key: &'a IdempotencyKey,
+    /// The operation reported indeterminate when the record cannot be read
+    /// back after its write.
+    pub(super) operation: OperationId,
+}
+
 pub(super) async fn write_once<A, O, T>(
     host: &FilesystemHost<A, O>,
     journal: &WorkspaceRef,
-    path: &str,
-    value: &T,
-    maximum: u64,
-    key: &IdempotencyKey,
-    operation: OperationId,
+    record: OnceRecord<'_, T>,
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<T>
@@ -141,31 +150,17 @@ where
     O: AsyncObjectStore,
     T: Serialize + bounded_io::PreparationRecord,
 {
-    write_once_alongside(
-        host,
-        journal,
-        (path, value),
-        Vec::new(),
-        maximum,
-        key,
-        operation,
-        io,
-        preparation,
-    )
-    .await
+    write_once_alongside(host, journal, record, Vec::new(), io, preparation).await
 }
 
 /// Like [`write_once`], publishing `alongside` in the same commit as the
-/// first `value`. A caller that finds a prior `value` checks its companions
+/// first record. A caller that finds a prior record checks its companions
 /// itself: all were published together or none was.
 pub(super) async fn write_once_alongside<A, O, T>(
     host: &FilesystemHost<A, O>,
     journal: &WorkspaceRef,
-    (path, value): (&str, &T),
+    record: OnceRecord<'_, T>,
     alongside: Vec<(&str, acyclic_stream::OwnedBytes)>,
-    maximum: u64,
-    key: &IdempotencyKey,
-    operation: OperationId,
     io: Option<&PreparationIo>,
     preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<T>
@@ -174,6 +169,13 @@ where
     O: AsyncObjectStore,
     T: Serialize + bounded_io::PreparationRecord,
 {
+    let OnceRecord {
+        path,
+        value,
+        maximum,
+        key,
+        operation,
+    } = record;
     if let Some(prior) = read_record(host, journal, path, maximum, io).await? {
         return Ok(prior);
     }

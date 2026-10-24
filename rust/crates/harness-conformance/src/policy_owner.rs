@@ -125,7 +125,6 @@ pub(crate) async fn collect<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
                 access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
             },
             acyclic_fs::OperationId::new(),
-            &[],
             WorkBudget::UNBOUNDED,
             &cancellation,
             None,

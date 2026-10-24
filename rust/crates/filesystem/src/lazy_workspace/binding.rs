@@ -19,7 +19,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 name,
                 initialization,
                 operation,
-                &[],
                 work,
                 cancel,
                 None

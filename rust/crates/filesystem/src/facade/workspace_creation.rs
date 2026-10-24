@@ -34,15 +34,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
     }
     /// Creates or recovers the immutable initial generation, holding exactly
-    /// `files`, under one guarded work context. The creation commit publishes
-    /// the files, so an empty workspace is the case without files. Recovery
-    /// accepts only the generation this operation and these files produce.
-    pub async fn create_workspace_with_operation<W, G, E>(
+    /// the creation's files, under one guarded work context. The creation
+    /// commit publishes the files, so an empty workspace is the case without
+    /// files. Recovery accepts only the generation this creation produces.
+    pub async fn create_workspace_with_operation<'c, W, G, E>(
         &self,
         name: impl AsRef<str>,
         initialization: VolumeInitialization<'_>,
-        operation_id: OperationId,
-        files: &[(&str, acyclic_stream::OwnedBytes)],
+        creation: impl Into<crate::CreationOperation<'c>>,
         budget: W,
         cancellation: &CancellationToken,
         guard: Option<&mut G>,
@@ -53,6 +52,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + Send,
     {
+        let creation = creation.into();
+        let crate::CreationOperation {
+            operation_id,
+            files,
+        } = creation;
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let config = initialization.config;
@@ -71,8 +75,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .create_volume_operation(
                             id.volume_id(),
                             initialization,
-                            Some(operation_id),
-                            files,
+                            Some(creation),
                             &mut accounting,
                             cancellation,
                             guard,
@@ -247,8 +250,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         config,
                         access_policy: None,
                     },
-                    operation_id,
-                    &[],
+                    operation_id.map(crate::CreationOperation::from),
                     &mut accounting,
                     cancellation,
                     None::<&mut ()>,

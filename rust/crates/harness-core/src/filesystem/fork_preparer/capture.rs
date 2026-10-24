@@ -92,11 +92,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let committed = write_once(
             host,
             journal,
-            &result,
-            &captured,
-            maximum,
-            &key,
-            request.operation_id,
+            OnceRecord {
+                path: &result,
+                value: &captured,
+                maximum,
+                key: &key,
+                operation: request.operation_id,
+            },
             io,
             self.task_preparation,
         )

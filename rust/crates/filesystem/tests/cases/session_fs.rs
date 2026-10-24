@@ -25,7 +25,6 @@ async fn fixture() -> Result<(
                 Some(access::INITIAL_POLICY),
             ),
             acyclic_fs::OperationId::new(),
-            &[],
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             None,

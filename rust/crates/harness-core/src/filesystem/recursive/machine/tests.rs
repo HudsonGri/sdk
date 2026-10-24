@@ -44,7 +44,7 @@ async fn measured_settlement_uses_the_admitted_finite_allowance() -> Result<()> 
     )?;
     let input = serde_json::json!({"commands": [{
         "operation_id": operation_id,
-        "value": Outcome::Succeeded(report.clone()),
+        "value": Outcome::Succeeded(report),
     }]});
     let machine = ForkPreparationMachine::new();
     let settle = |maximum_bytes: u64| {

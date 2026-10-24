@@ -63,7 +63,6 @@ fn scratch_mount_owner() -> TestResult {
                     Some(acyclic_fs::access::INITIAL_POLICY),
                 ),
                 acyclic_fs::OperationId::new(),
-                &[],
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 None,
