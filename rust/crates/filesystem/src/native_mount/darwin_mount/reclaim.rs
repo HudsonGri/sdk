@@ -144,6 +144,19 @@ fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
 pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountError> {
+    reclaim_stale_mounts_with_retirement(detach_stale_mount)
+}
+
+#[cfg(test)]
+pub(super) fn reclaim_stale_mounts_direct_only() -> Result<(), NativeMountError> {
+    reclaim_stale_mounts_with_retirement(|mount| {
+        direct_unmount(field(&mount.f_mntonname)?).map_err(Into::into)
+    })
+}
+
+fn reclaim_stale_mounts_with_retirement(
+    retire: impl Fn(&libc::statfs) -> Result<(), NativeMountError>,
+) -> Result<(), NativeMountError> {
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     for mount in mount_table()? {
@@ -181,7 +194,7 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
         {
             continue;
         }
-        detach_stale_mount(&mount)?;
+        retire(&mount)?;
         // Keep the fence file: other processes may already hold its inode.
         drop(owner);
     }

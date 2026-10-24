@@ -76,16 +76,40 @@ impl Drop for CrashRoots {
 #[test]
 #[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
-    check_startup_recovery(false)
+    check_startup_recovery(false, crate::initialize_native_mount_services)
 }
 
 #[test]
 #[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
-    check_startup_recovery(true)
+    check_startup_recovery(true, crate::initialize_native_mount_services)
 }
 
-fn check_startup_recovery(deny_direct_unmount: bool) -> TestResult {
+#[test]
+#[ignore = "requires live macOS NFS mounts and SIGKILL"]
+fn negative_control_direct_only_startup_cannot_retire_after_eperm() -> TestResult {
+    let attempted = std::cell::Cell::new(false);
+    let result = check_startup_recovery(true, || {
+        attempted.set(true);
+        super::super::reclaim::reclaim_stale_mounts_direct_only()
+    });
+    assert!(
+        attempted.get(),
+        "fixture failed before exercising retirement"
+    );
+    let error = result.expect_err("direct-only startup unexpectedly recovered after EPERM");
+    assert!(matches!(
+        error.downcast_ref::<NativeMountError>(),
+        Some(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EPERM)
+    ));
+    println!("RECLAIM_DIRECT_ONLY_REJECTED errno=EPERM");
+    Ok(())
+}
+
+fn check_startup_recovery(
+    deny_direct_unmount: bool,
+    startup: impl FnOnce() -> Result<(), NativeMountError>,
+) -> TestResult {
     let root = CrashRoots(Some(tempfile::tempdir()?));
     let canonical = root
         .0
@@ -137,9 +161,9 @@ fn check_startup_recovery(deny_direct_unmount: bool) -> TestResult {
         false,
     )?);
     if deny_direct_unmount {
-        super::super::reclaim::with_direct_unmount_denied(crate::initialize_native_mount_services)?;
+        super::super::reclaim::with_direct_unmount_denied(startup)?;
     } else {
-        crate::initialize_native_mount_services()?;
+        startup()?;
     }
     assert!(
         !mounted(&canonical.join("owned"))?,
