@@ -24,6 +24,13 @@ enum Node<'a> {
     Branch(Branch),
 }
 
+/// A leaf reached through the validated index traversal. Callers cannot turn
+/// an arbitrary fact page into a decoded key/value pair.
+pub(super) struct Leaf {
+    page: Page,
+    reference: PageRef,
+}
+
 fn key_bit(key: &[u8], bit: usize) -> bool {
     let Some(byte) = key.get(bit / 9) else {
         return false;
@@ -225,15 +232,66 @@ pub(super) fn put(
     Ok(replacement)
 }
 
+/// Remove one exact key by replacing its parent with the surviving sibling.
+/// Older roots remain immutable, including the deleted key and its fact.
+pub(super) fn remove(
+    io: &mut impl PageIo,
+    root: Option<PageRef>,
+    key: &[u8],
+) -> Result<Option<PageRef>, LocalStreamError> {
+    if key.len() > MAX_KEY_BYTES {
+        return Err(LocalStreamError::InvalidLimits);
+    }
+    let Some(mut reference) = root else {
+        return Ok(None);
+    };
+    let mut trail = Slots::<Edge>::default();
+    loop {
+        let page = io.read(reference)?;
+        match decode(&page, reference)? {
+            Node::Leaf { key: found, .. } => {
+                if found != key {
+                    return Ok(root);
+                }
+                break;
+            }
+            Node::Branch(branch) => {
+                let previous = trail.values.last().map(|edge| edge.branch.bit);
+                let (step, next) = edge(reference, branch, key, previous)?;
+                trail.push(step, io.work())?;
+                reference = next;
+            }
+        }
+    }
+    let Some(parent) = trail.values.pop() else {
+        return Ok(None);
+    };
+    let mut replacement = if parent.right {
+        parent.branch.left
+    } else {
+        parent.branch.right
+    };
+    while let Some(step) = trail.values.pop() {
+        let mut next = step.branch;
+        if step.right {
+            next.right = replacement;
+        } else {
+            next.left = replacement;
+        }
+        replacement = branch(io, next)?;
+    }
+    Ok(Some(replacement))
+}
+
 fn first(
     io: &mut impl PageIo,
     mut reference: PageRef,
     mut previous: Option<usize>,
-) -> Result<Page, LocalStreamError> {
+) -> Result<Leaf, LocalStreamError> {
     loop {
         let page = io.read(reference)?;
         match decode(&page, reference)? {
-            Node::Leaf { .. } => return Ok(page),
+            Node::Leaf { .. } => return Ok(Leaf { page, reference }),
             Node::Branch(branch) => {
                 if previous.is_some_and(|previous| previous >= branch.bit) {
                     return Err(LocalStreamError::Corrupt);
@@ -250,7 +308,7 @@ pub(super) fn next(
     io: &mut impl PageIo,
     root: Option<PageRef>,
     after: Option<&[u8]>,
-) -> Result<Option<Page>, LocalStreamError> {
+) -> Result<Option<Leaf>, LocalStreamError> {
     let Some(mut reference) = root else {
         return Ok(None);
     };
@@ -302,22 +360,11 @@ pub(super) fn next(
     Ok(None)
 }
 
-pub(super) fn entry(page: &Page) -> Result<(&[u8], PageRef), LocalStreamError> {
+pub(super) fn entry(leaf: &Leaf) -> Result<(&[u8], PageRef), LocalStreamError> {
     // The leaf was already address-checked while traversing. Decode its bounded
     // fields again without following a reference or allocating another key.
-    if page.kind != PageKind::Leaf {
-        return Err(LocalStreamError::Corrupt);
+    match decode(&leaf.page, leaf.reference)? {
+        Node::Leaf { key, value } => Ok((key, value)),
+        Node::Branch(_) => Err(LocalStreamError::Corrupt),
     }
-    let (length, rest) = page
-        .body()?
-        .split_first_chunk::<4>()
-        .ok_or(LocalStreamError::Corrupt)?;
-    let (key, mut rest) = rest
-        .split_at_checked(u32::from_le_bytes(*length) as usize)
-        .ok_or(LocalStreamError::Corrupt)?;
-    let value = PageRef::decode(&mut rest)?;
-    if !rest.is_empty() {
-        return Err(LocalStreamError::Corrupt);
-    }
-    Ok((key, value))
 }

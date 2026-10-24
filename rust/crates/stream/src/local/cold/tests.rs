@@ -251,5 +251,70 @@ mod properties {
                 prop_assert_eq!(found.as_ref().map(index::entry).transpose()?, expected.map(|(key, value)| (key.as_slice(), *value)));
             }
         }
+
+        #[test]
+        fn arbitrary_deletions_preserve_other_keys_successors_and_historical_roots(
+            keys in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..12), 0..32),
+            removals in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..12), 0..32),
+        ) {
+            let mut disk = Disk::new(None)?;
+            let mut root = None;
+            let mut oracle = BTreeMap::new();
+            for key in &keys {
+                let value = disk.append(PageKind::Fact, key)?;
+                root = Some(index::put(&mut disk, root, key, value)?);
+                oracle.insert(key.clone(), value);
+            }
+            for key in removals.iter().chain(&keys) {
+                let historical = root;
+                let old = oracle.remove(key);
+                root = index::remove(&mut disk, root, key)?;
+                prop_assert_eq!(index::get(&mut disk, historical, key)?, old);
+                prop_assert_eq!(index::get(&mut disk, root, key)?, None);
+                if old.is_some() {
+                    // Keeping the old root is the no-deletion control.
+                    prop_assert_ne!(root, historical);
+                } else {
+                    prop_assert_eq!(root, historical);
+                }
+                for probe in removals.iter().chain(&keys) {
+                    prop_assert_eq!(index::get(&mut disk, root, probe)?, oracle.get(probe).copied());
+                    let found = index::next(&mut disk, root, Some(probe))?;
+                    let expected = oracle.iter().find(|(key, _)| key.as_slice() > probe.as_slice());
+                    prop_assert_eq!(found.as_ref().map(index::entry).transpose()?, expected.map(|(key, value)| (key.as_slice(), *value)));
+                }
+            }
+            prop_assert_eq!(root, None);
+        }
     }
+}
+
+#[test]
+fn native_index_deletion_retires_traversal_capacity_without_retiring_old_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let meter = Arc::new(Meter::local());
+    let work = crate::memory::Work::new(meter.original())?;
+    let baseline = meter.held.load(Ordering::SeqCst);
+    let mut disk = Disk::new(Some(work))?;
+    let mut root = None;
+    for sequence in 0_u64..1_000 {
+        let key = sequence.to_be_bytes();
+        let value = disk.append(PageKind::Fact, &key)?;
+        root = Some(index::put(&mut disk, root, &key, value)?);
+    }
+    let historical = root;
+    for sequence in 0_u64..1_000 {
+        let key = sequence.to_be_bytes();
+        disk.reads = 0;
+        root = index::remove(&mut disk, root, &key)?;
+        assert!(disk.reads <= 8 * 9 + 1);
+        assert_eq!(index::get(&mut disk, root, &key)?, None);
+        assert!(index::get(&mut disk, historical, &key)?.is_some());
+        assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+    }
+    assert_eq!(root, None);
+    drop(disk);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
 }
