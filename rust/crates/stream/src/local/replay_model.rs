@@ -15,13 +15,15 @@ fn race<const REQUIRE: bool>() {
             if_tail: Some(0),
             idempotency_key: None,
         })))?;
-        let (file, durability) = {
+        let durability = {
             let journal = stream.inner.journal.lock().unwrap();
-            (journal.file.clone(), journal.limits.durability)
+            journal.limits.durability
         };
         let flusher = loom::thread::spawn({
             let stream = stream.clone();
-            move || stream.inner.flush_through(1, &file, durability, None)
+            move || {
+                let _ = stream.inner.flush_through(durability, None);
+            }
         });
         stream.require_accepted::<REQUIRE>()?;
         assert_eq!(

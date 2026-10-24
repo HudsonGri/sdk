@@ -89,14 +89,14 @@ impl LocalInner {
         self.synced.send_modify(|published| *published = synced);
     }
 
-    /// Flushes the journal through `target`, the latest frame written when
+    /// Captures one journal/file cut in the worker immediately before I/O.
+    /// Writes accepted while this worker was queued share its device operation;
+    /// writes racing the operation never advance its certified cut.
     fn flush_through(
         &self,
-        target: u64,
-        file: &File,
         durability: LocalDurability,
         work: Option<&crate::memory::Work>,
-    ) {
+    ) -> Option<(u64, u64, u64)> {
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
@@ -110,13 +110,46 @@ impl LocalInner {
                 let _ = release.recv();
             }
         }
-        let flushed = match &work {
-            Some(work) => work.sync(|| sync_file_data(file, durability)),
-            None => sync_file_data(file, durability),
+        let (target, synced_before, journal_bytes, file) = {
+            let Ok(journal) = self.journal.lock() else {
+                self.poison();
+                return None;
+            };
+            (
+                journal.appended,
+                journal.synced,
+                journal.bytes,
+                Arc::clone(&journal.file),
+            )
         };
+        let flushed = match &work {
+            Some(work) => work.sync(|| sync_file_data(&file, durability)),
+            None => sync_file_data(&file, durability),
+        };
+        #[cfg(test)]
+        {
+            let identity = Arc::as_ptr(&self.journal) as usize;
+            let gate = {
+                let mut hook = JOURNAL_FLUSHED_BLOCKER
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if hook
+                    .as_ref()
+                    .is_some_and(|(expected, _, _)| *expected == identity)
+                {
+                    hook.take()
+                } else {
+                    None
+                }
+            };
+            if let Some((_, started, release)) = gate {
+                let _ = started.send(());
+                let _ = release.recv();
+            }
+        }
         let Ok(mut journal) = self.journal.lock() else {
             self.poison();
-            return;
+            return None;
         };
         journal.syncing = false;
         if let Ok(completion) = flushed {
@@ -125,5 +158,6 @@ impl LocalInner {
             drop(journal);
             self.poison();
         }
+        Some((target, synced_before, journal_bytes))
     }
 }
