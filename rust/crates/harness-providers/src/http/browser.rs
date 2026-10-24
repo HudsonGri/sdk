@@ -6,26 +6,21 @@ use bytes::Bytes;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    AbortController, Headers, ReadableStreamDefaultReader, RequestCredentials, RequestInit,
-    RequestRedirect, Response,
-};
-#[path = "browser_delay.rs"]
-mod timer;
+
+use acyclic_harness_core::http::browser::timer;
 
 /// Browser HTTP with an explicitly owned fetch function.
 pub struct BrowserTransport(Function);
 
-struct Abort(AbortController);
-impl Drop for Abort {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 struct Body {
-    reader: ReadableStreamDefaultReader,
-    _abort: Abort,
+    receiver: JsValue,
+    read: Function,
+    cancel: Function,
+}
+impl Drop for Body {
+    fn drop(&mut self) {
+        let _ = self.cancel.call0(&self.receiver);
+    }
 }
 
 impl BrowserTransport {
@@ -44,102 +39,76 @@ impl BrowserTransport {
     }
 }
 
+fn interrupted() -> acyclic_harness_core::Error {
+    crate::transport_failure(
+        false,
+        acyclic_harness_core::ModelTransportFailure::Interrupted,
+        "browser HTTP exchange interrupted",
+    )
+}
+
 impl HttpTransport for BrowserTransport {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            let abort = Abort(
-                AbortController::new()
-                    .map_err(|_| invalid("browser cancellation is unavailable"))?,
-            );
-            let init = RequestInit::new();
-            init.set_method("POST");
-            init.set_credentials(RequestCredentials::Omit);
-            init.set_redirect(RequestRedirect::Error);
-            init.set_signal(Some(&abort.0.signal()));
-            let body = Uint8Array::from(request.body.as_ref());
-            init.set_body(body.as_ref());
-            let headers = Headers::new().map_err(|_| invalid("browser headers are unavailable"))?;
+            let mut headers = request.headers;
             headers
-                .set("content-type", "application/json")
-                .map_err(|_| invalid("invalid model content type"))?;
-            for (name, value) in request.headers {
-                headers
-                    .set(&name, &value)
-                    .map_err(|_| invalid("invalid model HTTP header"))?;
-            }
-            init.set_headers(headers.as_ref());
-            let response = self
-                .0
-                .call2(
-                    &js_sys::global(),
-                    &JsValue::from_str(&request.url),
-                    init.as_ref(),
-                )
-                .map_err(|_| {
-                    crate::transport_failure(
-                        false,
-                        acyclic_harness_core::ModelTransportFailure::Interrupted,
-                        "browser model dispatch failed",
-                    )
-                })?;
-            let response = JsFuture::from(Promise::resolve(&response))
-                .await
-                .map_err(|_| {
-                    crate::transport_failure(
-                        false,
-                        acyclic_harness_core::ModelTransportFailure::Interrupted,
-                        "browser model exchange failed",
-                    )
-                })?
-                .dyn_into::<Response>()
-                .map_err(|_| invalid("fetch did not return a Response"))?;
-            let status = response.status();
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .ok()
-                .flatten()
-                .and_then(|value| crate::retry::retry_after(&value));
-            let Some(body) = response.body() else {
-                return Ok(HttpResponse {
-                    status,
-                    body: Box::pin(futures::stream::empty()),
-                    retry_after,
-                });
+                .entry("content-type".into())
+                .or_insert_with(|| "application/json".into());
+            let receiver: JsValue = acyclic_harness_core::http::browser::start(
+                self.0.clone(),
+                acyclic_harness_core::http::browser::Request {
+                    method: "POST".into(),
+                    url: request.url,
+                    headers,
+                    body: request.body,
+                    timeout_ms: None,
+                },
+                None,
+            )?
+            .into();
+            let function = |name: &str| -> Result<Function> {
+                Reflect::get(&receiver, &JsValue::from_str(name))
+                    .map_err(|_| invalid("browser exchange missing function"))?
+                    .dyn_into::<Function>()
+                    .map_err(|_| invalid("invalid browser exchange function"))
             };
-            let reader = body
-                .get_reader()
-                .dyn_into::<ReadableStreamDefaultReader>()
-                .map_err(|_| invalid("browser response stream has no reader"))?;
-            let body = futures::stream::try_unfold(
-                Body {
-                    reader,
-                    _abort: abort,
-                },
-                |body| async move {
-                    let chunk = JsFuture::from(body.reader.read()).await.map_err(|_| {
-                        crate::transport_failure(
-                            false,
-                            acyclic_harness_core::ModelTransportFailure::Interrupted,
-                            "browser model body interrupted",
-                        )
-                    })?;
-                    let done = Reflect::get(&chunk, &JsValue::from_str("done"))
-                        .map_err(|_| invalid("invalid browser stream result"))?;
-                    if done.as_bool() == Some(true) {
-                        return Ok(None);
-                    }
-                    let value = Reflect::get(&chunk, &JsValue::from_str("value"))
-                        .map_err(|_| invalid("invalid browser stream chunk"))?
-                        .dyn_into::<Uint8Array>()
-                        .map_err(|_| invalid("browser stream chunk must be bytes"))?;
-                    Ok(Some((Bytes::from(value.to_vec()), body)))
-                },
-            );
+            let body = Body {
+                read: function("read")?,
+                cancel: function("cancel")?,
+                receiver,
+            };
+            let head = Reflect::get(&body.receiver, &JsValue::from_str("response"))
+                .map_err(|_| interrupted())?;
+            let head = JsFuture::from(Promise::resolve(&head))
+                .await
+                .map_err(|_| interrupted())?;
+            let status = Reflect::get(&head, &JsValue::from_str("status"))
+                .map_err(|_| interrupted())?
+                .as_f64()
+                .ok_or_else(interrupted)? as u16;
+            let headers =
+                Reflect::get(&head, &JsValue::from_str("headers")).map_err(|_| interrupted())?;
+            let retry_after = Reflect::get(&headers, &JsValue::from_str("retry-after"))
+                .ok()
+                .and_then(|value| value.as_string())
+                .and_then(|value| crate::retry::retry_after(&value));
+            let stream = futures::stream::try_unfold(body, |body| async move {
+                let value = body.read.call0(&body.receiver).map_err(|_| interrupted())?;
+                let value = JsFuture::from(Promise::resolve(&value))
+                    .await
+                    .map_err(|_| interrupted())?;
+                if value.is_null() {
+                    return Ok(None);
+                }
+                let value = value
+                    .dyn_into::<Uint8Array>()
+                    .map_err(|_| invalid("browser stream chunk must be bytes"))?;
+                Ok(Some((Bytes::from(value.to_vec()), body)))
+            });
             Ok(HttpResponse {
                 status,
-                body: Box::pin(body),
                 retry_after,
+                body: Box::pin(stream),
             })
         })
     }

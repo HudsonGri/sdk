@@ -1,7 +1,7 @@
 use super::{
     FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
 };
-use crate::tool::edit::{allocation, charge, reserve_string};
+use crate::tool::edit::{allocation, charge};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::Url;
@@ -11,9 +11,10 @@ use std::{sync::Arc, time::Duration};
 mod native_tests;
 #[cfg(test)]
 pub(crate) mod tests;
-mod transport;
+use crate::http::transport::{self, await_io, copy_text, public_address, transport_error};
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
+#[cfg(test)]
+use transport::MAXIMUM_RESPONSE_BYTES;
 const MAXIMUM_REDIRECTS: usize = 5;
 
 /// Direct GET adapter. No keys, cookies, proxy credentials, or search provider are used.
@@ -24,15 +25,9 @@ pub struct HttpFetch {
 impl HttpFetch {
     /// Creates a credential-free HTTP client using platform TLS verification.
     pub fn new() -> Result<Self> {
-        use rustls_platform_verifier::BuilderVerifierExt as _;
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .and_then(|builder| builder.with_platform_verifier())
-        .map_err(|_| Error::Invalid("cannot create fetch TLS client".into()))?
-        .with_no_client_auth();
-        Ok(Self { tls: Arc::new(tls) })
+        Ok(Self {
+            tls: transport::tls_config()?,
+        })
     }
 
     async fn run(
@@ -56,12 +51,7 @@ impl HttpFetch {
     ) -> Result<(FetchResponse, NativeCustody)> {
         let (mut endpoint, mut endpoint_held) = parse_url(&request.url, work)?;
         let original_origin = endpoint.origin();
-        let explicitly_local = endpoint.host_str().is_some_and(|host| {
-            host.trim_matches(['[', ']'])
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| !public_address(ip))
-                || host.eq_ignore_ascii_case("localhost")
-        });
+        let explicitly_local = transport::explicitly_local(&endpoint);
         for redirects in 0..=MAXIMUM_REDIRECTS {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {
@@ -77,9 +67,16 @@ impl HttpFetch {
             }
             let mut failure = None;
             let response = transport::send(
-                &endpoint,
-                &self.tls,
-                redirects > 0 && (!explicitly_local || endpoint.origin() != original_origin),
+                transport::Request {
+                    method: http::Method::GET,
+                    endpoint: &endpoint,
+                    key: None,
+                    body: bytes::Bytes::new(),
+                    tls: Some(&self.tls),
+                    require_public_address: !explicitly_local
+                        || endpoint.origin() != original_origin,
+                    redirects: true,
+                },
                 work,
                 &mut failure,
             )
@@ -143,14 +140,6 @@ impl HttpFetch {
         }
         Err(rejection(work, "fetch redirect limit exceeded"))
     }
-}
-
-fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
-    let mut output = String::new();
-    reserve_string(held, &mut output, text.len())?;
-    charge(held, text.len() as u64, 1)?;
-    output.push_str(text);
-    Ok(output)
 }
 
 fn url_allocation(length: usize, work: NativeWork<'_>) -> Result<NativeCustody> {
@@ -223,63 +212,6 @@ fn validate_redirect_host(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn public_address(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified()
-                || a == 0
-                || a >= 224
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 198 && (b == 18 || b == 19)))
-        }
-        IpAddr::V6(ip) => {
-            // Permit global unicast only. IPv4-mapped addresses inherit IPv4 policy.
-            if let Some(ip) = ip.to_ipv4_mapped() {
-                return public_address(IpAddr::V4(ip));
-            }
-            let segments = ip.segments();
-            (segments[0] & 0xe000) == 0x2000
-                && !(segments[0] == 0x2001 && (segments[1] <= 0x01ff || segments[1] == 0x0db8))
-                && segments[0] != 0x2002
-                && !(segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
-        }
-    }
-}
-
-async fn await_io<F: Future>(future: F, work: NativeWork<'_>) -> Result<F::Output> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work {
-        work.remaining()?;
-        return tokio::select! {
-            biased;
-            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
-            result = future => Ok(result),
-        };
-    }
-    let _ = work;
-    Ok(future.await)
-}
-
-fn transport_error(work: NativeWork<'_>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        return Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason,
-        };
-    }
-    let _ = work;
-    Error::Storage(reason.into())
 }
 
 impl FetchProvider for HttpFetch {

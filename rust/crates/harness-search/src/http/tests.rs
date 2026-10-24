@@ -1,5 +1,6 @@
 use super::*;
 use crate::SearchResult;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -187,7 +188,21 @@ async fn dropping_a_search_cancels_the_in_flight_exchange() -> Result<()> {
 pub(super) async fn serve(
     status: u16,
     body: String,
-) -> Result<(String, tokio::task::JoinHandle<Result<String>>)> {
+) -> Result<(
+    String,
+    impl Future<Output = std::result::Result<Result<String>, tokio::task::JoinError>>,
+)> {
+    serve_headers(status, body, "").await
+}
+
+async fn serve_headers(
+    status: u16,
+    body: String,
+    headers: &'static str,
+) -> Result<(
+    String,
+    impl Future<Output = std::result::Result<Result<String>, tokio::task::JoinError>>,
+)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
@@ -235,16 +250,54 @@ pub(super) async fn serve(
             format!("Content-Length: {}\r\n", body.len())
         };
         let output = format!(
-            "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nLocation: http://{address}/redirect\r\n{length}Connection: close\r\n\r\n{body}"
+            "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nLocation: http://{address}/redirect\r\n{length}{headers}Connection: close\r\n\r\n{body}"
         );
         // Early body rejection may close the socket before all bytes are written.
         let _ = socket.write_all(output.as_bytes()).await;
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
-                .await
-                .is_err()
-        );
-        String::from_utf8(input).map_err(|e| Error::Invalid(e.to_string()))
+        let input = String::from_utf8(input).map_err(|e| Error::Invalid(e.to_string()))?;
+        Ok((input, listener))
     });
-    Ok((format!("http://{address}/"), task))
+    let observation = async move {
+        task.await.map(|result| result.and_then(|(input, listener)| {
+            // Polled by the test after the exchange settles; inspect the retained backlog.
+            let listener = listener.into_std().map_err(|error| Error::Storage(error.to_string()))?;
+            assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+            Ok(input)
+        }))
+    };
+    Ok((format!("http://{address}/"), observation))
+}
+
+#[tokio::test]
+async fn both_search_adapters_reject_content_codings_before_parsing() -> Result<()> {
+    for exa in [true, false] {
+        let (endpoint, server) = serve_headers(
+            200,
+            r#"{"results":[]}"#.into(),
+            "Content-Encoding: gzip\r\n",
+        )
+        .await?;
+        let provider: Arc<dyn SearchProvider> = if exa {
+            Arc::new(Exa::with_endpoint("fixture-key", &endpoint)?)
+        } else {
+            Arc::new(TinyFish::with_endpoint("fixture-key", &endpoint)?)
+        };
+        let result = provider
+            .search(&SearchRequest {
+                query: "test".into(),
+                max_results: 1,
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "fetch response uses unsupported content encoding"
+            })
+        ));
+        server
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+    }
+    Ok(())
 }

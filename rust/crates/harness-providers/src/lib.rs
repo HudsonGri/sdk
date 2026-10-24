@@ -56,7 +56,7 @@ mod registry;
 mod resolved;
 mod retry;
 mod spec;
-mod sse;
+use acyclic_harness_core::http::sse;
 mod stream;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

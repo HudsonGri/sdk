@@ -181,6 +181,9 @@
     "typescript/packages/swarm": {
       "name": "@acyclic-labs/swarm",
       "version": "0.2.0",
+      "dependencies": {
+        "@acyclic-labs/harness": "0.2.0",
+      },
       "devDependencies": {
         "typescript": "7.0.2",
       },

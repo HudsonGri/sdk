@@ -1,3 +1,4 @@
+import { createSseDecoder } from "@acyclic-labs/harness/http";
 import type {
   ArtifactFile, CreateSwarmRequest, CreateSwarmResponse, CreateTokenRequest,
   CreateTokenResponse, Json, PullRequestInput, SwarmArtifact, SwarmDetail,
@@ -123,6 +124,7 @@ export class SwarmClient {
     options?.signal?.addEventListener("abort", abort, { once: true });
     if (options?.signal?.aborted) abort();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let decoder: Awaited<ReturnType<typeof createSseDecoder>> | undefined;
     try {
       const requestOptions = { ...options, signal: controller.signal };
       // Last-Event-ID is a decimal u64 string; never round it through a JS number.
@@ -130,45 +132,26 @@ export class SwarmClient {
       if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "text/event-stream") throw new TypeError("Swarm event response is not text/event-stream");
       if (!response.body) throw new TypeError("Swarm event response has no body");
       reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8", { fatal: true });
-      let fragments: string[] = [];
-      let id = "";
-      let event = "message";
-      let data: string[] = [];
-      let size = 0;
+      decoder = await createSseDecoder(this.maximum);
       while (true) {
+        controller.signal.throwIfAborted();
         const chunk = await reader.read();
-        // An incomplete event after disconnect is replayed by the next subscription.
-        if (chunk.done) return;
-        let offset = 0;
-        while (offset < chunk.value.byteLength) {
-          const newline = chunk.value.indexOf(10, offset);
-          const end = newline < 0 ? chunk.value.byteLength : newline + 1;
-          const part = chunk.value.subarray(offset, end);
-          size += part.byteLength;
-          if (size > this.maximum) throw new RangeError("Swarm event exceeds maximumResponseBytes");
-          fragments.push(decoder.decode(part, { stream: true }));
-          offset = end;
-          if (newline < 0) break;
-          const line = fragments.join("").replace(/\r?\n$/, "");
-          fragments = [];
-          if (line === "") {
-            if (data.length) {
-              controller.signal.throwIfAborted();
-              yield { id, event, data: JSON.parse(data.join("\n")) as T };
-            }
-            data = []; event = "message"; size = 0;
-          } else {
-            const colon = line.indexOf(":");
-            const field = colon < 0 ? line : line.slice(0, colon);
-            const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");
-            if (field === "data") data.push(value);
-            if (field === "event") event = value;
-            if (field === "id" && !value.includes("\0")) id = value;
-          }
+        if (chunk.done) {
+          const frame = decoder.finish();
+          controller.signal.throwIfAborted();
+          if (frame) yield { id: frame.id, event: frame.event, data: JSON.parse(frame.data) as T };
+          return;
+        }
+        decoder.push(chunk.value);
+        while (true) {
+          controller.signal.throwIfAborted();
+          const frame = decoder.next();
+          if (!frame) break;
+          yield { id: frame.id, event: frame.event, data: JSON.parse(frame.data) as T };
         }
       }
     } finally {
+      decoder?.free();
       controller.abort();
       options?.signal?.removeEventListener("abort", abort);
       if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
