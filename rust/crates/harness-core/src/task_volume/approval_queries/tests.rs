@@ -143,13 +143,25 @@ proptest! {
 }
 
 fn task_view(task: &Component) -> Query {
-    Query::TaskView { task: task.clone(), recent: 2, reasoning: false, details: false, terminal: false }
+    Query::TaskView {
+        task: task.clone(),
+        recent: 2,
+        reasoning: false,
+        details: false,
+        terminal: false,
+    }
 }
 
 #[tokio::test]
 async fn approval_live_window_matches_snapshot_after_settlement() {
     let task = component("task");
-    for query in [Query::TaskSession { task: task.clone(), session: component("session") }, task_view(&task)] {
+    for query in [
+        Query::TaskSession {
+            task: task.clone(),
+            session: component("session"),
+        },
+        task_view(&task),
+    ] {
         check_live_window(query).await;
     }
 }
@@ -274,7 +286,13 @@ async fn check_live_window(query: Query) {
 #[tokio::test]
 async fn approval_live_window_refuses_overfull_pending_set_instead_of_eviction() {
     let task = component("task");
-    for query in [Query::TaskSession { task: task.clone(), session: component("session") }, task_view(&task)] {
+    for query in [
+        Query::TaskSession {
+            task: task.clone(),
+            session: component("session"),
+        },
+        task_view(&task),
+    ] {
         check_pending_bound(query).await;
     }
 }

@@ -297,13 +297,52 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
         for _ in 0..64 {
             let volume = &harness.task_files().inner;
             let id = Component::new(crate::InteractionId::new().to_string())?;
-            let key = FileKey::Task { task: Component::new(task.to_string())?, file: TaskFile::ApprovalRequest(id.clone()) };
-            let bytes = serde_json::to_vec(&crate::interaction::Interaction::Approval { prompt: "old request".into(), operation_id: OperationId::new(), action_digest: [3; 32], subject: crate::interaction::ApprovalSubject::Opaque {} }).map_err(super::super::storage)?;
-            let descriptor = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?;
-            let decision = crate::interaction::ApprovalDecisionFile::new("historical-human", descriptor.sha256(), 1, true, None)?;
-            volume.append(volume.head().await?, &FileValue::new(key, bytes)).await?;
-            let key = FileKey::Task { task: Component::new(task.to_string())?, file: TaskFile::ApprovalDecision { request: id, principal: Component::new(crate::interaction::ApprovalDecisionFile::principal_file("historical-human"))? } };
-            volume.append(volume.head().await?, &FileValue::new(key, serde_json::to_vec(&decision).map_err(super::super::storage)?)).await?;
+            let key = FileKey::Task {
+                task: Component::new(task.to_string())?,
+                file: TaskFile::ApprovalRequest(id.clone()),
+            };
+            let bytes = serde_json::to_vec(&crate::interaction::Interaction::Approval {
+                prompt: "old request".into(),
+                operation_id: OperationId::new(),
+                action_digest: [3; 32],
+                subject: crate::interaction::ApprovalSubject::Opaque {},
+            })
+            .map_err(super::super::storage)?;
+            let descriptor = crate::conversation::FileDescriptor::from_bytes(
+                &bytes,
+                "application/json",
+                &mut None,
+            )?;
+            let decision = crate::interaction::ApprovalDecisionFile::new(
+                "historical-human",
+                descriptor.sha256(),
+                1,
+                true,
+                None,
+            )?;
+            volume
+                .append(volume.head().await?, &FileValue::new(key, bytes))
+                .await?;
+            let key = FileKey::Task {
+                task: Component::new(task.to_string())?,
+                file: TaskFile::ApprovalDecision {
+                    request: id,
+                    principal: Component::new(
+                        crate::interaction::ApprovalDecisionFile::principal_file(
+                            "historical-human",
+                        ),
+                    )?,
+                },
+            };
+            volume
+                .append(
+                    volume.head().await?,
+                    &FileValue::new(
+                        key,
+                        serde_json::to_vec(&decision).map_err(super::super::storage)?,
+                    ),
+                )
+                .await?;
         }
         let mut observed = harness
             .task_files()
@@ -362,11 +401,28 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
                     .await,
                 Err(crate::task_volume::Error::Unauthorized)
             ));
-            let mut client = crate::client::CommandSession::open_local(&harness, uuid::Uuid::new_v4(), 65536, 32).await?;
-            client.write_state(crate::client::CommandFileRoot::Session, "layout.json", &json!({"selected_task":task})).await?;
+            let mut client = crate::client::CommandSession::open_local(
+                &harness,
+                uuid::Uuid::new_v4(),
+                65536,
+                32,
+            )
+            .await?;
+            client
+                .write_state(
+                    crate::client::CommandFileRoot::Session,
+                    "layout.json",
+                    &json!({"selected_task":task}),
+                )
+                .await?;
             struct NoReads;
             impl crate::conversation::ContentResidencyVerifier for NoReads {}
-            assert_eq!(client.submit(if approved { "yes" } else { "no" }, &NoReads).await?, request.binding()?.operation_id);
+            assert_eq!(
+                client
+                    .submit(if approved { "yes" } else { "no" }, &NoReads)
+                    .await?,
+                request.binding()?.operation_id
+            );
             let saved = harness.task_files().snapshot(&request.query()?, 4).await?;
             assert!(saved.files.iter().any(|file| request.decision(&file.key, &file.bytes).unwrap() == Some(approved)));
             Ok::<_, Error>(())

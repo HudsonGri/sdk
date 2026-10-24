@@ -85,6 +85,23 @@ class InstallTests(unittest.TestCase):
             with tool.open('wb'):
                 with self.assertRaises(OSError):subprocess.run([str(tool)],check=True)
 
+    def test_command_custody_failure_is_a_publication_barrier(self):
+        import inspect
+        def run(command, **kwargs):
+            if 'command_custody.test.py' in command:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(installer.subprocess, 'run', side_effect=run):
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.qualify(Path('/unused-frozen-candidate'), 'var')
+            # Negative control executes the former qualification policy: the
+            # same failed command-custody suite cannot block publication.
+            former=inspect.getsource(installer.qualify).replace("['python3', 'command_custody.test.py'], ", '')
+            self.assertNotEqual(former, inspect.getsource(installer.qualify))
+            namespace=dict(installer.__dict__)
+            exec(compile(former, '<former-installer-policy>', 'exec'), namespace)
+            namespace['qualify'](Path('/unused-frozen-candidate'), 'var')
+
     def test_failed_qualification_never_publishes(self):
         self.assertIn('sccache-rustc',installer.TOOLS)
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:

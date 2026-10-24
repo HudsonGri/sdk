@@ -2,10 +2,18 @@
 use super::*;
 // Selection changes use the shared approval index; there is no second fold.
 pub(super) fn prepare(key: &FileKey) -> Option<(FileKey, bool)> {
-    let FileKey::Task { task, file } = key else { return None; };
+    let FileKey::Task { task, file } = key else {
+        return None;
+    };
     match file {
         TaskFile::ApprovalRequest(_) => Some((key.clone(), true)),
-        TaskFile::ApprovalDecision { request, .. } => Some((FileKey::Task { task: task.clone(), file: TaskFile::ApprovalRequest(request.clone()) }, false)),
+        TaskFile::ApprovalDecision { request, .. } => Some((
+            FileKey::Task {
+                task: task.clone(),
+                file: TaskFile::ApprovalRequest(request.clone()),
+            },
+            false,
+        )),
         _ => None,
     }
 }

@@ -10,10 +10,10 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
+mod connection;
 mod llm;
 mod owner;
 mod parent;
-mod connection;
 pub(crate) use connection::HumanConnection;
 #[cfg(test)]
 mod settlement_tests;
@@ -236,26 +236,54 @@ impl LocalHarness {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         let mut start = 0;
         loop {
-            let next = connection::next_stage(&self.approval_policy, digest, admission.parent, request, files, start)?;
-            let connection::NextStage::Review { approver, expected, retained } = next else {
-                let connection::NextStage::Decided(review) = next else { unreachable!() };
+            let next = connection::next_stage(
+                &self.approval_policy,
+                digest,
+                admission.parent,
+                request,
+                files,
+                start,
+            )?;
+            let connection::NextStage::Review {
+                approver,
+                expected,
+                retained,
+            } = next
+            else {
+                let connection::NextStage::Decided(review) = next else {
+                    unreachable!()
+                };
                 return Ok(Some(Stage::Automatic(review)));
             };
             match approver {
                 Approver::Human { .. } | Approver::Parent => {
                     if evaluate {
-                        connection::ensure_waiting_review(task_files, request, &expected, retained.is_some()).await?;
+                        connection::ensure_waiting_review(
+                            task_files,
+                            request,
+                            &expected,
+                            retained.is_some(),
+                        )
+                        .await?;
                     }
                     return Ok(Some(match approver {
                         Approver::Human { .. } => Stage::Human(expected.principal),
-                        _ => Stage::Parent(admission.parent.ok_or_else(|| Error::Unauthorized("parent admission is absent".into()))?),
+                        _ => Stage::Parent(admission.parent.ok_or_else(|| {
+                            Error::Unauthorized("parent admission is absent".into())
+                        })?),
                     }));
                 }
                 _ => {
-                    if !evaluate { return Ok(None); }
+                    if !evaluate {
+                        return Ok(None);
+                    }
                     start = expected.stage + 1;
-                    let review = self.automatic_review(task_files, request, approver, expected, admission.limits).await?;
-                    if review.verdict != RuleVerdict::Ask { return Ok(Some(Stage::Automatic(review))); }
+                    let review = self
+                        .automatic_review(task_files, request, approver, expected, admission.limits)
+                        .await?;
+                    if review.verdict != RuleVerdict::Ask {
+                        return Ok(Some(Stage::Automatic(review)));
+                    }
                 }
             }
         }
@@ -415,7 +443,11 @@ impl LocalHarness {
 
     pub(crate) fn human_approval_connection(&self) -> Result<HumanConnection> {
         self.approval_digest()?;
-        Ok(HumanConnection::new(self.runtime.clone(), self.approval_policy.clone(), self.limits.file_bytes))
+        Ok(HumanConnection::new(
+            self.runtime.clone(),
+            self.approval_policy.clone(),
+            self.limits.file_bytes,
+        ))
     }
 
     async fn service_pending_approvals(
