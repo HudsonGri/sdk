@@ -96,3 +96,66 @@ async fn committed_status_diff_log_and_show_do_not_publish() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn native_diff_keeps_the_committed_side_when_references_match() -> TestResult {
+    let (directory, fs, store, workspace) = fixture().await?;
+    workspace.write_text("/file", "committed\n").await?;
+    execute(
+        &fs,
+        &store,
+        (&workspace).into(),
+        workspace.id(),
+        &["commit", "-m", "base"],
+    )
+    .await?;
+    let physical = directory.path().join("checkout");
+    std::fs::create_dir(&physical)?;
+    std::fs::write(physical.join("file"), "physical edit\n")?;
+    let cancellation = CancellationToken::new();
+    let work = super::super::super::readonly::work(&cancellation)?;
+    let options = acyclic_fs::CaptureOptions {
+        expected_root_identity: work.root_identity(&physical)?,
+        source_root: physical.clone(),
+        maximum_paths: 16,
+        maximum_extent_spans: 16,
+    };
+    let policy = acyclic_fs::CapturePolicy::default();
+    let before = files(store.root())?;
+    let generation = workspace.head(&work, &cancellation).await?.id();
+    for args in [vec!["diff".into()], vec!["diff".into(), "--cached".into()]] {
+        let result = super::super::super::inspect_with_guard(
+            Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&workspace).into(),
+                root: &physical,
+                repository: workspace.id(),
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &args,
+            acyclic_fs::NativeGitView {
+                options: &options,
+                policy: &policy,
+                materialized: false,
+            },
+            || async { Ok(()) },
+        )
+        .await?;
+        let Some(GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value })) =
+            result.command
+        else {
+            return Err("missing native diff result".into());
+        };
+        assert_eq!(kind, "diff");
+        assert_eq!(value["fileChanges"], 1, "{args:?}: {value}");
+        assert_ne!(value["from"], value["to"]);
+    }
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), generation);
+    assert_eq!(files(store.root())?, before);
+    Ok(())
+}
