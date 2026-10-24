@@ -325,7 +325,7 @@ fn descriptor_shapes(root: &Path) -> std::collections::BTreeMap<String, u64> {
 fn diagnose_threads_and_files(_: &Path) {}
 
 #[cfg(target_os = "linux")]
-fn diagnose_threads_and_files(root: &Path) {
+fn thread_names() -> std::collections::BTreeMap<String, u64> {
     let mut threads = std::collections::BTreeMap::<String, u64>::new();
     for entry in std::fs::read_dir("/proc/self/task")
         .into_iter()
@@ -335,7 +335,12 @@ fn diagnose_threads_and_files(root: &Path) {
         let name = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
         *threads.entry(name.trim().to_owned()).or_default() += 1;
     }
-    println!("scale diag threads={threads:#?}");
+    threads
+}
+
+#[cfg(target_os = "linux")]
+fn diagnose_threads_and_files(root: &Path) {
+    println!("scale diag threads={:#?}", thread_names());
     let mut files = Vec::new();
     let mut pending = vec![root.join("0")];
     while let Some(directory) = pending.pop() {
@@ -614,6 +619,8 @@ async fn run_agents(
     let idle = resources()?;
     if diagnosing {
         println!("scale diag idle fds={:#?}", descriptor_shapes(directory));
+        #[cfg(target_os = "linux")]
+        println!("scale diag idle threads={:#?}", thread_names());
     }
     let (disk_bytes, disk_files) = disk_bytes(directory);
     let mut timings = std::mem::take(
