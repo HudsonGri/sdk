@@ -629,6 +629,7 @@ impl StockExecution<'_> {
                 )
             })?;
             let reference = stage_json(journal, operation_id, &key, record, self.io).await?;
+            let _order = self.journal_order.mutex().lock().await;
             let (tail, current) = self
                 .tool_records(journal, operation_id, step, &invocation.call_id)
                 .await?;
@@ -787,6 +788,7 @@ impl StockExecution<'_> {
             Ok(projection) => projection,
             Err(reason) => return Ok(Err(reason)),
         };
+        let _order = self.journal_order.mutex().lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;

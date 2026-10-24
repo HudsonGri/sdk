@@ -51,6 +51,7 @@ mod prefix;
 mod records;
 mod request;
 mod response;
+mod stream_tools;
 mod summary;
 mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]
