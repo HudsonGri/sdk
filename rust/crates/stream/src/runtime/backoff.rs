@@ -39,7 +39,24 @@ impl Backoff {
     /// Starts one connection recovery exchange with a runtime-owned fresh identity.
     #[must_use]
     pub fn connection() -> Self {
-        Self::new(BackoffPolicy::CONNECTION, &crate::new_identity_bytes())
+        Self::connection_attempts(
+            BackoffPolicy::CONNECTION.attempts,
+            BackoffPolicy::CONNECTION.max_delay_ms,
+        )
+    }
+
+    /// Starts a connection exchange within the caller's additional-attempt
+    /// budget, using the same capped schedule and fresh identity as all hosts.
+    #[must_use]
+    pub fn connection_attempts(attempts: u32, maximum_delay_ms: u32) -> Self {
+        Self::new(
+            BackoffPolicy {
+                attempts,
+                max_delay_ms: maximum_delay_ms.min(BackoffPolicy::CONNECTION.max_delay_ms),
+                ..BackoffPolicy::CONNECTION
+            },
+            &crate::new_identity_bytes(),
+        )
     }
 
     /// Seeds equal jitter from the exchange identity. Distinct clients must supply
@@ -104,6 +121,23 @@ mod tests {
             assert!(retry.next(true, None, false).is_some());
         }
         assert_eq!(retry.next(true, None, false), None);
+    }
+
+    #[test]
+    fn connection_adapters_preserve_their_exact_attempt_budget() {
+        for attempts in 0..16 {
+            let mut exchange = Backoff::connection_attempts(attempts, 20);
+            for used in 0..attempts {
+                assert_eq!(exchange.attempts_used(), used);
+                assert!(
+                    exchange
+                        .next(true, None, false)
+                        .is_some_and(|delay| delay <= Duration::from_millis(20))
+                );
+            }
+            assert_eq!(exchange.next(true, None, false), None);
+            assert_eq!(exchange.attempts_used(), attempts);
+        }
     }
 
     #[test]

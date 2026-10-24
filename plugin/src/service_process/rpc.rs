@@ -12,7 +12,8 @@ pub(crate) async fn send_cli_control_request(
     // direct view of per-user state. Probe that endpoint before attempting a filesystem-backed
     // cold start. The published marker is an instance nonce, not a binary compatibility identity.
     let ping = ping_request()?;
-    for attempt in 0..10 {
+    let mut recovery = acyclic_stream::runtime::Backoff::connection_attempts(9, 20);
+    loop {
         match send_control_request_once(data, &ping).await {
             Ok(active)
                 if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) =>
@@ -21,10 +22,13 @@ pub(crate) async fn send_cli_control_request(
                     .await
                     .map_err(|error| error.to_string());
             }
-            Err(ControlRequestError::Unavailable(_)) if attempt < 9 => {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Err(ControlRequestError::Unavailable(_)) => {
+                let Some(delay) = recovery.next(true, None, false) else {
+                    break;
+                };
+                tokio::time::sleep(delay).await;
             }
-            Ok(_) | Err(ControlRequestError::Unavailable(_)) => break,
+            Ok(_) => break,
             Err(error) => return Err(error.to_string()),
         }
     }

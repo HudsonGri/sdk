@@ -8,6 +8,10 @@ pub(crate) struct ReadBuffer<T> {
 }
 
 impl<T> ReadBuffer<T> {
+    pub(crate) fn meter(&self) -> &Arc<dyn NativeReadMeter> {
+        self.allocation.meter()
+    }
+
     pub(crate) fn new(count: usize, meter: &Arc<dyn NativeReadMeter>) -> io::Result<Self> {
         let bytes = count
             .checked_mul(std::mem::size_of::<T>())

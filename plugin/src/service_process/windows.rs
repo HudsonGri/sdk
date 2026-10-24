@@ -19,7 +19,10 @@ pub(crate) async fn connect_windows_control_pipe(
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 
     let pipe = windows_control_pipe_path(data);
-    let mut attempt = 1;
+    let mut recovery = acyclic_stream::runtime::Backoff::connection_attempts(
+        u32::try_from(attempts.saturating_sub(1)).unwrap_or(u32::MAX),
+        20,
+    );
     loop {
         let remaining = remaining_control_wait(deadline)?;
         let error = match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
@@ -50,13 +53,73 @@ pub(crate) async fn connect_windows_control_pipe(
                     .await;
             continue;
         }
-        if attempt >= attempts {
+        // Access failures cannot be repaired by reconnecting. Only a missing
+        // endpoint is safely replayable before any request bytes are sent.
+        let Some(delay) = recovery.next(error.kind() == io::ErrorKind::NotFound, None, false)
+        else {
             return Err(ControlRequestError::Unavailable(format!(
                 "Acyclic service is not running: {error}"
             )));
+        };
+        tokio::time::sleep(delay.min(remaining)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_pipe_uses_the_shared_bounded_jitter_schedule() {
+        let root = tempfile::tempdir().unwrap();
+        for attempts in [1_usize, 3] {
+            let started = tokio::time::Instant::now();
+            let result = connect_windows_control_pipe(
+                root.path(),
+                attempts,
+                started + std::time::Duration::from_secs(1),
+            )
+            .await;
+            assert!(matches!(result, Err(ControlRequestError::Unavailable(_))));
+            let elapsed = tokio::time::Instant::now() - started;
+            if attempts == 1 {
+                assert_eq!(elapsed, std::time::Duration::ZERO);
+            } else {
+                // Three real missing-pipe opens use the shared 10/20 ms
+                // ceilings. Compare against the actual old two fixed sleeps
+                // on this paused clock, including the timer's own granularity.
+                let old_started = tokio::time::Instant::now();
+                for _ in 0..2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                let old_elapsed = tokio::time::Instant::now() - old_started;
+                assert!(elapsed >= std::time::Duration::from_millis(15));
+                assert!(
+                    elapsed < old_elapsed,
+                    "fixed-delay adapter returned: {elapsed:?}"
+                );
+            }
         }
-        attempt += 1;
-        tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_pipe_preserves_same_user_admission_without_backoff() {
+        let root = tempfile::tempdir().unwrap();
+        let server = tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(windows_control_pipe_path(root.path()))
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let client = connect_windows_control_pipe(
+            root.path(),
+            3,
+            started + std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        server.connect().await.unwrap();
+        assert!(windows_pipe_server_is_this_user(&client).unwrap());
+        assert_eq!(tokio::time::Instant::now(), started);
     }
 }
 

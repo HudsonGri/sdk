@@ -35,7 +35,7 @@ fn process_storage_is_small_and_matches_the_original_heap_credit() {
     let HostState::Running(slot) = &state else {
         panic!("missing funded slot")
     };
-    assert!(slot.is_none());
+    assert!(slot.is_reaped());
     drop(state);
     assert_eq!(original.memory.load(Ordering::Acquire), 0);
 }
@@ -54,6 +54,27 @@ fn denied_process_storage_never_reaches_an_allocator_or_spawn() {
 }
 
 #[test]
+fn malformed_private_storage_cannot_acknowledge_quiescence_or_spawn() {
+    let original = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
+    let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
+    let mut storage = ProcessTreeStorage::new(&observer).unwrap();
+    // Public operations cannot resize the slot. Exercise the guard against a
+    // future internal change, rather than allowing an invalid owner to appear idle.
+    storage.slot.data.clear();
+    assert!(!storage.is_reaped());
+    assert_eq!(
+        storage.terminate().unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    let mut command = Command::new("must-not-start");
+    assert_eq!(
+        storage.spawn(&mut command, None).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(original.used_operations.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn failed_spawn_keeps_the_partial_tree_and_its_storage_on_the_original_owner() {
     let root = tempfile::tempdir().unwrap();
     let custody = ProcessCustody::open(root.path()).unwrap();
@@ -66,23 +87,18 @@ fn failed_spawn_keeps_the_partial_tree_and_its_storage_on_the_original_owner() {
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
     let retained = original.memory.load(Ordering::Acquire);
     let mut command = super::super::tests::command("exit-code", root.path());
-    assert!(
-        ProcessTree::spawn_in_custody_controlled(
-            &mut command,
-            &custody,
-            Some(observer.as_ref()),
-            &mut slot,
-        )
-        .is_err()
-    );
-    let tree = slot
-        .as_mut()
-        .expect("the partial tree remains in its funded slot");
-    assert!(!tree.is_reaped());
+    assert!(slot.spawn(&mut command, Some(&custody)).is_err());
+    assert!(!slot.is_reaped());
     assert_eq!(original.memory.load(Ordering::Acquire), retained);
-    let recovery = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-    tree.terminate(Some(&recovery)).unwrap();
-    assert!(tree.is_reaped());
+    let before_cleanup = original.used_operations.load(Ordering::Acquire);
+    slot.terminate().unwrap();
+    assert!(slot.is_reaped());
+    assert!(original.used_operations.load(Ordering::Acquire) > before_cleanup);
+    assert_eq!(
+        slot.spawn(&mut command, Some(&custody)).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists,
+        "retired storage cannot silently become another execution"
+    );
     assert_eq!(original.memory.load(Ordering::Acquire), retained);
     drop(slot);
     assert_eq!(original.memory.load(Ordering::Acquire), 0);
