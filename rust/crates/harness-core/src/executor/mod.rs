@@ -56,6 +56,8 @@ mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
+mod tool_output;
+pub(crate) use tool_output::TOOL_OUTPUT_PREVIEW_BYTES;
 mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::{CauseText, ToolFailureText};

@@ -52,7 +52,9 @@ impl StockExecution<'_> {
             interactions: self.interactions,
             io: self.io,
             summary: Some((&pipeline, summary_output)),
-            selected_model: self.selected_model,
+            // A summary has its own durable selection. Reusing the parent's
+            // member bypasses the alloy's summary-role policy.
+            selected_model: None,
             compaction: once_cell::sync::OnceCell::new(),
         };
         let input = TurnInput {

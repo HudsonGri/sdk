@@ -193,6 +193,7 @@ impl StockExecution<'_> {
             0
         };
         context.messages = std::mem::take(&mut request.messages);
+        self.demote_stored_tool_outputs(&mut context)?;
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,

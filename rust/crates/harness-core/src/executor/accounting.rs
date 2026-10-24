@@ -65,6 +65,14 @@ pub(super) fn stock_json_bound<T: Serialize>(
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    stock_json_length(value, maximum, io).map(|_| ())
+}
+
+pub(super) fn stock_json_length<T: Serialize>(
+    value: &T,
+    maximum: u64,
+    io: Option<&PreparationIo>,
+) -> Result<u64> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         return crate::executor::json::count_json_bytes_trusted(
@@ -76,19 +84,18 @@ pub(super) fn stock_json_bound<T: Serialize>(
             },
             Some(crate::wire::ErrorCode::Invalid),
             &mut |next| io.codec_charge(next, false),
-        )
-        .map(|_| ());
+        );
     }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
         let bytes = io.encode(value, maximum, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
-        return Ok(());
+        return Ok(bytes.len() as u64);
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, &mut None)
 }
 
 impl StockExecution<'_> {
