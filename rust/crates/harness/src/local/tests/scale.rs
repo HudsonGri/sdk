@@ -158,19 +158,22 @@ impl ScaleProvider {
                 },
             ]
         };
-        // A child runs one checkout command, which gives it a native task
-        // view that retires when its turn settles, then answers. It writes
+        // A child runs one checkout command where native execution is built,
+        // which gives it a native task view that retires when its turn
+        // settles, then answers. It writes
         // nothing: concurrent sibling writes into the parent's workspace
         // currently fail admission with a generation conflict (see #1030).
         if agent.contains('c') {
-            return Ok(if results.is_empty() {
-                call(
-                    crate::tools::shell::PLATFORM.name,
-                    json!({"command": "echo child"}),
-                )
-            } else {
-                done()
-            });
+            return Ok(
+                if results.is_empty() && cfg!(feature = "native-execution") {
+                    call(
+                        crate::tools::shell::PLATFORM.name,
+                        json!({"command": "echo child"}),
+                    )
+                } else {
+                    done()
+                },
+            );
         }
         // A root writes, reads and rewrites its file, then spawns its children
         // one per step and waits for all of them. The rewrite goes by path:
@@ -612,11 +615,12 @@ async fn run_agents(
         assert!(output.text.starts_with("done "), "{output:?}");
         idle_agents.push(harness);
     }
-    // The negative control's leak: descriptors each idle agent keeps, on a
-    // file outside the agents' directories so only descriptors grow.
+    // The negative control's leak: descriptors each idle agent, root or
+    // child, keeps, on a file outside the agents' directories so only
+    // descriptors grow.
     let leaked_per_agent = setting::<u64>(LEAKED_DESCRIPTORS).unwrap_or(0);
     let leak = tempfile::NamedTempFile::new().map_err(storage)?;
-    let leaked = (0..agents * leaked_per_agent)
+    let leaked = (0..agents * (1 + children as u64) * leaked_per_agent)
         .map(|_| std::fs::File::open(leak.path()))
         .collect::<std::io::Result<Vec<_>>>()
         .map_err(storage)?;
@@ -851,19 +855,15 @@ struct Run {
 }
 
 impl Run {
-    const ROOTS: Self = Self {
-        roots: 4,
-        children: 0,
+    /// Roots that each spawn two children and wait for them to settle, so
+    /// every run measures what children cost as well as roots.
+    const AGENTS: Self = Self {
+        roots: 2,
+        children: 2,
         leaked_per_agent: 0,
         retain_child_views: false,
         unshared_task_views: false,
         from_baseline: false,
-    };
-    #[cfg(feature = "native-execution")]
-    const CHILDREN: Self = Self {
-        roots: 2,
-        children: 2,
-        ..Self::ROOTS
     };
 
     /// What the larger run's report line starts with.
@@ -947,9 +947,12 @@ fn expect_run(run: &Run, failure: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Roots that write, read and spawn children, and the children that run a
+/// checkout command and settle, stay within every per-agent bound: their
+/// stores' change records, child views and bookkeeping are all counted.
 #[test]
 fn per_agent_cost_is_bounded() -> Result<()> {
-    expect_run(&Run::ROOTS, None)
+    expect_run(&Run::AGENTS, None)
 }
 
 /// The bound fails an agent that keeps one descriptor more than it allows,
@@ -959,7 +962,7 @@ fn a_descriptor_leaked_per_agent_fails_the_bound() -> Result<()> {
     expect_run(
         &Run {
             leaked_per_agent: bounds::IDLE_FDS.0 / 1000 + 1,
-            ..Run::ROOTS
+            ..Run::AGENTS
         },
         Some("idle fds/agent"),
     )
@@ -985,15 +988,6 @@ async fn settled_children_keep_no_task_view() -> Result<()> {
     Ok(())
 }
 
-/// Children that ran checkout commands and settled keep no task view, so
-/// their mounts, callback threads and descriptors stay within the per-agent
-/// bounds.
-#[test]
-#[cfg(feature = "native-execution")]
-fn settled_children_cost_is_bounded() -> Result<()> {
-    expect_run(&Run::CHILDREN, None)
-}
-
 /// Settled children that keep task views mounted as instances of their own
 /// exceed the bounds, so the bounds see each retained instance.
 #[test]
@@ -1003,7 +997,7 @@ fn retained_child_views_fail_the_bound() -> Result<()> {
         &Run {
             retain_child_views: true,
             unshared_task_views: true,
-            ..Run::CHILDREN
+            ..Run::AGENTS
         },
         Some("per-agent ceilings exceeded"),
     )
@@ -1019,7 +1013,7 @@ fn retained_shared_child_views_stay_within_the_bound() -> Result<()> {
     expect_run(
         &Run {
             retain_child_views: true,
-            ..Run::CHILDREN
+            ..Run::AGENTS
         },
         None,
     )
@@ -1035,7 +1029,7 @@ fn a_cost_counted_from_the_baseline_fails_the_idle_bound() -> Result<()> {
     expect_run(
         &Run {
             from_baseline: true,
-            ..Run::CHILDREN
+            ..Run::AGENTS
         },
         Some("idle fds/agent"),
     )
