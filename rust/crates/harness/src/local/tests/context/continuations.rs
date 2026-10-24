@@ -74,7 +74,7 @@ fn predecessor_key(bits: u8) -> u8 {
 struct Predecessor {
     bootstrap: super::super::bootstrap::Bootstrap,
     parent: crate::TaskId,
-    old_manifest: ContextManifest,
+    old_manifest: FileRef,
 }
 
 async fn predecessor(key: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<Predecessor> {

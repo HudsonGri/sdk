@@ -1,4 +1,4 @@
-//! Share immutable empty-volume bytes, never live providers or effect ledgers.
+//! Share immutable closed-volume bytes, never live providers or effect ledgers.
 use super::super::admission::snapshot::Snapshot;
 use super::*;
 
