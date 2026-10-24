@@ -15,6 +15,55 @@ const RESPONSE: &str = concat!(
     "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"run\",\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n"
 );
 
+#[tokio::test]
+async fn conversation_identity_reaches_codex_headers_and_body_across_operations() -> Result<()> {
+    use acyclic_harness_core::{ConversationId, OperationId, conversation::Limits, model::*};
+    let (_root, login, server, _) = fixture(vec![(200, RESPONSE.into()), (200, RESPONSE.into())])?;
+    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
+        .with_codex_login(login)
+        .resolve("openai/gpt-5")?;
+    let conversation = ConversationId::from_bytes([9; 16]);
+    let (base, _) = crate::tests::request(&provider)?;
+    let mut request = base.request().clone();
+    request.conversation_id = Some(conversation);
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+    for byte in [1, 2] {
+        let dispatch = ModelDispatch {
+            operation_id: OperationId::from_bytes([byte; 16]),
+            step: 0,
+            request_digest: prepared.request_digest(),
+        };
+        provider
+            .generate(prepared.clone(), dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
+    }
+    let requests = server
+        .requests
+        .lock()
+        .map_err(|_| invalid("fixture poisoned"))?;
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.headers["session-id"], conversation.to_string());
+        assert_eq!(request.headers["thread-id"], conversation.to_string());
+        assert_eq!(
+            crate::json(&request.body)?["prompt_cache_key"],
+            conversation.to_string()
+        );
+    }
+    assert_ne!(
+        requests[0].headers["x-client-request-id"],
+        requests[1].headers["x-client-request-id"]
+    );
+    // The former per-operation header identity fails this same-conversation oracle.
+    assert_ne!(
+        OperationId::from_bytes([1; 16]).to_string(),
+        conversation.to_string()
+    );
+    assert_eq!(requests[0].body, requests[1].body);
+    Ok(())
+}
+
 struct Server {
     replies: Mutex<VecDeque<(u16, String)>>,
     requests: Mutex<Vec<HttpRequest>>,
@@ -147,14 +196,8 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         })
     );
     assert_eq!(requests[2].headers["originator"], "acyclic_harness");
-    assert_eq!(
-        requests[2].headers["session-id"],
-        dispatch.operation_id.to_string()
-    );
-    assert_eq!(
-        requests[2].headers["thread-id"],
-        dispatch.operation_id.to_string()
-    );
+    assert!(!requests[2].headers.contains_key("session-id"));
+    assert!(!requests[2].headers.contains_key("thread-id"));
     assert_eq!(
         requests[2].headers["x-client-request-id"],
         format!("{}-0", dispatch.operation_id)
@@ -231,6 +274,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
     registry.register(
         "openai".into(),
         ProviderSpec {
+            account_id: None,
             authentication: Authentication::ApiKeyOrCodexLogin,
             adapter: Adapter::Responses,
             base_url: "https://other.test/v1".into(),

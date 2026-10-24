@@ -10,6 +10,61 @@ pub(super) struct NativeServer {
     pub(super) sent: AtomicUsize,
 }
 
+#[tokio::test]
+async fn native_conversation_identity_reaches_codex_across_operations() -> Result<()> {
+    use acyclic_harness_core::{ConversationId, OperationId, conversation::Limits, model::*};
+    let (_root, login, inner, _) = fixture(vec![(200, RESPONSE.into()), (200, RESPONSE.into())])?;
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let server = Arc::new(NativeServer {
+        inner: inner.clone(),
+        work: work.clone(),
+        sent: AtomicUsize::new(0),
+    });
+    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server)
+        .with_codex_login(login)
+        .resolve("openai/gpt-5")?;
+    let conversation = ConversationId::from_bytes([9; 16]);
+    let (base, _) = crate::tests::request(&provider)?;
+    let mut request = base.request().clone();
+    request.conversation_id = Some(conversation);
+    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+    for byte in [1, 2] {
+        let dispatch = ModelDispatch {
+            operation_id: OperationId::from_bytes([byte; 16]),
+            step: 0,
+            request_digest: prepared.request_digest(),
+        };
+        provider
+            .generate_with_native_work(&prepared, dispatch, &work)?
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+    }
+    let requests = inner
+        .requests
+        .lock()
+        .map_err(|_| invalid("fixture poisoned"))?;
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.headers["session-id"], conversation.to_string());
+        assert_eq!(request.headers["thread-id"], conversation.to_string());
+        assert_eq!(
+            crate::json(&request.body)?["prompt_cache_key"],
+            conversation.to_string()
+        );
+    }
+    assert_eq!(requests[0].body, requests[1].body);
+    assert_ne!(
+        requests[0].headers["x-client-request-id"],
+        requests[1].headers["x-client-request-id"]
+    );
+    Ok(())
+}
+
 impl HttpTransport for NativeServer {
     fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         crate::fixtures::delay(wait)
@@ -112,6 +167,12 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
     sent.clear();
     assert_eq!(work.receipt().durability_operations, 2);
     assert!(work.receipt().backend_read_operations > 0);
+    assert!(
+        work.live_allocation_bytes() > baseline,
+        "prepared request retains its wire payload"
+    );
+    drop(request);
+    drop(provider);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }

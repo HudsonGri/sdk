@@ -425,6 +425,10 @@ impl LocalHarness {
         )
         .await?;
         let model = crate::filesystem::ModelTaskCommand {
+            conversation_id: Some(
+                self.conversation_id(crate::runtime::task_id_for_admission(operation))
+                    .await?,
+            ),
             role: Some(role.to_owned()),
             summary_source: None,
             context_manifest: manifest,

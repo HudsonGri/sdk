@@ -500,6 +500,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
+    conversation_id: Option<crate::ConversationId>,
     model: Model,
     role: Option<String>,
     summary_source: Option<Box<FileRef>>,

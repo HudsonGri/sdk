@@ -85,6 +85,7 @@ impl LocalHarness {
         let output = {
             let request = PreparedModelRequest::prepare(
                 ModelRequest {
+                    conversation_id: Some(self.conversation_id(target).await?),
                     model,
                     messages: context.messages,
                     tools: Vec::new(),
@@ -107,6 +108,7 @@ impl LocalHarness {
             )?
         };
         let command = ModelTaskCommand {
+            conversation_id: Some(self.conversation_id(target).await?),
             role: Some(self.root_role.clone()),
             input,
             context_manifest: manifest,

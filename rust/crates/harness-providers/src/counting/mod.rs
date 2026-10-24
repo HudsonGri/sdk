@@ -4,8 +4,13 @@ use crate::{HttpRequest, HttpTransport as _, ResolvedModel, dispatch, projection
 use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
 use futures::StreamExt as _;
 
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static VERIFIED_EXCHANGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Body {
-    bytes: Vec<u8>,
+    bytes: bytes::Bytes,
     _custody: NativeCustody,
 }
 impl AsRef<[u8]> for Body {
@@ -106,32 +111,20 @@ pub(crate) async fn count(
             )
         })
         .transpose()?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let content_io = work
-        .map(acyclic_harness_core::filesystem::PreparationIo::from_native_work)
-        .transpose()?;
-    #[cfg(target_arch = "wasm32")]
-    let content_io = None;
     let prepared = async {
         // Retain table custody until after its projected generation is encoded.
         let _name_custody;
-        let mut files =
-            crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
         let names = {
             let (names, custody) = crate::tool_names::Names::funded(request.request(), work)?;
             _name_custody = custody;
             names
         };
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let generation =
-            projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let body = wire::body(&generation, &provider.model.name, spec.adapter);
-        let bytes =
-            serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;
+        let bodies = crate::encoded::bodies(provider, request, &names, &origin, work).await?;
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
-        Ok::<_, Error>((url, headers, bytes, plan))
+        Ok::<_, Error>((url, headers, bodies, plan))
     }
     .await;
     #[cfg(not(target_arch = "wasm32"))]
@@ -144,7 +137,7 @@ pub(crate) async fn count(
     let count_custody;
     #[cfg(target_arch = "wasm32")]
     let count_custody = None;
-    let (url, headers, bytes, count) = prepared?;
+    let (url, headers, bodies, count) = prepared?;
     drop(auth);
     #[cfg(not(target_arch = "wasm32"))]
     drop(auth_custody);
@@ -165,7 +158,6 @@ pub(crate) async fn count(
         let retained = std::mem::size_of::<HttpRequest>()
             + std::mem::size_of::<Body>()
             + url.capacity()
-            + bytes.capacity()
             + headers.len() * std::mem::size_of::<(String, String)>()
             + headers
                 .iter()
@@ -176,11 +168,19 @@ pub(crate) async fn count(
     #[cfg(target_arch = "wasm32")]
     let admission = None;
     let body = bytes::Bytes::from_owner(Body {
-        bytes,
+        bytes: bodies.count,
         _custody: admission,
     });
     let exchange = HttpRequest { url, headers, body };
-    send_count(provider, exchange, count, count_custody, work).await
+    send_count(
+        provider,
+        exchange,
+        count,
+        count_custody,
+        work,
+        &bodies.verified,
+    )
+    .await
 }
 
 pub(crate) async fn send_count(
@@ -189,8 +189,19 @@ pub(crate) async fn send_count(
     mut count: ModelTokenCount,
     count_custody: NativeCustody,
     work: NativeWork<'_>,
+    verification: &crate::encoded::Verification,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
-    count.input_tokens = exchange_count(provider, exchange, work).await?;
+    // Only the exact immutable input and original binding share this verified total.
+    // Usage ratios still influence planning, never admission.
+    let mut verified = verification.tokens.lock().await;
+    count.input_tokens = match *verified {
+        Some(tokens) => tokens,
+        None => {
+            let tokens = exchange_count(provider, exchange, work).await?;
+            *verified = Some(tokens);
+            tokens
+        }
+    };
     Ok((count, count_custody))
 }
 
@@ -267,6 +278,8 @@ async fn exchange_count(
     exchange: HttpRequest,
     work: NativeWork<'_>,
 ) -> Result<u64> {
+    #[cfg(test)]
+    VERIFIED_EXCHANGES.with(|count| count.set(count.get() + 1));
     let mut redelivery =
         crate::retry::Redelivery::for_request(provider.config.retry, &exchange.body);
     // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.

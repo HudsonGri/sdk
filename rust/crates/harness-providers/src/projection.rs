@@ -200,6 +200,14 @@ pub(crate) fn body_named<'a>(
             model
         };
     map.insert("model".into(), json!(model));
+    // The retained conversation owns this routing key; model options cannot
+    // replace it or accidentally share one key across independent sessions.
+    map.remove("prompt_cache_key");
+    if matches!(adapter, Adapter::Responses | Adapter::Chat)
+        && let Some(conversation) = request.conversation_id
+    {
+        map.insert("prompt_cache_key".into(), json!(conversation.to_string()));
+    }
     configure_body(provider, map, &system, &tools, max)?;
     let fields = body
         .as_object_mut()

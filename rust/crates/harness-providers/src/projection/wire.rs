@@ -44,6 +44,46 @@ pub(crate) struct Body<'a> {
     pub(super) messages_field: &'static str,
     pub(super) messages: Vec<Message<'a>>,
 }
+
+pub(crate) enum SystemKey {
+    Chat(String),
+    Responses(Value),
+}
+
+impl SystemKey {
+    pub(crate) fn owned_bytes(&self) -> acyclic_harness_core::Result<u64> {
+        match self {
+            Self::Chat(text) => Ok(text.capacity() as u64),
+            Self::Responses(value) => {
+                acyclic_harness_core::executor::json::json_value_logical_owned_bytes(value)
+            }
+        }
+    }
+}
+
+fn system_key<'a>(message: &'a Message<'_>) -> Option<SystemKeyRef<'a>> {
+    match message {
+        Message::Chat(chat)
+            if chat.role == "system"
+                && chat.tool_calls.is_empty()
+                && chat.reasoning_content.is_none() =>
+        {
+            chat.content.as_deref().map(SystemKeyRef::Chat)
+        }
+        Message::Item(Item::Json(value))
+            if value.get("type").and_then(Value::as_str) == Some("message")
+                && value.get("role").and_then(Value::as_str) == Some("system") =>
+        {
+            Some(SystemKeyRef::Responses(value))
+        }
+        _ => None,
+    }
+}
+
+enum SystemKeyRef<'a> {
+    Chat(&'a str),
+    Responses(&'a Value),
+}
 impl Serialize for Body<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.serialize_fields(serializer, None, None)
@@ -56,6 +96,43 @@ impl Body<'_> {
         serializer: S,
         include: Option<&[&str]>,
         model: Option<&str>,
+    ) -> Result<S::Ok, S::Error> {
+        self.serialize_fields_prefix(serializer, include, model, None)
+    }
+
+    pub(crate) fn matches_system_prefix(&self, keys: &[SystemKey]) -> bool {
+        let mut actual = self.messages.iter().map_while(system_key);
+        keys.iter().all(|key| match (key, actual.next()) {
+            (SystemKey::Chat(a), Some(SystemKeyRef::Chat(b))) => a == b,
+            (SystemKey::Responses(a), Some(SystemKeyRef::Responses(b))) => a == b,
+            _ => false,
+        }) && actual.next().is_none()
+    }
+
+    pub(crate) fn encode_system_prefix(
+        &self,
+    ) -> Result<(Vec<SystemKey>, Vec<Box<RawValue>>), serde_json::Error> {
+        let mut keys = Vec::new();
+        let mut encoded = Vec::new();
+        for message in &self.messages {
+            let Some(key) = system_key(message) else {
+                break;
+            };
+            keys.push(match key {
+                SystemKeyRef::Chat(text) => SystemKey::Chat(text.to_owned()),
+                SystemKeyRef::Responses(value) => SystemKey::Responses(value.clone()),
+            });
+            encoded.push(serde_json::value::to_raw_value(message)?);
+        }
+        Ok((keys, encoded))
+    }
+
+    fn serialize_fields_prefix<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        include: Option<&[&str]>,
+        model: Option<&str>,
+        chat_system: Option<&[Box<RawValue>]>,
     ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         // Keep the reusable tool/instruction prefix before request controls.
@@ -84,10 +161,37 @@ impl Body<'_> {
         }
         if matches!(self.messages.first(), Some(Message::Anthropic { .. })) {
             map.serialize_entry(self.messages_field, &CacheMessages(&self.messages))?;
+        } else if let Some(prefix) = chat_system {
+            map.serialize_entry(
+                self.messages_field,
+                &PrefixMessages(prefix, &self.messages[prefix.len()..]),
+            )?;
         } else {
             map.serialize_entry(self.messages_field, &self.messages)?;
         }
         map.end()
+    }
+}
+
+pub(crate) struct WithChatPrefix<'a, 'b>(pub &'a Body<'b>, pub Option<&'a [Box<RawValue>]>);
+impl Serialize for WithChatPrefix<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0
+            .serialize_fields_prefix(serializer, None, None, self.1)
+    }
+}
+
+struct PrefixMessages<'a, 'b>(&'a [Box<RawValue>], &'a [Message<'b>]);
+impl Serialize for PrefixMessages<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.1.len() + self.0.len()))?;
+        for message in self.0 {
+            sequence.serialize_element(message)?;
+        }
+        for message in self.1 {
+            sequence.serialize_element(message)?;
+        }
+        sequence.end()
     }
 }
 

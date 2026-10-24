@@ -23,6 +23,7 @@ pub(super) async fn select(
             let reserve = ThresholdCompaction::for_capacity(capacity, 0)?.response_reserve_tokens;
             let request = PreparedModelRequest::prepare(
                 ModelRequest {
+                    conversation_id: None,
                     model: model.clone(),
                     messages: vec![ModelMessage {
                         role: ModelRole::User,

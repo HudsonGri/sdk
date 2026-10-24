@@ -151,6 +151,7 @@ impl Registry {
                 ));
             }
             Arc::new(ProviderSpec {
+                account_id: None,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 token_counter: None,
                 ..config.as_ref().clone()
@@ -176,6 +177,7 @@ impl Registry {
         let transport = crate::deadline::Bounded::new(self.transport.clone(), config.timeouts);
         Ok(ResolvedModel {
             files: self.files.clone(),
+            prefix_cache: std::sync::Arc::default(),
             estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
             model,
             config,
@@ -226,6 +228,15 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    if config
+        .account_id
+        .as_ref()
+        .is_some_and(|account| account.trim().is_empty() || account.chars().any(char::is_control))
+    {
+        return Err(invalid(
+            "provider account identity is empty or contains controls",
+        ));
+    }
     config.timeouts.validate()?;
     for (name, value) in &config.headers {
         if name.is_empty()
@@ -235,6 +246,10 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
             || value.contains(['\r', '\n'])
             || [
                 "authorization",
+                "chatgpt-account-id",
+                "session-id",
+                "thread-id",
+                "x-client-request-id",
                 "x-api-key",
                 "x-goog-api-key",
                 "cookie",

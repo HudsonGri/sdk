@@ -160,6 +160,12 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
             );
         }
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
+        assert!(
+            work.live_allocation_bytes() > before,
+            "request retains its wire memo"
+        );
+        drop(request);
+        drop(provider);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
     }
     Ok(())

@@ -251,6 +251,7 @@ impl StockExecution<'_> {
             }
         }
         Ok(ModelRequest {
+            conversation_id: self.conversation_id(),
             model: crate::model::clone_model(self.model(), self.io)?,
             messages,
             tools: if tools_required {
@@ -259,6 +260,15 @@ impl StockExecution<'_> {
                 Vec::new()
             },
             max_output_tokens: self.output_budget()?,
+        })
+    }
+
+    pub(super) fn conversation_id(&self) -> Option<crate::ConversationId> {
+        self.stock.conversation_id.or_else(|| {
+            self.stock
+                .task
+                .as_ref()
+                .map(|(_, task, _)| crate::ConversationId::from_bytes(task.into_bytes()))
         })
     }
 }

@@ -120,6 +120,12 @@ impl NativeStockExecutor {
         self
     }
 
+    /// Carries the command's retained conversation on the original ledger.
+    pub(crate) fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.stock = self.stock.with_conversation_id(conversation);
+        self
+    }
+
     /// Selects a pinned summary source without copying its retained command data.
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
         self.stock = self.stock.with_summary_source(source);
