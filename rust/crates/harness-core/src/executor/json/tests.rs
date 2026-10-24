@@ -868,3 +868,32 @@ fn rejected_strings_reserve_their_error_message() {
     let reserved = reserved.unwrap();
     assert!(reserved < peak, "{reserved} reserved / {peak} decode peak");
 }
+
+// A record with a flattened map keeps a tree per record, built from the
+// members its `Content` buffer holds: every record's tree is reserved, not
+// only the largest buffer.
+#[test]
+fn flattened_maps_reserve_every_record_tree() {
+    use std::collections::BTreeMap;
+    #[derive(Serialize, serde::Deserialize, crate::HeapLayout)]
+    struct Record {
+        id: u64,
+        #[serde(flatten)]
+        rest: BTreeMap<String, u64>,
+    }
+    let records: Vec<Record> = (0..256)
+        .map(|id| Record {
+            id,
+            rest: (0..4).map(|key| (format!("k{key}"), key)).collect(),
+        })
+        .collect();
+    let (_, peak) = assert_layout_covers_decode(&records);
+    // Negative control: without the flattened trees the reservation falls
+    // short of the measured decode.
+    let bytes = serde_json::to_vec(&records).unwrap();
+    super::layout::tests::FLATTENED.set(false);
+    let reserved = layout_reservation::<Vec<Record>>(&bytes);
+    super::layout::tests::FLATTENED.set(true);
+    let reserved = reserved.unwrap();
+    assert!(reserved < peak, "{reserved} reserved / {peak} decode peak");
+}

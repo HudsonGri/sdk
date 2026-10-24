@@ -289,6 +289,56 @@ fn members(
     found
 }
 
+/// What a record's flattened fields keep and build.
+#[derive(Clone, Copy, Default)]
+struct Flattened {
+    kept: u64,
+    moving: u64,
+    /// A flattened map owns its keys.
+    owns_keys: bool,
+}
+/// What the flattened fields of `node` keep when its object has `entries`
+/// members: every flattened collection may receive each member, and every
+/// flattened box is allocated once. A chain deeper than admission resolves
+/// keeps an unbounded amount, so its decode is refused.
+fn flattened_cost(node: &'static JsonLayout, entries: u64, depth: u32) -> Flattened {
+    let JsonLayout::Node { flatten, .. } = node else {
+        return Flattened::default();
+    };
+    let mut cost = Flattened::default();
+    for layout in *flatten {
+        let mut flattened = Candidates::NONE;
+        flattened.add(layout, 0, depth + 1);
+        if flattened.overflow {
+            cost.kept = u64::MAX;
+            continue;
+        }
+        let mut field = 0_u64;
+        for inner in flattened.nodes() {
+            let mut bytes = 0;
+            if let JsonLayout::Node {
+                map: Some(alloc), ..
+            } = inner
+            {
+                let (kept, moving) = alloc.bytes(entries);
+                bytes = kept;
+                cost.moving = cost.moving.max(moving);
+                cost.owns_keys |= *alloc != Alloc::INLINE;
+            }
+            let nested = flattened_cost(inner, entries, depth + 1);
+            cost.moving = cost.moving.max(nested.moving);
+            cost.owns_keys |= nested.owns_keys;
+            field = field.max(bytes.saturating_add(nested.kept));
+        }
+        cost.kept = cost.kept.saturating_add(
+            field
+                .saturating_add(flattened.once)
+                .saturating_mul(flattened.scale),
+        );
+    }
+    cost
+}
+
 /// Bytes admitted for a layout walk.
 ///
 /// The decode keeps every collection, box and string it builds. Everything
@@ -380,7 +430,12 @@ impl LayoutCost {
                     continue;
                 };
                 accepted = true;
-                let (bytes, moving) = alloc.bytes(entries);
+                let (mut bytes, mut moving) = alloc.bytes(entries);
+                if map && flattened_counted() {
+                    let flattened = flattened_cost(node, entries, 0);
+                    bytes = bytes.saturating_add(flattened.kept);
+                    moving = moving.max(flattened.moving);
+                }
                 kept = kept.max(bytes.saturating_mul(placement.scale));
                 self.moving = self.moving.max(moving.saturating_mul(placement.scale));
             }
@@ -565,6 +620,7 @@ impl<'a> Entries<'a> {
             let candidates = &placement.candidates;
             let owned = candidates.nodes().any(|node| {
                 matches!(node, JsonLayout::Node { map: Some(alloc), .. } if *alloc != Alloc::INLINE)
+                    || (flattened_counted() && flattened_cost(node, 0, 0).owns_keys)
             });
             let mut cost = placement.cost.borrow_mut();
             cost.string(key, owned, placement.scale);
@@ -613,7 +669,18 @@ pub(super) mod tests {
         /// Whether rejected strings' error messages are reserved; a negative
         /// control clears it.
         pub(in crate::executor::json) static MESSAGES: Cell<bool> = const { Cell::new(true) };
+        /// Whether flattened collections are reserved; a negative control
+        /// clears it.
+        pub(in crate::executor::json) static FLATTENED: Cell<bool> = const { Cell::new(true) };
     }
+}
+#[cfg(test)]
+fn flattened_counted() -> bool {
+    tests::FLATTENED.get()
+}
+#[cfg(not(test))]
+const fn flattened_counted() -> bool {
+    true
 }
 #[cfg(test)]
 fn messages_counted() -> bool {
