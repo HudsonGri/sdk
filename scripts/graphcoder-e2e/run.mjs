@@ -2,7 +2,7 @@
 // Data cases drive the shipping executable through argv, HTTP and real PTYs.
 // Build graphcoder and harness-mock-model ahead of time, then run:
 //   node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [case-id...]
-// Install scripts/graphcoder-pty's pinned @xterm/headless before timing.
+// Before building or timing: node scripts/graphcoder-pty/prepare.mjs
 // On Windows, cross-build the ConPTY transport on bb2 and set E2E_CONPTY_HOST
 // to its EXE. Use serial.mjs for the full matrix. E2E_SCRATCH_ROOT selects
 // all temporary directories and is mandatory on Windows.
