@@ -741,16 +741,34 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
             server,status=job.start_cache(d,env)
         self.assertIsNone(server);self.assertEqual(status,'startup-failed:forced bind failure')
 
+def run_owned_case(name):
+    # Each case allocates its own directory, worker, receipt, cgroup and cache.
+    # A process owns Python patches too: concurrent cases never mutate another
+    # case's imported worker or environment.
+    output=io.StringIO()
+    result=unittest.TextTestRunner(stream=output,verbosity=2).run(RuntimeTests(name))
+    return name,result.wasSuccessful(),output.getvalue()
+
+
+def run_owned_suite(label,names):
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+    started=time.monotonic()
+    with ProcessPoolExecutor(max_workers=4,mp_context=get_context('spawn')) as cases:
+        results=list(cases.map(run_owned_case,names))
+    assert [name for name,_,_ in results]==names,'every discovered control must run exactly once'
+    for _,_,output in results:sys.stderr.write(output)
+    seconds=time.monotonic()-started
+    print(f'SUITE_RESULT {label}: {len(results)} cases, {seconds:.3f}s wall',file=sys.stderr,flush=True)
+    return all(success for _,success,_ in results) and seconds<10
+
+
 if __name__=='__main__':
-    # Keep the kernel-boundary and lifecycle suites independently measurable.
-    # Every discovered control runs exactly once; neither group filters failures.
+    # All discovered controls run exactly once in their complete domain suites.
     names=unittest.defaultTestLoader.getTestCaseNames(RuntimeTests)
     home_tokens=('home','proc_','namespace_','fuse_','inherited_','no_new_privs')
     groups={label:[name for name in names if any(token in name for token in home_tokens)==is_home]
             for label,is_home in [('HOME boundary',True),('admission, cache and lifecycle',False)]}
     assert sorted(sum(groups.values(),[]))==names
-    results=[]
-    for label,selected in groups.items():
-        print('SUITE '+label,file=sys.stderr,flush=True)
-        results.append(unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(RuntimeTests(name) for name in selected)))
-    raise SystemExit(0 if all(result.wasSuccessful() for result in results) else 1)
+    results=[run_owned_suite(label,selected) for label,selected in groups.items()]
+    raise SystemExit(0 if all(results) else 1)
