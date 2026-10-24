@@ -139,11 +139,11 @@ impl AuthenticatedAdmission {
     /// # Errors
     /// Rejects changed bindings, future admission times and revoked trust.
     pub fn authorize(
-        &self,
+        self,
         trust: &dyn Trust,
         request: &Request<'_>,
         payload: [u8; 32],
-    ) -> Result<(), VerifyError> {
+    ) -> Result<VerifiedCapability, VerifyError> {
         if self.admitted > request.now_unix_seconds {
             return Err(VerifyError::Time);
         }
@@ -162,13 +162,8 @@ impl AuthenticatedAdmission {
                 ..*request
             },
             PolicyDecision::Allow,
-        )
-    }
-
-    /// Consume the evidence without parsing or authenticating its bytes again.
-    #[must_use]
-    pub fn into_workload(self) -> VerifiedCapability {
-        self.workload
+        )?;
+        Ok(self.workload)
     }
 }
 
@@ -215,8 +210,7 @@ impl AdmittedCapability {
         payload: [u8; 32],
     ) -> Result<VerifiedCapability, VerifyError> {
         let authenticated = self.authenticate_history(trust, request.now_unix_seconds)?;
-        authenticated.authorize(trust, request, payload)?;
-        Ok(authenticated.into_workload())
+        authenticated.authorize(trust, request, payload)
     }
 }
 
