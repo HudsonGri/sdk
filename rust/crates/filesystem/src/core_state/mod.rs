@@ -464,6 +464,26 @@ impl Namespace {
         family: &str,
         key: &[u8],
     ) -> Result<RecordPaths<'_>, LocalCoreStateStoreError> {
+        self.record_locked(family, key, RecordLock::Own)
+    }
+
+    /// The paths of an immutable record named by the digest of its encoding.
+    /// Its writers exclude each other on the family's one lock, since the
+    /// record never changes after publication and readers take no lock.
+    fn content_record(
+        &self,
+        family: &str,
+        key: &[u8],
+    ) -> Result<RecordPaths<'_>, LocalCoreStateStoreError> {
+        self.record_locked(family, key, RecordLock::Family)
+    }
+
+    fn record_locked(
+        &self,
+        family: &str,
+        key: &[u8],
+        lock: RecordLock,
+    ) -> Result<RecordPaths<'_>, LocalCoreStateStoreError> {
         let work = self
             ._allocation
             .as_ref()
@@ -527,7 +547,10 @@ impl Namespace {
         let current = entry(".json")?;
         let previous = entry(".previous.json")?;
         let temporary = entry(".next.json")?;
-        let lock = entry(".lock")?;
+        let lock = match lock {
+            RecordLock::Own => entry(".lock")?,
+            RecordLock::Family => path(&directory, FAMILY_LOCK)?,
+        };
         let directory_bytes = directory.capacity() as u64;
         drop(directory);
         if let Some(allocation) = &mut allocation {
@@ -554,6 +577,18 @@ impl Namespace {
         Ok(operations.collect())
     }
 }
+
+/// Which lock file serializes a record's writers.
+#[derive(Clone, Copy)]
+enum RecordLock {
+    /// One lock file beside the record, for a record that changes.
+    Own,
+    /// The family's one lock file, for immutable content-addressed records.
+    Family,
+}
+
+/// The leaf of a family's shared lock; no record stem has this name.
+const FAMILY_LOCK: &str = ".lock";
 
 /// Guard for a [`LocalCoreStateStore::defer_durability`] scope.
 #[must_use = "deferred commits are durable only once committed"]
