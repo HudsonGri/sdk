@@ -97,6 +97,18 @@ impl<T: HeapLayout> HeapLayout for Arc<T> {
         inner: T::LAYOUT,
     };
 }
+/// serde decodes a `String` and copies it into the shared allocation after
+/// its two reference counts, rounded up to their alignment. The `String` and
+/// the copy are alive together while it is copied.
+impl HeapLayout for Arc<str> {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::Boxed {
+        bytes: (2 * size_of::<usize>() + align_of::<usize>() - 1) as u64,
+        inner: &JsonLayout::Scaled {
+            times: 2,
+            inner: &JsonLayout::Scalar,
+        },
+    };
+}
 /// A boxed slice decodes as a vector and shrinks in place.
 impl<T: HeapLayout> HeapLayout for Box<[T]> {
     const LAYOUT: &'static JsonLayout = <Vec<T> as HeapLayout>::LAYOUT;
@@ -124,16 +136,41 @@ impl<T: HeapLayout> HeapLayout for BTreeSet<T> {
         flatten: &[],
     };
 }
-/// JSON object keys decode through the key type from their string.
+/// JSON object keys decode through the key type from their string, and a
+/// key is charged only its string: a key type whose decode keeps more (a
+/// box, or a converted copy) has no layout here and fails to compile.
 impl<K: HeapLayout, V: HeapLayout> HeapLayout for BTreeMap<K, V> {
-    const LAYOUT: &'static JsonLayout = &JsonLayout::Node {
-        seq: None,
-        map: Some(Alloc::tree::<K, V>()),
-        tagged: false,
-        fields: &[("*", V::LAYOUT)],
-        elements: &[],
-        flatten: &[],
+    const LAYOUT: &'static JsonLayout = {
+        assert!(
+            keeps_only_its_string(K::LAYOUT),
+            "a map key's decode keeps more than its string"
+        );
+        &JsonLayout::Node {
+            seq: None,
+            map: Some(Alloc::tree::<K, V>()),
+            tagged: false,
+            fields: &[("*", V::LAYOUT)],
+            elements: &[],
+            flatten: &[],
+        }
     };
+}
+/// Whether a key decoded with `layout` allocates nothing beyond its string.
+const fn keeps_only_its_string(layout: &JsonLayout) -> bool {
+    match layout {
+        JsonLayout::Scalar | JsonLayout::Node { .. } => true,
+        JsonLayout::Boxed { .. } | JsonLayout::Scaled { .. } => false,
+        JsonLayout::Any { of, .. } => {
+            let mut index = 0;
+            while index < of.len() {
+                if !keeps_only_its_string(of[index]) {
+                    return false;
+                }
+                index += 1;
+            }
+            true
+        }
+    }
 }
 impl<T: HeapLayout, const N: usize> HeapLayout for [T; N] {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Node {
