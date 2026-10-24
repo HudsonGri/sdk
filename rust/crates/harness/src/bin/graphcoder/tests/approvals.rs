@@ -241,8 +241,15 @@ impl Fixture {
         if body.get("model").unwrap() == "reviewer" {
             return self.review(body);
         }
+        // Each child turn retains its receive instruction, while a later inbox
+        // turn need not repeat the initial CHILD_APPROVAL_FIXTURE message.
         let child = body["input"].as_array().unwrap().iter().any(|item| {
-            item["role"] == "user" && item.to_string().contains("CHILD_APPROVAL_FIXTURE")
+            item["role"] == "user"
+                && item["content"].as_array().is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|part| part["text"] == "Follow the received child request.")
+                })
         });
         let counter = if child {
             &self.child_calls
