@@ -52,6 +52,7 @@ mod view_gate;
 pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
+mod view_table;
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
@@ -272,6 +273,10 @@ fn start_driver_into<F>(
 where
     F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
 {
+    #[cfg(not(target_os = "linux"))]
+    if request.shared {
+        return Err(NativeMountError::UnsupportedTarget);
+    }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         #[cfg(target_os = "linux")]
@@ -302,6 +307,8 @@ pub use error::*;
 mod fence_io;
 mod recovery;
 mod registry;
+mod shared_root;
+pub use shared_root::shared_view_root;
 pub use recovery::*;
 mod startup;
 pub use startup::*;

@@ -224,6 +224,7 @@ where
                 volume_id: self.id().volume_id(),
                 destination: session_destination.0,
                 writable: options.writable,
+                shared: options.shared,
             },
             Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
             &work,

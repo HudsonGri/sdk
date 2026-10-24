@@ -47,6 +47,10 @@ pub struct NativeMountRequest {
     pub destination: PathBuf,
     /// Whether authored effects may be captured.
     pub writable: bool,
+    /// Lists the view in the process's shared native instance at the
+    /// destination's parent, named by the destination's last component,
+    /// instead of mounting it at the destination. Linux only.
+    pub shared: bool,
 }
 
 /// Platform-neutral node facts required by kernel callbacks.
