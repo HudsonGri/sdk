@@ -74,15 +74,15 @@ fn predecessor_key(bits: u8) -> u8 {
 struct Predecessor {
     bootstrap: super::super::bootstrap::Bootstrap,
     parent: crate::TaskId,
-    old_manifest: FileRef,
+    stale_guidance: (bool, bool),
 }
 
 async fn predecessor(key: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<Predecessor> {
     let directory = bootstrap.restore()?;
-    let provider = scripted((0..2).map(|_| ScriptedTurn::Text("answer".into())));
+    let provider = scripted((0..3).map(|_| ScriptedTurn::Text("answer".into())));
     let harness = LocalHarness::open(
         bootstrap
-            .config(directory.path(), provider)?
+            .config(directory.path(), provider.clone())?
             .goal_continuations(None),
     )
     .await?;
@@ -100,10 +100,29 @@ async fn predecessor(key: u8, bootstrap: &super::super::bootstrap::Bootstrap) ->
             .compact(OperationId::new(), parent, "retain history")
             .await?;
     }
+    // The old route depends on this immutable manifest, not the later
+    // requested/present booleans. Execute its negative control once per exact
+    // predecessor, then require every branch to reject the witnessed guidance.
+    let expected = (key & 1 != 0, key & 2 != 0);
+    let broken = OperationId::new();
+    let broken_task = crate::runtime::task_id_for_admission(broken);
+    harness.prepare_inheritance(broken_task, None).await?;
+    let (receive, model) = harness
+        .stage_bound_turn(
+            broken,
+            prompt(expected.0, expected.1),
+            old_manifest,
+            harness.input_publisher()?.as_ref(),
+        )
+        .await?;
+    harness.admit_turn(broken, None, receive, model).await?;
+    harness.resume(broken_task).await?;
+    let stale_guidance = guidance(&provider.last_request().unwrap());
+    assert_eq!(stale_guidance, (!expected.0, !expected.1));
     Ok(Predecessor {
         bootstrap: bootstrap.checkpoint(directory, harness).await?,
         parent,
-        old_manifest,
+        stale_guidance,
     })
 }
 
@@ -113,7 +132,7 @@ async fn case(bits: u8, predecessor: &Predecessor) -> Result<()> {
     let expected = (requested.0 || present.0, requested.1 || present.1);
     let bootstrap = &predecessor.bootstrap;
     let directory = bootstrap.restore()?;
-    let provider = scripted((0..2).map(|_| ScriptedTurn::Text("answer".into())));
+    let provider = scripted([ScriptedTurn::Text("answer".into())]);
     let config = || {
         Ok::<_, Error>(
             bootstrap
@@ -176,23 +195,11 @@ async fn case(bits: u8, predecessor: &Predecessor) -> Result<()> {
     );
     harness.resume(task).await?;
     assert_eq!(provider.request_count(), 1);
-    // Negative control executes the old checkpoint-manifest staging path through
-    // the same stock executor. Its model request must fail the same detector.
-    let broken = OperationId::new();
-    let broken_task = crate::runtime::task_id_for_admission(broken);
-    harness.prepare_inheritance(broken_task, None).await?;
-    let (receive, model) = harness
-        .stage_bound_turn(
-            broken,
-            prompt(requested.0, requested.1),
-            predecessor.old_manifest.clone(),
-            harness.input_publisher()?.as_ref(),
-        )
-        .await?;
-    harness.admit_turn(broken, None, receive, model).await?;
-    harness.resume(broken_task).await?;
+    // All sixteen branches must reject their exact predecessor's witnessed
+    // old route; constructing fewer witnesses cannot silently miss a branch.
+    assert_eq!(predecessor.stale_guidance, (!expected.0, !expected.1));
     assert_ne!(
-        guidance(&provider.last_request().unwrap()),
+        predecessor.stale_guidance,
         expected,
         "old route escaped case {bits}"
     );
@@ -246,5 +253,6 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
     harness.admit_turn(broken, None, receive, model).await?;
     harness.resume(broken_task).await?;
     assert_eq!(guidance(&provider.request(2).unwrap()), (true, true));
+    harness.close().await?;
     Ok(())
 }
