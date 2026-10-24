@@ -645,7 +645,23 @@ pub async fn capture_recorded_metadata<A: AsyncAuthorityStore, O: AsyncObjectSto
             meter,
         )
         .await?;
-        let observed = observe_unique_paths(paths, &source_root, meter)?;
+        let paths_bytes = vector_bytes(&paths);
+        let mut recorded = capture_vec(paths.len(), meter)?;
+        capture_charge(
+            meter,
+            WorkCounters {
+                items_examined: paths.len() as u64,
+                ..WorkCounters::UNCHARGED
+            },
+        )?;
+        for (path, ()) in paths {
+            recorded.push(path);
+        }
+        meter
+            .clone()
+            .release(paths_bytes)
+            .map_err(capture_demand_error)?;
+        let observed = observe_unique_paths(recorded, &source_root, meter)?;
         super::reconcile::capture_observed_metadata_or_content(
             &mut candidate,
             observed,
