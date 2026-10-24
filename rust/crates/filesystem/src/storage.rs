@@ -477,7 +477,7 @@ impl HashedObject {
     }
 
     /// Admits `bytes` under `object_id` only if they hash to it.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn verify(object_id: ObjectId, bytes: acyclic_stream::OwnedBytes) -> Option<Self> {
         (object_digest(object_id.kind, &bytes) == object_id.digest)
             .then_some(Self { object_id, bytes })
