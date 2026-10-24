@@ -18,6 +18,7 @@ fn model() -> Result<Model> {
 
 fn command(context_manifest: FileRef) -> ModelTaskCommand {
     ModelTaskCommand {
+        conversation_id: None,
         role: None,
         summary_source: None,
         context_manifest,

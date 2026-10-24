@@ -30,6 +30,7 @@ fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata
 
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
+        conversation_id: None,
         model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
         messages: vec![ModelMessage {
             role: ModelRole::User,

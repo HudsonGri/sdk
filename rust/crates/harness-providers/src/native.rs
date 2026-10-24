@@ -25,34 +25,19 @@ async fn encode(
     work: &NativeMaterializationWork,
 ) -> Result<bytes::Bytes> {
     let (key, account) = auth;
-    let (mut bytes, nodes) = shape(request.bytes());
-    for message in &request.request().messages {
-        bytes = bytes
-            .checked_add(
-                crate::files::extra_bytes(&message.content, provider.files.maximum_bytes)? as u64,
-            )
-            .ok_or_else(|| invalid("model file size overflow"))?;
-    }
-    let mut allocation = reserve(
-        work,
-        bytes,
-        nodes,
-        key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
-    )?;
-    let io = acyclic_harness_core::filesystem::PreparationIo::from_native_work(work)?;
     let origin = provider.reasoning_origin(key, account);
-    let body = diagnostic(
-        dispatch::encode(provider, request, names, Some(&io), &origin).await,
-        &mut allocation,
-    )?;
-    retain(&mut allocation, body.capacity() as u64)?;
-    crate::http::owned_bytes::owned(body, allocation)
+    Ok(
+        crate::encoded::bodies(provider, request, names, &origin, Some(work))
+            .await?
+            .generation,
+    )
 }
 
 async fn send(
     provider: &ResolvedModel,
     body: bytes::Bytes,
     dispatch_id: ModelDispatch,
+    conversation: Option<acyclic_harness_core::ConversationId>,
     auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
 ) -> Result<crate::HttpResponse> {
@@ -73,7 +58,7 @@ async fn send(
         0,
     )?;
     let url = diagnostic(crate::projection::endpoint(provider), &mut allocation)?;
-    let headers = dispatch::request_headers(provider, dispatch_id, key, account);
+    let headers = dispatch::request_headers(provider, dispatch_id, conversation, key, account);
     let retained = (std::mem::size_of::<crate::HttpRequest>()
         + url.capacity()
         + headers.len() * std::mem::size_of::<(String, String)>()
@@ -228,6 +213,7 @@ pub(crate) fn generate<'a>(
                 provider,
                 body.clone(),
                 dispatch_id,
+                request.request().conversation_id,
                 (auth.0.as_deref(), auth.1.as_deref()),
                 work,
             )
@@ -271,7 +257,7 @@ pub(crate) fn generate<'a>(
                                     let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
                                     auth = (Some(std::borrow::Cow::Owned(key)), account);
                                     work.remaining()?;
-                                    send(provider, body.clone(), dispatch_id,
+                                    send(provider, body.clone(), dispatch_id, request.request().conversation_id,
                                         (auth.0.as_deref(), auth.1.as_deref()), work).await
                                 };
                                 let cancelled = work.cancellation_wait()?;
@@ -288,7 +274,7 @@ pub(crate) fn generate<'a>(
                             let exchange = async {
                                 crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
                                 work.remaining()?;
-                                Ok::<_, Error>(send(provider, body.clone(), dispatch_id,
+                                Ok::<_, Error>(send(provider, body.clone(), dispatch_id, request.request().conversation_id,
                                     (auth.0.as_deref(), auth.1.as_deref()), work).await)
                             };
                             let cancelled = work.cancellation_wait()?;

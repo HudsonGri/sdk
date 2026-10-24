@@ -81,6 +81,7 @@ proptest! {
             "manifest.json".into(), &mut None,
         )?;
         let command = crate::filesystem::ModelTaskCommand {
+            conversation_id: None,
             role: None,
             summary_source: summary.then(|| Box::new(reference.clone())),
             context_manifest: reference.clone(), input: ModelContent::Text(text),

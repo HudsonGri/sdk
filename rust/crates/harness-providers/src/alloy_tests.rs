@@ -60,6 +60,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
             .register(
                 (*name).into(),
                 ProviderSpec {
+                    account_id: Some("fixture-alloy-account".into()),
                     adapter: *adapter,
                     authentication: Authentication::Optional,
                     base_url: format!("http://localhost/{name}"),
@@ -123,6 +124,7 @@ async fn alloy_preflight_counts_every_member_and_binds_the_maximum_to_the_policy
     let limits = Limits::default();
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: alloy.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -427,6 +429,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             MEMBERS.get((ordinal % 4) as usize).map(|member| member.0)
         );
         let request = ModelRequest {
+            conversation_id: None,
             model: provider.model().clone(),
             messages: history.clone(),
             tools: vec![acyclic_harness_core::tool::ToolDefinition {

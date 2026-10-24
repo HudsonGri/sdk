@@ -224,7 +224,7 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
     assert_eq!(call.arguments, arguments);
 }
 
-struct Script {
+pub(super) struct Script {
     adapter: Adapter,
     status: u16,
     sent: Mutex<Vec<HttpRequest>>,
@@ -280,7 +280,7 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     })
 }
 
-fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
+pub(super) fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
     let script = Arc::new(Script {
         adapter,
         status,
@@ -297,6 +297,7 @@ pub(super) fn provider_with(
 ) -> ResolvedModel {
     ResolvedModel {
         files: crate::files::Files::default(),
+        prefix_cache: std::sync::Arc::default(),
         estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
         model: Model {
             provider: "fixture".into(),
@@ -305,6 +306,7 @@ pub(super) fn provider_with(
             options: json!({}),
         },
         config: Arc::new(ProviderSpec {
+            account_id: Some("fixture-account".into()),
             adapter,
             authentication: Authentication::ApiKey,
             base_url: base_url.into(),
@@ -336,6 +338,7 @@ pub(super) fn provider_with(
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: provider.model.clone(),
             messages: vec![
                 ModelMessage {
@@ -486,6 +489,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
     let mut config = ProviderSpec {
+        account_id: None,
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "https://example.test/v1".into(),
@@ -563,6 +567,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         };
         let is_error = matches!(content, ToolResultContent::Error { .. });
         let request = ModelRequest {
+            conversation_id: None,
             model: provider.model.clone(),
             max_output_tokens: Some(64),
             tools: vec![tool],

@@ -92,6 +92,7 @@ impl StockExecution<'_> {
         #[derive(Serialize)]
         struct Request<'a> {
             executor: &'static str,
+            conversation_id: Option<crate::ConversationId>,
             #[serde(skip_serializing_if = "Option::is_none")]
             summary_source: Option<&'a FileRef>,
             input: &'a TurnInput,
@@ -126,7 +127,8 @@ impl StockExecution<'_> {
         });
         preparation_digest(
             &Request {
-                executor: "acyclic.stock.v8",
+                executor: "acyclic.stock.v9",
+                conversation_id: self.conversation_id(),
                 summary_source: self.stock.summary_source.as_deref(),
                 input,
                 model: &self.stock.model,

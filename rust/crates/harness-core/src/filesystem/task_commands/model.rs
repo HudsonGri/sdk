@@ -214,6 +214,9 @@ where
             selected_context: command.selected_context,
             max_steps: command.max_steps,
         };
+        let conversation_id = command
+            .conversation_id
+            .unwrap_or_else(|| crate::ConversationId::from_bytes(task.into_bytes()));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             return BoundedContentFuture::new(Some(io), || async {
@@ -245,6 +248,7 @@ where
                         compaction,
                         command.max_output_tokens,
                     )?
+                    .with_conversation_id(conversation_id)
                     .with_summary_source(command.summary_source)
                     .with_role(command.role);
                 let executor = if reconciliation_only {
@@ -281,6 +285,7 @@ where
                     command.selected_output_volume.as_ref(),
                 )
                 .await?
+                .with_conversation_id(conversation_id)
                 .with_compaction_policy(compaction.clone())
                 .with_summary_source(command.summary_source)
                 .with_role(command.role);

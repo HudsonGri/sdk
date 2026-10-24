@@ -16,6 +16,7 @@ impl StockExecutor {
         tools: ToolRegistry,
     ) -> Self {
         Self {
+            conversation_id: None,
             model,
             role: None,
             summary_source: None,
@@ -41,6 +42,13 @@ impl StockExecutor {
     #[must_use]
     pub fn with_role(mut self, role: Option<String>) -> Self {
         self.role = role;
+        self
+    }
+
+    /// Binds model steps and their summaries to one retained conversation.
+    #[must_use]
+    pub fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.conversation_id = Some(conversation);
         self
     }
 

@@ -433,6 +433,7 @@ pub(crate) fn clone_request(
         crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?;
     }
     Ok(ModelRequest {
+        conversation_id: request.conversation_id,
         model,
         messages,
         tools,
