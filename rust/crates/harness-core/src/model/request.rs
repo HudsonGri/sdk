@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 #[cfg(feature = "filesystem")]
 use std::mem::size_of;
 
+mod continuation;
+
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -18,6 +20,15 @@ pub struct ModelRequest {
 }
 impl ModelRequest {
     pub(super) fn validate(&mut self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+        self.validate_with_instruction_budget(limits, io)
+            .map(|_| ())
+    }
+
+    fn validate_with_instruction_budget(
+        &mut self,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<u64> {
         #[cfg(not(target_arch = "wasm32"))]
         let _span = tracing::debug_span!("acyclic.harness.request.validate").entered();
         with_history_io(io, |work| limits.validate(work))?;
@@ -39,16 +50,26 @@ impl ModelRequest {
         }
         let mut remaining = limits.render_bytes;
         reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
+        Self::validate_messages(&mut self.messages, &self.tools, limits, io)?;
+        Ok(remaining)
+    }
+
+    fn validate_messages(
+        messages: &mut [ModelMessage],
+        definitions: &[crate::tool::ToolDefinition],
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         #[cfg(feature = "filesystem")]
         let _maps = if let Some(io) = io {
             let mut calls = 0u64;
-            for message in &self.messages {
+            for message in messages.iter() {
                 charge_items(Some(io), 1)?;
                 calls = calls
                     .checked_add(message.content.parts().len() as u64)
                     .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
             }
-            let bytes = (self.tools.len() as u64)
+            let bytes = (definitions.len() as u64)
                 .checked_mul(size_of::<(&str, &crate::tool::ToolDefinition)>() as u64)
                 .and_then(|tools| {
                     calls
@@ -61,7 +82,7 @@ impl ModelRequest {
             None
         };
         let mut tools = BTreeMap::new();
-        for tool in &self.tools {
+        for tool in definitions {
             charge_items(io, 1)?;
             with_history_io(io, |work| tool.validate(work))?;
             if tools.insert(tool.name.as_str(), tool).is_some() {
@@ -69,7 +90,7 @@ impl ModelRequest {
             }
         }
         let mut pending = BTreeMap::new();
-        for message in &mut self.messages {
+        for message in messages {
             charge_items(io, 1)?;
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
             let empty = message.content.parts().is_empty();
@@ -234,6 +255,7 @@ pub struct PreparedModelRequest {
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
     admitted_limits: Limits,
+    instruction_remaining: u64,
 }
 impl PreparedModelRequest {
     pub(crate) const fn admitted_limits(&self) -> Limits {
@@ -294,7 +316,8 @@ impl PreparedModelRequest {
             bytes_hold = io.guard_bytes(&bytes)?;
             request_hold =
                 io.reserve_decode(add(size_of::<Self>() as u64, request.payload_bytes()?)?)?;
-            request.validate(limits, Some(io))?;
+            let instruction_remaining =
+                request.validate_with_instruction_budget(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
             if let Some(hold) = bytes_hold {
                 hold.into_retained()?;
@@ -305,6 +328,7 @@ impl PreparedModelRequest {
                 bytes,
                 request_digest,
                 admitted_limits: limits,
+                instruction_remaining,
             });
         }
         Self::encode_admitted(request, limits, io)
@@ -316,6 +340,12 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         let _span = tracing::debug_span!("acyclic.harness.request.prepare").entered();
+        Self::begin_preparation(io)?;
+        let instruction_remaining = request.validate_with_instruction_budget(limits, io)?;
+        Self::encode_validated(request, limits, instruction_remaining, io)
+    }
+
+    fn begin_preparation(io: Option<&PreparationIo>) -> Result<()> {
         #[cfg(all(
             any(test, feature = "test-support"),
             feature = "filesystem",
@@ -326,7 +356,16 @@ impl PreparedModelRequest {
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned((size_of::<Self>() - size_of::<ModelRequest>()) as u64)?;
         }
-        request.validate(limits, io)?;
+        let _ = io;
+        Ok(())
+    }
+
+    fn encode_validated(
+        request: ModelRequest,
+        limits: Limits,
+        instruction_remaining: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
         #[cfg(feature = "filesystem")]
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {
@@ -348,6 +387,7 @@ impl PreparedModelRequest {
             bytes,
             request_digest,
             admitted_limits: limits,
+            instruction_remaining,
         })
     }
     /// Admitted values for provider-specific encoding.
