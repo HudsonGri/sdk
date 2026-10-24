@@ -69,10 +69,22 @@ impl SseDecoder {
 }
 
 fn sse_frame(frame: acyclic_harness_core::http::sse::Frame) -> Result<JsValue, JsValue> {
+    // Struct fields have one object representation at the JavaScript boundary.
+    // A serde_json::Value object is a map and becomes a JavaScript Map instead.
+    #[derive(Serialize)]
+    struct SubscriptionFrame<'a> {
+        id: &'a str,
+        event: &'a str,
+        data: &'a str,
+    }
     let metadata = frame
         .metadata
         .ok_or_else(|| JsValue::from_str("subscription metadata missing"))?;
-    to_js(&serde_json::json!({ "id": metadata.id, "event": metadata.event, "data": frame.data }))
+    to_js(&SubscriptionFrame {
+        id: &metadata.id,
+        event: &metadata.event,
+        data: &frame.data,
+    })
 }
 
 fn sse_error(error: acyclic_harness_core::Error) -> JsValue {
