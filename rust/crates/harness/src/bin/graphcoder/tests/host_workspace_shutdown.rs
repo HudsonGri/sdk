@@ -17,14 +17,13 @@ impl Drop for Running {
 }
 
 #[cfg(target_os = "linux")]
-fn mounts_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    std::fs::read_to_string("/proc/self/mountinfo")
-        .unwrap()
+fn mounts_in(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    Ok(std::fs::read_to_string("/proc/self/mountinfo")?
         .lines()
         .filter_map(|line| line.split_whitespace().nth(4))
         .map(std::path::PathBuf::from)
         .filter(|path| path.starts_with(root))
-        .collect()
+        .collect())
 }
 
 #[test]
@@ -87,7 +86,7 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
         host_files::request(&checkout, HostAction::Capture { task: child }).unwrap();
         #[cfg(target_os = "linux")]
         {
-            let active = mounts_in(fixture.path());
+            let active = mounts_in(fixture.path()).unwrap();
             assert!(
                 active.contains(&view),
                 "shutdown qualification requires a live child mount: {view:?}; active={active:?}"
@@ -117,7 +116,7 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
         }
         #[cfg(target_os = "linux")]
         {
-            let remaining = mounts_in(fixture.path());
+            let remaining = mounts_in(fixture.path()).unwrap();
             assert!(
                 remaining.is_empty(),
                 "native workspace mount outlived its owner: {remaining:?}"
