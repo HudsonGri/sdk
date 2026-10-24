@@ -562,8 +562,7 @@ mod build_metadata {
 
     pub(super) fn executable() -> std::path::PathBuf {
         let path = acyclic_harness::native_environment::variable("ACYCLIC_TEST_BINARY")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| EXECUTABLE.into());
+            .map_or_else(|| EXECUTABLE.into(), std::path::PathBuf::from);
         assert!(
             path.is_absolute() && path.is_file(),
             "missing admitted GraphCoder executable: {}",
