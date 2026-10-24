@@ -648,8 +648,13 @@ fn durable(point: &str) -> bool {
     DURABLE.contains(&point)
 }
 
+// One fixture executor owns the worker allowance, including when libtest runs
+// different exhaustive partitions concurrently. Each cut still owns its files.
+static SWEEP_EXECUTOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let _executor = SWEEP_EXECUTOR.lock().unwrap();
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -726,10 +731,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
     let completed = AtomicUsize::new(0);
     let unadmitted = AtomicUsize::new(0);
     let interrupted = AtomicUsize::new(0);
-    // Concurrent partition tests divide the original worker allowance rather
-    // than multiplying native filesystem contention by the partition count.
-    let workers = std::thread::available_parallelism().unwrap().get().min(64)
-        / partition.map_or(1, |_| RESUME_PARTITIONS.len());
+    let workers = std::thread::available_parallelism().unwrap().get().min(64);
     eprintln!("replay workers: {}", workers.max(1).min(cuts.len()));
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..workers.max(1).min(cuts.len()))
