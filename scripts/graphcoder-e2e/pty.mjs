@@ -91,5 +91,8 @@ export async function pty(processes, binary, fixture, input, capture) {
   assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${raw}`);
   if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
   else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
+  for (const text of input.settled_contains ?? []) {
+    assert.ok(snapshots.at(-1)?.visible.includes(text), `settled screen missing ${text}`);
+  }
   return result;
 }

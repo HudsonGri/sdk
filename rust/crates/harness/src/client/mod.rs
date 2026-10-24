@@ -29,6 +29,8 @@ pub mod jsonl;
 pub use headless::{HeadlessClient, HeadlessOutcome, run_headless, run_jsonl};
 mod commands;
 pub use commands::*;
+mod command_execution;
+pub(crate) use command_execution::CommandExecution;
 mod mentions;
 pub use mentions::*;
 mod diff;

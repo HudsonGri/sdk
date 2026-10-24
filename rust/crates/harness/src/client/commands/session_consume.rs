@@ -19,7 +19,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Box::pin(self.consume_with_recovery::<false, _, _, _, _>(
             request,
             execute,
-            |operation, _, _| async move { Err(Error::Indeterminate(operation)) },
+            |operation, _, _| async move { Err::<Value, _>(Error::Indeterminate(operation)) },
         ))
         .await
     }
@@ -32,9 +32,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     ) -> Result<Option<Value>>
     where
         F: FnOnce(OperationId, Option<TaskId>, CommandResolution) -> Fut,
-        Fut: std::future::Future<Output = Result<Value>>,
+        Fut: std::future::Future,
+        Fut::Output: Into<crate::client::CommandExecution>,
         R: FnOnce(OperationId, Option<TaskId>, CommandResolution) -> Recovery,
-        Recovery: std::future::Future<Output = Result<Value>>,
+        Recovery: std::future::Future,
+        Recovery::Output: Into<crate::client::CommandExecution>,
     {
         if self.read_file(&request.key).await?.as_ref() != Some(request) {
             return Err(Error::Unauthorized(
@@ -96,11 +98,12 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
             return Err(error);
         }
-        let result = if claimed {
-            recover(operation, task_id, resolution).await
+        let execution: crate::client::CommandExecution = if claimed {
+            recover(operation, task_id, resolution).await.into()
         } else {
-            execute(operation, task_id, resolution).await
+            execute(operation, task_id, resolution).await.into()
         };
+        let (retained_task, result) = execution.into_parts();
         if claimed
             && matches!(
                 &result,
@@ -117,13 +120,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let selection_first = true;
         #[cfg(test)]
         let selection_first = !SELECTION_AFTER_OUTCOME.with(std::cell::Cell::get);
-        // A failed admitted task still owns the retained transcript. Publish its
-        // identity before releasing the request, just as for successful turns.
-        let failed_selection = match &result {
-            Err(Error::TaskFailed { task, .. }) => Some(json!({"selected_task": task})),
-            _ => None,
-        };
-        let selection = result.as_ref().ok().or(failed_selection.as_ref());
+        // Admission owns the transcript even when cancellation or an unknown
+        // outcome cannot carry its identity in an ordinary error value.
+        let retained_selection = retained_task.map(|task| json!({"selected_task": task}));
+        let selection = result.as_ref().ok().or(retained_selection.as_ref());
         if selection_first && let Some(value) = selection {
             self.apply_outcome(value).await?;
         }

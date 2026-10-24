@@ -219,6 +219,124 @@ fn failed_task_keeps_its_selected_transcript() {
     futures::executor::block_on(selection_before_completion::<true>([3; 16], true));
 }
 
+fn cancelled_execution<const RETAIN: bool>(task: TaskId) -> crate::client::CommandExecution {
+    let failure = Err(Error::InteractionRejected(
+        crate::InteractionRejection::Cancelled,
+    ));
+    if RETAIN {
+        crate::client::CommandExecution::admitted(task, failure)
+    } else {
+        // The former uncontextual error discarded an admitted task.
+        crate::client::CommandExecution::from(failure)
+    }
+}
+
+async fn cancelled_selection<const RETAIN: bool>(task_root: bool, recovering: bool) {
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("cancelled-selection").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let session = uuid::Uuid::from_bytes([1; 16]);
+    let operation = OperationId::from_bytes([2; 16]);
+    let selected = crate::runtime::task_id_for_admission(operation);
+    let id = component(operation.to_string()).unwrap();
+    let request = files::FileValue::new(
+        if task_root {
+            files::FileKey::Task {
+                task: component(TaskId::from_bytes([3; 16]).to_string()).unwrap(),
+                file: files::TaskFile::Request(id),
+            }
+        } else {
+            files::FileKey::Session {
+                session: component(session.to_string()).unwrap(),
+                file: files::TaskFile::Request(id),
+            }
+        },
+        serde_json::to_vec(&CommandResolution::Prompt {
+            text: "retain my interrupted answer".into(),
+            source: None,
+            mentions: Vec::new(),
+        })
+        .unwrap(),
+    );
+    volume
+        .append(volume.head().await.unwrap(), &request)
+        .await
+        .unwrap();
+    let mut commands = CommandSession::open(volume.clone(), session, 65536, 128)
+        .await
+        .unwrap();
+    if recovering {
+        let claim = related(&request.key, files::TaskFile::ExecutionClaim).unwrap();
+        commands
+            .publish(claim, request.bytes.to_vec(), true)
+            .await
+            .unwrap();
+    }
+    let outcome = commands
+        .consume_with_recovery::<true, _, _, _, _>(
+            &request,
+            |_, _, _| async {
+                assert!(!recovering, "claimed cancellation redispatched");
+                cancelled_execution::<RETAIN>(selected)
+            },
+            |_, _, _| async {
+                assert!(recovering, "unclaimed cancellation recovered");
+                cancelled_execution::<RETAIN>(selected)
+            },
+        )
+        .await;
+    assert!(matches!(
+        outcome,
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled
+        ))
+    ));
+    assert_eq!(commands.active_task(), None);
+    assert_eq!(
+        commands.presentation_task().unwrap(),
+        Some(selected),
+        "cancelled completion lost its admitted conversation"
+    );
+    assert_eq!(
+        commands.output_page(0).unwrap().unwrap()["completion"],
+        "cancelled"
+    );
+    drop(commands);
+    let mut reopened = CommandSession::open(volume, session, 65536, 128)
+        .await
+        .unwrap();
+    assert_eq!(reopened.presentation_task().unwrap(), Some(selected));
+    assert!(
+        reopened
+            .consume(&request, |_, _, _| async {
+                panic!("cancelled task redispatched")
+            })
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cancelled_admissions_retain_selection_and_never_redispatch() {
+    for task_root in [false, true] {
+        for recovering in [false, true] {
+            futures::executor::block_on(cancelled_selection::<true>(task_root, recovering));
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "cancelled completion lost its admitted conversation")]
+fn uncontextual_cancellation_is_detected_negative_control() {
+    futures::executor::block_on(cancelled_selection::<false>(false, false));
+}
+
 #[test]
 #[should_panic(expected = "completion must follow its selected conversation")]
 fn failed_completion_before_selection_negative_control() {
