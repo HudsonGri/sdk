@@ -103,6 +103,7 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
         Case::Chain => vec![rule("ask"), llm, human],
+        Case::ForgedPrincipal => vec![rule("ask"), human],
         Case::ChildHumanAllow
         | Case::ChildHumanDeny
         | Case::ChildHumanForged
