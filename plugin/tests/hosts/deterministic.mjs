@@ -318,7 +318,7 @@ async function claudeCase(name, definition) {
   let exited = true;
   for (let turn = 1; turn <= (definition.turns ?? 1); turn += 1) {
     const prompt = definition.turns ? `CASE-${name}-${turn}` : `CASE-${name}`;
-    const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-hook-events",
+    const args = ["-p", prompt, "--model", "claude-haiku-5-5", "--output-format", "stream-json", "--verbose", "--include-hook-events",
       "--permission-mode", "bypassPermissions", "--debug", "hooks", "--debug-file", join(caseRoot, `claude-debug-${turn}.log`)];
     if (sessionId) args.push("--resume", sessionId);
     const result = await host(claude, args, { cwd: workspace, env });

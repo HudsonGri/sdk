@@ -133,7 +133,7 @@ function hostCommand() {
     ]];
   }
   return [hostBinary("claude"), [
-    "-p", PROMPT, "--output-format", "stream-json", "--verbose", "--include-hook-events",
+    "-p", PROMPT, "--model", "claude-haiku-5-5", "--output-format", "stream-json", "--verbose", "--include-hook-events",
     "--permission-mode", "bypassPermissions", "--debug", "hooks", "--debug-file", join(root, "claude-debug.log"),
   ]];
 }

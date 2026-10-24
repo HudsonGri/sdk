@@ -7,6 +7,19 @@ import { tmpdir } from "node:os";
 import { test } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+test("Anthropic qualification commands explicitly select the approved model", () => {
+  // Inspect the launch arrays without running either driver or opening a login.
+  const approved = /"-p",\s*(?:PROMPT|prompt),\s*"--model",\s*"claude-haiku-5-5"/;
+  for (const name of ["live.mjs", "deterministic.mjs"]) {
+    const source = readFileSync(new URL(name, import.meta.url), "utf8");
+    assert.match(source, approved, name);
+    assert.doesNotMatch(source.replace('"--model", "claude-haiku-5-5", ', ""), approved,
+      "negative control: relying on a host default must be rejected");
+    assert.doesNotMatch(source.replaceAll("claude-haiku-5-5", "other-model"), approved,
+      "negative control: a different model must be rejected");
+  }
+});
+
 test("Pi registration delegates execution and exposes only native coordination", async () => {
   const directory = mkdtempSync(join(import.meta.dir, ".shim-contract-"));
   try {
