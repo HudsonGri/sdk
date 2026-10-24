@@ -648,7 +648,7 @@ fn durable(point: &str) -> bool {
     DURABLE.contains(&point)
 }
 
-fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
+fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
@@ -660,6 +660,9 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
     for &scenario in scenarios {
         let seed = runtime.block_on(Seed::new(scenario))?;
         let observed = runtime.block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?;
+        let admission = observed
+            .admission_submission
+            .expect("missing admission submission");
         let baseline = observed.points;
         // The resume sweep owns the reviewed manifest for this same baseline.
         if recovery == Recovery::Resume {
@@ -670,16 +673,16 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
             "{scenario:?}: {} deterministic cancellation points",
             baseline.len()
         );
-        schedules.push((scenario, baseline, seed));
+        schedules.push((scenario, baseline, seed, admission));
     }
     // Replays own independent filesystems. Each bounded worker polls its driver
     // and owned completions together, without cross-thread barrier handoffs.
     let mut cuts: Vec<_> = schedules
         .iter()
-        .flat_map(|(scenario, baseline, seed)| {
+        .flat_map(|(scenario, baseline, seed, admission)| {
             (1..=baseline.len())
                 .filter(move |cut| recovery == Recovery::Resume || durable(baseline[cut - 1]))
-                .map(move |cut| (*scenario, baseline, seed, cut))
+                .map(move |cut| (*scenario, baseline, seed, cut, *admission))
         })
         .collect();
     if recovery != Recovery::Resume {
@@ -687,7 +690,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
         // publications, and each model and tool dispatch and acceptance.
         let kinds: std::collections::BTreeSet<_> = cuts
             .iter()
-            .map(|(_, baseline, _, cut)| baseline[cut - 1])
+            .map(|(_, baseline, _, cut, _)| baseline[cut - 1])
             .collect();
         assert_eq!(
             kinds,
@@ -697,27 +700,38 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
     }
     coverage::permute(&mut cuts, 711);
     if scenarios.len() > 1 {
-        coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _)| *scenario))?;
+        coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _, _)| *scenario))?;
     }
-    for (scenario, baseline, _) in schedules.iter().filter(|_| recovery == Recovery::Resume) {
+    for (scenario, baseline, _, _) in schedules.iter().filter(|_| recovery == Recovery::Resume) {
         coverage::check_cuts(
             baseline.len(),
             cuts.iter()
-                .filter(|(candidate, _, _, _)| candidate == scenario)
-                .map(|(_, _, _, cut)| *cut),
+                .filter(|(candidate, _, _, _, _)| candidate == scenario)
+                .map(|(_, _, _, cut, _)| *cut),
         )?;
+    }
+    if let Some(selected) = partition {
+        assert_eq!(recovery, Recovery::Resume);
+        let indices =
+            coverage::partition_indices(cuts.len(), RESUME_PARTITIONS, selected, |index| {
+                let (_, _, _, cut, admission) = cuts[index];
+                cut < admission
+            })?;
+        cuts = indices.into_iter().map(|index| cuts[index]).collect();
+        coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _, _)| *scenario))?;
+        eprintln!("replay partition {selected}: {} cuts", cuts.len());
     }
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
     let completed = AtomicUsize::new(0);
     let unadmitted = AtomicUsize::new(0);
     let interrupted = AtomicUsize::new(0);
+    // Concurrent partition tests divide the original worker allowance rather
+    // than multiplying native filesystem contention by the partition count.
+    let workers = std::thread::available_parallelism().unwrap().get().min(64)
+        / partition.map_or(1, |_| RESUME_PARTITIONS.len());
     std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..std::thread::available_parallelism()
-            .unwrap()
-            .get()
-            .min(64)
-            .min(cuts.len()))
+        let workers: Vec<_> = (0..workers.max(1).min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
                     let io_threads = Arc::new(AtomicUsize::new(0));
@@ -735,7 +749,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
                             return Ok(());
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&(scenario, baseline, seed, cut)) = cuts.get(index) else {
+                        let Some(&(scenario, baseline, seed, cut, _)) = cuts.get(index) else {
                             assert_eq!(
                                 io_threads.load(Ordering::Relaxed),
                                 0,
@@ -791,26 +805,45 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
-    sweep(
-        &[
-            Scenario::Text,
-            Scenario::EffectAndContinuation,
-            Scenario::Compaction,
-        ],
-        Recovery::Resume,
-    )
+// One registration defines both the tests and their checked ownership manifest.
+// Removing a registration redistributes every cut; holes or duplicates fail.
+macro_rules! resume_sweep_tests {
+    ($($partition:literal => $name:ident),+ $(,)?) => {
+        const RESUME_PARTITIONS: &[usize] = &[$($partition),+];
+        $(
+            #[test]
+            fn $name() -> Result<()> {
+                sweep(
+                    &[Scenario::Text, Scenario::EffectAndContinuation, Scenario::Compaction],
+                    Recovery::Resume,
+                    Some($partition),
+                )
+            }
+        )+
+    };
+}
+
+resume_sweep_tests! {
+    0 => run_cancellation_at_every_poll_recovers_head_and_admission,
+    1 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_1,
+    2 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_2,
+    3 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_3,
+    4 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_4,
+    5 => run_cancellation_at_every_poll_recovers_head_and_admission_partition_5,
 }
 
 #[test]
 fn new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch() -> Result<()> {
-    sweep(&[Scenario::EffectAndContinuation], Recovery::Supersede)
+    sweep(
+        &[Scenario::EffectAndContinuation],
+        Recovery::Supersede,
+        None,
+    )
 }
 
 #[test]
 fn new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver() -> Result<()> {
-    sweep(&[Scenario::EffectAndContinuation], Recovery::SameHost)
+    sweep(&[Scenario::EffectAndContinuation], Recovery::SameHost, None)
 }
 
 /// The supersession sweep's kill, recovered without orphan supersession,

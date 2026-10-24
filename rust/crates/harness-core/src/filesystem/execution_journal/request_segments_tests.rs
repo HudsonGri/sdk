@@ -34,14 +34,21 @@ async fn admitted_request_append_reads_only_the_manifest_at_every_history_length
             None,
         )?
         .await?;
-    let mut messages = Vec::new();
+    let mut retained: Option<PreparedModelRequest> = None;
     let mut previous = None;
     for step in 1..=1000 {
-        messages.push(ModelMessage {
+        let message = ModelMessage {
             role: ModelRole::User,
             content: ModelContent::Text(format!("turn {step}")),
-        });
-        let prepared = prepare(&messages)?;
+        };
+        let prepared = match retained.take() {
+            Some(previous) => {
+                let mut continued = previous.into_continuation();
+                continued.messages().push(message);
+                continued.finish(Limits::default(), None)?
+            }
+            None => prepare(&[message])?,
+        };
         let key = format!("request:{step}");
         let request = journal
             .stage_prepared_model_request(operation, &key, &prepared, previous.as_ref(), None)?
@@ -87,6 +94,7 @@ async fn admitted_request_append_reads_only_the_manifest_at_every_history_length
             }
         }
         previous = Some(request);
+        retained = Some(prepared);
     }
     Ok(())
 }
