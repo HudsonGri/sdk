@@ -70,10 +70,25 @@ impl Pending {
     }
     pub(super) fn keys(&self, task: &Component, maximum: usize) -> Result<Vec<FileKey>> {
         let mut keys = Vec::new();
-        for request in self.tasks.get(task).into_iter().flat_map(|requests| requests.values()) {
+        for request in self
+            .tasks
+            .get(task)
+            .into_iter()
+            .flat_map(|requests| requests.values())
+        {
             for key in request {
-                if !matches!(key, FileKey::Task { file: TaskFile::ApprovalRequest(_), .. }) { continue; }
-                if keys.len() == maximum { return Err(Error::LimitExceeded); }
+                if !matches!(
+                    key,
+                    FileKey::Task {
+                        file: TaskFile::ApprovalRequest(_),
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                if keys.len() == maximum {
+                    return Err(Error::LimitExceeded);
+                }
                 keys.push(key.clone());
             }
         }

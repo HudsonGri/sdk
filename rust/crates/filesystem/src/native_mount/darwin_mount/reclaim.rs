@@ -105,7 +105,10 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
             .any(|current| same_mount(&mount, current))
         {
             recovery.detach(&work)?;
-            if mount_table()?.iter().any(|current| same_mount(&mount, current)) {
+            if mount_table()?
+                .iter()
+                .any(|current| same_mount(&mount, current))
+            {
                 return Err(std::io::Error::other("stale mount remained after retirement").into());
             }
         }

@@ -1,6 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
-mod cancellation;
 mod approval_queries;
+mod cancellation;
 mod child;
 pub use cancellation::{cancellation_key, is_cancellation};
 mod child_queries;

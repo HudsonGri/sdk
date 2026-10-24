@@ -52,23 +52,58 @@ impl FileApproval {
     }
     /// Decode the canonical request bytes, deriving identities only from its path.
     pub fn decode(file: &FileValue) -> crate::Result<Self> {
-        let FileKey::Task { task, file: TaskFile::ApprovalRequest(id) } = &file.key else {
+        let FileKey::Task {
+            task,
+            file: TaskFile::ApprovalRequest(id),
+        } = &file.key
+        else {
             return Err(crate::Error::Invalid("not an approval request file".into()));
         };
-        let descriptor = crate::conversation::FileDescriptor::from_bytes(&file.bytes, "application/json", &mut None)?;
-        let value = Self { request_sha256: *descriptor.sha256(), task: TaskId::parse(task.as_str())?, id: InteractionId::from_bytes(uuid::Uuid::parse_str(id.as_str()).map_err(|e| crate::Error::Invalid(e.to_string()))?.into_bytes()), request: crate::contract::json_from_slice(&file.bytes).map_err(|e| crate::Error::Invalid(e.to_string()))? };
+        let descriptor = crate::conversation::FileDescriptor::from_bytes(
+            &file.bytes,
+            "application/json",
+            &mut None,
+        )?;
+        let value = Self {
+            request_sha256: *descriptor.sha256(),
+            task: TaskId::parse(task.as_str())?,
+            id: InteractionId::from_bytes(
+                uuid::Uuid::parse_str(id.as_str())
+                    .map_err(|e| crate::Error::Invalid(e.to_string()))?
+                    .into_bytes(),
+            ),
+            request: crate::contract::json_from_slice(&file.bytes)
+                .map_err(|e| crate::Error::Invalid(e.to_string()))?,
+        };
         value.binding()?;
-        if value.key()? != file.key { return Err(crate::Error::Invalid("noncanonical approval request path".into())); }
+        if value.key()? != file.key {
+            return Err(crate::Error::Invalid(
+                "noncanonical approval request path".into(),
+            ));
+        }
         Ok(value)
     }
     /// Check a display projection against the shared exact-request decision codec.
     /// Execution still requires its owner's authenticated durable resolution.
     pub fn decision(&self, key: &FileKey, bytes: &[u8]) -> crate::Result<Option<bool>> {
-        let FileKey::Task { task, file: TaskFile::ApprovalDecision { request, principal } } = key else { return Ok(None); };
-        if task.as_str() != self.task.to_string() || request.as_str() != self.id.to_string() { return Ok(None); }
+        let FileKey::Task {
+            task,
+            file: TaskFile::ApprovalDecision { request, principal },
+        } = key
+        else {
+            return Ok(None);
+        };
+        if task.as_str() != self.task.to_string() || request.as_str() != self.id.to_string() {
+            return Ok(None);
+        }
         let decision = crate::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64)?;
-        if !decision.binds(&self.request_sha256, 1) || principal.as_str() != crate::interaction::ApprovalDecisionFile::principal_file(&decision.principal) {
-            return Err(crate::Error::Unauthorized("approval decision names another request or principal".into()));
+        if !decision.binds(&self.request_sha256, 1)
+            || principal.as_str()
+                != crate::interaction::ApprovalDecisionFile::principal_file(&decision.principal)
+        {
+            return Err(crate::Error::Unauthorized(
+                "approval decision names another request or principal".into(),
+            ));
         }
         Ok(Some(decision.approved()))
     }

@@ -63,28 +63,11 @@ pub(crate) fn publish_writeback<'a>(
                 "writeback lacks exact original-root user approval",
             ));
         }
-        let guard_work = native_work.clone();
-        let guard_cause = std::sync::Mutex::new(None);
-        let receipt = root
-            .publication
-            .publish(from, candidate, state, options, native_work, || async {
-                root.verify(&guard_work)
-                    .await
-                    .map_err(|error| native_guard_cause(error, &guard_cause))?;
-                Ok(())
+        root.publication
+            .publish(from, candidate, state, options, native_work, || {
+                root.verify(native_work)
             })
-            .await;
-        let value = match receipt {
-            Ok(journal) => journal,
-            Err(source) => {
-                return Err(guard_cause
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-                    .unwrap_or(source));
-            }
-        };
-        Ok(value)
+            .await
     }
 }
 
@@ -120,22 +103,6 @@ pub(crate) fn validate_applied_writeback(
         ));
     }
     Ok(())
-}
-
-fn native_guard_cause(
-    error: Error,
-    cause: &std::sync::Mutex<Option<Error>>,
-) -> acyclic_fs::NativeWorkspacePublicationError {
-    let mut retained = cause
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.is_none() {
-        *retained = Some(error);
-    }
-    acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::from(
-        std::io::ErrorKind::PermissionDenied,
-    ))
-    .into()
 }
 
 pub(crate) fn writeback_digest_value<'a>(

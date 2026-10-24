@@ -204,9 +204,9 @@ def stop_server(server):
             except ProcessLookupError:pass
     finally: os.close(fd)
 
-def export_job_outputs(meta,env,*,cache_reused=False):
+def export_job_outputs(meta,spec,env,*,cache_reused=False):
     from job_exports import prepare
-    spec=json.loads(env['BB_JOB_EXPORT_SPEC'])
+    spec=json.loads(spec)
     if Path(meta).resolve()!=Path(str(spec['prefix'])+'.receipt-meta.v2.json').resolve():
         raise RuntimeError('export destination belongs to another receipt')
     prepare(spec,env['CARGO_TARGET_DIR'],cache_reused=cache_reused)
@@ -518,7 +518,7 @@ def run(argv,namespace_ready=False):
         atomic(runtimefile,runtime)
         if rc==0 and export_spec:
             try:
-                export_job_outputs(meta,env,
+                export_job_outputs(meta,export_spec,env,
                     cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
@@ -538,13 +538,13 @@ def run(argv,namespace_ready=False):
 def cleanup_runtime(file, prefix=None):
     runtime=json.loads(Path(file).read_text())
     try:
-        stop_command(runtime.get('command'))
-        proof=job_custody.join(runtime['custody'])
-        stop_server(runtime.get('sccache_server'))
         job=Path(runtime['hermetic_home'])
         if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
             raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
         with home_lease(job,exclusive=True):
+            stop_command(runtime.get('command'))
+            proof=job_custody.join(runtime['custody'])
+            stop_server(runtime.get('sccache_server'))
             if job.exists(): remove_home(job)
         runtime['home_removed']=True
         if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True

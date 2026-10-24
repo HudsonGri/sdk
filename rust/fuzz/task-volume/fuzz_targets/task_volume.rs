@@ -1,7 +1,5 @@
 #![no_main]
-use acyclic_harness::task_volume::{
-    Cursor, FileKey, FileValue, Generation, Query,
-};
+use acyclic_harness::task_volume::{Cursor, FileKey, FileValue, Generation, Query};
 use acyclic_stream::{CommitId, Record, wire, wire_codec};
 use libfuzzer_sys::fuzz_target;
 use prost::Message as _;
@@ -15,9 +13,13 @@ fuzz_target!(|bytes: &[u8]| {
     {
         assert_eq!(key.path(), path);
     }
-    if let Ok(request) = serde_json::from_slice::<acyclic_harness::interaction::Interaction>(bytes) {
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness::interaction::Interaction>(bytes)
+    {
         let encoded = serde_json::to_vec(&request).unwrap();
-        assert_eq!(serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded).unwrap(), request);
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded).unwrap(),
+            request
+        );
     }
     let _ = acyclic_harness::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64);
     let _ = serde_json::from_slice::<FileKey>(bytes);
