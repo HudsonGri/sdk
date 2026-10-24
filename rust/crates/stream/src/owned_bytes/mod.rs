@@ -12,8 +12,10 @@ use std::{
 use std::{io, sync::Arc};
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
+mod unique;
 #[cfg(not(target_arch = "wasm32"))]
 pub use prepared::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
+pub use unique::UniqueOwnedBytes;
 
 #[derive(Clone)]
 enum Data {

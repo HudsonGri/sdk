@@ -176,7 +176,7 @@ include!("lib/error.rs");
 include!("lib/tests.rs");
 
 mod owned_bytes;
-pub use owned_bytes::OwnedBytes;
+pub use owned_bytes::{OwnedBytes, UniqueOwnedBytes};
 #[cfg(not(target_arch = "wasm32"))]
 pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
 #[cfg(not(target_arch = "wasm32"))]
