@@ -29,7 +29,7 @@ class CustodyTests(unittest.TestCase):
                                              'identity': job.identity(os.getpid()),
                                              'pid_namespace': namespace}))
                 with patch.object(job.os, 'killpg') as signalled:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaisesRegex(RuntimeError, 'another or unknown PID namespace'):
                         job.stop_job(record)
                     signalled.assert_not_called()
 
