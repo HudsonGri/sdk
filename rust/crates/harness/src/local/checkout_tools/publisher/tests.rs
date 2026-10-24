@@ -18,6 +18,12 @@ struct Fixture {
     _state: tempfile::TempDir,
 }
 
+impl Fixture {
+    fn into_state(self) -> tempfile::TempDir {
+        self._state
+    }
+}
+
 fn temporary_directory() -> Result<tempfile::TempDir> {
     // Keep real native I/O and durability calls; Linux's memory-backed temporary
     // directory avoids making logical publication tests depend on disk latency.
@@ -29,10 +35,17 @@ fn temporary_directory() -> Result<tempfile::TempDir> {
 }
 
 async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
+    let directory = temporary_directory()?;
+    let (fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
+    Ok((directory, fixture, publisher))
+}
+
+async fn open_fixture(
+    directory: &Path,
+    state: tempfile::TempDir,
+) -> Result<(Fixture, CheckoutPublisher)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
     acyclic_fs::initialize_native_mount_services().map_err(storage)?;
-    let directory = temporary_directory()?;
-    let state = temporary_directory()?;
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
         state.path().join("filesystem"),
     ))
@@ -70,7 +83,7 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
                 native_mounts: false,
                 authority: None,
             },
-            acyclic_fs::hold_root(directory.path()).map_err(storage)?,
+            acyclic_fs::hold_root(directory).map_err(storage)?,
             false,
             workspace::OwnerState {
                 store: acyclic_fs::LocalCoreStateStore::open_shared_owner(
@@ -124,7 +137,6 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
     );
     let publisher = CheckoutPublisher::new(tools, files.clone(), &project, &verifier, 65536);
     Ok((
-        directory,
         Fixture {
             _runtime: issuer,
             files,
@@ -502,54 +514,98 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
 
 #[tokio::test]
 async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Result<()> {
-    let (directory, _harness, publisher) = fixture().await?;
+    let (directory, harness, publisher) = fixture().await?;
+    let (key, captured_id) = {
+        let physical = &*publisher.tools.workspace;
+        let view = physical.view();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        let before = view
+            .workspace()
+            .head(budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        let operation = OperationId::new();
+        let mut cursor = None;
+        let key = acyclic_fs::IdempotencyKey::from_bytes(
+            capture::capture_operation(operation, 1).into_bytes(),
+        );
+        // Negative control: the ordinary clean-capture path used before this fix
+        // completes without a receipt. It cannot acknowledge an owed effect.
+        publisher
+            .tools
+            .capture(
+                (physical, view),
+                &mut cursor,
+                operation,
+                1,
+                PublicationPermit::Unrestricted,
+                None,
+            )
+            .await?;
+        assert!(
+            view.workspace()
+                .operation_generation(key, budget, &cancellation)
+                .await
+                .map_err(storage)?
+                .value
+                .is_none()
+        );
+        let owed = (
+            acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+            acyclic_fs::GitGenerationRef {
+                workspace_id: view.workspace().id(),
+                generation: before.id(),
+            },
+        );
+        publisher
+            .tools
+            .owe_write_capture((physical, view), &mut cursor, owed)
+            .await?;
+        publisher
+            .tools
+            .finish_owed_write(
+                (physical, view),
+                &mut cursor,
+                PublicationPermit::Unrestricted,
+            )
+            .await?;
+        let captured = view
+            .workspace()
+            .operation_generation(key, budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .ok_or_else(|| Error::Invalid("clean capture lost its completion receipt".into()))?;
+        // A clean completion records its operation without changing tree identity.
+        // Recovery must consult the receipt even while the staged head still holds.
+        assert_eq!(captured.id(), before.id());
+        std::fs::write(directory.path().join("later.txt"), b"user edit").map_err(storage)?;
+        publisher
+            .tools
+            .owe_write_capture((physical, view), &mut cursor, owed)
+            .await?;
+        (key, captured.id())
+    };
+    // Retain only immutable fixture paths. The recovery below reconstructs the
+    // filesystem, journal owner, checkout selection and watcher from disk.
+    drop(publisher);
+    let (_harness, publisher) = open_fixture(directory.path(), harness.into_state()).await?;
     let physical = &*publisher.tools.workspace;
     let view = physical.view();
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-    let before = view
-        .workspace()
-        .head(budget, &cancellation)
-        .await
-        .map_err(storage)?
-        .value;
-    let operation = OperationId::new();
-    let mut cursor = None;
-    let key = acyclic_fs::IdempotencyKey::from_bytes(
-        capture::capture_operation(operation, 1).into_bytes(),
-    );
-    // Negative control: the ordinary clean-capture path used before this fix
-    // completes without a receipt. It cannot acknowledge an owed effect.
-    publisher
-        .tools
-        .capture(
-            (physical, view),
-            &mut cursor,
-            operation,
-            1,
-            PublicationPermit::Unrestricted,
-            None,
-        )
-        .await?;
-    assert!(
+    assert_eq!(
         view.workspace()
             .operation_generation(key, budget, &cancellation)
             .await
             .map_err(storage)?
             .value
-            .is_none()
+            .map(|generation| generation.id()),
+        Some(captured_id)
     );
-    let owed = (
-        acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-        acyclic_fs::GitGenerationRef {
-            workspace_id: view.workspace().id(),
-            generation: before.id(),
-        },
-    );
-    publisher
-        .tools
-        .owe_write_capture((physical, view), &mut cursor, owed)
-        .await?;
+    let mut cursor = None;
     publisher
         .tools
         .finish_owed_write(
@@ -558,29 +614,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
             PublicationPermit::Unrestricted,
         )
         .await?;
-    let captured = view
-        .workspace()
-        .operation_generation(key, budget, &cancellation)
-        .await
-        .map_err(storage)?
-        .value
-        .ok_or_else(|| Error::Invalid("clean capture lost its completion receipt".into()))?;
-    // A clean completion records its operation without changing tree identity.
-    // Recovery must consult the receipt even while the staged head still holds.
-    assert_eq!(captured.id(), before.id());
-    std::fs::write(directory.path().join("later.txt"), b"user edit").map_err(storage)?;
-    publisher
-        .tools
-        .owe_write_capture((physical, view), &mut cursor, owed)
-        .await?;
-    publisher
-        .tools
-        .finish_owed_write(
-            (physical, view),
-            &mut cursor,
-            PublicationPermit::Unrestricted,
-        )
-        .await?;
+    assert!(reconciliation::owed_write(physical).await?.is_none());
     assert_eq!(
         view.workspace()
             .head(budget, &cancellation)
@@ -588,7 +622,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
             .map_err(storage)?
             .value
             .id(),
-        captured.id()
+        captured_id
     );
     assert_eq!(
         std::fs::read(directory.path().join("later.txt")).map_err(storage)?,

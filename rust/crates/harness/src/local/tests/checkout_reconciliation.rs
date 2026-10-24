@@ -289,13 +289,6 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
     )
     .await?;
     assert_eq!(harness.resume(task_id).await?.text, "resolved");
-    for message in &provider.last_request().expect("completed scripted requests").messages {
-        for part in message.content.parts() {
-            if let crate::model::ModelContentPart::ToolResult { call_id, content, .. } = part {
-                eprintln!("merge diagnostic {call_id}: {content:?}");
-            }
-        }
-    }
     assert_eq!(
         std::fs::read(directory.path().join("renamed.txt")).map_err(super::super::storage)?,
         b"resolved\n"
