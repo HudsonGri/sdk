@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 HERE=Path(__file__).resolve().parent
+sys.path.insert(0,str(HERE))
 
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'))
@@ -33,10 +34,11 @@ class RuntimeTests(unittest.TestCase):
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
+        shutil.copyfile(HERE/'job_custody.py',self.d/'job_custody.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
-        if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
+        if cleanup_failure:source=source.replace('if job.exists(): remove_home(job)','raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
@@ -44,7 +46,10 @@ class RuntimeTests(unittest.TestCase):
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
-        return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
+        clean=subprocess.run([sys.executable,str(self.d/'negative.py' if negative else self.d/'worker.py'),'cleanup',str(meta)+'.runtime'],cwd=self.d,env=env,capture_output=True)
+        if clean.returncode:
+            result=subprocess.CompletedProcess(result.args,224,result.stdout,result.stderr+clean.stderr)
+        return result,json.loads(Path(str(meta)+'.runtime').read_text())
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -58,10 +63,12 @@ class RuntimeTests(unittest.TestCase):
         env.pop('BB_JOB_ACTIVE',None)
         args=['bash',str(script),'cargo','metadata','--format-version','1','--no-deps']
         result=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
+        job.cleanup_runtime(str(meta)+'.runtime')
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(json.loads(result.stdout)['packages'][0]['name'],'gate-stdout-fixture')
         self.assertIn(b'BB_DISK_FREE',result.stderr);self.assertIn(b'GATE_HOME_GUARD',result.stderr)
         script.write_text(script.read_text().replace(str(self.d/'worker.py'),str(self.worker(True))))
         bad=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
+        job.cleanup_runtime(str(meta)+'.runtime')
         self.assertEqual(bad.returncode,0,bad.stderr.decode())
         with self.assertRaises(json.JSONDecodeError):json.loads(bad.stdout)
     def test_native_cold_entry_propagates_disabled_policy_before_execution(self):
@@ -548,13 +555,15 @@ const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-m
 fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 ''')
             subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],check=True,capture_output=True)
-            source=receipt_source.replace("if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
+            source=receipt_source.replace('...(m.job_prefix ? [m.job_prefix] : [])','...[]') if negative else receipt_source
             Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
             code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
             import shlex
             with Path(str(prefix)+'.wrap').open('a') as wrapper:
                 wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META={shlex.quote(str(meta))}\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job {shlex.quote(str(meta))} "$payload"\nwait "$payload"\n')
-            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env={**os.environ,'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            env={**os.environ,'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']}
+            env.pop('BB_JOB_ACTIVE',None)
+            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
             try:
                 until=time.monotonic()+4
                 while not marker.exists() and time.monotonic()<until:time.sleep(.01)
@@ -564,12 +573,12 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
                 while not receipt.exists() and time.monotonic()<until:time.sleep(.01)
                 data=json.loads(receipt.read_text())
                 self.assertEqual((data['exit_status'],data['termination']),(137,'interrupted'))
-                self.assertTrue(data['home_removed']);self.assertTrue(data['targets_removed'])
+                self.assertTrue(data.get('home_removed'),data);self.assertTrue(data['targets_removed'])
                 for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative)
                 self.assertEqual(bool(data.get('outer_targets_removed')),not negative)
             finally:
                 if process.poll() is None:process.kill();process.wait()
-                process.stdout.close();process.stderr.close();job.cleanup_outer(prefix)
+                process.stdout.close();process.stderr.close();job.cleanup_runtime(str(meta)+'.runtime',prefix)
                 for p in prefix.parent.glob(prefix.name+'.*'):
                     if p.is_file():p.unlink()
 
@@ -665,7 +674,8 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         alias=self.d/'root-alias';alias.symlink_to('/work',target_is_directory=True)
         with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path(alias/'target')
         directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
-        file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory)}))
+        custody=job.job_custody.prepare()
+        file=self.d/'runtime.json';file.write_text(json.dumps({'hermetic_home':str(directory),'custody':custody}))
         try:
             (directory/'keep').write_text('live')
             with job.home_lease(directory),patch.object(job,'stop_server') as stopped:
@@ -680,16 +690,17 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
     def test_outer_reaper_respects_live_job_lease_and_old_reaper_negative(self):
         directory=Path(tempfile.mkdtemp(prefix='job-outer-control-',dir=job.JOBS))
         prefix=job.JOBS/('outer-custody-'+directory.name)
-        runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime');runtime.write_text(json.dumps({'hermetic_home':str(directory)}))
+        custody=job.job_custody.prepare();proof=job.job_custody.join(custody)
+        runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime');runtime.write_text(json.dumps({'hermetic_home':str(directory),'custody':custody}))
         for suffix in ['.targets','.tmp']:Path(str(prefix)+suffix).mkdir()
         try:
             with job.home_lease(directory):
-                with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_outer(prefix)
+                with self.assertRaisesRegex(RuntimeError,'leased live job'):job.cleanup_outer(prefix,proof,custody)
                 for suffix in ['.targets','.tmp']:self.assertTrue(Path(str(prefix)+suffix).exists())
-                with patch.object(job,'home_lease',return_value=contextlib.nullcontext()):job.cleanup_outer(prefix)
+                with patch.object(job,'home_lease',return_value=contextlib.nullcontext()):job.cleanup_outer(prefix,proof,custody)
                 for suffix in ['.targets','.tmp']:self.assertFalse(Path(str(prefix)+suffix).exists(),'negative control: old reaper deletes live scratch')
         finally:
-            runtime.unlink();job.remove_home(directory);job.cleanup_outer(prefix)
+            runtime.unlink();job.remove_home(directory);job.cleanup_outer(prefix,proof,custody)
 
     def test_fixed_shared_port_negative_control(self):
         c=socket.socket();c.bind(('127.0.0.1',0));port=c.getsockname()[1];c.close()

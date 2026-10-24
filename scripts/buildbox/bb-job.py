@@ -19,6 +19,7 @@ import tempfile
 import time
 import uuid
 import bb_target_store
+import job_custody
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -298,7 +299,7 @@ def run(argv,namespace_ready=False):
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
-    custody=home_lease(job)
+    lease=home_lease(job)
     env=dict(os.environ); real_home=Path('/home/var')
     compiler_policy(env)
     # sudo/runuser may strip admission env across the mount-namespace boundary.
@@ -306,9 +307,11 @@ def run(argv,namespace_ready=False):
     admission_file=Path(meta+'.admission')
     admission=json.loads(admission_file.read_text()) if admission_file.exists() else {'tier':env.get('BB_ADMIT_TIER'),'tenant':env.get('BB_ADMIT_TENANT'),'wait_seconds':env.get('BB_ADMIT_WAIT_SECONDS'),'build_jobs':env.get('CARGO_BUILD_JOBS')}
     if admission.get('build_jobs'):env['CARGO_BUILD_JOBS']=str(admission['build_jobs'])
-    runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
+    custody=job_custody.prepare()
+    runtime={'custody':custody,'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
              'admission':admission}
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
+    job_custody.enter(custody)
     server=None; child=None; rc=224; units=[]
     def interrupted(n,f):
         if child:
@@ -397,38 +400,39 @@ def run(argv,namespace_ready=False):
                 runtime['export_error']=str(error);rc=224
         return rc
     finally:
-        # A signal does not leave test children running after their home/cache
-        # is removed. The independent receipt watcher covers SIGKILL as well.
+        # The receipt owner is outside this cgroup. It alone can join every
+        # descendant (including daemonized cache compilers) and delete files.
         if child and child.poll() is None:
             try: child.kill()
             except ProcessLookupError: pass
             child.wait()
         stop_server(server)
-        try:remove_home(job)
-        except OSError as error:
-            runtime['cleanup_error']=str(error);atomic(runtimefile,runtime)
-            print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
-            return 224
-        runtime['home_removed']=True; runtime['targets_removed']=True; atomic(runtimefile,runtime)
-        custody.close()
+        atomic(runtimefile,runtime)
+        lease.close()
         for unit in units:unit.close()
 
 
-def cleanup_runtime(file):
+def cleanup_runtime(file, prefix=None):
     runtime=json.loads(Path(file).read_text())
-    if not runtime.get('hermetic_home'):
-        stop_server(runtime.get('sccache_server'));return
-    job=Path(runtime['hermetic_home'])
-    if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
-        raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
-    with home_lease(job,exclusive=True):
-        stop_server(runtime.get('sccache_server'))
-        if job.exists(): remove_home(job)
-    runtime['home_removed']=True
-    if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
-    atomic(file,runtime)
+    try:
+        proof=job_custody.join(runtime['custody'])
+        job=Path(runtime['hermetic_home'])
+        if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
+            raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
+        with home_lease(job,exclusive=True):
+            if job.exists(): remove_home(job)
+        runtime['home_removed']=True
+        if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
+        if prefix is not None:runtime.update(cleanup_outer(prefix,proof,runtime['custody']))
+        runtime['quiescence']=proof.reason
+        atomic(file,runtime)
+    except Exception as error:
+        runtime['cleanup_error']=str(error)
+        atomic(file,runtime)
+        raise
 
-def cleanup_outer(prefix):
+def cleanup_outer(prefix, proof, custody):
+    proof.require(custody)
     prefix=Path(prefix)
     if prefix.parent.resolve()!=JOBS.resolve() or prefix.name in ['', '.', '..']:
         raise ValueError('refusing outer cleanup outside /mnt/bb/jobs')
@@ -481,7 +485,10 @@ if __name__=='__main__':
         except (OSError,RuntimeError,subprocess.SubprocessError) as error:
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True);result=224
         raise SystemExit(result)
-    elif sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
-    elif sys.argv[1:2]==['cleanup-outer']:print(json.dumps(cleanup_outer(sys.argv[2])))
+    elif sys.argv[1:2]==['cleanup']:
+        try:cleanup_runtime(sys.argv[2],sys.argv[3] if len(sys.argv)>3 else None)
+        except Exception as error:
+            print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
+            raise SystemExit(224)
     elif sys.argv[1:2]==['stop-job']:stop_job(sys.argv[2])
     else: raise SystemExit(run(sys.argv[1:]))
