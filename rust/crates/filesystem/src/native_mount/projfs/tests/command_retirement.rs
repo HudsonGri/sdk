@@ -353,10 +353,4 @@ async fn command_retirement_retries_the_physical_owner_before_live_controls()
     Ok(())
 }
 
-mod fixture_access {
-    use crate as acyclic_fs;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/native_access.rs"
-    ));
-}
+use crate::native_mount::fixture_access;
