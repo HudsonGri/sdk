@@ -24,12 +24,12 @@ proptest! {
     #[test]
     fn reasoning_oracle_binds_every_continuity_byte_and_credential_scope(
         bytes in prop::collection::vec(any::<u8>(), 0..64),
-        inserted in any::<u8>(), position in 0usize..65, scope_byte in 0usize..32,
+        inserted in any::<u8>(), position in 0usize..65, scope_byte in 0usize..32, known_account in any::<bool>(),
     ) {
         use acyclic_harness::model::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
         let event = ModelEvent::ReasoningBlock { block: ReasoningBlock {
             kind: ReasoningKind::Opaque, text: None,
-            origin: ReasoningOrigin { provider: "fixture".into(), model: "model".into(), credential_scope: Some([73; 32]) },
+            origin: ReasoningOrigin { provider: "fixture".into(), model: "model".into(), credential_scope: known_account.then_some([73; 32]) },
             continuity: bytes, outcome: ReasoningOutcome::PreservedOpaque,
         }};
         let expected = vec![serde_json::to_value(&event)?];
@@ -38,7 +38,9 @@ proptest! {
             let mut broken = event.clone();
             let ModelEvent::ReasoningBlock { block } = &mut broken else { unreachable!() };
             if scope {
-                if let Some(byte) = block.origin.credential_scope.as_mut().and_then(|scope| scope.get_mut(scope_byte)) {
+                if block.origin.credential_scope.is_none() {
+                    block.origin.credential_scope = Some([73; 32]);
+                } else if let Some(byte) = block.origin.credential_scope.as_mut().and_then(|scope| scope.get_mut(scope_byte)) {
                     *byte ^= 1;
                 }
             } else {

@@ -115,7 +115,10 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                     let mut broken = events.clone();
                     if let Some(ModelEvent::ReasoningBlock { block }) = broken.get_mut(index) {
                         if scope {
-                            block.origin.credential_scope = None;
+                            block.origin.credential_scope = match block.origin.credential_scope {
+                                Some(_) => None,
+                                None => Some([73; 32]),
+                            };
                         } else {
                             block.continuity.push(255);
                         }
