@@ -31,26 +31,9 @@ impl StockExecution<'_> {
                 policy,
             )
             .await?;
-        let (source, instruction) = self.prepare_summary_source(&context, through)?;
-        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
-            self.summarize(
-                journal,
-                Some(input),
-                input.operation_id,
-                step,
-                (source, instruction),
-                phase,
-            )
-        })?
-        .await?;
-        #[cfg(feature = "filesystem")]
-        let text_hold = self
-            .io
-            .map(|io| io.guard_owned(text.capacity() as u64))
-            .transpose()?;
-        drop(text);
-        #[cfg(feature = "filesystem")]
-        drop(text_hold);
+        let summary = self
+            .summarize_compaction(journal, input, step, (&context, through), phase)
+            .await?;
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
@@ -118,6 +101,37 @@ impl StockExecution<'_> {
             request,
         )
         .await
+    }
+
+    async fn summarize_compaction(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        source: (&crate::context::Context, usize),
+        phase: &mut DispatchPhase,
+    ) -> Result<crate::context::ContextSummary> {
+        let material = self.prepare_summary_source(source.0, source.1)?;
+        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
+            self.summarize(
+                journal,
+                Some(input),
+                input.operation_id,
+                step,
+                material,
+                phase,
+            )
+        })?
+        .await?;
+        #[cfg(feature = "filesystem")]
+        let text_hold = self
+            .io
+            .map(|io| io.guard_owned(text.capacity() as u64))
+            .transpose()?;
+        drop(text);
+        #[cfg(feature = "filesystem")]
+        drop(text_hold);
+        Ok(summary)
     }
 
     async fn prepare_compacted_request(
