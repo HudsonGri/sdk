@@ -27,6 +27,7 @@ impl StockExecution<'_> {
                 accounting.count,
                 accounting.capacity,
                 &context,
+                pre_stage,
                 policy,
             )
             .await?;
@@ -136,6 +137,7 @@ impl StockExecution<'_> {
         count: crate::context::ModelTokenCount,
         capacity: crate::context::ModelContextCapacity,
         context: &crate::context::Context,
+        pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<(usize, usize)> {
         let canonical_request = crate::model::PreparedModelRequest::prepare(
@@ -143,7 +145,7 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let count = if projection.canonical.is_some() {
+        let count = if pre_stage {
             stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
         } else {
             count

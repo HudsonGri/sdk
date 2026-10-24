@@ -407,64 +407,70 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
     }
 
     for capacity in [1, 2] {
-    let (sender, receiver) = crate::sync::mpsc::sync_channel(capacity);
-    let workers = NativeWorkers::single(sender, AdmissionState::new());
-    let job = || run_blocking_io(|| (), None).map(|mut task| task.pending.take().unwrap());
-    for _ in 0..capacity {
-    workers
-        .sender
-        .try_send(job()?)
-        .map_err(|_| io::Error::other("failed to saturate admission queue"))?;
-    }
-    workers
-        .admission
-        .lock()
-        .map_err(|_| io::Error::other("admission mutex poisoned"))?
-        .queued_jobs += capacity;
+        let (sender, receiver) = crate::sync::mpsc::sync_channel(capacity);
+        let workers = NativeWorkers::single(sender, AdmissionState::new());
+        let job = || run_blocking_io(|| (), None).map(|mut task| task.pending.take().unwrap());
+        for _ in 0..capacity {
+            workers
+                .sender
+                .try_send(job()?)
+                .map_err(|_| io::Error::other("failed to saturate admission queue"))?;
+        }
+        workers
+            .admission
+            .lock()
+            .map_err(|_| io::Error::other("admission mutex poisoned"))?
+            .queued_jobs += capacity;
 
-    let mut inactive = Some(job()?);
-    let mut inactive_waiter = None;
-    assert!(matches!(
-        poll_submission_with(
-            &workers,
-            &mut inactive,
-            &mut inactive_waiter,
-            &Context::from_waker(Waker::noop()),
-        ),
-        Poll::Pending
-    ));
-    let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
-    let active_waker = Waker::from(Arc::clone(&wakes));
-    let context = Context::from_waker(&active_waker);
-    let mut active = Some(job()?);
-    let mut active_waiter = None;
-    assert!(matches!(
-        poll_submission_with(&workers, &mut active, &mut active_waiter, &context),
-        Poll::Pending
-    ));
+        let mut inactive = Some(job()?);
+        let mut inactive_waiter = None;
+        assert!(matches!(
+            poll_submission_with(
+                &workers,
+                &mut inactive,
+                &mut inactive_waiter,
+                &Context::from_waker(Waker::noop()),
+            ),
+            Poll::Pending
+        ));
+        let wakes = Arc::new(CountWake(AtomicUsize::new(0)));
+        let active_waker = Waker::from(Arc::clone(&wakes));
+        let context = Context::from_waker(&active_waker);
+        let mut active = Some(job()?);
+        let mut active_waiter = None;
+        assert!(matches!(
+            poll_submission_with(&workers, &mut active, &mut active_waiter, &context),
+            Poll::Pending
+        ));
 
-    let _ = receiver.recv().map_err(io::Error::other)?;
-    notify_capacity_released(&workers.admission);
-    assert!(wakes.0.load(Ordering::Relaxed) > 0, "inactive waiter stranded an active successor");
-    assert!(matches!(
-        poll_submission_with(&workers, &mut active, &mut active_waiter, &context),
-        Poll::Ready(Ok(()))
-    ), "available native queue slot waited for an inactive head");
-    let _ = receiver.recv().map_err(io::Error::other)?;
-    notify_capacity_released(&workers.admission);
-    assert!(matches!(
-        poll_submission_with(
-            &workers,
-            &mut inactive,
-            &mut inactive_waiter,
-            &Context::from_waker(Waker::noop()),
-        ),
-        Poll::Ready(Ok(()))
-    ));
-    for _ in 0..capacity {
         let _ = receiver.recv().map_err(io::Error::other)?;
         notify_capacity_released(&workers.admission);
-    }
+        assert!(
+            wakes.0.load(Ordering::Relaxed) > 0,
+            "inactive waiter stranded an active successor"
+        );
+        assert!(
+            matches!(
+                poll_submission_with(&workers, &mut active, &mut active_waiter, &context),
+                Poll::Ready(Ok(()))
+            ),
+            "available native queue slot waited for an inactive head"
+        );
+        let _ = receiver.recv().map_err(io::Error::other)?;
+        notify_capacity_released(&workers.admission);
+        assert!(matches!(
+            poll_submission_with(
+                &workers,
+                &mut inactive,
+                &mut inactive_waiter,
+                &Context::from_waker(Waker::noop()),
+            ),
+            Poll::Ready(Ok(()))
+        ));
+        for _ in 0..capacity {
+            let _ = receiver.recv().map_err(io::Error::other)?;
+            notify_capacity_released(&workers.admission);
+        }
     }
     Ok(())
 }
@@ -514,7 +520,10 @@ fn capacity_released_during_notification_revisits_prior_waiters() {
     for node in nodes {
         remove_capacity_waiter(&workers, Some(node));
     }
-    assert_ne!(observed, 0, "concurrent capacity release lost its second pass");
+    assert_ne!(
+        observed, 0,
+        "concurrent capacity release lost its second pass"
+    );
     assert_eq!(workers.admission.lock().unwrap().queued_jobs, 0);
 }
 

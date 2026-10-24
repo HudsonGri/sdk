@@ -768,9 +768,9 @@ mod compaction;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod compaction_resolution;
 mod content;
-mod final_message;
 #[cfg(not(target_arch = "wasm32"))]
 mod context_input_reuse;
+mod final_message;
 mod invocation_bounds;
 mod live_execution;
 mod output_bounds;

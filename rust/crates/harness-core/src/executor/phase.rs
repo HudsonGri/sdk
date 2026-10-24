@@ -40,7 +40,7 @@ impl ProviderAttempt {
     pub(super) fn generate<'a>(
         self,
         provider: &'a dyn ModelProvider,
-        request: crate::model::PreparedModelRequest,
+        request: &'a crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         provider.generate(request, dispatch)

@@ -85,7 +85,6 @@ impl StockExecution<'_> {
             step,
             request_digest,
         };
-        let mut request = Some(request);
         #[cfg(feature = "filesystem")]
         let _continuation_hold;
         let continuation = if started {
@@ -112,7 +111,7 @@ impl StockExecution<'_> {
                     journal,
                     input,
                     (step, purpose, purpose_key),
-                    request.as_ref().ok_or(Error::Indeterminate(input.operation_id))?,
+                    &request,
                     dispatch,
                     phase,
                 ))
@@ -124,7 +123,7 @@ impl StockExecution<'_> {
                     attempt
                         .generate_native(
                             self.stock.provider.as_ref(),
-                            request.as_ref().ok_or(Error::Indeterminate(input.operation_id))?,
+                            &request,
                             dispatch,
                             work,
                         )?
@@ -134,14 +133,14 @@ impl StockExecution<'_> {
             } else {
                 Either::Left(attempt.generate(
                     self.stock.provider.as_ref(),
-                    request.take().ok_or(Error::Indeterminate(input.operation_id))?,
+                    &request,
                     dispatch,
                 ))
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let generated = attempt.generate(
                 self.stock.provider.as_ref(),
-                request.take().ok_or(Error::Indeterminate(input.operation_id))?,
+                &request,
                 dispatch,
             );
             Either::Right(generated)
@@ -159,9 +158,7 @@ impl StockExecution<'_> {
             ),
         )
         .await?;
-        if purpose == ModelPurpose::Response && admission.completed
-            && let Some(request) = request
-        {
+        if purpose == ModelPurpose::Response && admission.completed {
             self.retain_response_request(journal, input, step, prior_messages.len(), request)
                 .await?;
         }

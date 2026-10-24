@@ -7,7 +7,7 @@ pub(super) fn encode(
 ) -> Result<OwnedBytes> {
     let length = match value {
         None => 5,
-        Some(value) => value.calls.iter().try_fold(22_usize, |length, call| {
+        Some(value) => value.calls.iter().try_fold(30_usize, |length, call| {
             length
                 .checked_add(8)
                 .and_then(|length| length.checked_add(call.len()))
@@ -24,13 +24,14 @@ pub(super) fn encode(
             })?;
             work.copy_bytes(length as u64)?;
         }
-        bytes.extend_from_slice(b"EXM1");
+        bytes.extend_from_slice(b"EXM2");
         match value {
             None => bytes.push(0),
             Some(value) => {
                 bytes.push(1);
                 bytes.extend_from_slice(&(value.count as u64).to_le_bytes());
                 bytes.push(u8::from(value.completed));
+                bytes.extend_from_slice(&value.text_bytes.to_le_bytes());
                 bytes.extend_from_slice(&(value.calls.len() as u64).to_le_bytes());
                 for call in &value.calls {
                     bytes.extend_from_slice(&(call.len() as u64).to_le_bytes());
@@ -59,7 +60,7 @@ pub(super) fn decode(
     mut bytes: &[u8],
     io: Option<&PreparationIo>,
 ) -> Result<Option<ModelEventAdmission>> {
-    if take(&mut bytes, 4, io)? != b"EXM1" {
+    if take(&mut bytes, 4, io)? != b"EXM2" {
         return Err(corrupt(io));
     }
     match take(&mut bytes, 1, io)? {
@@ -73,6 +74,9 @@ pub(super) fn decode(
         [1] => true,
         _ => return Err(corrupt(io)),
     };
+    let text_bytes = u64::from_le_bytes(
+        take(&mut bytes, 8, io)?.try_into().map_err(|_| corrupt(io))?,
+    );
     let length = number(&mut bytes, io)?;
     if length > bytes.len() / 8 {
         return Err(corrupt(io));
@@ -99,6 +103,7 @@ pub(super) fn decode(
             count,
             calls,
             completed,
+            text_bytes,
         }))
     })
 }
@@ -113,28 +118,47 @@ mod tests {
             count: 7,
             calls: vec!["call".into()],
             completed: true,
+            text_bytes: 37,
         };
         let encoded = encode(Some(&value), None)?;
         let decoded = decode(&encoded, None)?.expect("model cell");
         assert_eq!(
-            (decoded.count, decoded.calls, decoded.completed),
-            (7, value.calls, true)
+            (decoded.count, decoded.calls, decoded.completed, decoded.text_bytes),
+            (7, value.calls, true, 37)
         );
         for length in 0..encoded.len() {
             assert!(decode(&encoded[..length], None).is_err());
         }
-        for (position, byte) in [(0, b'?'), (4, 2), (13, 2), (30, 255)] {
+        for (position, byte) in [(0, b'?'), (4, 2), (13, 2), (38, 255)] {
             let mut forged = encoded.to_vec();
             forged[position] = byte;
             assert!(decode(&forged, None).is_err());
         }
         let mut forged = encoded.to_vec();
-        forged[14..22].copy_from_slice(&u64::MAX.to_le_bytes());
+        forged[22..30].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode(&forged, None).is_err());
         forged = encoded.to_vec();
         forged.push(0);
         assert!(decode(&forged, None).is_err());
         assert!(decode(&encode(None, None)?, None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn recovered_model_cell_preserves_the_cumulative_text_limit() -> Result<()> {
+        let state = ModelEventAdmission {
+            count: 1,
+            text_bytes: 3,
+            ..Default::default()
+        };
+        let mut recovered = decode(&encode(Some(&state), None)?, None)?.expect("model cell");
+        let limits = Limits { file_bytes: 4, ..Limits::default() };
+        let event = ModelEvent::Content { delta: "ab".into() };
+        assert!(recovered.observe(&event, limits, None).is_err(),
+            "checkpoint reset cumulative model text admission");
+        let mut omitted = ModelEventAdmission { text_bytes: 0, ..state };
+        assert!(omitted.observe(&event, limits, None).is_ok(),
+            "omitted-counter negative control did not admit excess text");
         Ok(())
     }
 }

@@ -390,6 +390,7 @@ mod tests {
         };
         let value = Some(ModelEventAdmission {
             count: 9_000,
+            text_bytes: 0,
             calls: (0..9_000)
                 .map(|index| format!("{index:08}{}", "x".repeat(120)))
                 .collect(),

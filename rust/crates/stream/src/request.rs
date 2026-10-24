@@ -128,24 +128,6 @@ fn records_hash_bytes(records: &[AppendRecord]) -> u64 {
     8 + records.iter().map(AppendRecord::hash_bytes).sum::<u64>()
 }
 
-#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
-pub(crate) fn append_hash_bytes(request: &AppendRequest) -> u64 {
-    b"acyclic.stream.request.v1\0".len() as u64
-        + b"append".len() as u64
-        + path_hash_bytes(&request.path)
-        + 8
-        + records_hash_bytes(&request.records)
-}
-
-#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
-pub(crate) fn fork_hash_bytes(request: &ForkRequest) -> u64 {
-    b"acyclic.stream.request.v1\0".len() as u64
-        + b"fork".len() as u64
-        + path_hash_bytes(&request.source)
-        + path_hash_bytes(&request.destination)
-        + 8
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
     b"acyclic.stream.request.v1\0".len() as u64

@@ -399,11 +399,13 @@ where
         let scratch = crate::filesystem::PreparationScope::new(io)?;
         let event = crate::executor::load_model_event(self, reference, scratch.io())
             .await?
-            .ok_or_else(|| canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "canonical model event is missing",
-            ))?;
+            .ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "canonical model event is missing",
+                )
+            })?;
         admission.observe(&event, limits, io)?;
         match &event {
             ModelEvent::Content { .. } | ModelEvent::MessageCompleted { .. } => {

@@ -453,14 +453,14 @@ impl StockExecution<'_> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let claimed = super::phase::claim(self.claim_tool_invocation(
-                journal,
-                (operation_id, step),
-                &record,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                context,
-                started,
-            ))
-            .await?;
+            journal,
+            (operation_id, step),
+            &record,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            context,
+            started,
+        ))
+        .await?;
         let execution = self
             .observe_tool_cancellation(
                 journal,
