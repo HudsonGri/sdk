@@ -1001,13 +1001,7 @@ async fn published_lazy_unmount_captures_authored_changes_before_detach()
     Ok(())
 }
 
-mod fixture_access {
-    use crate as acyclic_fs;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/native_access.rs"
-    ));
-}
+use crate::native_mount::fixture_access;
 pub(super) use fixture_access::options as fixture_options;
 
 async fn admitted_source(
