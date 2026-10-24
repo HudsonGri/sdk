@@ -117,7 +117,7 @@ impl CheckoutTools {
         // A file publication's physical write is owed a capture of its own.
         // Finish it first, so this capture never records that write.
         self.finish_owed_write(selected, slot, permit).await?;
-        self.capture_changes(selected, slot, operation, phase, permit)
+        self.capture_changes(selected, slot, operation, phase, permit, None)
             .await
     }
 
@@ -169,6 +169,7 @@ impl CheckoutTools {
                 OperationId::from_bytes(operation.into_bytes()),
                 1,
                 permit,
+                Some(staged.generation.digest()),
             )
             .await?;
         }
@@ -182,6 +183,7 @@ impl CheckoutTools {
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
+        publication_context: Option<acyclic_fs::Digest>,
     ) -> Result<()> {
         let (physical, view) = selected;
         let cancellation = CancellationToken::new();
@@ -222,12 +224,16 @@ impl CheckoutTools {
             &cancellation,
         )
         .await?;
-        if checkout.has_pending_mutations() {
+        // A companion capture is a completed effect even when materialization
+        // reproduced the staged tree exactly. Seal its original staged head in
+        // the shared publication receipt so replay cannot capture a later edit
+        // under this write's identity. Ordinary quiet captures remain read-only.
+        if checkout.has_pending_mutations() || publication_context.is_some() {
             let operation = capture_operation(operation, phase);
             let committed = checkout
                 .commit(
                     operation,
-                    None,
+                    publication_context,
                     None,
                     None,
                     permit,
