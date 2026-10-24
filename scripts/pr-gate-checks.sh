@@ -97,8 +97,12 @@ gate_cache_finish(){
   fi
 }
 gate_boot=$(cat /proc/sys/kernel/random/boot_id) || exit 2
-test_target=${CARGO_TARGET_DIR:-target}
-clippy_target="$test_target/gate-clippy"
+target_root=${CARGO_TARGET_DIR:-target}
+# Parent snapshots exclude descendant writers. Keep independent gate phases
+# as siblings so the hierarchy leases permit their intended parallel work.
+test_target="$target_root/.gate-pr-tests"
+clippy_target="$target_root/.gate-pr-clippy"
+export CARGO_TARGET_DIR="$test_target"
 gate_cache_prepare "$test_target" "$gate_boot" || exit 2
 gate_cache_prepare "$clippy_target" "$gate_boot" || exit 2
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going "${clippy_pkgs[@]}" --all-targets --all-features --message-format=short \
