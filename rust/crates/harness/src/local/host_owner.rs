@@ -137,33 +137,7 @@ impl HostWorkspaceOwner {
                 task,
                 agents,
                 previous,
-            } => {
-                use acyclic_native_runtime::testing::{
-                    sample_process_resources, scale::ViewResources,
-                };
-                self.attach(task).await?;
-                let process = sample_process_resources().map_err(storage)?;
-                let current = ViewResources { agents, process };
-                let exceeded = previous
-                    .map(|[agents, descriptors, threads, mounts]| {
-                        ViewResources {
-                            agents,
-                            process: acyclic_native_runtime::testing::ProcessResources {
-                                descriptors,
-                                threads,
-                                mounts,
-                                ..Default::default()
-                            },
-                        }
-                        .exceeded(current)
-                    })
-                    .transpose()
-                    .map_err(storage)?;
-                Ok(
-                    json!({"counts": [agents, process.descriptors, process.threads, process.mounts],
-                    "exceeded": exceeded}),
-                )
-            }
+            } => self.resource_probe(task, agents, previous).await,
             HostAction::Sessions { parent } => {
                 self.attach(parent).await?;
                 let references = self
@@ -254,6 +228,36 @@ impl HostWorkspaceOwner {
                 serde_json::to_value(snapshot).map_err(storage)
             }
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    async fn resource_probe(
+        &mut self,
+        task: TaskId,
+        agents: u64,
+        previous: Option<[u64; 4]>,
+    ) -> Result<Value> {
+        use acyclic_native_runtime::testing::{sample_process_resources, scale::ViewResources};
+        self.attach(task).await?;
+        let process = sample_process_resources().map_err(storage)?;
+        let current = ViewResources { agents, process };
+        let exceeded = previous
+            .map(|[agents, descriptors, threads, mounts]| {
+                ViewResources {
+                    agents,
+                    process: acyclic_native_runtime::testing::ProcessResources {
+                        descriptors,
+                        threads,
+                        mounts,
+                        ..Default::default()
+                    },
+                }
+                .exceeded(current)
+            })
+            .transpose()
+            .map_err(storage)?;
+        Ok(json!({"counts": [agents, process.descriptors, process.threads, process.mounts],
+            "exceeded": exceeded}))
     }
 
     async fn native_fs(

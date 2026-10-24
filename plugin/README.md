@@ -107,6 +107,21 @@ log, capture, merge, discard and the hook command, with an external-data mailbox
 negative control. These probes do not replace the independent live matrix.
 
 The separate [identity package](identity-mcp.md) retains its command surface.
+
+The probe-only resource check exercises each production host adapter with
+stand-in native sessions and retained N/2N child views:
+
+```sh
+python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER codex
+```
+
+Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
+with the harness `test-support` feature for its OS resource query. These
+instrumented binaries are test fixtures, not the shipping package. The oracle
+shares the harness's descriptor/thread bounds and requires zero mount growth;
+the per-child-mount counterfactual must fail the same check. The real-host e2e
+owner runs the corresponding scale and sandbox matrix with native sessions.
+
 The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
 `Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
 native model-session acceptance.

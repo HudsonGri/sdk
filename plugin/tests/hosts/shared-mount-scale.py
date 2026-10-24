@@ -33,6 +33,7 @@ def main():
         bins.mkdir()
         env = {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
                'FIXTURE_FLAGS': json.dumps(flags), 'FIXTURE_HOST': host,
+               'FIXTURE_WORKSPACE': str(workspace),
                'ACYCLIC_CACHED_DESCRIPTORS': '1', 'ACYCLIC_ADMITTED_DESCRIPTORS': '1'}
         for key in ('HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_STATE_HOME',
                     'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
@@ -52,7 +53,7 @@ if not child:
  (cwd/'root.json').write_text(json.dumps({'task':os.environ['ACYCLIC_TASK'],
                                          'flags':json.loads(os.environ['ACYCLIC_HOST_ARGS'])}))
  sys.exit(0)
-assert cwd.is_relative_to(pathlib.Path(os.environ['ACYCLIC_WORKSPACE'])/'.volumes/agents')
+assert cwd.is_relative_to(pathlib.Path(os.environ['FIXTURE_WORKSPACE'])/'.volumes/agents')
 assert (cwd/'AGENTS.md').read_text()=='shared scale discovery fixture'
 prompt=sys.stdin.read()
 (cwd/(prompt+'.txt')).write_text(prompt)

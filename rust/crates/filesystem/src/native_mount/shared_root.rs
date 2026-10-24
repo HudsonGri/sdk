@@ -10,9 +10,8 @@
 //! next start. One directory lock orders creation against reaping, so a
 //! root is never reaped between its creation and its owner's lock.
 
-use super::{NativeMountError, detach_native_mount_destination_after_crash, registry};
+use super::{NativeMountError, registry};
 use acyclic_native_runtime::{FileLock, FileLockMode};
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -40,6 +39,9 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
         .parent()
         .ok_or_else(|| std::io::Error::other("native-mount directory has no parent"))?
         .join(ROOTS);
+    std::fs::create_dir_all(&roots)?;
+    let roots = crate::hold_root(&roots)
+        .map_err(crate::NativeTreeMaterializationError::from)?;
     root_in(&roots)
 }
 
@@ -48,6 +50,10 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
 /// sandbox roots. Root ownership, crash reaping and instance allocation are
 /// identical to [`shared_view_root`]; placement grants no additional access.
 pub fn shared_view_root_in(admitted: &crate::HeldRoot) -> Result<PathBuf, NativeMountError> {
+    root_in(admitted)
+}
+
+fn verify_placement(admitted: &crate::HeldRoot) -> Result<(), NativeMountError> {
     if crate::capture_root_identity(admitted.path())
         .map_err(|error| std::io::Error::other(error.to_string()))?
         != admitted.identity()
@@ -58,14 +64,12 @@ pub fn shared_view_root_in(admitted: &crate::HeldRoot) -> Result<PathBuf, Native
         )
         .into());
     }
-    root_in(admitted.path())
+    Ok(())
 }
 
-fn root_in(roots: &Path) -> Result<PathBuf, NativeMountError> {
-    std::fs::create_dir_all(roots)?;
-    let identity = crate::capture_root_identity(roots)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let key = (roots.to_path_buf(), identity.to_bytes());
+fn root_in(roots: &crate::HeldRoot) -> Result<PathBuf, NativeMountError> {
+    verify_placement(roots)?;
+    let key = (roots.path().to_path_buf(), roots.identity().to_bytes());
     let mut index = ROOTS_BY_ADMISSION
         .get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
         .lock()
@@ -80,21 +84,27 @@ fn root_in(roots: &Path) -> Result<PathBuf, NativeMountError> {
             u128::from_be_bytes(crate::MountId::new().into_bytes())
         ),
     )?;
+    verify_placement(roots)?;
     let path = root.path.clone();
     index.insert(key, root);
     Ok(path)
 }
 
-fn create_root(roots: &Path, name: &str) -> std::io::Result<Root> {
-    std::fs::create_dir_all(roots)?;
-    let reaping = FileLock::acquire(File::create(roots.join(REAP_LOCK))?, FileLockMode::Exclusive)?;
-    reap_dead_roots(roots);
-    let owner = FileLock::try_acquire(
-        File::create(roots.join(format!("{name}.{OWNER}")))?,
+fn create_root(roots: &crate::HeldRoot, name: &str) -> Result<Root, NativeMountError> {
+    crate::native_host::require_leaf(Path::new(name))?;
+    let reaping = FileLock::acquire(
+        roots.open_file(Path::new(REAP_LOCK), true)
+            .map_err(crate::NativeTreeMaterializationError::from)?,
         FileLockMode::Exclusive,
     )?;
-    let path = roots.join(name);
-    std::fs::create_dir(&path)?;
+    reap_dead_roots(roots)?;
+    let owner = FileLock::try_acquire(
+        roots.open_file(Path::new(&format!("{name}.{OWNER}")), true)
+            .map_err(crate::NativeTreeMaterializationError::from)?,
+        FileLockMode::Exclusive,
+    )?;
+    roots.root.directory.create_dir(name)?;
+    let path = roots.path().join(name);
     drop(reaping);
     Ok(Root {
         path,
@@ -104,59 +114,45 @@ fn create_root(roots: &Path, name: &str) -> std::io::Result<Root> {
 
 /// Detaches and removes every root under `roots` whose owner is gone; the
 /// caller holds the directory's reap lock. Returns how many were removed.
-fn reap_dead_roots(roots: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(roots) else {
-        return 0;
-    };
+fn reap_dead_roots(roots: &crate::HeldRoot) -> Result<usize, NativeMountError> {
+    let entries = roots.root.directory.entries()?;
     let suffix = format!(".{OWNER}");
     let mut reaped = 0;
-    for entry in entries.flatten() {
-        let file = entry.file_name();
+    for entry in entries {
+        let file = entry?.file_name();
         let Some(name) = file
             .to_str()
             .and_then(|file| file.strip_suffix(suffix.as_str()))
         else {
             continue;
         };
-        let owner_path = entry.path();
-        let Ok(owner) = File::options().write(true).open(&owner_path) else {
-            continue;
+        let owner = roots.open_file(Path::new(&file), false)
+            .map_err(crate::NativeTreeMaterializationError::from)?;
+        let _owner = match FileLock::try_acquire(owner, FileLockMode::Exclusive) {
+            Ok(owner) => owner,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(error) => return Err(error.into()),
         };
-        let Ok(_owner) = FileLock::try_acquire(owner, FileLockMode::Exclusive) else {
-            // Held: a live process owns this root.
-            continue;
-        };
-        if reap_root(&roots.join(name)) {
-            // Only a fully removed root gives up its owner file, so a failed
-            // reap is retried by the next start.
-            if std::fs::remove_file(&owner_path).is_ok() {
-                reaped += 1;
-            }
-        }
+        reap_root(roots, Path::new(name))?;
+        roots.remove_file(Path::new(&file))
+            .map_err(crate::NativeTreeMaterializationError::from)?;
+        reaped += 1;
     }
-    reaped
+    Ok(reaped)
 }
 
-fn reap_root(root: &Path) -> bool {
-    match std::fs::symlink_metadata(root) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
-        _ => {}
-    }
-    let Ok([fence, ..]) = super::native_mount_control_paths(root) else {
-        return false;
-    };
-    if fence.exists()
-        && let Err(error) = detach_native_mount_destination_after_crash(root)
-    {
-        tracing::warn!(%error, root = %root.display(), "a dead shared root was not detached");
-        return false;
-    }
-    match std::fs::remove_dir(root) {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::warn!(%error, root = %root.display(), "a dead shared root was not removed");
-            false
-        }
+fn reap_root(roots: &crate::HeldRoot, name: &Path) -> Result<(), NativeMountError> {
+    // The shared backend currently exists on Linux. Its common pinned
+    // recovery operation cannot detach an alias or a replacement mount.
+    #[cfg(target_os = "linux")]
+    super::recover_disconnected_native_mount_destination_in(
+        roots,
+        name.as_os_str(),
+    )?;
+    match roots.root.directory.remove_dir(name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -195,17 +191,18 @@ pub(super) mod tests {
 
     /// A root whose owner lock is held is never reaped; once released it is.
     #[test]
-    fn only_roots_without_a_live_owner_are_reaped() -> std::io::Result<()> {
+    fn only_roots_without_a_live_owner_are_reaped() -> Result<(), Box<dyn std::error::Error>> {
         let roots = tempfile::tempdir()?;
-        let live = create_root(roots.path(), "live")?;
-        let dead = create_root(roots.path(), "dead")?;
+        let admission = crate::hold_root(roots.path())?;
+        let live = create_root(&admission, "live")?;
+        let dead = create_root(&admission, "dead")?;
         std::fs::write(roots.path().join("stray"), b"")?;
         let held = FileLock::acquire(
-            File::open(roots.path().join(REAP_LOCK))?,
+            admission.open_file(Path::new(REAP_LOCK), true)?,
             FileLockMode::Exclusive,
         )?;
         drop(dead);
-        assert_eq!(reap_dead_roots(roots.path()), 1);
+        assert_eq!(reap_dead_roots(&admission)?, 1);
         drop(held);
         assert!(live.path.is_dir(), "a live owner keeps its root");
         assert!(!roots.path().join("dead").exists());
@@ -216,9 +213,52 @@ pub(super) mod tests {
         );
         // Negative control: the same root, its owner lock dropped, is reaped.
         drop(live);
-        let next = create_root(roots.path(), "next")?;
+        let next = create_root(&admission, "next")?;
         assert!(!roots.path().join("live").exists());
         assert!(next.path.is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn root_setup_and_reaping_never_reopen_the_admitted_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = tempfile::tempdir()?;
+        let path = fixture.path().join("admitted");
+        let moved = fixture.path().join("held");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&path)?;
+        std::fs::create_dir(&outside)?;
+        let admission = crate::hold_root(&path)?;
+        drop(create_root(&admission, "dead")?);
+        std::fs::rename(&path, &moved)?;
+        std::os::unix::fs::symlink(&outside, &path)?;
+        // Replacement after admission cannot redirect creation, owner locks,
+        // enumeration or removal. The public boundary also refuses its cwd.
+        let next = create_root(&admission, "next")?;
+        assert!(moved.join("next").is_dir());
+        assert!(!moved.join("dead").exists());
+        assert!(!moved.join("dead.owner").exists());
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
+        assert!(shared_view_root_in(&admission).is_err());
+        // Negative control: the former path-based creation writes outside.
+        std::fs::create_dir(path.join("path-based-control"))?;
+        assert!(outside.join("path-based-control").is_dir());
+        drop(next);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_reap_refuses_a_new_root_without_removing_its_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = tempfile::tempdir()?;
+        let admission = crate::hold_root(fixture.path())?;
+        let dead = create_root(&admission, "dead")?;
+        std::fs::write(fixture.path().join("dead/authored"), b"retained")?;
+        drop(dead);
+        assert!(create_root(&admission, "next").is_err());
+        assert!(!fixture.path().join("next").exists());
+        assert!(fixture.path().join("dead.owner").exists());
+        assert_eq!(std::fs::read(fixture.path().join("dead/authored"))?, b"retained");
         Ok(())
     }
 }

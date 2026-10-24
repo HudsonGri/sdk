@@ -183,7 +183,7 @@ mod tests {
             // The former UTF-8 read rejects the same input before any mount.
             prop_assert!(std::fs::read_to_string(&exclude).is_err());
             let mount = repository.join(".volumes/scratch");
-            exclude_mount_paths(repository, &[mount.clone()]).unwrap();
+            exclude_mount_paths(repository, std::slice::from_ref(&mount)).unwrap();
             let updated = std::fs::read(&exclude).unwrap();
             prop_assert!(updated.starts_with(&original));
             if crlf { prop_assert_eq!(&updated, &original); }

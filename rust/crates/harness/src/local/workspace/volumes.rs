@@ -414,9 +414,9 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>)
 
 /// Rebinds only an empty SDK directory or the exact preceding alias.
 pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) -> Result<()> {
-    match std::fs::symlink_metadata(&path) {
+    match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            let linked = std::fs::read_link(&path).map_err(mount_io)?;
+            let linked = std::fs::read_link(path).map_err(mount_io)?;
             let linked = path
                 .parent()
                 .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?
@@ -430,15 +430,15 @@ pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) ->
                 // A fork inherits the parent's SDK alias in its authored
                 // cut. Before exposing this new view, replace only that
                 // exact authenticated binding with the child's volume.
-                unlink_directory_alias(&path).map_err(mount_io)?;
-                link_directory(target, &path).map_err(mount_io)?;
+                unlink_directory_alias(path).map_err(mount_io)?;
+                link_directory(target, path).map_err(mount_io)?;
             }
         }
         Ok(metadata) if metadata.is_dir() => {
             // remove_dir atomically refuses a nonempty directory; user
             // content is never replaced to install a volume binding.
-            std::fs::remove_dir(&path).map_err(mount_io)?;
-            link_directory(target, &path).map_err(mount_io)?;
+            std::fs::remove_dir(path).map_err(mount_io)?;
+            link_directory(target, path).map_err(mount_io)?;
         }
         Ok(_) => {
             return Err(Error::Conflict(
@@ -446,7 +446,7 @@ pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) ->
             ));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            link_directory(target, &path).map_err(mount_io)?;
+            link_directory(target, path).map_err(mount_io)?;
         }
         Err(error) => return Err(mount_io(error)),
     }
@@ -531,25 +531,10 @@ pub(super) fn recover_volume_after_crash(
 }
 
 pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
-    let mut path = root.to_path_buf();
-    for part in relative.components() {
-        let std::path::Component::Normal(name) = part else {
-            return Err(Error::Invalid("invalid mount path".into()));
-        };
-        path.push(name);
-        match std::fs::create_dir(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let entry = std::fs::symlink_metadata(&path).map_err(mount_io)?;
-                if !entry.is_dir() || entry.file_type().is_symlink() {
-                    return Err(Error::Invalid(
-                        "mount parent is not an ordinary directory".into(),
-                    ));
-                }
-            }
-            Err(error) => return Err(mount_io(error)),
-        }
-    }
+    let root = acyclic_fs::hold_root(root)
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+    root.create_directories(relative)
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
     Ok(())
 }
 
@@ -596,11 +581,19 @@ mod tests {
         let outside = tempfile::tempdir().map_err(storage)?;
         std::os::unix::fs::symlink(outside.path(), root.path().join(".volumes"))
             .map_err(storage)?;
-        assert!(matches!(
-            create_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
-            Err(Error::Invalid(_))
-        ));
+        assert!(create_mount_directory(root.path(), Path::new(SCRATCH_PATH)).is_err());
         assert!(!outside.path().join("scratch").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn mount_root_alias_is_refused_before_any_creation() -> Result<()> {
+        let fixture = tempfile::tempdir().map_err(storage)?;
+        let outside = tempfile::tempdir().map_err(storage)?;
+        let root = fixture.path().join("replaced-root");
+        std::os::unix::fs::symlink(outside.path(), &root).map_err(storage)?;
+        assert!(create_mount_directory(&root, Path::new(SCRATCH_PATH)).is_err());
+        assert!(!outside.path().join(".volumes").exists());
         Ok(())
     }
 }
