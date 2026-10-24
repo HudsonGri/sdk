@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 mod continuation;
+mod encoding;
 
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -256,16 +257,37 @@ pub struct PreparedModelRequest {
     request_digest: [u8; 32],
     admitted_limits: Limits,
     instruction_remaining: u64,
+    encoding: Vec<encoding::EncodingPrefix>,
 }
 impl PreparedModelRequest {
     pub(crate) const fn admitted_limits(&self) -> Limits {
         self.admitted_limits
     }
     #[cfg(feature = "filesystem")]
+    pub(super) fn encoding_owned_bytes(&self) -> Result<u64> {
+        slots(
+            self.encoding.capacity(),
+            size_of::<encoding::EncodingPrefix>(),
+        )
+    }
+
+    pub(crate) fn cached_message_digests(
+        &self,
+        prefix: Option<usize>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<encoding::MessageDigests>> {
+        self.encoding
+            .first()
+            .map_or(Ok(None), |state| state.digests(prefix, io))
+    }
+    #[cfg(feature = "filesystem")]
     pub(crate) fn preparation_owned_bytes(&self, io: &PreparationIo) -> Result<u64> {
         let bytes = add(
-            size_of::<Self>() as u64,
-            self.request.retained_payload_bytes()?,
+            add(
+                size_of::<Self>() as u64,
+                self.request.retained_payload_bytes()?,
+            )?,
+            self.encoding_owned_bytes()?,
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         if io.original_native_work().is_some() {
@@ -329,6 +351,7 @@ impl PreparedModelRequest {
                 request_digest,
                 admitted_limits: limits,
                 instruction_remaining,
+                encoding: Vec::new(),
             });
         }
         Self::encode_admitted(request, limits, io)
@@ -388,18 +411,13 @@ impl PreparedModelRequest {
             request_digest,
             admitted_limits: limits,
             instruction_remaining,
+            encoding: Vec::new(),
         })
     }
     /// Admitted values for provider-specific encoding.
     #[must_use]
     pub fn request(&self) -> &ModelRequest {
         &self.request
-    }
-    /// Transfers admitted values when the old encoded request is no longer
-    /// needed. Reusing its buffers avoids copying the whole retained context
-    /// merely to append the current tool exchange.
-    pub(crate) fn into_request(self) -> ModelRequest {
-        self.request
     }
     pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
         self.request.messages
