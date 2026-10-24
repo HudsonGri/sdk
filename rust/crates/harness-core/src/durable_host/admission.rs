@@ -80,6 +80,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(Self {
             coordinator: Arc::new(crate::sync::Mutex::new(coordinator)),
             stream,
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
+            owner_changes: tokio::sync::OnceCell::new(),
             payloads,
             reader,
             owner,
