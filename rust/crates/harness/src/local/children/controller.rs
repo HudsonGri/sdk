@@ -23,15 +23,23 @@ mod result_slot;
 mod results;
 mod stopping;
 
+pub(super) struct ChildSignals {
+    inherited: Option<acyclic_fs::CancellationToken>,
+    parent_done: acyclic_fs::CancellationToken,
+}
+
 impl LocalHarness {
     pub(super) fn service_child<'a>(
         &'a self,
         files: Arc<Files>,
         reference: Component,
         request: FileValue,
-        inherited: Option<acyclic_fs::CancellationToken>,
+        signals: Option<ChildSignals>,
     ) -> BoxProviderFuture<'a, Result<(Component, u64)>> {
         Box::pin(async move {
+            let (inherited, parent_done) = signals
+                .map(|signals| (signals.inherited, signals.parent_done))
+                .unwrap_or_default();
             let FileKey::Child {
                 reference: requested,
                 file: ChildFile::Request,
@@ -316,7 +324,11 @@ impl LocalHarness {
                         child,
                         &child_commands,
                         child_files,
-                        Some((files.clone(), reference.clone())),
+                        Some(crate::local::approvals::Inbox {
+                            files: files.clone(),
+                            reference: reference.clone(),
+                            parent_done: parent_done.clone(),
+                        }),
                     );
                     let controls = async {
                         loop {
