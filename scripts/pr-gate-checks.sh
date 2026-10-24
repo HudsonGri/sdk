@@ -1,5 +1,5 @@
 #!/bin/bash
-# PR-only runner. The main gate continues using the unchanged gate-checks.sh.
+# Affected-PR runner; main uses the reviewed whole-workspace runner.
 # The coordinator writes all scope files before submitting this one build job.
 set -u
 # bb2 keeps stdout/stderr on separate transports. Send all job diagnostics
@@ -10,36 +10,6 @@ gate_output=$PWD
 if [ -f scripts/gate-target-cache.py ]; then
   gate_output=$(python3 scripts/gate-target-cache.py output) || exit 2
 fi
-# Shared by the self-contained main and affected-PR gate payloads.
-gate_windows_runtime_clippy() (
-  set -u
-  exec 2>&1
-  phase_started=$SECONDS
-  target=${GATE_WINDOWS_RUNTIME_TARGET_DIR:-/mnt/bb/targets/sdk/gate-windows-runtime}
-  echo 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all'
-  if [[ "$target" == /mnt/bb/targets/*/* ]]; then
-    unit=${target#/mnt/bb/targets/}; unit=${unit//\//%}
-    mkdir -p /mnt/bb/locks/unit || exit 2
-    exec 8>>"/mnt/bb/locks/unit/$unit.lock"
-    flock -s 8 || exit 2
-  fi
-  mkdir -p "$target" || exit 2
-  exec 7>"$target/.gate.lock"
-  flock -x 7 || exit 2
-  trap 'touch "$target"' EXIT
-  echo "GATE_WINDOWS_RUNTIME_START target_dir=$target"
-  CARGO_TARGET_DIR="$target" cargo clippy --locked --target x86_64-pc-windows-gnu \
-    -p acyclic-native-runtime --all-targets --all-features --message-format=short 2>&1 | tee "$gate_output/.gate-windows-runtime.out"
-  status=("${PIPESTATUS[@]}")
-  rc=${status[0]}
-  if [ "${status[1]}" != 0 ]; then
-    echo "error: could not retain Windows runtime clippy output (tee rc=${status[1]})"
-    rc=2
-  fi
-  echo "GATE_WINDOWS_RUNTIME_CLIPPY rc=$rc seconds=$((SECONDS-phase_started)) target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all"
-  exit "$rc"
-)
-
 windows_required=0
 if [ "$(tr -d '\r' < .gate-scope-mode)" = full ] || grep -qx 'acyclic-native-runtime' .gate-clippy-packages .gate-tests-packages; then
   windows_required=1
@@ -201,7 +171,7 @@ else
 fi
 echo "GATE_WALL seconds=$((SECONDS-started)) test_rc=$rc"
 if [ "$windows_required" = 1 ]; then
-  gate_windows_runtime_clippy; windows_rc=$?
+  GATE_WINDOWS_RUNTIME_OUTPUT_DIR="$gate_output" bash scripts/buildbox/coordinator/gate-checks.sh --windows-runtime-only; windows_rc=$?
   [ "$rc" != 0 ] || rc=$windows_rc
 fi
 bash scripts/gate-windows-features.sh "$mode"; windows_features_rc=$?
