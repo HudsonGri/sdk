@@ -27,6 +27,61 @@ pub struct GenerationFork<'a, A, O> {
     pub permit: crate::PublicationPermit,
 }
 
+impl<'a, A, O> GenerationFork<'a, A, O> {
+    /// Retains the issued publication guard and optional inherited paths inside
+    /// the graph's creation phase. Recovery still receives the graph's original
+    /// generation; the caller cannot substitute a newer parent head.
+    pub fn guarded<G>(
+        self,
+        guard: G,
+        paths: Option<Vec<String>>,
+    ) -> GuardedGenerationFork<'a, A, O, G> {
+        GuardedGenerationFork {
+            fork: self,
+            guard,
+            paths,
+        }
+    }
+}
+
+/// A graph creator holding the original authority guard through publication.
+pub struct GuardedGenerationFork<'a, A, O, G> {
+    fork: GenerationFork<'a, A, O>,
+    guard: G,
+    paths: Option<Vec<String>>,
+}
+
+async fn create_generation<A, O, G, E>(
+    fork: GenerationFork<'_, A, O>,
+    generation: crate::Generation<A, O>,
+    paths: Option<Vec<String>>,
+    guard: G,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Workspace<A, O>, E>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    G: crate::AuthorityGuard,
+    G::Error: Into<E>,
+    E: From<crate::FsError> + From<WorkspaceError> + Send,
+{
+    let options = crate::ForkOptions::from_generation(generation, fork.key);
+    let options = match paths {
+        Some(paths) => options.inherit_paths(paths),
+        None => options,
+    };
+    crate::accounted_fs!(accounting, E, |work, cancellation| fork
+        .parent
+        .fork::<_, _, E>(
+            fork.destination,
+            options,
+            fork.permit,
+            work,
+            cancellation,
+            guard,
+        ))
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<WorkspaceError>>
     WorkspaceForkCreator<A, O, Workspace<A, O>, E> for GenerationFork<'_, A, O>
 {
@@ -35,17 +90,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<WorkspaceError>>
         generation: crate::Generation<A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Workspace<A, O>, E> {
-        crate::accounted_fs!(accounting, WorkspaceError, |work, cancellation| self
-            .parent
-            .fork::<_, _, WorkspaceError>(
-                self.destination,
-                crate::ForkOptions::from_generation(generation, self.key),
-                self.permit,
-                work,
-                cancellation,
-                (),
-            ))
-        .map_err(E::from)
+        create_generation::<_, _, _, WorkspaceError>(self, generation, None, (), accounting)
+            .await
+            .map_err(E::from)
+    }
+}
+
+impl<A, O, G, E> WorkspaceForkCreator<A, O, Workspace<A, O>, E>
+    for GuardedGenerationFork<'_, A, O, G>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    G: crate::AuthorityGuard,
+    G::Error: Into<E>,
+    E: From<crate::FsError> + From<WorkspaceError> + Send,
+{
+    async fn create(
+        self,
+        generation: crate::Generation<A, O>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Workspace<A, O>, E> {
+        create_generation(self.fork, generation, self.paths, self.guard, accounting).await
     }
 }
 

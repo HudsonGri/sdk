@@ -2,6 +2,128 @@ use super::*;
 use crate::facade::FsWork as _;
 use crate::{Digest, Fs, WorkspaceName};
 
+struct IssuedForkGuard<'a> {
+    denied: bool,
+    called: &'a std::sync::atomic::AtomicUsize,
+    #[cfg(not(target_arch = "wasm32"))]
+    original: Option<&'a crate::NativeMaterializationWork>,
+}
+
+impl crate::AuthorityGuard for IssuedForkGuard<'_> {
+    type Error = WorkspaceError;
+
+    async fn seal(
+        &mut self,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::AuthorityError<Self::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(
+            work.original.map(std::ptr::from_ref),
+            self.original.map(std::ptr::from_ref)
+        );
+        work.cancellation
+            .check()
+            .map_err(|_| crate::AuthorityError::Owner(WorkspaceError::NotFound))?;
+        self.called
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.denied {
+            Err(crate::AuthorityError::Owner(WorkspaceError::NotFound))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn guarded_graph_fork_retains_issued_guard_paths_and_original_cut() {
+    let cancellation = CancellationToken::new();
+    for native in [false, true] {
+        let fs = Fs::memory();
+        let parent = fs
+            .create_workspace("guard-parent", WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value;
+        parent.write_text("/selected", "original").await.unwrap();
+        parent.write_text("/excluded", "private").await.unwrap();
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = native.then(|| {
+            crate::NativeMaterializationWork::new(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .unwrap()
+        });
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = &original {
+            accounting = KernelAccounting::native(original, &cancellation);
+        }
+        let key = IdempotencyKey::from_bytes([73; 16]);
+        let called = std::sync::atomic::AtomicUsize::new(0);
+        for denied in [true, false] {
+            let result: Result<_, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>> = graph
+                .fork(
+                    &parent,
+                    "guard-child",
+                    key,
+                    None,
+                    &mut accounting,
+                    GenerationFork {
+                        parent: &parent,
+                        destination: "guard-child",
+                        key,
+                        permit: crate::PublicationPermit::Unrestricted,
+                    }
+                    .guarded(
+                        IssuedForkGuard {
+                            denied,
+                            called: &called,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            original: original.as_ref(),
+                        },
+                        Some(vec!["/selected".into()]),
+                    ),
+                    |child| child,
+                )
+                .await;
+            assert!(called.load(std::sync::atomic::Ordering::SeqCst) > 0);
+            let child_id = fs.workspace_id("guard-child").unwrap();
+            let planned = graph.store().load(child_id).await.unwrap().unwrap();
+            assert_eq!(planned.ready, !denied);
+            if denied {
+                assert!(matches!(
+                    result,
+                    Err(WorkspaceLineageError::Workspace(WorkspaceError::NotFound))
+                ));
+                parent.write_text("/selected", "new head").await.unwrap();
+            } else {
+                let child = result.unwrap();
+                let head = child
+                    .head(WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .unwrap()
+                    .value;
+                assert_eq!(
+                    head.read("/selected", 32, WorkBudget::UNBOUNDED, &cancellation)
+                        .await
+                        .unwrap()
+                        .value
+                        .as_ref(),
+                    b"original"
+                );
+                assert!(
+                    matches!(head.stat("/excluded", WorkBudget::UNBOUNDED, &cancellation).await,
+                    Err(failure) if matches!(failure.error, WorkspaceError::NotFound))
+                );
+            }
+        }
+        // Native and ordinary entry points execute the same creator and guard.
+        assert!(native || called.load(std::sync::atomic::Ordering::SeqCst) > 1);
+    }
+}
+
 fn workspace(name: &str) -> WorkspaceId {
     WorkspaceId::derive(
         [9; 16],

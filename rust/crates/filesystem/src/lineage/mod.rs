@@ -12,7 +12,7 @@ use std::future::Future;
 use thiserror::Error;
 
 mod creators;
-pub use creators::{GenerationFork, LazyFork, WorkspaceForkCreator};
+pub use creators::{GenerationFork, GuardedGenerationFork, LazyFork, WorkspaceForkCreator};
 
 const LINEAGE_VERSION: u32 = 2;
 
