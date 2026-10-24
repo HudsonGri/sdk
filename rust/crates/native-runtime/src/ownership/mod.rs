@@ -18,6 +18,7 @@ impl Clone for OwnershipAnchor {
 struct ReleaseState {
     complete: crate::sync::Mutex<bool>,
     changed: crate::sync::Condvar,
+    async_changed: tokio::sync::Notify,
 }
 
 // This field must be dropped after both the resource and every retained fence.
@@ -26,13 +27,17 @@ struct ReleaseNotification(Arc<ReleaseState>);
 
 impl Drop for ReleaseNotification {
     fn drop(&mut self) {
-        let mut complete = self
-            .0
-            .complete
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *complete = true;
+        {
+            let mut complete = self
+                .0
+                .complete
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *complete = true;
+        }
+        // Wake outside the predicate lock: a waker may inspect the barrier.
         self.0.changed.notify_all();
+        self.0.async_changed.notify_waiters();
     }
 }
 
@@ -53,6 +58,7 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
             released: ReleaseNotification(Arc::new(ReleaseState {
                 complete: crate::sync::Mutex::new(false),
                 changed: crate::sync::Condvar::new(),
+                async_changed: tokio::sync::Notify::new(),
             })),
         }
     }
@@ -133,6 +139,20 @@ impl OwnershipReleaseBarrier {
             .complete
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Waits for physical cleanup without holding a blocking worker or the owner.
+    /// Dropping this future cancels only the observation, never owner cleanup.
+    pub async fn wait_async(self) {
+        let changed = self.released.async_changed.notified();
+        tokio::pin!(changed);
+        // Register before inspecting the shared predicate. Cleanup can occur
+        // before registration, between registration and inspection, or during
+        // the await; every cut observes either completion or its notification.
+        changed.as_mut().enable();
+        if !self.is_released() {
+            changed.await;
+        }
     }
 
     /// Blocks until the final owner's cleanup and all retained fences finished.

@@ -49,12 +49,18 @@ fn ownership_release_barrier_requires_physical_owner_and_fence_cleanup() {
             OwnershipAnchor::new(cleanup)
         };
         let barrier = owner.release_barrier();
+        let mut asynchronous = Box::pin(owner.release_barrier().wait_async());
         let dropping = std::thread::spawn(move || drop(owner));
         cleanup_started.recv().unwrap();
         // The last Arc is already gone here, but physical cleanup is held.
         // Release the fixture before asserting so the old implementation also
         // terminates cleanly instead of leaving a blocked destructor behind.
         let early_release = barrier.is_released();
+        let early_async_release = std::future::Future::poll(
+            asynchronous.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        )
+        .is_ready();
         let early_completion = completed.load(Ordering::Acquire);
         finish.send(()).unwrap();
         dropping.join().unwrap();
@@ -63,9 +69,95 @@ fn ownership_release_barrier_requires_physical_owner_and_fence_cleanup() {
             "release preceded physical cleanup (fence={retain_as_fence})"
         );
         assert!(!early_completion);
+        assert!(
+            !early_async_release,
+            "async release preceded physical cleanup"
+        );
         barrier.wait();
         assert!(completed.load(Ordering::Acquire));
     }
+}
+
+#[test]
+fn ownership_release_async_wait_is_runtime_independent_and_broadcasts_completion() {
+    use std::sync::atomic::AtomicUsize;
+    use std::{
+        future::Future as _,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct ReleasedWake {
+        barrier: OwnershipReleaseBarrier,
+        count: AtomicUsize,
+    }
+    impl Wake for ReleasedWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            // Notifications must not hold the completion lock while calling a
+            // waker, including a waker which immediately observes completion.
+            assert!(self.barrier.is_released());
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    // No Tokio runtime or blocking pool exists in this test.
+    for release_before_poll in [false, true] {
+        let owner = OwnershipAnchor::new(());
+        let wake = Arc::new(ReleasedWake {
+            barrier: owner.release_barrier(),
+            count: AtomicUsize::new(0),
+        });
+        let waker = Waker::from(wake.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut waiters: Vec<_> = (0..8)
+            .map(|_| Box::pin(owner.release_barrier().wait_async()))
+            .collect();
+        let late = owner.release_barrier();
+        if !release_before_poll {
+            for waiter in &mut waiters {
+                assert_eq!(waiter.as_mut().poll(&mut context), Poll::Pending);
+            }
+            // Cancelling one registered waiter cannot consume another's wake.
+            waiters.pop();
+        }
+        drop(owner);
+        if !release_before_poll {
+            assert_eq!(wake.count.load(Ordering::SeqCst), waiters.len());
+        }
+        for mut waiter in waiters {
+            assert_eq!(waiter.as_mut().poll(&mut context), Poll::Ready(()));
+        }
+        assert_eq!(
+            Box::pin(late.wait_async()).as_mut().poll(&mut context),
+            Poll::Ready(())
+        );
+    }
+}
+
+#[test]
+fn ownership_release_async_wait_cancellation_never_retains_physical_owner() {
+    use std::{
+        future::Future as _,
+        task::{Context, Poll, Waker},
+    };
+    struct Cleanup(Arc<AtomicBool>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let completed = Arc::new(AtomicBool::new(false));
+    let owner = OwnershipAnchor::new(Cleanup(completed.clone()));
+    let mut waiter = Box::pin(owner.release_barrier().wait_async());
+    let mut context = Context::from_waker(Waker::noop());
+    assert_eq!(waiter.as_mut().poll(&mut context), Poll::Pending);
+    drop(waiter);
+    assert!(!completed.load(Ordering::SeqCst));
+    let mut retained = Box::pin(owner.release_barrier().wait_async());
+    assert_eq!(retained.as_mut().poll(&mut context), Poll::Pending);
+    drop(owner);
+    assert!(completed.load(Ordering::SeqCst));
+    assert_eq!(retained.as_mut().poll(&mut context), Poll::Ready(()));
 }
 
 #[cfg(unix)]
