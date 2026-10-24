@@ -34,8 +34,11 @@ fn continuing_an_admitted_request_transfers_every_history_buffer_at_one_to_one_t
         // Keep it alive through the comparison so allocator reuse cannot mask it.
         let copied = clone_request(prepared.request(), None)?;
         assert_ne!(copied.messages.as_ptr(), slots);
-        let continued = prepared.into_request();
-        assert_eq!(continued, copied);
+        let continued = prepared
+            .into_continuation()
+            .finish(Limits::default(), None)?;
+        let continued = continued.request();
+        assert_eq!(continued, &copied);
         assert_eq!(
             continued.messages.as_ptr(),
             slots,

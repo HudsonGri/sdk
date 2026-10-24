@@ -7,6 +7,8 @@ pub(crate) struct RequestContinuation {
     limits: Limits,
     instruction_remaining: u64,
     suffix: Vec<ModelMessage>,
+    bytes: acyclic_stream::OwnedBytes,
+    encoding: Vec<encoding::EncodingPrefix>,
 }
 
 impl PreparedModelRequest {
@@ -14,10 +16,12 @@ impl PreparedModelRequest {
         let limits = self.admitted_limits;
         let instruction_remaining = self.instruction_remaining;
         RequestContinuation {
-            request: self.into_request(),
+            request: self.request,
             limits,
             instruction_remaining,
             suffix: Vec::new(),
+            bytes: self.bytes,
+            encoding: self.encoding,
         }
     }
 }
@@ -66,13 +70,29 @@ impl RequestContinuation {
     }
 
     pub(crate) fn finish(
-        self,
+        mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<PreparedModelRequest> {
         PreparedModelRequest::begin_preparation(io)?;
+        let old_count = self.request.messages.len();
+        let same_limits = self.limits == limits;
+        let bytes = std::mem::take(&mut self.bytes);
+        let encoding = std::mem::take(&mut self.encoding);
         let (request, remaining) = self.validate(limits, io)?;
-        PreparedModelRequest::encode_validated(request, limits, remaining, io)
+        if !same_limits {
+            return PreparedModelRequest::encode_validated(request, limits, remaining, io);
+        }
+        let (bytes, request_digest, encoding) =
+            encoding::EncodingPrefix::append(bytes, encoding, old_count, &request, io)?;
+        Ok(PreparedModelRequest {
+            request,
+            bytes,
+            request_digest,
+            admitted_limits: limits,
+            instruction_remaining: remaining,
+            encoding,
+        })
     }
 }
 

@@ -155,6 +155,12 @@ impl ModelRequest {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl PreparedModelRequest {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        add(size_of::<Self>() as u64, self.request().payload_bytes()?)
+        add(
+            add(
+                size_of::<Self>() as u64,
+                self.request().retained_payload_bytes()?,
+            )?,
+            self.encoding_owned_bytes()?,
+        )
     }
 }

@@ -394,7 +394,7 @@ async fn stage_request_inner(
         journal,
         operation,
         key,
-        &request.messages,
+        prepared,
         previous.map(|manifest| manifest.messages),
         io,
     )
@@ -421,15 +421,17 @@ async fn stage_messages(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
-    messages: &[ModelMessage],
+    prepared: &crate::model::PreparedModelRequest,
     previous: Option<MessagePrefix>,
     io: Option<&PreparationIo>,
 ) -> Result<MessagePrefix> {
-    let (content_digest, prefix_digest) = digests::messages(
-        messages,
-        previous.as_ref().map(|previous| previous.count as usize),
-        io,
-    )?;
+    let messages = &prepared.request().messages;
+    let previous_count = previous.as_ref().map(|previous| previous.count as usize);
+    let (content_digest, prefix_digest) =
+        match prepared.cached_message_digests(previous_count, io)? {
+            Some(digests) => digests,
+            None => digests::messages(messages, previous_count, io)?,
+        };
     let parent = previous.filter(|previous| Some(previous.content_digest) == prefix_digest);
     let count = u32::try_from(messages.len()).map_err(|_| invalid(io))?;
     let messages = match parent {
