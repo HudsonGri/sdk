@@ -13,6 +13,21 @@ adapter does not change those keys, compiler flags or package/feature sets.
 Changed source or toolchain requires a new request. Cargo still validates all
 fingerprints in a restored target.
 
+The Windows matrix uses its own private root rather than inheriting the Linux
+matrix's occupied target. `with-xwin-cache.py` prepares stable SDK/compiler paths
+inside the private target mount, with one completed workspace per target and
+worker count. The runtime retains that workspace until the job's children exit.
+Initialization uses the shared hierarchical lease; an incomplete workspace is
+refused without deleting or repairing a possibly live worker. Legacy callers
+without private mount proof retain temporary SDK workspaces.
+
+Each SDK snapshot records the seed's file inventory (including inode/ctime)
+under its existing seed lock and refuses a change during copying. The combined
+SDK identity remains in the strict environment key, so stable paths cannot hide
+an SDK change. The compiler copy must match its reviewed hash before a completed
+workspace can be reused. This uses the existing SDK snapshot factory rather
+than adding another downloader or seed store.
+
 The private source clock normalizes directory times as well as file times.
 Cargo build scripts can watch entire `proto` or `data` directories: identical
 files in a newly created directory otherwise rerun those scripts and rebuild

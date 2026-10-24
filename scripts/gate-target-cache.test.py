@@ -16,6 +16,21 @@ spec.loader.exec_module(gate)
 
 
 class MatrixArtifacts(unittest.TestCase):
+    def test_windows_phase_owns_a_separate_private_matrix_root(self):
+        source=Path(__file__).with_name('gate-windows-features.sh').read_text()
+        prefix=source.split('\necho "GATE_WINDOWS_FEATURES_START',1)[0]
+        for legacy,explicit in [(False,False),(True,False),(False,True)]:
+            with self.subTest(legacy=legacy,explicit=explicit):
+                env={**os.environ,'GATE_FEATURE_TARGET_DIR':'/work/target/matrix-fixture'}
+                env.pop('GATE_WINDOWS_FEATURE_TARGET_DIR',None)
+                if explicit:env['GATE_WINDOWS_FEATURE_TARGET_DIR']='/work/target/explicit-windows'
+                script=prefix+'\nprintf "%s\\n" "$GATE_FEATURE_TARGET_DIR"\n'
+                if legacy:script=script.replace('python3 scripts/gate-target-cache.py private "$GATE_FEATURE_TARGET_DIR"','false')
+                result=subprocess.run(['bash','-c',script,'fixture','full'],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                expected='/work/target/explicit-windows' if explicit else '/work/target/matrix-fixture'+('' if legacy else '-windows-msvc')
+                self.assertEqual(result.stdout.strip(),expected)
+
     def test_matrix_releases_parent_snapshot_lease_before_cargo_worker_execution(self):
         with tempfile.TemporaryDirectory(dir='/work/target') as temporary:
             root=Path(temporary);command,env=self.fixture(root)
