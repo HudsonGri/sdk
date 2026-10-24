@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 def remove_tree(path):
@@ -41,7 +42,16 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
         fcntl.flock(global_lock,fcntl.LOCK_EX)
         groups={}
         for p in root.iterdir():
-            if p.is_dir() and not p.is_symlink():groups.setdefault(p.name.removesuffix('.prep'),[]).append(p)
+            if not p.is_dir() or p.is_symlink():continue
+            if p.name.startswith('.prune-'):
+                # Retirement is a separate state. A crash may leave this state
+                # unfinished, but it must never re-enter source admission or
+                # grow another retirement/lease name on the next invocation.
+                if any(source==str(p) or source.startswith(str(p)+'/') for source in active):
+                    held.append(p.name)
+                else:remove_tree(p)
+                continue
+            groups.setdefault(p.name.removesuffix('.prep'),[]).append(p)
         rows=[]
         for name,paths in groups.items():
             metadata=mirror/'worktrees'/name
@@ -53,7 +63,7 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                 try:stamps.append(file.stat().st_mtime)
                 except FileNotFoundError:pass
             rows.append((max(stamps),name,paths))
-        count=len(rows)
+        count=len(rows)+len(held)
         for used,name,paths in sorted(rows):
             if now-used<=max_age and count<=max_count:continue
             with (locks/(name+'.lock')).open('a') as lease:
@@ -64,7 +74,9 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                 for p in paths:
                     # Only immediate, resolved children can be renamed/deleted.
                     if p.parent!=root or p.resolve().parent!=root:raise ValueError('unsafe source path')
-                    tomb=root/('.prune-'+p.name+'-'+str(os.getpid()))
+                    # The allocated empty directory owns a fixed-size name even
+                    # when the source is already at the filesystem name limit.
+                    tomb=Path(tempfile.mkdtemp(prefix='.prune-',dir=root))
                     try:p.rename(tomb)
                     except FileNotFoundError:continue
                     remove_tree(tomb)
