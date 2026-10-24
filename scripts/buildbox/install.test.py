@@ -2,6 +2,7 @@ import concurrent.futures
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,22 @@ installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installe
 
 
 class InstallTests(unittest.TestCase):
+    def test_published_worker_imports_only_the_declared_tool_generation(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary)
+            for name in installer.TOOLS:shutil.copyfile(HERE/name,root/name)
+            command=[sys.executable,'-I','-B','-c',
+                     'import runpy,sys;sys.path.insert(0,sys.argv[1]);'
+                     'runpy.run_path(sys.argv[1]+"/bb-job.py",run_name="installed_worker")',str(root)]
+            good=subprocess.run(command,cwd=root,capture_output=True)
+            self.assertEqual(good.returncode,0,good.stderr.decode())
+            # The former publication list omitted a runtime import even though
+            # qualification had copied every source file into its stage.
+            (root/'job_custody.py').unlink()
+            bad=subprocess.run(command,cwd=root,capture_output=True)
+            self.assertNotEqual(bad.returncode,0)
+            self.assertIn(b"No module named 'job_custody'",bad.stderr)
+
     def test_fifty_concurrent_exec_jobs_see_complete_generations(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool'
