@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import init from "../generated/wasm/acyclic_harness_wasm.js";
-import { createBrowserMcpHttpProvider } from "../src/mcp-http.ts";
+import { createBrowserMcpHttpProvider } from "../dist/mcp-http.js";
 import { startMcpFixture } from "./mcp-http-fixture.mjs";
 import { exerciseMcpHttp, verifyReopenedMcpHttp, peerStats } from "./mcp-http-consumer.mjs";
 

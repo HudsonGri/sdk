@@ -93,23 +93,33 @@ fn sse_error(error: acyclic_harness_core::Error) -> JsValue {
     }
 }
 
-/// Creates the shared fetch exchange for an admitted MCP request.
+/// Creates the protocol-neutral exchange used by browser HTTP adapters.
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(js_name = browserMcpHttpExchange)]
-pub fn browser_mcp_http_exchange(
+#[wasm_bindgen(js_name = browserHttpExchange)]
+pub fn browser_http_exchange(
     fetch: js_sys::Function,
-    request: JsValue,
+    method: String,
+    url: String,
+    headers: JsValue,
+    body: js_sys::Uint8Array,
+    timeout_ms: JsValue,
     signal: Option<web_sys::AbortSignal>,
 ) -> Result<JsValue, JsValue> {
-    let request: crate::mcp::http::McpHttpRequest = from_js(request)?;
+    let headers = from_js(headers)?;
+    let timeout_ms = if timeout_ms.is_undefined() || timeout_ms.is_null() {
+        None
+    } else {
+        Some(from_js(timeout_ms)?)
+    };
+    let body = super::bytes::snapshot(&body, |_| Ok(()))?.0.into();
     acyclic_harness_core::http::browser::start(
         fetch,
         acyclic_harness_core::http::browser::Request {
-            method: request.method,
-            url: request.endpoint,
-            headers: request.headers,
-            body: request.body.into(),
-            timeout_ms: Some(request.timeout_ms),
+            method,
+            url,
+            headers,
+            body,
+            timeout_ms,
         },
         signal,
     )

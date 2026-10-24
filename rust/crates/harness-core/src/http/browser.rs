@@ -189,11 +189,15 @@ pub fn start(fetch: Function, request: Request, signal: Option<AbortSignal>) -> 
             result
         })
     });
+    let body_state = state.clone();
     let cancel: Closure<dyn FnMut()> = Closure::new(move || state.cancel());
+    let has_body: Closure<dyn FnMut() -> bool> =
+        Closure::new(move || body_state.reader.borrow().is_some());
     let exchange = Object::new();
     set(&exchange, "response", response.as_ref())?;
     set(&exchange, "read", &read.into_js_value())?;
     set(&exchange, "cancel", &cancel.into_js_value())?;
+    set(&exchange, "hasBody", &has_body.into_js_value())?;
     Ok(exchange)
 }
 

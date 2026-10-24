@@ -1,4 +1,5 @@
-import { createSseDecoder } from "@acyclic-labs/harness/http";
+import { browserHttpResponse, createBrowserHttpExchange, createSseDecoder } from "@acyclic-labs/harness/http";
+import type { BrowserHttpExchange, BrowserHttpHead } from "@acyclic-labs/harness/http";
 import type {
   ArtifactFile, CreateSwarmRequest, CreateSwarmResponse, CreateTokenRequest,
   CreateTokenResponse, Json, PullRequestInput, SwarmArtifact, SwarmDetail,
@@ -20,6 +21,10 @@ export interface CallOptions { readonly signal?: AbortSignal; readonly tracepare
 export interface MutationOptions extends CallOptions { readonly idempotencyKey?: string }
 export interface EventOptions extends CallOptions { readonly lastEventId?: string }
 export interface ServerEvent<T> { readonly id: string; readonly event: string; readonly data: T }
+interface HttpResponse extends BrowserHttpHead {
+  readonly exchange: BrowserHttpExchange;
+  readonly responseHeaders: Headers;
+}
 
 export class SwarmHttpError extends Error {
   constructor(readonly status: number, readonly body: Json, readonly traceId: string | null) {
@@ -52,7 +57,10 @@ export class SwarmClient {
   trace(id: string, options?: CallOptions) { return this.json<TraceResponse>(`${this.swarm(id)}/trace`, "GET", undefined, options); }
   artifact(id: string, options?: CallOptions) { return this.json<SwarmArtifact>(`${this.swarm(id)}/artifact`, "GET", undefined, options); }
   artifactFiles(id: string, options?: CallOptions) { return this.json<{ files: ArtifactFile[] }>(`${this.swarm(id)}/artifact/files`, "GET", undefined, options); }
-  artifactTree(id: string, options?: CallOptions) { return this.request(`${this.swarm(id)}/artifact/tree`, "GET", undefined, options); }
+  async artifactTree(id: string, options?: CallOptions) {
+    const response = await this.request(`${this.swarm(id)}/artifact/tree`, "GET", undefined, options);
+    return browserHttpResponse(response.exchange, response);
+  }
   async artifactPatch(id: string, options?: CallOptions) { return this.text(await this.request(`${this.swarm(id)}/artifact/patch`, "GET", undefined, options)); }
   memory(id: string, options?: CallOptions) { return this.json<Json>(`${this.swarm(id)}/memory`, "GET", undefined, options); }
   cancel(id: string, options?: CallOptions) { return this.json<{ swarm_id: string; status: "canceling" }>(`${this.swarm(id)}/cancel`, "POST", undefined, options); }
@@ -62,7 +70,7 @@ export class SwarmClient {
   listTokens(org?: string, options?: CallOptions) { return this.json<{ tokens: TokenInfo[] }>(`/v1/tokens${org === undefined ? "" : `?${new URLSearchParams({ org })}`}`, "GET", undefined, options); }
   async revokeToken(id: string, options?: CallOptions) {
     const response = await this.request(`/v1/tokens/${segment(id)}`, "DELETE", undefined, options);
-    await response.body?.cancel();
+    response.exchange.cancel();
   }
   whoami(options?: CallOptions) { return this.json<Whoami>("/v1/whoami", "GET", undefined, options); }
   async metrics(options?: CallOptions) { return this.text(await this.request("/v1/metrics", "GET", undefined, options)); }
@@ -78,7 +86,7 @@ export class SwarmClient {
     return JSON.parse(await this.text(await this.request(path, method, body === undefined ? undefined : JSON.stringify(body), options, "application/json"))) as T;
   }
 
-  private async request(path: string, method: string, body?: BodyInit, options?: MutationOptions, contentType?: string, accept?: string, lastEventId?: string): Promise<Response> {
+  private async request(path: string, method: string, body?: string | Blob | Uint8Array, options?: MutationOptions, contentType?: string, accept?: string, lastEventId?: string): Promise<HttpResponse> {
     const headers = new Headers({ authorization: `Bearer ${this.options.token}` });
     if (this.options.org !== undefined) headers.set("x-acyclic-org", this.options.org);
     if (this.options.user !== undefined) headers.set("x-acyclic-user", this.options.user);
@@ -87,64 +95,61 @@ export class SwarmClient {
     if (body !== undefined && contentType !== undefined) headers.set("content-type", contentType);
     if (accept !== undefined) headers.set("accept", accept);
     if (lastEventId !== undefined) headers.set("last-event-id", lastEventId);
-    const response = await this.send(new URL(path, this.endpoint), {
-      method, headers, redirect: "error",
-      ...(body === undefined ? {} : { body }),
-      ...(options?.signal === undefined ? {} : { signal: options.signal }),
-    });
-    if (!response.ok) {
-      const text = await this.text(response);
-      let error: Json;
-      try { error = JSON.parse(text) as Json; } catch { error = text; }
-      throw new SwarmHttpError(response.status, error, response.headers.get("x-trace-id"));
-    }
-    return response;
+    const bytes = body instanceof Blob ? new Uint8Array(await body.arrayBuffer())
+      : body instanceof Uint8Array ? body : new TextEncoder().encode(body ?? "");
+    const exchange = await createBrowserHttpExchange(this.send, {
+      method, url: new URL(path, this.endpoint).href, headers: Object.fromEntries(headers), body: bytes,
+    }, options?.signal);
+    try {
+      const head = await exchange.response;
+      const response = { ...head, exchange, responseHeaders: new Headers(head.headers) };
+      if (response.status < 200 || response.status >= 300) {
+        const text = await this.text(response);
+        let error: Json;
+        try { error = JSON.parse(text) as Json; } catch { error = text; }
+        throw new SwarmHttpError(response.status, error, response.responseHeaders.get("x-trace-id"));
+      }
+      return response;
+    } catch (error) { exchange.cancel(); throw error; }
   }
 
-  private async text(response: Response): Promise<string> {
-    if (!response.body) return "";
-    const reader = response.body.getReader();
+  private async text(response: HttpResponse): Promise<string> {
     const decoder = new TextDecoder("utf-8", { fatal: true });
     let size = 0;
     let result = "";
     try {
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) return result + decoder.decode();
+        const value = await response.exchange.read();
+        if (value === null) return result + decoder.decode();
         size += value.byteLength;
         if (size > this.maximum) throw new RangeError("Swarm response exceeds maximumResponseBytes");
         result += decoder.decode(value, { stream: true });
       }
-    } finally { await reader.cancel(); reader.releaseLock(); }
+    } finally { response.exchange.cancel(); }
   }
 
   private async *events<T>(path: string, options?: EventOptions): AsyncGenerator<ServerEvent<T>> {
-    const controller = new AbortController();
-    const abort = () => controller.abort(options?.signal?.reason);
-    options?.signal?.addEventListener("abort", abort, { once: true });
-    if (options?.signal?.aborted) abort();
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let exchange: BrowserHttpExchange | undefined;
     let decoder: Awaited<ReturnType<typeof createSseDecoder>> | undefined;
     try {
-      const requestOptions = { ...options, signal: controller.signal };
       // Last-Event-ID is a decimal u64 string; never round it through a JS number.
-      const response = await this.request(path, "GET", undefined, requestOptions, undefined, "text/event-stream", options?.lastEventId);
-      if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "text/event-stream") throw new TypeError("Swarm event response is not text/event-stream");
-      if (!response.body) throw new TypeError("Swarm event response has no body");
-      reader = response.body.getReader();
+      const response = await this.request(path, "GET", undefined, options, undefined, "text/event-stream", options?.lastEventId);
+      exchange = response.exchange;
+      if (response.responseHeaders.get("content-type")?.split(";")[0]?.trim() !== "text/event-stream") throw new TypeError("Swarm event response is not text/event-stream");
+      if (!exchange.hasBody()) throw new TypeError("Swarm event response has no body");
       decoder = await createSseDecoder(this.maximum);
       while (true) {
-        controller.signal.throwIfAborted();
-        const chunk = await reader.read();
-        if (chunk.done) {
+        options?.signal?.throwIfAborted();
+        const chunk = await exchange.read();
+        if (chunk === null) {
           const frame = decoder.finish();
-          controller.signal.throwIfAborted();
+          options?.signal?.throwIfAborted();
           if (frame) yield { id: frame.id, event: frame.event, data: JSON.parse(frame.data) as T };
           return;
         }
-        decoder.push(chunk.value);
+        decoder.push(chunk);
         while (true) {
-          controller.signal.throwIfAborted();
+          options?.signal?.throwIfAborted();
           const frame = decoder.next();
           if (!frame) break;
           yield { id: frame.id, event: frame.event, data: JSON.parse(frame.data) as T };
@@ -152,9 +157,7 @@ export class SwarmClient {
       }
     } finally {
       decoder?.free();
-      controller.abort();
-      options?.signal?.removeEventListener("abort", abort);
-      if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+      exchange?.cancel();
     }
   }
 }
