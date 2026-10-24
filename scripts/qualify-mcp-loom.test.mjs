@@ -10,6 +10,8 @@ const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, pr
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
 test("gate runs every harness model suite and rejects an absent suite or a stale model build", () => {
+  assert.deepEqual(harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === "client::commands::session::scroll_models::"),
+    ["client::commands::session::scroll_models::", 2], "the scroll model and its negative control must run in the gate");
   const suites = Object.values(harnessModelSuites).flat();
   for (const missing of [null, ...suites.map(([prefix]) => prefix), "query-model"]) {
     let target;
