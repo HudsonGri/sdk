@@ -188,16 +188,26 @@ def server_identity(endpoint):
 def stop_server(server):
     if server and server.get('pid_namespace')!=pid_namespace():return
     if not server or identity(server['pid'])!=server['identity']: return
-    try: env=Path(f'/proc/{server["pid"]}/environ').read_bytes().split(b'\0')
-    except FileNotFoundError: return
-    if ('SCCACHE_SERVER_UDS='+server['endpoint']).encode() not in env: return
     try:fd=os.pidfd_open(server['pid'])
     except ProcessLookupError:return
     try:
+        # Authenticate the live endpoint through SO_PEERCRED while a pidfd
+        # owns the process identity. /proc/environ becomes unreadable during
+        # exit and is neither endpoint custody nor an exit observation.
+        try:peer=server_identity(server['endpoint'])
+        except (FileNotFoundError,ConnectionRefusedError,ProcessLookupError):return
+        if peer!=server:return
         if identity(server['pid'])==server['identity']:
             try:signal.pidfd_send_signal(fd,signal.SIGTERM)
             except ProcessLookupError:pass
     finally: os.close(fd)
+
+def export_job_outputs(meta,env,*,cache_reused=False):
+    from job_exports import prepare
+    spec=json.loads(env['BB_JOB_EXPORT_SPEC'])
+    if Path(meta).resolve()!=Path(str(spec['prefix'])+'.receipt-meta.v2.json').resolve():
+        raise RuntimeError('export destination belongs to another receipt')
+    prepare(spec,env['CARGO_TARGET_DIR'],cache_reused=cache_reused)
 
 def start_cache(job,env):
     endpoint=job/'sccache.sock'
@@ -404,9 +414,8 @@ def run(argv,namespace_ready=False):
         atomic(runtimefile,runtime)
         if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
             try:
-                from job_exports import prepare
-                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'],
-                        cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
+                export_job_outputs(meta,env,
+                    cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224
