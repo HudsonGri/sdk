@@ -12,8 +12,13 @@ use acyclic_stream::MemoryStream;
 
 type Host = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "aggregate_custody_tests.rs"]
+mod aggregate_custody_tests;
+
 struct Fixture {
     host: Arc<Host>,
+    stream: Arc<MemoryStream>,
     parent: StreamAggregate<MemoryStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
@@ -173,6 +178,7 @@ async fn fixture() -> Result<Fixture> {
         .await?;
     Ok(Fixture {
         host,
+        stream,
         parent,
         issuer,
         scope,

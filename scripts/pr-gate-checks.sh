@@ -57,6 +57,7 @@ if [ ${#test_pkgs[@]} -eq 0 ]; then
   exit 0
 fi
 # Validate dispatch before any background compiler can outlive an early exit.
+bash scripts/gate-rust-format.sh || exit $?
 # Match main's target coverage, including test=false libFuzzer binaries.
 cargo metadata --locked --offline --no-deps --format-version 1 > .gate-pr-metadata.json || exit 2
 export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
@@ -168,7 +169,8 @@ fi
 if [ -n "$features" ]; then
   wait "$features"
   echo "GATE_FEATURES rc=$(cat .gate-features.rc)"
-  grep -aE '^(feature matrix:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
+  [ "$rc" != 0 ] || rc=$(cat .gate-features.rc)
+  grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
   if [ "$(cat .gate-features.rc)" != 0 ] && ! grep -aq '^FAILED cargo' .gate-features.out; then
     echo "GATE_FEATURES FAILED matrix did not complete rc=$(cat .gate-features.rc)"
     cat .gate-features.out

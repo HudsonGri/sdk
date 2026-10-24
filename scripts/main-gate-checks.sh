@@ -19,6 +19,7 @@ while (($#)); do
     *) cargo_args+=("$1"); shift;;
   esac
 done
+bash scripts/gate-rust-format.sh || exit $?
 cache=${GATE_MAIN_TARGET_DIR:-/mnt/bb/targets/sdk/gate-main}
 if [[ "$cache" == /mnt/bb/targets/*/* ]]; then
   unit=${cache#/mnt/bb/targets/}; unit=${unit//\//%}
@@ -102,7 +103,7 @@ grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' .gate-clippy.out | sed -E
 grep -aE '^error(\[E[0-9]+\])?: ' .gate-clippy.out | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
 wait "$features"
 echo "GATE_FEATURES rc=$(cat .gate-features.rc)"
-grep -aE '^(feature matrix:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
+grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' .gate-features.out | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
 grep -a '^feature check: ' .gate-features.out | sed 's/^/GATE_FEATURE_CHECK /'
 grep -aE '^GATE_FEATURES_(CACHE|WALL) ' .gate-features.out
 if [ "$(cat .gate-features.rc)" != 0 ]; then cat .gate-features.out; fi
