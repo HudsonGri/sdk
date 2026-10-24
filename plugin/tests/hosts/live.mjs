@@ -222,9 +222,13 @@ try {
   };
   verdict = { host, platform: `${process.platform}-${process.arch}`, pass: Object.values(checks).every(Boolean), checks, childCwd, workspace, timings, evidence: root };
 } finally {
-  // A refreshed login must survive the run, or the host is logged out.
-  timings.login = releaseLogin(login);
-  spawnSync(native, ["uninstall", host], { env, encoding: "utf8" });
+  // A refreshed login must survive the run, or the host is logged out. The
+  // host is uninstalled even when that restoration fails.
+  try {
+    timings.login = releaseLogin(login);
+  } finally {
+    spawnSync(native, ["uninstall", host], { env, encoding: "utf8" });
+  }
 }
 console.log(JSON.stringify(verdict));
 if (verdict.pass && !keep) rmSync(root, { recursive: true, force: true });
