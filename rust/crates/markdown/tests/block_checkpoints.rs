@@ -177,6 +177,46 @@ struct RewriteCheckpoint {
     rows: Vec<Line>,
 }
 
+fn resume_checkpoint(
+    history: &mut Vec<RewriteCheckpoint>,
+    next_shared: usize,
+) -> RewriteCheckpoint {
+    if history.last().unwrap().end > next_shared {
+        history.pop().unwrap()
+    } else {
+        history.last().unwrap().clone()
+    }
+}
+
+#[test]
+fn rewrite_checkpoint_moves_storage_when_the_next_fixture_cannot_reuse_it() {
+    let mut markdown = Markdown::default();
+    markdown.push(&"owned parser checkpoint ".repeat(64));
+    let rows = markdown.lines().to_vec();
+    let source_storage = markdown.source.as_ptr();
+    let row_storage = rows.as_ptr();
+    let end = markdown.source.len();
+    let mut history = vec![RewriteCheckpoint {
+        end,
+        markdown,
+        rows,
+    }];
+    let checkpoint = resume_checkpoint(&mut history, 0);
+    assert!(
+        history.is_empty(),
+        "unused checkpoint retained a second owner"
+    );
+    assert_eq!(checkpoint.markdown.source.as_ptr(), source_storage);
+    assert_eq!(checkpoint.rows.as_ptr(), row_storage);
+
+    history.push(checkpoint);
+    let mut branch = resume_checkpoint(&mut history, end);
+    assert_eq!(history.len(), 1);
+    assert_ne!(branch.markdown.source.as_ptr(), source_storage);
+    branch.markdown.push("independent branch");
+    assert_eq!(history.first().unwrap().markdown.source.len(), end);
+}
+
 fn shared_prefix(left: &str, right: &str) -> usize {
     let mut shared = left
         .bytes()
@@ -245,7 +285,7 @@ fn check_rewrite_histories(sources: &[&str], reuse: bool) -> RewriteWork {
                 check(&checkpoint.rows, checkpoint.end);
                 work.assertions += 1;
             }
-            let checkpoint = history.last().unwrap().clone();
+            let checkpoint = resume_checkpoint(history, next_shared);
             let mut markdown = checkpoint.markdown;
             let mut rows = checkpoint.rows;
             for character in source.get(checkpoint.end..).unwrap().chars() {
