@@ -41,6 +41,11 @@ name = "native_stage_loom"
 path = "tests/native_stage_loom.rs"
 required-features = ["native-mount"]
 
+[[test]]
+name = "native_view_table_loom"
+path = "tests/native_view_table_loom.rs"
+required-features = ["native-mount"]
+
 [[bench]]
 name = "filesystem"
 harness = false

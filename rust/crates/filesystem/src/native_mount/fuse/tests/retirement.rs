@@ -107,6 +107,7 @@ fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error
         retirement: None,
         cleanup,
         failure: None,
+        shared: None,
         _allocation: allocation,
     }));
     let mut facade = super::super::FuseSession {
