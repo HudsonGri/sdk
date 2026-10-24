@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     approvals::{ApprovalPolicy, ApprovalReviewFile, RuleVerdict},
     conversation::FileDescriptor,
+    executor::ExecutionJournal as _,
     interaction::{ApprovalDecisionFile, ApprovalSubject},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskFiles},
 };
