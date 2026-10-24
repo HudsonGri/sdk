@@ -20,10 +20,27 @@ export function processIdentity(pid) {
     return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() + ':' + stat[19];
   } catch { return null; }
 }
+export function processOwner(pid = process.pid) {
+  return { pid: Number(pid), identity: processIdentity(pid),
+    pid_namespace: fs.readlinkSync('/proc/self/ns/pid') };
+}
+export function processState(owner) {
+  // A private /proc cannot disprove the existence of a host PID. Refuse that
+  // authority before looking up the numeric PID, including a reused alias.
+  if (!owner?.identity || !owner.pid_namespace) return 'unverifiable';
+  if (owner.pid_namespace !== fs.readlinkSync('/proc/self/ns/pid')) return 'foreign';
+  return processIdentity(owner.pid) === owner.identity ? 'live' : 'dead';
+}
+function requireLocalOwner(owner) {
+  const state = processState(owner);
+  if (state === 'foreign' || state === 'unverifiable')
+    throw new Error('receipt ownership is outside this PID namespace');
+  return state;
+}
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 export function arm(file, meta, pid = process.pid) {
   atomic(file, { exec_start: null, toolchain: null, ...meta,
-    owner: { pid: Number(pid), identity: processIdentity(pid) } });
+    owner: processOwner(pid) });
   const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], {
     detached: true, stdio: 'ignore'
   });
@@ -52,6 +69,7 @@ export function execution(metaFile) {
 export function finish(metaFile, rc, category, extra = {}) {
   const m = read(metaFile);
   if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
+  requireLocalOwner(m.owner);
   const file = m.receipt_file;
   if (fs.existsSync(file)) return read(file);
   // mkdir serializes the wrapper, independent watcher and reboot recovery.
@@ -61,7 +79,7 @@ export function finish(metaFile, rc, category, extra = {}) {
   catch (e) {
     if (e.code !== 'EEXIST') throw e;
     const owner = read(lock + '/owner');
-    if (!owner || processIdentity(owner.pid) !== owner.identity) {
+    if (!owner || requireLocalOwner(owner) === 'dead') {
       try {
         if (Date.now() - fs.statSync(lock).mtimeMs < 1000) return null;
         fs.rmSync(lock, { recursive: true, force: true });
@@ -69,7 +87,7 @@ export function finish(metaFile, rc, category, extra = {}) {
     }
     return null;
   }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid) });
+  atomic(lock + '/owner', processOwner());
   try {
     if (fs.existsSync(file)) return read(file);
     const runtimeFile = metaFile + '.runtime';
@@ -112,13 +130,13 @@ function ledgerRecord(ledger, out) {
       if (e.code !== 'EEXIST') throw e;
       const owner = read(lock + '/owner');
       try {
-        if ((!owner || processIdentity(owner.pid) !== owner.identity) && Date.now() - fs.statSync(lock).mtimeMs > 1000)
+        if ((!owner || requireLocalOwner(owner) === 'dead') && Date.now() - fs.statSync(lock).mtimeMs > 1000)
           fs.rmSync(lock, { recursive: true, force: true });
       } catch (err) { if (err.code !== 'ENOENT') throw err; }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
   }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid) });
+  atomic(lock + '/owner', processOwner());
   try {
     let lines = [], previous = '';
     try { previous = fs.readFileSync(ledger, 'utf8'); lines = previous.split('\n'); } catch {}
@@ -137,12 +155,12 @@ export async function watch(metaFile, interval = 1000) {
       if (m.ledger) ledgerRecord(m.ledger, read(m.receipt_file));
       return;
     }
-    if (processIdentity(m.owner.pid) !== m.owner.identity) {
+    if (requireLocalOwner(m.owner) === 'dead') {
       const job = read(metaFile + '.job');
-      if (job && processIdentity(job.pid) === job.identity) {
+      if (job && processState(job) === 'live') {
         try { process.kill(-job.pid, 'SIGTERM'); } catch {}
         await new Promise(r => setTimeout(r, 1000));
-        if (processIdentity(job.pid) === job.identity) try { process.kill(-job.pid, 'SIGKILL'); } catch {}
+        if (processState(job) === 'live') try { process.kill(-job.pid, 'SIGKILL'); } catch {}
       }
       const result = finish(metaFile, 137, 'interrupted', { reason: 'receipt owner disappeared' });
       if (result && m.job_prefix) {
@@ -170,9 +188,9 @@ export function recover(dir) {
         ledgerRecord(m.ledger, terminal); seen.get(m.ledger).add(terminal.receipt_file);
       }
     }
-    if (m?.owner && !fs.existsSync(m.receipt_file) && processIdentity(m.owner.pid) !== m.owner.identity) {
+    if (m?.owner && !fs.existsSync(m.receipt_file) && processState(m.owner) === 'dead') {
       const job = read(file + '.job');
-      if (job && processIdentity(job.pid) === job.identity) {
+      if (job && processState(job) === 'live') {
         const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
         p.unref(); continue;
       }
@@ -232,7 +250,7 @@ export async function runBb(script, args) {
       detached: true, stdio: ['inherit', 'pipe', 'pipe'] });
     child.on('error', () => {});
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-    atomic(file + '.job', { pid: child.pid, identity: processIdentity(child.pid) });
+    atomic(file + '.job', processOwner(child.pid));
     child.stdout.on('data', b => { process.stdout.write(b); log.write(b); });
     child.stderr.on('data', b => { process.stderr.write(b); log.write(b); });
     const end = await new Promise(resolve => child.once('close', (code, sig) => resolve({ code, sig })));
@@ -250,7 +268,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [op, file, rc, category] = process.argv.slice(2);
   if (op === 'run-bb') process.exitCode = await runBb(file, process.argv.slice(4));
   else if (op === 'arm') arm(file, read(file), rc);
-  else if (op === 'job') atomic(file + '.job', { pid: Number(rc), identity: processIdentity(rc) });
+  else if (op === 'job') atomic(file + '.job', processOwner(rc));
   else if (op === 'exec') process.stderr.write('BUILD_SLOT_EXEC=' + JSON.stringify(execution(file)) + '\n');
   else if (op === 'finish') {
     const terminal = finish(file, rc, category);

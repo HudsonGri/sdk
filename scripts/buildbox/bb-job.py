@@ -242,6 +242,8 @@ def cleanup_outer(prefix, proof, custody):
 
 def stop_job(file):
     item=json.loads(Path(file).read_text()); pid=item['pid']
+    if item.get('pid_namespace')!=os.readlink('/proc/self/ns/pid'):
+        raise ValueError('job ownership is outside this PID namespace')
     if identity(pid)!=item['identity']: return
     try: fd=os.pidfd_open(pid)
     except ProcessLookupError: return
