@@ -10,6 +10,7 @@ mod blob;
 mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
+mod content_eq;
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod encoder_fuzz;
@@ -65,6 +66,7 @@ pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
+pub(crate) use content_eq::records_match_content;
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
@@ -73,25 +75,23 @@ pub(crate) use generation_mutation::{
 pub(crate) use list::list_tree_entries_async_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
-#[cfg(feature = "native-mount")]
-pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 pub(crate) use merge::{
     ContentMerge, MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
 };
+#[cfg(feature = "native-mount")]
+pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use persistent_batch::{IndexedKey, sort_indexed};
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };
 pub(crate) use persistent_point::split_allocation;
+pub(crate) use probe::WorkingRebaseProbe;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
 pub(crate) use range::plan_extent_range_with_accounting;
-pub(crate) use probe::WorkingRebaseProbe;
-pub(crate) use rebase::{
-    ClassifyRebaseFailure, Settled, classify_rebase_settling_with_accounting,
-};
+pub(crate) use rebase::{ClassifyRebaseFailure, Settled, classify_rebase_settling_with_accounting};
 pub(crate) use regular_mutation::apply_regular_mutation_with_accounting;
 pub(crate) use search::binary_search_with_accounting;
 
@@ -265,12 +265,12 @@ pub use types::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
-pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 #[cfg(not(acyclic_loom))]
 pub(crate) use volume::encode_volume_created;
 #[cfg(acyclic_loom)]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
+pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 
 #[cfg(any(test, feature = "fuzzing"))]

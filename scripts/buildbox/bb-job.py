@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import socket
@@ -21,6 +22,7 @@ BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 SCCACHE='/home/var/.cargo/bin/sccache'
 JOBS=Path('/mnt/bb/jobs')
+PIDFD_SIGNAL_PROCESS_GROUP=1 << 2
 
 def identity(pid):
     try:
@@ -108,6 +110,91 @@ def remove_home(job):
     shutil.rmtree(job)
 
 
+class OwnedCommand:
+    """Keep the command's group leader alive until its custody pipe closes."""
+    def __init__(self, argv, env, register):
+        control_read, self.control = os.pipe()
+        status_read, status_write = os.pipe()
+        self.child = None
+        self.command = None
+        self.status = None
+        try:
+            self.child = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), 'supervise',
+                 str(control_read), str(status_write), *argv],
+                env=env, pass_fds=(control_read, status_write), start_new_session=True)
+            self.status = os.fdopen(status_read, 'rb')
+            status_read = None
+            # Before admission, parent death closes the pipe without allowing
+            # the command to run. After admission, the recorded supervisor
+            # pins the group identity until every cleanup path stops it.
+            self.command = {'pid': self.child.pid, 'identity': identity(self.child.pid)}
+            register(self.command)
+            os.write(self.control, b'S')
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            os.close(control_read)
+            os.close(status_write)
+            if status_read is not None: os.close(status_read)
+
+    def wait(self):
+        line = self.status.readline()
+        if not line:
+            raise RuntimeError('command supervisor exited without an outcome')
+        return int(line)
+
+    def close(self):
+        if self.control is not None:
+            os.close(self.control)
+            self.control = None
+        if self.child is not None:
+            stop_command(self.command)
+            self.child.wait()
+        if self.status is not None: self.status.close()
+
+
+def supervise(control, status, argv):
+    # This supervisor is the session/group leader. Its parent owns the only
+    # custody writer; even SIGKILL before registration or during execution
+    # therefore reaches the same group-retirement path through EOF.
+    def interrupted(number, frame):
+        raise SystemExit(128+number)
+    for number in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
+        signal.signal(number, interrupted)
+    try:
+        if os.read(control, 1) != b'S': return 224
+        child = subprocess.Popen(argv)
+        exited = os.pidfd_open(child.pid)
+        try:
+            ready, _, _ = select.select([control, exited], [], [])
+            if control in ready: return 224
+            os.write(status, (str(child.wait())+'\n').encode())
+            # Preserve the group identity after the command exits, including
+            # when a shell exits before its descendants.
+            os.read(control, 1)
+        finally: os.close(exited)
+    finally:
+        try: os.killpg(os.getpid(), signal.SIGKILL)
+        except ProcessLookupError: pass
+
+
+def stop_command(command):
+    if not command or identity(command['pid']) != command['identity']: return
+    try: descriptor = os.pidfd_open(command['pid'])
+    except ProcessLookupError: return
+    try:
+        if identity(command['pid']) != command['identity']: return
+        # Linux >= 6.9 addresses the pinned process group through its leader's
+        # pidfd. Retirement cannot depend on that leader running a handler (a
+        # stopped supervisor cannot handle TERM), or race a recycled group ID.
+        try: signal.pidfd_send_signal(descriptor, signal.SIGKILL, None, PIDFD_SIGNAL_PROCESS_GROUP)
+        except ProcessLookupError: pass
+        select.select([descriptor], [], [])
+    finally: os.close(descriptor)
+
+
 def run(argv):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
@@ -122,6 +209,8 @@ def run(argv):
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
     env=dict(os.environ); real_home=Path('/home/var')
+    # The plan belongs to this receipt owner, never to commands or nested jobs.
+    export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)
     # sudo/runuser may strip admission env across the mount-namespace boundary.
     # The admitted wrapper persists it before privilege changes.
     admission_file=Path(meta+'.admission')
@@ -132,9 +221,7 @@ def run(argv):
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
     server=None; child=None; before=None; rc=224; units=[]
     def interrupted(n,f):
-        if child:
-            try: os.killpg(child.pid,n)
-            except ProcessLookupError: pass
+        for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
         raise SystemExit(128+n)
     for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,interrupted)
     try:
@@ -178,14 +265,16 @@ def run(argv):
             env['RUSTC']='/home/var/bin/bigstack/rustc';env.setdefault('RUSTC_WRAPPER','/home/var/bin/sccache-rustc')
         if not Path(meta+'.exec').exists() and env.get('BUILD_SLOT_EXEC_IN_PAYLOAD')!='1':
             subprocess.run([NODE,str(BIN/'buildbox-receipt.mjs'),'exec',meta],env=env,check=True)
-        # Stay in the admission lease's process group. A killed client causes
-        # the daemon/receipt watcher to terminate the entire leased group.
-        child=subprocess.Popen(argv,env=env)
+        def register_command(command):
+            runtime['command'] = command
+            atomic(runtimefile, runtime)
+        child=OwnedCommand(argv,env,register_command)
         rc=child.wait(); rc=128-rc if rc<0 else rc
-        if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
+        child.close()
+        if rc==0 and export_spec:
             try:
                 from job_exports import prepare
-                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'])
+                prepare(json.loads(export_spec), env['CARGO_TARGET_DIR'])
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224
@@ -199,10 +288,8 @@ def run(argv):
     finally:
         # A signal does not leave test children running after their home/cache
         # is removed. The independent receipt watcher covers SIGKILL as well.
-        if child and child.poll() is None:
-            try: child.kill()
-            except ProcessLookupError: pass
-            child.wait()
+        for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
+        if child: child.close()
         stop_server(server)
         try:remove_home(job)
         except OSError as error:
@@ -215,6 +302,7 @@ def run(argv):
 
 def cleanup_runtime(file):
     runtime=json.loads(Path(file).read_text())
+    stop_command(runtime.get('command'))
     stop_server(runtime.get('sccache_server'))
     if not runtime.get('hermetic_home'):return
     job=Path(runtime['hermetic_home'])
@@ -250,7 +338,8 @@ def stop_job(file):
 
 
 if __name__=='__main__':
-    if sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
+    if sys.argv[1:2]==['supervise']: raise SystemExit(supervise(int(sys.argv[2]),int(sys.argv[3]),sys.argv[4:]))
+    elif sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
     elif sys.argv[1:2]==['cleanup-outer']:print(json.dumps(cleanup_outer(sys.argv[2])))
     elif sys.argv[1:2]==['stop-job']:stop_job(sys.argv[2])
     else: raise SystemExit(run(sys.argv[1:]))

@@ -7,6 +7,38 @@ import { Events, Processes } from "./process.mjs";
 import { requests, subset, toolResults } from "./assertions.mjs";
 import { matches } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
+import { TerminalFrames, FailureHistory } from "./frames.mjs";
+
+test("screen assertions observe complete synchronized frames at every fragmentation boundary", async () => {
+  const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
+  for (let cut = 0; cut <= bytes.length; cut++) {
+    const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+    const frames = new TerminalFrames(screen), seen = [];
+    const capture = () => seen.push(screen.buffer.active.getLine(0).translateToString(true));
+    await frames.write(bytes.slice(0, cut), capture);
+    await frames.write(bytes.slice(cut), capture);
+    assert.ok(seen.includes("final"));
+    assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
+    frames.dispose(); screen.dispose();
+  }
+  // Negative control: callbacks after arbitrary writes disclose the half-painted draft.
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  await new Promise(resolve => screen.write(bytes.slice(0, bytes.indexOf("\x1b[Hfinal")), resolve));
+  assert.equal(screen.buffer.active.getLine(0).translateToString(true), "draft");
+  screen.dispose();
+});
+
+test("handled failures retain exact task and reason identity across subsequent actions", () => {
+  const history = new FailureHistory();
+  const old = "task 00000000-0000-0000-0000-000000000001 failed: cancelled";
+  const next = old.replace("0001 failed", "0002 failed");
+  assert.equal(history.unexpected(old, {}), old, "old stateless guard rejects the handled result again");
+  history.accept(old, { task_failure: "cancelled" });
+  assert.equal(history.unexpected(old, {}), undefined);
+  assert.equal(history.unexpected(next, {}), next, "another task's failure must still fail immediately");
+  const changed = old.replace("cancelled", "unauthorized");
+  assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
+});
 
 test("owner exit permits recovery before a live descendant releases inherited pipes", async () => {
   const processes = new Processes();
@@ -105,6 +137,22 @@ test("screen conditions require rendered styles and reject literal markdown", as
   assert.ok(matches(screen, "\x1b[?25l\x1b[?25h", { contains: ["\u25cb GraphCoder"], cursor: true }));
   assert.ok(!matches(screen, "\x1b[?25h\x1b[?25l", { contains: ["\u25cb GraphCoder"], cursor: true }));
   assert.ok(!matches(screen, "\x1b[?25h", { contains: ["\u00e2\u2014\u2039"] }));
+  screen.dispose();
+});
+
+test("expected interrupted recovery still requires its retained transcript and exact failure", async () => {
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const write = data => new Promise(resolve => screen.write(data, resolve));
+  const expected = { task_failure: "model provider unavailable (co", contains: ["RECOVERED_E2E"] };
+  const failure = "task 00000000-0000-0000-0000-000000000001 failed: ";
+  await write("RECOVERED_E2E");
+  assert.ok(!matches(screen, "", expected), "replayed prefix alone is not settled recovery");
+  await write("\r\n" + failure + "unauthorized");
+  assert.ok(!matches(screen, "", expected), "another error cannot satisfy interrupted recovery");
+  await write("\r\x1b[2K" + failure + "model provider unavailable (connection interrupted)");
+  assert.ok(matches(screen, "", expected));
+  await write("\x1b[H\x1b[2K");
+  assert.ok(!matches(screen, "", expected), "settlement must preserve the partial transcript");
   screen.dispose();
 });
 

@@ -91,8 +91,11 @@ pub(crate) use content::verify_model_contents_scoped;
 #[cfg(all(any(test, feature = "test-support"), feature = "filesystem"))]
 #[doc(hidden)]
 pub use content::verify_model_contents_with_summary_authorization;
+mod phase;
 mod retained;
 mod turn;
+pub(crate) use phase::DispatchPhase;
+pub use phase::PreDispatchFailure;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
 mod checkpoint_selection;
 use checkpoint_selection::*;
@@ -428,6 +431,8 @@ pub struct TurnOutput {
 
 /// Execution progress with its settled value or original approval outcome.
 pub enum ExecutionProgress<T> {
+    /// Preparation failed before any provider attempt could start.
+    PreDispatchFailed(PreDispatchFailure),
     /// The operation settled with its complete result.
     Ready(T),
     /// The original approval operation is pending.
@@ -441,6 +446,7 @@ pub enum ExecutionProgress<T> {
 impl ExecutionProgress<TurnOutput> {
     pub(crate) fn into_output(self) -> Result<TurnOutput> {
         match self {
+            Self::PreDispatchFailed(failure) => Err(failure.into_error()),
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
             Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
@@ -586,6 +592,8 @@ pub struct ModelEventAdmission {
     pub calls: Vec<String>,
     #[doc(hidden)]
     pub completed: bool,
+    #[doc(hidden)]
+    pub text_bytes: u64,
 }
 
 #[cfg(test)]
