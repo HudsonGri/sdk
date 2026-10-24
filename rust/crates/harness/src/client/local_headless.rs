@@ -118,28 +118,44 @@ pub struct LocalFileClient {
 impl LocalFileClient {
     // Task metadata can need a coordinator guard held by the paused driver.
     // Poll both futures so that its IO can release that guard.
-    async fn while_driving<T>(&mut self, work: impl Future<Output = T>) -> Result<T> {
-        if self.host_done {
-            return Ok(work.await);
-        }
-        futures::pin_mut!(work);
-        match futures::future::select(work, self.host.as_mut()).await {
-            futures::future::Either::Left((result, _)) => Ok(result),
-            futures::future::Either::Right((result, work)) => {
-                self.host_done = true;
-                self.host_error = result.err();
-                let result = work.await;
-                self.drain_through = self
-                    .local
-                    .task_files()
-                    .inner
-                    .snapshot(&selection(self.operation)?, MAXIMUM_FILES)
-                    .await?
-                    .cursor
-                    .position;
-                Ok(result)
-            }
-        }
+    async fn while_driving<T>(
+        &mut self,
+        work: impl Future<Output = T>,
+        output: &mut impl Write,
+    ) -> Result<T> {
+        let host = &mut self.host;
+        let host_done = &mut self.host_done;
+        let host_error = &mut self.host_error;
+        let drain_through = &mut self.drain_through;
+        let local = self.local.clone();
+        let operation = self.operation;
+        self.approvals
+            .during(
+                async {
+                    if *host_done {
+                        return Ok(work.await);
+                    }
+                    futures::pin_mut!(work);
+                    match futures::future::select(work, host.as_mut()).await {
+                        futures::future::Either::Left((result, _)) => Ok(result),
+                        futures::future::Either::Right((result, work)) => {
+                            *host_done = true;
+                            *host_error = result.err();
+                            let result = work.await;
+                            *drain_through = local
+                                .task_files()
+                                .inner
+                                .snapshot(&selection(operation)?, MAXIMUM_FILES)
+                                .await?
+                                .cursor
+                                .position;
+                            Ok(result)
+                        }
+                    }
+                },
+                output,
+            )
+            .await?
     }
 
     pub(super) async fn open(local: Arc<LocalHarness>, operation: OperationId) -> Result<Self> {
@@ -183,6 +199,7 @@ impl LocalFileClient {
     /// malformed input or a failed output sink. Dropping an awaiting future
     /// cannot join a native capture worker.
     pub async fn finish(mut self, outcome: Result<HeadlessOutcome>) -> Result<HeadlessOutcome> {
+        let mut output = std::io::sink();
         let requested = self.submitted
             || self
                 .query
@@ -202,7 +219,14 @@ impl LocalFileClient {
             );
             // The driver may hold a coordinator guard across pending IO. Keep
             // polling it while cancellation acquires and updates that owner.
-            match futures::future::select(Box::pin(cancel), self.host.as_mut()).await {
+            match self
+                .approvals
+                .during(
+                    futures::future::select(Box::pin(cancel), self.host.as_mut()),
+                    &mut output,
+                )
+                .await?
+            {
                 futures::future::Either::Left((result, _)) => {
                     if matches!(result, Err(Error::NotFound(_))) {
                         // Admission can still be queued on the runtime owner.
@@ -211,13 +235,16 @@ impl LocalFileClient {
                         drop(self.attachment.take());
                     } else {
                         result?;
-                        let _ = self.host.as_mut().await;
+                        let _ = self
+                            .approvals
+                            .during(self.host.as_mut(), &mut output)
+                            .await?;
                         self.host_done = true;
                     }
                 }
                 futures::future::Either::Right((_, cancel)) => {
                     self.host_done = true;
-                    if let Err(error) = cancel.await
+                    if let Err(error) = self.approvals.during(cancel, &mut output).await?
                         && !matches!(error, Error::NotFound(_))
                     {
                         return Err(error);
@@ -228,18 +255,24 @@ impl LocalFileClient {
         if requested
             && !self.host_done
             && self.outcome()?.is_none()
-            && !self.awaiting_approval().await?
+            && !self.awaiting_approval(&mut output).await?
         {
             // The one-request headless owner returns after saving its outcome.
             // Keep polling it until native work and publication have settled.
-            settlement = self.host.as_mut().await;
+            settlement = self
+                .approvals
+                .during(self.host.as_mut(), &mut output)
+                .await?;
             self.host_done = true;
         }
         // Even a published outcome precedes worker teardown. Stop idle follow
         // and join before the process can shut down its executor.
         drop(self.attachment.take());
         if !self.host_done {
-            settlement = self.host.as_mut().await;
+            settlement = self
+                .approvals
+                .during(self.host.as_mut(), &mut output)
+                .await?;
         }
         let Self {
             local,
@@ -290,7 +323,7 @@ impl LocalFileClient {
         Ok(())
     }
 
-    async fn submit(&mut self, file: &FileValue) -> Result<()> {
+    async fn submit(&mut self, file: &FileValue, output: &mut impl Write) -> Result<()> {
         validate(file, self.operation)?;
         if matches!(
             file.key,
@@ -301,10 +334,13 @@ impl LocalFileClient {
         ) {
             let local = self.local.clone();
             return self
-                .while_driving(local.submit_operation_approval(
-                    crate::runtime::task_id_for_admission(self.operation),
-                    file,
-                ))
+                .while_driving(
+                    local.submit_operation_approval(
+                        crate::runtime::task_id_for_admission(self.operation),
+                        file,
+                    ),
+                    output,
+                )
                 .await?;
         }
         // Both -p and JSONL enter through this boundary. Already pinned prompt
@@ -316,7 +352,10 @@ impl LocalFileClient {
                 source: None,
                 mentions,
             }) if mentions.is_empty() => {
-                let resolution = self.local.resolve_input(self.operation, &text).await?;
+                let local = self.local.clone();
+                let resolution = self
+                    .while_driving(local.resolve_input(self.operation, &text), output)
+                    .await??;
                 let mut captured = file.clone();
                 captured.bytes = serde_json::to_vec(&resolution)
                     .map_err(|error| Error::Invalid(error.to_string()))?
@@ -370,17 +409,20 @@ impl LocalFileClient {
         }
     }
 
-    async fn awaiting_approval(&mut self) -> Result<bool> {
+    async fn awaiting_approval(&mut self, output: &mut impl Write) -> Result<bool> {
         let tasks = self.approvals.tasks()?;
         let local = self.local.clone();
-        self.while_driving(async move {
-            for task in tasks {
-                if local.awaiting_human_approval(task).await? {
-                    return Ok(true);
+        self.while_driving(
+            async move {
+                for task in tasks {
+                    if local.awaiting_human_approval(task).await? {
+                        return Ok(true);
+                    }
                 }
-            }
-            Ok(false)
-        })
+                Ok(false)
+            },
+            output,
+        )
         .await?
     }
 
@@ -410,7 +452,7 @@ impl LocalFileClient {
         self.initial(output)?;
         loop {
             let settled = self.outcome()?;
-            if settled.is_none() && !input_open && self.awaiting_approval().await? {
+            if settled.is_none() && !input_open && self.awaiting_approval(output).await? {
                 return Ok(HeadlessOutcome::Indeterminate);
             }
             if settled.is_none()
@@ -431,7 +473,7 @@ impl LocalFileClient {
                 if input_open {
                     match input.next().now_or_never() {
                         Some(Some(line)) => {
-                            self.submit(&parse_local_request(&line?, operation)?)
+                            self.submit(&parse_local_request(&line?, operation)?, output)
                                 .await?;
                             continue;
                         }
@@ -460,7 +502,7 @@ impl LocalFileClient {
             };
             match next {
                 Next::Input(Some(line)) => {
-                    self.submit(&parse_local_request(&line?, operation)?)
+                    self.submit(&parse_local_request(&line?, operation)?, output)
                         .await?
                 }
                 Next::Input(None) => {
@@ -479,12 +521,16 @@ impl LocalFileClient {
                 Next::Host(result) => {
                     self.host_done = true;
                     self.host_error = result.err();
+                    let local = self.local.clone();
                     self.drain_through = self
-                        .local
-                        .task_files()
-                        .inner
-                        .snapshot(&selection(operation)?, MAXIMUM_FILES)
-                        .await?
+                        .while_driving(
+                            local
+                                .task_files()
+                                .inner
+                                .snapshot(&selection(operation)?, MAXIMUM_FILES),
+                            output,
+                        )
+                        .await??
                         .cursor
                         .position;
                 }
@@ -528,7 +574,7 @@ impl HeadlessClient for LocalFileClient {
         }
         validate(&command, operation)?;
         self.initial(output)?;
-        self.submit(&command).await?;
+        self.submit(&command, output).await?;
         Box::pin(self.run(operation, futures::stream::empty(), false, output)).await
     }
     async fn input<W: Write>(
