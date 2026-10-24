@@ -697,6 +697,49 @@ struct PendingModel {
     reconciled: AtomicUsize,
 }
 impl ModelProvider for PendingModel {
+    fn context_capacity(
+        &self,
+        _: &crate::model::Model,
+    ) -> Result<crate::context::ModelContextCapacity> {
+        Ok(crate::context::ModelContextCapacity {
+            context_tokens: 131_072,
+            output_tokens: Some(4096),
+        })
+    }
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        Box::pin(async move { Ok(request.serialized_token_upper_bound(None)?.0) })
+    }
+    fn context_capacity_with_native_work(
+        &self,
+        model: &crate::model::Model,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::context::ModelContextCapacity> {
+        work.remaining()?;
+        self.context_capacity(model)
+    }
+    fn count_tokens_with_native_work<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        crate::NativeFutureBundle<
+            'a,
+            (
+                crate::context::ModelTokenCount,
+                acyclic_fs::NativeAllocation,
+            ),
+        >,
+    > {
+        crate::NativeFutureBundle::new(work, || async move {
+            let (count, custody) = request.serialized_token_upper_bound(Some(work))?;
+            let custody =
+                custody.ok_or_else(|| Error::Invalid("native token count lost custody".into()))?;
+            Ok((count, custody))
+        })
+    }
     fn generate<'a>(
         &'a self,
         _: crate::model::PreparedModelRequest,

@@ -32,6 +32,12 @@ impl ModelContextCapacity {
             && self.output_tokens.is_none_or(|limit| output <= limit)
     }
 
+    /// Checks the complete input plus its explicit generated-output budget.
+    #[must_use]
+    pub fn permits_request(self, input: u64, output: u32) -> bool {
+        self.permits_output(output) && input <= u64::from(self.context_tokens - output)
+    }
+
     /// Rejects impossible provider advertisements.
     pub fn validate(self) -> Result<()> {
         if self.context_tokens == 0
@@ -157,6 +163,23 @@ mod tests {
             .validate()
             .is_ok()
         );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+        #[test]
+        fn complete_capacity_admission_cannot_wrap_or_ignore_output(
+            context in 1u32..=u32::MAX,
+            output in proptest::num::u32::ANY,
+            input in proptest::num::u64::ANY,
+            limit in proptest::option::of(1u32..=u32::MAX),
+        ) {
+            let capacity = ModelContextCapacity { context_tokens: context, output_tokens: limit };
+            let expected = output > 0
+                && limit.is_none_or(|limit| output <= limit)
+                && u128::from(input) + u128::from(output) <= u128::from(context);
+            proptest::prop_assert_eq!(capacity.permits_request(input, output), expected);
+        }
     }
 
     proptest::proptest! {

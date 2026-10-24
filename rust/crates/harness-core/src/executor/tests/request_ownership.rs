@@ -94,7 +94,7 @@ proptest! {
         });
         let mut projected = None;
         let transferred = acyclic_test_support::measure(|| {
-            projected = Some(futures::executor::block_on(plain.transform_projection(&input, plain_context)).unwrap());
+            projected = Some(futures::executor::block_on(plain.prepare_transformed_request(&input, plain_context)).unwrap());
         });
         let no_copy = |observed: acyclic_test_support::AllocationInfo| {
             observed.count_total + copying.count_total == legacy.count_total
@@ -103,11 +103,7 @@ proptest! {
         prop_assert!(no_copy(transferred), "transient history copies: {transferred:?}, {legacy:?}, {copying:?}");
         prop_assert!(!no_copy(legacy), "restored copying transform escaped detection");
         drop(projected);
-        let mut projected = futures::executor::block_on(session.transform_projection(&input, context)).unwrap();
-        prop_assert_eq!(buffers(&projected.messages), original);
-        let final_request = crate::model::PreparedModelRequest::prepare(
-            session.request_taking_context(&mut projected).unwrap(), executor.limits, None,
-        ).unwrap();
+        let (_, final_request) = futures::executor::block_on(session.prepare_transformed_request(&input, context)).unwrap();
         prop_assert_eq!(buffers(&final_request.request().messages), original);
         prop_assert_eq!(final_request.bytes(), expected.bytes());
         prop_assert_eq!(final_request.request_digest(), expected.request_digest());

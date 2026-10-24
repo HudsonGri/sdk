@@ -156,18 +156,6 @@ impl StockExecution<'_> {
         ContextPipeline::continue_base(retained, delta, self.stock.limits, self.io)
     }
 
-    pub(super) async fn transform_projection(
-        &self,
-        input: &ContextInput,
-        base: crate::context::Context,
-    ) -> Result<crate::context::Context> {
-        let (mut context, prepared) = self.prepare_transformed_request(input, base).await?;
-        if self.io.is_none() {
-            context.messages = prepared.into_messages();
-        }
-        Ok(context)
-    }
-
     pub(super) async fn prepare_transformed_request(
         &self,
         input: &ContextInput,

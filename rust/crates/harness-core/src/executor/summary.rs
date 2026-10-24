@@ -29,7 +29,12 @@ impl StockExecution<'_> {
                 "summary step exceeds parent turn bounds",
             ));
         }
-        let summary_output = self.output_budget()?;
+        // Explicit summaries validate their budget against their own selected
+        // member below. The response member may have a different output limit.
+        let summary_output = match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Disabled => self.output_tokens(),
+            crate::context::CompactionPolicy::Threshold(_) => self.output_budget()?,
+        };
         if summary_output.is_none() {
             return Err(stock_boundary(
                 self.io,
