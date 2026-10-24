@@ -135,6 +135,7 @@ impl Query {
                     TaskFile::ApprovalRequest(request.clone()),
                     TaskFile::ApprovalRequest(request.clone()),
                 ),
+                range(task, TaskFile::ApprovalReview { request: request.clone(), principal: minimum.clone() }, TaskFile::ApprovalReview { request: request.clone(), principal: maximum.clone() }),
                 range(
                     task,
                     TaskFile::ApprovalDecision {
@@ -335,7 +336,7 @@ impl Query {
                 session: selected_session,
             } => match key {
                 FileKey::Task { task, .. } => {
-                    selected_task == task && super::super::recent::kind(key).is_some()
+                    selected_task == task && (super::super::recent::kind(key).is_some() || Self::Approvals(task.clone()).matches(key))
                 }
                 FileKey::Session { session, .. } => selected_session == session,
                 _ => false,
@@ -411,13 +412,13 @@ impl Query {
                 ..
             } => {
                 selected == task
-                    && super::super::recent::kind(key).is_some_and(|kind| match kind {
+                    && (Self::Approvals(task.clone()).matches(key) || super::super::recent::kind(key).is_some_and(|kind| match kind {
                         3 => *reasoning,
                         4 => *details,
                         5 => *terminal,
                         6 => *details || *terminal,
                         _ => true,
-                    })
+                    }))
             }
             Self::Turns(selected) => selected == task && file.turn().is_some(),
             Self::Turn {
@@ -450,6 +451,7 @@ impl Query {
                 selected == task
                     && match file {
                         TaskFile::ApprovalRequest(request)
+                        | TaskFile::ApprovalReview { request, .. }
                         | TaskFile::ApprovalDecision { request, .. } => selected_request == request,
                         _ => false,
                     }
@@ -462,13 +464,8 @@ impl Query {
                     )
             }
             Self::Requests(selected) => selected == task && matches!(file, TaskFile::Request(_)),
-            Self::Approvals(selected) | Self::PendingApprovals(selected) => {
-                selected == task
-                    && matches!(
-                        file,
-                        TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. }
-                    )
-            }
+            Self::Approvals(selected) => selected == task && matches!(file, TaskFile::ApprovalRequest(_) | TaskFile::ApprovalReview { .. } | TaskFile::ApprovalDecision { .. }),
+            Self::PendingApprovals(selected) => selected == task && matches!(file, TaskFile::ApprovalRequest(_) | TaskFile::ApprovalDecision { .. }),
             Self::Notifications(selected) => {
                 selected == task && matches!(file, TaskFile::Notification(_))
             }

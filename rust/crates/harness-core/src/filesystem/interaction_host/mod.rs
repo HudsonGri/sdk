@@ -1,6 +1,6 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
-use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass, PreparationIo};
+use super::{DecodeReservation, FilesystemContentVerifier, FilesystemHost, InternalContentClass, PreparationIo};
 use crate::contract::capability;
 use crate::contract::next_revision;
 use crate::executor::with_history_io;
@@ -10,7 +10,7 @@ use crate::{
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, ApplyResult, Authority, AuthorityVerifier, Command, SchemaRegistry, Scope},
     interaction::{
-        ApprovalBinding, Interaction, InteractionKind, InteractionOutcome, InteractionResolution,
+        ApprovalBinding, Interaction, InteractionOutcome, InteractionResolution,
         InteractionResponse, InteractionTicket, ResolutionReceipt,
     },
     runtime::InteractionResolver,
@@ -34,7 +34,14 @@ pub struct FilesystemInteractionHost<P, A, O> {
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
+/// A verified projection and its sole live writer have the same lifetime.
+pub(in crate::filesystem) struct InteractionTransaction<'a, P> {
+    pub aggregate: (StreamAggregate<P>, Option<PreparationIo>),
+    _writer: acyclic_stream::OperationClaim<'a, Option<DecodeReservation<'a>>>,
+}
+
 mod content;
+pub(in crate::filesystem) use content::admit_interaction;
 mod publication;
 mod resolution;
 

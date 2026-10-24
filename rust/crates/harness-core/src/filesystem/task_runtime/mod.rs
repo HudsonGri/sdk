@@ -278,6 +278,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
 }
 
 struct TaskInteractionOwner {
+    approval_authority: Option<crate::core::AuthorityIssuer>,
     verifier: AuthorityVerifier,
     schemas: SchemaRegistry,
     scope: Scope,
