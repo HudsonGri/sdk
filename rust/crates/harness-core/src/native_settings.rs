@@ -59,7 +59,10 @@ impl SettingsConfig {
         Self::with_roots(workspace.into(), home, codex_home)
     }
 
-    fn with_roots(workspace: PathBuf, home: PathBuf, codex_home: PathBuf) -> Self {
+    /// Use only caller-owned settings roots, without consulting process user
+    /// directories or `CODEX_HOME`. Repository commands still require trust.
+    #[must_use]
+    pub fn with_roots(workspace: PathBuf, home: PathBuf, codex_home: PathBuf) -> Self {
         Self {
             workspace,
             home,

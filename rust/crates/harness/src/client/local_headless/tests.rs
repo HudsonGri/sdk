@@ -79,7 +79,7 @@ async fn unsaved_indeterminate_owner_result_preserves_exit_class() -> Result<()>
         .await?,
     );
     let operation = OperationId::new();
-    let mut client = LocalFileClient::open(local.clone(), operation).await?;
+    let mut client = FileHeadlessClient::open(local.clone(), operation).await?;
     // The recovery owner cannot establish an outcome. Its original request
     // remains in the outbox; no fabricated terminal execution file is written.
     drop(client.attachment.take());
@@ -147,3 +147,83 @@ proptest! {
 }
 
 mod restoration;
+
+#[tokio::test]
+async fn deployed_unsaved_owner_failure_drains_the_published_request() -> Result<()> {
+    use crate::task_volume::TaskVolume;
+    struct Remote {
+        volume: Arc<TaskVolume<acyclic_stream::MemoryStream>>,
+    }
+    impl RequestAdmission for Remote {
+        fn submit(
+            &self,
+            _: OperationId,
+            file: FileValue,
+        ) -> futures::future::LocalBoxFuture<'_, Result<()>> {
+            Box::pin(async move {
+                let cut = self.volume.snapshot(&Query::Root, 32).await?;
+                self.volume.append(cut.generation, &file).await?;
+                Ok(())
+            })
+        }
+        fn settled(
+            &self,
+            operation: OperationId,
+        ) -> futures::future::LocalBoxFuture<'_, Result<()>> {
+            Box::pin(async move { Err(Error::Indeterminate(operation)) })
+        }
+        fn drain_cut(&self, _: OperationId) -> futures::future::LocalBoxFuture<'_, Result<u64>> {
+            Box::pin(async move {
+                Ok(self
+                    .volume
+                    .snapshot(&Query::Root, 32)
+                    .await?
+                    .cursor
+                    .position)
+            })
+        }
+    }
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_stream::StreamPath::new("deployed-failure")
+                .map_err(|e| Error::Storage(e.to_string()))?,
+        )
+        .await?,
+    );
+    let operation = OperationId::new();
+    let query = ClientQuery::open(
+        &volume,
+        selection(operation)?,
+        None,
+        QueryViewLimits {
+            files: 32,
+            segments: 32,
+            bytes: OBSERVATION_BYTES,
+        },
+    )
+    .await?;
+    let mut client = FileHeadlessClient::deployed(operation, query, Box::new(Remote { volume }));
+    let mut output = Vec::new();
+    let result = super::super::run_headless(
+        &mut client,
+        prepare_local_prompt(operation, "owned")?,
+        operation,
+        &mut output,
+    )
+    .await?;
+    assert_eq!(result, HeadlessOutcome::Indeterminate);
+    assert_eq!(result.exit_code(), 4);
+    assert!(
+        client
+            .query
+            .file(&key(operation, TaskFile::Request)?)
+            .is_some()
+    );
+    assert!(
+        client.outcome()?.is_none(),
+        "no terminal file is fabricated"
+    );
+    assert!(String::from_utf8_lossy(&output).contains("owned"));
+    Ok(())
+}

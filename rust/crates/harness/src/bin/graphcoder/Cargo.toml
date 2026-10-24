@@ -13,6 +13,7 @@ name = "graphcoder"
 path = "../graphcoder.rs"
 
 [dependencies]
+acyclic-local-server = { path = "../../../../local-server", features = ["native-harness"] }
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 acyclic-stream = { path = "../../../../stream", default-features = false }
@@ -25,6 +26,8 @@ tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-actors = { path = "../../../../actors" }
+tonic.workspace = true
 acyclic-harness = { path = "../../..", features = ["test-support"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -39,6 +42,10 @@ path = "tests/cli.rs"
 [[test]]
 name = "tui"
 path = "tests/tui.rs"
+
+[[test]]
+name = "localhost"
+path = "tests/localhost.rs"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix-openpty = "0.2"

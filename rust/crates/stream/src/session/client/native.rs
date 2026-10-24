@@ -51,14 +51,18 @@ impl transport::Transport for Grpc {
         source: transport::Requests,
     ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
         Box::pin(async move {
-            let authorization =
-                grpc::request_authorization(self.authorization.as_ref(), self.credential.as_ref())
-                    .await
-                    .map_err(|error| grpc::status(&error))?;
             let mut request = Request::new(Input(source));
-            request
-                .metadata_mut()
-                .insert("authorization", authorization);
+            if self.authorization.is_some() || self.credential.is_some() {
+                let authorization = grpc::request_authorization(
+                    self.authorization.as_ref(),
+                    self.credential.as_ref(),
+                )
+                .await
+                .map_err(|error| grpc::status(&error))?;
+                request
+                    .metadata_mut()
+                    .insert("authorization", authorization);
+            }
             let response = wire::stream_session_service_client::StreamSessionServiceClient::new(
                 self.channel.clone(),
             )
@@ -87,10 +91,18 @@ impl Client {
         ca: Option<std::sync::Arc<[u8]>>,
         verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     ) -> Self {
+        let local_only = authorization.is_none() && credential.is_none();
         let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
             let verifier = verifier.clone();
             Box::pin(async move {
+                if local_only {
+                    return grpc::loopback_endpoint(&node.endpoint)
+                        .map_err(|_| StreamError::AccessDenied)?
+                        .connect()
+                        .await
+                        .map_err(|_| StreamError::Unavailable);
+                }
                 match verifier {
                     Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
                     None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,

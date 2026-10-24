@@ -111,7 +111,13 @@ impl<P: StreamProvider> ActorRuntime for Supervised<P> {
         Box::pin(async move {
             // Recheck authorization and ownership for every caller, even when
             // a completed worker already has a retained observation.
-            self.runtime.recover(placement.clone()).await?;
+            let snapshot = self.runtime.recover(placement.clone()).await?;
+            if snapshot.status == MachineStatus::Suspended && snapshot.pending.is_empty() {
+                // An idle actor is a valid recovery observation. Its subscription
+                // lives until a later event; waiting for that worker here would
+                // make an empty history depend on future client input.
+                return Ok(snapshot);
+            }
             self.supervise(placement)?.await.map_err(Error::Storage)
         })
     }

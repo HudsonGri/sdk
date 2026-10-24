@@ -100,6 +100,39 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .as_deref()
         .map(OperationId::parse)
         .transpose()?;
+    if let Some(endpoint) = &args.endpoint {
+        if args.prompt.is_none() && args.input_format != InputFormat::Jsonl {
+            return Err("localhost mode requires -p or --input-format jsonl".into());
+        }
+        let operation = operation.unwrap_or_else(OperationId::new);
+        let mut connection = phase(|| {
+            acyclic_local_server::harness::connect(
+                endpoint,
+                acyclic_local_server::Scope {
+                    account: args.account.as_bytes().to_vec(),
+                    namespace: args.namespace.clone(),
+                },
+                operation,
+            )
+        })
+        .await?;
+        let mut output = std::io::stdout().lock();
+        let outcome = if let Some(prompt) = &args.prompt {
+            let command = client::prepare_local_prompt(operation, prompt)?;
+            phase(|| client::run_headless(&mut connection, command, operation, &mut output)).await
+        } else {
+            phase(|| {
+                client::run_jsonl(
+                    &mut connection,
+                    operation,
+                    client::stdin_jsonl(),
+                    &mut output,
+                )
+            })
+            .await
+        };
+        return Ok(phase(|| connection.finish(outcome)).await?.exit_code());
+    }
     let credentials = args
         .credentials
         .as_deref()

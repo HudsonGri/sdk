@@ -128,7 +128,7 @@ async fn restored(completed: bool, gate_input: bool) -> bool {
     if completed {
         files.inner.append(cut, &result).await.unwrap();
     }
-    let mut client = Box::pin(LocalFileClient::open(local.clone(), operation))
+    let mut client = Box::pin(FileHeadlessClient::open(local.clone(), operation))
         .await
         .unwrap();
     if !completed {
@@ -177,7 +177,7 @@ impl std::io::Write for Sink {
 async fn teardown(output_failure: bool, join: bool) -> bool {
     let (_directory, local) = Box::pin(local()).await;
     let operation = OperationId::new();
-    let mut client = Box::pin(LocalFileClient::open(local.clone(), operation))
+    let mut client = Box::pin(FileHeadlessClient::open(local.clone(), operation))
         .await
         .unwrap();
     Box::pin(client.submit(&prepare_local_prompt(operation, "active").unwrap()))

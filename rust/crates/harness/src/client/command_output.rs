@@ -70,6 +70,7 @@ fn settled(outcome: &Outcome<'_>) -> Result<HeadlessOutcome> {
     }
 }
 
+/// Decode the canonical execution-result envelope for a headless client.
 pub(super) fn completion(bytes: &[u8]) -> Result<HeadlessOutcome> {
     let outcome: Outcome<'_> =
         serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))?;

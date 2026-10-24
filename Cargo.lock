@@ -415,9 +415,12 @@ dependencies = [
 name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-conformance",
  "acyclic-fs",
+ "acyclic-fs-wire",
  "acyclic-harness",
+ "acyclic-local-server",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -425,11 +428,13 @@ dependencies = [
  "axum",
  "blake3",
  "futures",
+ "hex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -669,6 +674,26 @@ dependencies = [
  "wasm-bindgen",
 ]
 
+[[package]]
+name = "acyclic-local-server"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-fs-wire",
+ "acyclic-harness",
+ "acyclic-harness-providers",
+ "acyclic-stream",
+ "blake3",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
 [[package]]
 name = "acyclic-machines"
 version = "0.2.0"
@@ -3024,8 +3049,10 @@ dependencies = [
 name = "graphcoder"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-harness",
  "acyclic-harness-providers",
+ "acyclic-local-server",
  "acyclic-stream",
  "acyclic-test-support",
  "alacritty_terminal",
@@ -3041,6 +3068,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tonic",
 ]
 
 [[package]]

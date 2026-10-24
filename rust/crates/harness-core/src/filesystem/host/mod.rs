@@ -24,6 +24,11 @@ pub struct FilesystemHost<A, O> {
 }
 
 impl<A, O> FilesystemHost<A, O> {
+    /// The canonical filesystem engine, shared with a host's wire service.
+    pub const fn filesystem(&self) -> &Fs<A, O> {
+        &self.filesystem
+    }
+
     /// Binds a deployment and funds its shared descriptor on the optional ledger.
     pub fn new(
         filesystem: Fs<A, O>,

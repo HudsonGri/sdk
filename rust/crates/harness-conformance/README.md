@@ -4,6 +4,7 @@ From the SDK root:
 
 ```sh
 cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate in-process --report out.json
+cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate localhost --report out.json
 cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate http://127.0.0.1:8080/contract --filter core/ --report out.json
 ```
 
@@ -14,6 +15,13 @@ are merged by the existing corpus loader; no case JSON needs changing.
 directly, providing a baseline for the Actors adapter. The existing
 `cargo test -p acyclic-harness --test main` path retains its native driver
 selection and scenario inputs.
+
+`--substrate localhost` starts the SDK's single-node server and deploys the same
+pinned Actors package over the canonical Actors API. Its Streams journal uses
+`LocalStream`; immutable payloads and observations use the canonical fs API.
+The server's directory stays owned by every provider clone through shutdown.
+It needs no Cloud code or credentials. The stock harness deployment and shipping
+GraphCoder client are described in [local-server](../local-server/README.md).
 
 The report has a sorted `records` array with one `case`, `status`, `reason` and
 `requires` entry per discovered JSON case, plus pass/fail/skip counts. Defaults

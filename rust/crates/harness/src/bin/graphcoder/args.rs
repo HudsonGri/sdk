@@ -11,6 +11,13 @@ pub enum InputFormat {
 #[derive(Debug, Parser)]
 #[command(version, about = "Coding agent over the harness client")]
 pub struct Args {
+    /// SDK localhost Actors/Streams/fs endpoint; execution stays on the server.
+    #[arg(long)]
+    pub endpoint: Option<String>,
+    #[arg(long, default_value = "local")]
+    pub account: String,
+    #[arg(long, default_value = "harness")]
+    pub namespace: String,
     #[arg(long, default_value = ".")]
     pub workspace: PathBuf,
     /// Instruction scope relative to the workspace root.

@@ -63,7 +63,10 @@ fn required<T>(value: Option<T>, name: &'static str) -> Result<T, Status> {
 fn status(error: &WorkspaceError) -> Status {
     match error {
         WorkspaceError::AccessDenied => Status::permission_denied(error.to_string()),
-        WorkspaceError::NotFound => Status::not_found(error.to_string()),
+        WorkspaceError::NotFound
+        | WorkspaceError::Filesystem(crate::FsError::Authority(
+            crate::AuthorityStoreError::Missing | crate::AuthorityStoreError::Retired,
+        )) => Status::not_found(error.to_string()),
         WorkspaceError::Name(_)
         | WorkspaceError::Path(_)
         | WorkspaceError::NamespacePath(_)

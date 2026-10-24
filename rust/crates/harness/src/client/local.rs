@@ -8,8 +8,8 @@ use std::sync::Arc;
 pub async fn connect_local(
     local: Arc<LocalHarness>,
     operation: OperationId,
-) -> Result<(super::LocalFileClient, OperationId)> {
-    match super::LocalFileClient::open(local.clone(), operation).await {
+) -> Result<(super::FileHeadlessClient, OperationId)> {
+    match super::FileHeadlessClient::open(local.clone(), operation).await {
         Ok(client) => Ok((client, operation)),
         Err(error) => {
             disconnect_local(local).await?;

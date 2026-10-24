@@ -107,7 +107,47 @@ impl<P> Clone for Service<P> {
     }
 }
 
+/// Validate the credential-free SDK transport boundary before connecting.
+/// DNS names, user information, routing paths and non-loopback IPs are refused.
+pub fn loopback_endpoint(endpoint: &str) -> Result<Endpoint, ConnectError> {
+    let configured = Endpoint::from_shared(endpoint.to_owned())?;
+    let uri = configured.uri();
+    if uri.scheme_str() != Some("http")
+        || uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@'))
+        || uri.path() != "/"
+        || uri.query().is_some()
+        || !uri
+            .host()
+            .and_then(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback())
+    {
+        return Err(ConnectError::InsecureEndpoint);
+    }
+    Ok(configured)
+}
+
 impl Client {
+    /// Connect without credentials to a numeric loopback HTTP endpoint.
+    /// Production and DNS endpoints must use the authenticated TLS constructors.
+    pub async fn connect_loopback(endpoint: &str) -> Result<Self, ConnectError> {
+        let configured = loopback_endpoint(endpoint)?;
+        Ok(Self {
+            channel: configured.connect().await?,
+            authorization: None,
+            credential: None,
+            acknowledge_deliveries: false,
+            operation_claims: Arc::new(crate::OperationClaims::default()),
+            sessions: Arc::new(crate::session::Cache::new()),
+            session_ca: None,
+            session_verifier: None,
+        })
+    }
     /// Uses a request-local credential while retaining this client's TLS channel.
     pub fn with_credential(&self, bearer_token: &str) -> Result<Self, ConnectError> {
         let mut client = self.clone();
@@ -233,6 +273,9 @@ impl Client {
     }
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
+        if self.authorization.is_none() && self.credential.is_none() {
+            return Ok(Request::new(body));
+        }
         let authorization =
             request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(body);

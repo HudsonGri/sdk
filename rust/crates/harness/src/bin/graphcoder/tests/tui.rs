@@ -16,11 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[expect(
-    clippy::disallowed_macros,
-    reason = "Cargo-provided executable metadata for this integration crate"
-)]
-const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
+mod build_metadata;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const ANSWERS: [&str; 3] = ["ALPHA_REPLY", "BRAVO_REPLY", "CHARLIE_REPLY"];
 
@@ -247,7 +243,7 @@ fn launch(
     let child = Running(
         Command::new("setsid")
             .arg("--ctty")
-            .arg(EXECUTABLE)
+            .arg(build_metadata::executable())
             .arg("--workspace")
             .arg(workspace)
             .arg("--catalog")

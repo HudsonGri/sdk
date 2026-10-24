@@ -62,6 +62,7 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         Original(usize),
         Hosted(runner::Report),
         Local(runner::Report),
+        Localhost(runner::Report),
     }
     // These fixtures share no state or observations. Give each traversal its
     // own runnable task instead of a serial original-driver phase followed by
@@ -89,12 +90,28 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         .await
         .map(Traversal::Local)
     });
-    let (mut count, mut report, mut local) = (None, None, None);
+    traversals.spawn(async {
+        let host = Arc::new(substrate::localhost::Localhost::start().await?);
+        let result = runner::run(
+            &corpus(),
+            host.clone(),
+            None,
+            std::thread::available_parallelism()?.get(),
+        )
+        .await;
+        Arc::into_inner(host)
+            .ok_or("localhost still borrowed")?
+            .shutdown()
+            .await?;
+        result.map(Traversal::Localhost)
+    });
+    let (mut count, mut report, mut local, mut localhost) = (None, None, None, None);
     while let Some(result) = traversals.join_next().await {
         match result?? {
             Traversal::Original(value) => count = Some(value),
             Traversal::Hosted(value) => report = Some(value),
             Traversal::Local(value) => local = Some(value),
+            Traversal::Localhost(value) => localhost = Some(value),
         }
     }
     let count = count.ok_or("original traversal did not return its case count")?;
@@ -115,7 +132,21 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         "{} cases: {} passed, {} skipped",
         count, report.passed, report.skipped
     );
-    assert_eq!(serde_json::to_value(local)?, serde_json::to_value(report)?);
+    assert_eq!(serde_json::to_value(local)?, serde_json::to_value(&report)?);
+    let localhost = localhost.ok_or("localhost report missing")?;
+    for record in &localhost.records {
+        assert_ne!(
+            record.status,
+            Status::Fail,
+            "{}: {}",
+            record.case,
+            record.reason
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(localhost)?,
+        serde_json::to_value(report)?
+    );
     Ok(())
 }
 

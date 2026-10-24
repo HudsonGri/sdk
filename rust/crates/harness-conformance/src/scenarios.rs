@@ -30,30 +30,45 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
     let report = report.ok_or(
-        "usage: scenarios --substrate <in-process|local|URL> [--filter TEXT] --report FILE",
+        "usage: scenarios --substrate <in-process|local|localhost|URL> [--filter TEXT] --report FILE",
     )?;
-    let substrate: Arc<dyn Substrate> = match selected.as_str() {
-        "in-process" => Arc::new(substrate::InProcess),
-        "local" => Arc::new(substrate::Local),
-        _ => {
-            let http = substrate::remote::Http::new(selected)?;
-            Arc::new(substrate::Actors {
-                runtime: http.clone(),
-                volume: http,
-                bindings: substrate::fixture_bindings(),
-            })
-        }
-    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let concurrency = std::thread::available_parallelism()?.get();
-    let result = runtime.block_on(runner::run(
-        &root,
-        substrate,
-        filter.as_deref(),
-        concurrency,
-    ))?;
+    let result = runtime.block_on(async {
+        let localhost = if selected == "localhost" {
+            Some(Arc::new(substrate::localhost::Localhost::start().await?))
+        } else {
+            None
+        };
+        let substrate: Arc<dyn Substrate> = match selected.as_str() {
+            "in-process" => Arc::new(substrate::InProcess),
+            "local" => Arc::new(substrate::Local),
+            "localhost" => localhost.as_ref().ok_or("localhost not started")?.clone(),
+            _ => {
+                let http = substrate::remote::Http::new(selected)?;
+                Arc::new(substrate::Actors {
+                    runtime: http.clone(),
+                    volume: http,
+                    bindings: substrate::fixture_bindings(),
+                })
+            }
+        };
+        let result = runner::run(
+            &root,
+            substrate,
+            filter.as_deref(),
+            std::thread::available_parallelism()?.get(),
+        )
+        .await;
+        if let Some(localhost) = localhost {
+            Arc::into_inner(localhost)
+                .ok_or("localhost still borrowed")?
+                .shutdown()
+                .await?;
+        }
+        result
+    })?;
     std::fs::write(report, serde_json::to_vec_pretty(&result)?)?;
     println!(
         "{} passed, {} failed, {} skipped",

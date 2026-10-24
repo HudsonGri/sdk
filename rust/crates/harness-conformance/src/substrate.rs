@@ -21,6 +21,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// SDK single-node deployment using canonical Streams, fs and Actors services.
+pub mod localhost;
 /// HTTP bridge for remote Actors and fs contract implementations.
 pub mod remote;
 mod supervised;

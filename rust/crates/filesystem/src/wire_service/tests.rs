@@ -6,6 +6,41 @@ include!("access_tests.rs");
 #[path = "metadata_tests.rs"]
 mod metadata_tests;
 
+#[tokio::test]
+async fn missing_workspace_is_not_a_backend_outage() -> Result<(), Box<dyn std::error::Error>> {
+    let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
+    let absent = service
+        .open_workspace(Request::new(wire::OpenWorkspaceRequest {
+            selector: Some(wire::open_workspace_request::Selector::Name(
+                "absent".into(),
+            )),
+        }))
+        .await
+        .err()
+        .ok_or("missing workspace unexpectedly opened")?;
+    assert_eq!(absent.code(), tonic::Code::NotFound);
+    // Typed absence covers both never-created and permanently retired authorities.
+    for cause in [
+        crate::AuthorityStoreError::Missing,
+        crate::AuthorityStoreError::Retired,
+    ] {
+        assert_eq!(
+            status(&WorkspaceError::Filesystem(crate::FsError::Authority(
+                cause
+            )))
+            .code(),
+            tonic::Code::NotFound
+        );
+    }
+    // Negative control: an actual backend rejection must never become an absent
+    // result that callers could overwrite while reconciling an existing effect.
+    let unavailable = WorkspaceError::Filesystem(crate::FsError::Authority(
+        crate::AuthorityStoreError::RejectedStatic("backend unavailable"),
+    ));
+    assert_eq!(status(&unavailable).code(), tonic::Code::Unavailable);
+    Ok(())
+}
+
 struct TestIssuer;
 
 struct TestSourceProvider {

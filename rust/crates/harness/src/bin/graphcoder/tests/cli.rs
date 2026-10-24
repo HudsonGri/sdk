@@ -99,7 +99,7 @@ async fn execute_with(
         Vec::new()
     };
     input.write_all(&request).unwrap();
-    let mut command = Command::new(build_metadata::EXECUTABLE);
+    let mut command = Command::new(build_metadata::executable());
     command
         .env("CODEX_HOME", settings.join("codex-home"))
         .env("HOME", settings)
@@ -512,7 +512,7 @@ fn catalog_parse_error_reports_field_and_line_through_binary() {
         "{\n  \"broken\": {\n    \"adapter\": 42\n  }\n}\n",
     )
     .unwrap();
-    let output = Command::new(build_metadata::EXECUTABLE)
+    let output = Command::new(build_metadata::executable())
         .env("CODEX_HOME", fixture.path())
         .env("XDG_DATA_HOME", fixture.path())
         .env_remove("GRAPHCODER_MODEL")
@@ -536,7 +536,7 @@ fn catalog_missing_file_and_unknown_model_fail_through_binary() {
         if let Some(document) = document {
             std::fs::write(&catalog, document).unwrap();
         }
-        let output = Command::new(build_metadata::EXECUTABLE)
+        let output = Command::new(build_metadata::executable())
             .env("CODEX_HOME", fixture.path())
             .env("XDG_DATA_HOME", fixture.path())
             .env_remove("GRAPHCODER_MODEL")
@@ -586,13 +586,7 @@ async fn catalog_unknown_output_still_initializes_compaction_and_reaches_http() 
     scenario(Mode::UnknownOutput).await;
 }
 
-mod build_metadata {
-    #[expect(
-        clippy::disallowed_macros,
-        reason = "Cargo-provided executable metadata for this integration crate"
-    )]
-    pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
-}
+mod build_metadata;
 
 // A process killed during a tool effect leaves the workspace usable by the next prompt.
 const EFFECT: &str = "effect.txt";
@@ -615,7 +609,7 @@ fn graphcoder(
     operation: OperationId,
     prompt: Option<&str>,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    let mut command = Command::new(build_metadata::executable());
     command
         .current_dir(workspace)
         .arg("--workspace")

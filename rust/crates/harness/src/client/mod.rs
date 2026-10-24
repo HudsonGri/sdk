@@ -195,7 +195,9 @@ pub use native_input::next_file_tui_event;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local_headless;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};
+pub use local_headless::{
+    FileHeadlessClient, RequestAdmission, admit_request, parse_local_request, prepare_local_prompt,
+};
 
 #[cfg(all(
     feature = "tui",
