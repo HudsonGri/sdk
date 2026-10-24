@@ -11,6 +11,72 @@ fn fixture() -> AuthorityIssuer {
 }
 
 #[test]
+fn alternating_live_scopes_share_certificate_authentication_and_recheck_authority() -> Result<()> {
+    let issuer = fixture();
+    let grants = Capabilities::new(["event:append"]);
+    let root = issuer.issue("root", &grants, None, None, &mut None)?;
+    let first = issuer.attenuate(&root, "first", &grants)?;
+    let second = issuer.attenuate(&root, "second", &grants)?;
+    let verifier = issuer.verifier(&mut None)?;
+    verifier.verify(&first, &mut None)?;
+    let wire = acyclic_auth::authority::decode_capability(&first.workload).map_err(unauthorized)?;
+    let scopes = [&second, &first, &second];
+    let (result, signatures) = acyclic_test_support::differential::observe(
+        || (),
+        |()| -> Result<()> {
+            for scope in scopes {
+                verifier.verify(scope, &mut None)?;
+            }
+            Ok(())
+        },
+    );
+    result?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert_eq!(signatures.len(), wire.blocks.len() * scopes.len());
+    // Restoring a fresh certificate owner for each scope performs the old
+    // certificate signatures in addition to the mandatory workload signatures.
+    let (result, repeated) = acyclic_test_support::differential::observe(
+        || (),
+        |()| -> Result<()> {
+            let trust = issuer.public_workload_trust()?;
+            for scope in scopes {
+                verify_trusted(&trust, issuer.audience(), scope, now(), &mut None)?;
+            }
+            Ok(())
+        },
+    );
+    result?;
+    let repeated: Vec<acyclic_auth::crypto::SignatureVerification> = repeated;
+    assert!(repeated.len() > signatures.len());
+    let mut forged = first.clone();
+    *forged.workload.last_mut().unwrap() ^= 1;
+    assert!(verifier.verify(&forged, &mut None).is_err());
+    verifier
+        .public
+        .trust
+        .write()
+        .map_err(unauthorized)?
+        .minimum_key_epoch = 2;
+    for scope in [&first, &second] {
+        assert!(verifier.verify(scope, &mut None).is_err());
+    }
+    verifier
+        .public
+        .trust
+        .write()
+        .map_err(unauthorized)?
+        .minimum_key_epoch = 1;
+    for scope in [&first, &second] {
+        verifier.verify(scope, &mut None)?;
+    }
+    issuer.revoke_workload(&root)?;
+    for scope in [&first, &second] {
+        assert!(verifier.verify(scope, &mut None).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn retained_authentication_rechecks_exact_claims_current_trust_time_and_audience() -> Result<()> {
     let issuer = fixture();
     let verifier = issuer.verifier(&mut None)?;
