@@ -214,3 +214,76 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
     }
     Ok(())
 }
+
+fn retained_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+    std::mem::size_of::<T>()
+}
+
+#[test]
+fn publication_boundaries_retain_only_owned_polling_handles() {
+    type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
+    let staging = retained_operation_bytes(
+        |(transaction, cancellation): (
+            &'static mut Transaction,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            Host::stage_unmeasured(
+                transaction,
+                &[],
+                false,
+                FilePublication::Replace(None),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+        },
+    );
+    let publication = retained_operation_bytes(
+        |(host, workspace, key): (
+            &'static Host,
+            &'static WorkspaceRef,
+            &'static IdempotencyKey,
+        )| {
+            host.apply_generation_unmeasured(
+                workspace,
+                None,
+                &[],
+                key,
+                false,
+                FilePublication::Replace(None),
+            )
+        },
+    );
+    let content = retained_operation_bytes(
+        |(host, volume, grant, key): (
+            &'static Host,
+            &'static VolumeRef,
+            &'static ContentGrant,
+            &'static IdempotencyKey,
+        )| {
+            let input: &'static [u8] = b"";
+            host.put_content_impl(
+                volume,
+                grant,
+                "content",
+                input,
+                "text/plain",
+                "content",
+                0,
+                key,
+                None,
+                None,
+                None,
+                None,
+            )
+        },
+    );
+    eprintln!(
+        "publication retained bytes: staging={staging} publication={publication} content={content}"
+    );
+    assert!(
+        [staging, publication, content]
+            .into_iter()
+            .all(|bytes| bytes <= 512),
+        "publication embeds a concrete child operation in its caller"
+    );
+}
