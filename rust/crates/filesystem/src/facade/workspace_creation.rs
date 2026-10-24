@@ -100,21 +100,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id,
             )?;
             // A recovered creation of this operation must also be the one
-            // these files yield, so no retry with other (or no) files adopts it.
-            if recovered
-                && self
-                    .initial_generation_root(
+            // these files yield, so no retry with other (or no) files adopts
+            // it. Recovery decides that by reads and never writes.
+            if recovered {
+                let before = super::read_accounting::readonly_standalone_live(&accounting);
+                let holds = self
+                    .initial_generation_matches(
                         id.volume_id(),
-                        initialization,
-                        Some(operation_id),
+                        config,
+                        creation.initial_generation_root,
                         files,
                         &mut accounting,
                         cancellation,
                     )
-                    .await?
-                    != creation.initial_generation_root
-            {
-                return Err(E::from(FsError::CreationRejected));
+                    .await;
+                super::read_accounting::readonly_cleanup_standalone(&mut accounting, before, 0)?;
+                if !holds? {
+                    return Err(E::from(FsError::CreationRejected));
+                }
             }
             let workspace = crate::Workspace {
                 name,
