@@ -59,6 +59,12 @@ pub(super) struct Display {
     key: FileKey,
 }
 impl Views {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(super) fn native_index_bytes(&self) -> usize {
+        self.order.len() * std::mem::size_of::<((Component, u8, u64), FileKey)>()
+            + self.overviews.len() * std::mem::size_of::<(Component, FileKey)>()
+    }
+
     pub(super) fn prepare(file: &FileValue, position: u64) -> Option<Display> {
         let (FileKey::Task { task, .. }, Some(kind)) = (&file.key, file_kind(file)) else {
             return None;
@@ -129,6 +135,12 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             }
             files.push(stored.file.clone());
         }
+        for pending in index.approvals.files(index, task) {
+            if files.len() == maximum {
+                return Err(Error::LimitExceeded);
+            }
+            files.push(pending);
+        }
         return Ok(files);
     }
     if let Query::TaskView { task, recent, .. } = query {
@@ -179,14 +191,24 @@ pub(super) fn observe(
     };
     let snapshot = observation.snapshot.as_mut().ok_or(Error::ResetRequired)?;
     let window = Window::new(&mut snapshot.files, maximum, bytes, recent);
+    if !window.within_limits() {
+        return Err(Error::LimitExceeded);
+    }
+    let active_approvals = matches!(query, Query::TaskSession { .. });
     observation.changes = Box::pin(futures::stream::try_unfold(
         (observation.changes, window),
-        |(mut changes, mut window)| async move {
+        move |(mut changes, mut window)| async move {
             let Some(change) = changes.next().await else {
                 return Ok(None);
             };
             let mut change = change?;
+            if active_approvals {
+                change = change.active_approval_view(window.keys());
+            }
             window.apply(&mut change);
+            if !window.within_limits() {
+                return Err(Error::LimitExceeded);
+            }
             Ok(Some((change, (changes, window))))
         },
     ));

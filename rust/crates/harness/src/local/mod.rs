@@ -24,6 +24,7 @@ use std::{
 };
 
 mod admission;
+pub(crate) mod approvals;
 mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
@@ -73,6 +74,8 @@ pub struct LocalHarness {
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     signed: Scope,
+    approval_policy: crate::approvals::ApprovalPolicy,
+    approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     model: Model,
     /// Unbound: each model command binds it to its executing task's reader.
     provider: Arc<dyn ModelProvider>,

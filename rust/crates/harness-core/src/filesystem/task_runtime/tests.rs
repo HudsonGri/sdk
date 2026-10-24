@@ -464,6 +464,13 @@ impl Fixture {
             .ok_or_else(|| Error::NotFound("fixture task".into()))
     }
     async fn runtime(&self, io: Option<&PreparationIo>) -> Result<Runtime> {
+        self.runtime_with_policy(io, None).await
+    }
+    async fn runtime_with_policy(
+        &self,
+        io: Option<&PreparationIo>,
+        policy: Option<Arc<dyn ToolPolicy>>,
+    ) -> Result<Runtime> {
         FilesystemTaskRuntime::open(
             self.stream.clone(),
             self.filesystem.clone(),
@@ -484,7 +491,7 @@ impl Fixture {
             1,
             65_536,
             self.clock.clone(),
-            None,
+            policy,
             &[],
             &ResumableToolRegistry::default(),
             io,
@@ -771,6 +778,7 @@ impl ModelProvider for PendingModel {
 mod mail_tests;
 
 mod admission;
+mod approvals;
 mod future_sizes;
 mod manifest;
 mod model;
