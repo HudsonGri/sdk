@@ -78,6 +78,7 @@ def publish(destination, data, mode=0o555):
 
 def qualify(source, user):
     commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs'],
+                [NODE, '--test', 'receipt-outcome.test.mjs'],
                 ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
                 ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
                 ['python3', 'prune.test.py'],

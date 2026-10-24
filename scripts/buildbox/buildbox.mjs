@@ -1044,7 +1044,7 @@ export function beginReceipt(argv) {
 }
 export function endReceipt(ctx, rc) {
   return finish(ctx.metaFile, rc, ctx.termination || ctx.remote?.termination || (cause || rc === 224 || rc === 222 ? 'infra' : rc >= 128 ? 'interrupted' : 'command'),
-    { reason: ctx.failure?.cause || cause || null, detail: ctx.failure?.detail || causeDetail || null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
+    { reason: ctx.failure?.cause || cause || ctx.remote?.reason || null, detail: ctx.failure?.detail || causeDetail || ctx.remote?.detail || null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
 }
 export async function run(argv, sharedReceipt) {
   if (sharedReceipt) return runTracked(argv, sharedReceipt);

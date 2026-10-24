@@ -80,7 +80,7 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(list(Path(temporary).iterdir()),[tool])
 
     def test_cache_and_retirement_controls_are_mandatory_before_publication(self):
-        for suite in ['prune.test.py','cargo_cache.test.py']:
+        for suite in ['prune.test.py','cargo_cache.test.py','receipt-outcome.test.mjs']:
             with self.subTest(suite=suite):
                 calls=[]
                 def run(command,**kwargs):
@@ -91,7 +91,8 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(calls[-1][-1],suite)
                 # The former omission admitted an otherwise failing suite.
                 old=Path(installer.__file__).read_text().replace(
-                    ",\n                ['python3', '"+suite+"']",'')
+                    ",\n                ['python3', '"+suite+"']",'').replace(
+                    ",\n                [NODE, '--test', '"+suite+"']",'')
                 namespace={};exec(compile(old,'old-qualification','exec'),namespace)
                 with patch.object(installer.subprocess,'run',side_effect=run):namespace['qualify'](Path('/fixture'),'var')
 
