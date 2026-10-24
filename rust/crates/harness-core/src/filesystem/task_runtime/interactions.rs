@@ -92,7 +92,19 @@ where
             let previous = files
                 .snapshot(&crate::task_volume::Query::File(file.key.clone()), 1)
                 .await?;
-            if !matches!(previous.files.as_slice(), [previous] if previous.bytes == file.bytes) {
+            let [previous] = previous.files.as_slice() else {
+                return Err(Error::Conflict("task is already terminal".into()));
+            };
+            // The owner stages the decoded decision in its own JSON encoding.
+            // Compare that exact value: an already admitted client's bytes may
+            // differ in whitespace or key order even on an identical retry.
+            if crate::interaction::ApprovalDecisionFile::decode(
+                &previous.bytes,
+                self.maximum_payload_bytes,
+            )? != crate::interaction::ApprovalDecisionFile::decode(
+                &file.bytes,
+                self.maximum_payload_bytes,
+            )? {
                 return Err(Error::Conflict("task is already terminal".into()));
             }
         }
