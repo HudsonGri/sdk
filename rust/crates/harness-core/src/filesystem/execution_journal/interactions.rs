@@ -27,7 +27,10 @@ where
                 // Only the complete approval publication can certify a
                 // verdict. Its explicit receipts still flush every staged
                 // write before any caller receives the decision.
-                acyclic_stream::deferring_durability(resolution).await?;
+                #[cfg(feature = "filesystem-local")]
+                let resolution =
+                    acyclic_stream::deferring_provider_durability(&*self.stream, resolution);
+                resolution.await?;
                 self.published_decision(id, None).await?;
             } else {
                 resolution.await?;

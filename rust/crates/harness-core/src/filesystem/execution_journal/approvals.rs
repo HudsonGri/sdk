@@ -125,14 +125,12 @@ where
         // The resolution's filesystem staging and canonical append are one
         // publication. Its explicit receipt below remains the durability gate;
         // intermediate appends must not each submit a separate device flush.
-        acyclic_stream::deferring_durability(host.resolve_decision(
-            id,
-            decision,
-            responder,
-            owner,
-            &mut transaction,
-        ))
-        .await?;
+        let resolution = host.resolve_decision(id, decision, responder, owner, &mut transaction);
+        // Only this provider owner may share its receipt. A separately stored
+        // filesystem authority must retain its own publication barrier.
+        #[cfg(feature = "filesystem-local")]
+        let resolution = acyclic_stream::deferring_provider_durability(&*self.stream, resolution);
+        resolution.await?;
         self.published_decision_from(id, None, transaction.aggregate, None)
             .await?;
         if let Some(owner) = owner {

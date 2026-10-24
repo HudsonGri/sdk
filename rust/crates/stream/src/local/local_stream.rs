@@ -252,7 +252,7 @@ impl LocalStream {
         {
             return Err(self.cut_crash(cut.as_ref()).await);
         }
-        let required = !deferred();
+        let required = !deferred(self);
         let journal = self.inner.journal.clone();
         let persist = spawn_blocking(move || {
             journal
@@ -348,7 +348,7 @@ impl LocalStream {
     // Called under visibility before releasing an ordinary replay. A deferred
     // original must become required, without appending a duplicate frame.
     fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
-        if REQUIRE && !deferred() {
+        if REQUIRE && !deferred(self) {
             let mut journal = self
                 .inner
                 .journal
@@ -443,7 +443,7 @@ impl LocalStream {
         })?;
         let stream = self.clone();
         // The mutation owns completion as well as durability, even if its caller is dropped.
-        let deferred = deferred();
+        let deferred = current_deferral();
         let operation = span.clone();
         spawn(DEFERRED.scope(deferred, async move {
             let result = operation

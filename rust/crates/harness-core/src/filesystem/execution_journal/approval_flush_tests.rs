@@ -23,6 +23,47 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Flushes {
 
 #[test]
 fn approval_settlement_groups_staging_but_keeps_both_durable_proofs() -> Result<()> {
+    settlement_flushes(true)
+}
+
+#[test]
+fn approval_settlement_keeps_a_foreign_filesystem_authority_durable() -> Result<()> {
+    settlement_flushes(false)
+}
+
+fn settlement_flushes(shared_provider: bool) -> Result<()> {
+    // The callsite registry belongs to the process. Give this observer one
+    // process and install it before any provider/span is constructed.
+    let test = std::thread::current()
+        .name()
+        .ok_or_else(|| Error::Storage("flush proof has no libtest identity".into()))?
+        .to_owned();
+    const CHILD: &str = "ACYCLIC_APPROVAL_FLUSH_PROOF";
+    if std::env::var(CHILD).as_deref() != Ok(test.as_str()) {
+        let mut command = std::process::Command::new(
+            std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            command.creation_flags(0x08000000);
+        }
+        let output = command
+            .args([&test, "--exact", "--test-threads=1", "--nocapture"])
+            .env(CHILD, &test)
+            .output()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains("1 passed; 0 failed"), "{stdout}\n{stderr}");
+        assert_eq!(stderr.matches("APPROVALS_SETTLEMENT_FLUSHES").count(), 2);
+        eprint!("{stderr}");
+        return Ok(());
+    }
+    let flushes = Flushes::default();
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(flushes.clone()))
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -34,9 +75,20 @@ fn approval_settlement_groups_staging_but_keeps_both_durable_proofs() -> Result<
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         );
+        let authority_directory =
+            tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let authority = if shared_provider {
+            stream.clone()
+        } else {
+            Arc::new(
+                acyclic_stream::LocalStream::open(authority_directory.path(), Default::default())
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            )
+        };
         let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let backend = acyclic_fs::Fs::new(
-            acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+            acyclic_fs::StreamAuthorityStore::new(authority),
             acyclic_fs::LogicalObjectStore::new(Arc::new(objects), bucket),
             acyclic_fs::EmbeddedCapabilities::MEMORY,
         );
@@ -112,10 +164,7 @@ fn approval_settlement_groups_staging_but_keeps_both_durable_proofs() -> Result<
                         None,
                     )?,
                 );
-                let flushes = Flushes::default();
-                let subscriber = tracing::subscriber::set_default(
-                    tracing_subscriber::registry().with(flushes.clone()),
-                );
+                flushes.0.store(0, Ordering::Relaxed);
                 match entry {
                     0 => journal.write_approval_decision(&decision, &human).await?,
                     1 => {
@@ -146,7 +195,6 @@ fn approval_settlement_groups_staging_but_keeps_both_durable_proofs() -> Result<
                         journal.published_decision(id, None).await?;
                     }
                 }
-                drop(subscriber);
                 let count = flushes.0.load(Ordering::Relaxed);
                 assert!(count > 0, "the native flush trace was not observed");
                 measured.push(count);
@@ -177,16 +225,21 @@ fn approval_settlement_groups_staging_but_keeps_both_durable_proofs() -> Result<
                     })
                 );
             }
-            assert!(
-                measured[0] < measured[2],
-                "file settlement did not group staging: {measured:?}"
-            );
-            assert!(
-                measured[1] < measured[2],
-                "direct settlement did not group staging: {measured:?}"
-            );
+            if shared_provider {
+                assert!(
+                    measured[0] < measured[2],
+                    "file settlement did not group staging: {measured:?}"
+                );
+                assert!(
+                    measured[1] < measured[2],
+                    "direct settlement did not group staging: {measured:?}"
+                );
+            } else {
+                assert_eq!(measured[0], measured[2], "file settlement deferred a foreign authority");
+                assert_eq!(measured[1], measured[2], "direct settlement deferred a foreign authority");
+            }
             eprintln!(
-                "APPROVALS_SETTLEMENT_FLUSHES approved={approved} file={} direct={} former={}",
+                "APPROVALS_SETTLEMENT_FLUSHES shared={shared_provider} approved={approved} file={} direct={} former={}",
                 measured[0], measured[1], measured[2]
             );
         }
