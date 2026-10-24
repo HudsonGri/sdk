@@ -8,50 +8,6 @@
 //! entries in each `clippy.toml`.
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy)]
-enum EnumeratedKind {
-    Plain { directory: bool },
-    FollowPath,
-}
-
-impl EnumeratedKind {
-    fn is_directory(self, follow: impl FnOnce() -> bool) -> bool {
-        match self {
-            Self::Plain { directory } => directory,
-            Self::FollowPath => follow(),
-        }
-    }
-}
-
-#[cfg(windows)]
-fn source_directory(entry: &std::fs::DirEntry) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-    // Windows enumeration owns this metadata without another system call.
-    // Every reparse tag (including junctions) keeps the original path lookup;
-    // missing enumeration metadata keeps its original behavior as well.
-    let kind = match entry.metadata() {
-        Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 => {
-            EnumeratedKind::Plain {
-                directory: metadata.is_dir(),
-            }
-        }
-        _ => EnumeratedKind::FollowPath,
-    };
-    kind.is_directory(|| entry.path().is_dir())
-}
-
-/// Source trees scanned from the repository root.
-const ROOTS: [&str; 7] = [
-    "rust/crates",
-    "rust/fuzz",
-    "rust/verification",
-    "plugin",
-    "examples",
-    "compatibility",
-    "fuzz",
-];
-
 /// Raw file-lock spellings.
 const RAW_LOCKS: [&str; 12] = [
     "fs2",
@@ -95,19 +51,19 @@ const ALLOWED: [(&str, &str, usize); 4] = [
 ];
 
 /// Compares raw-lock counts with the exact allowance, in both directions.
-fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<String> {
+fn violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<String> {
     let mut found = BTreeMap::new();
     for (path, text) in files {
         for spelling in RAW_LOCKS {
             let count = text.matches(spelling).count();
             if count > 0 {
-                found.insert((path.clone(), spelling), count);
+                found.insert((path, spelling), count);
             }
         }
     }
     let mut violations = Vec::new();
     for (path, spelling, count) in ALLOWED {
-        match found.remove(&(path.to_owned(), spelling)) {
+        match found.remove(&(path, spelling)) {
             Some(actual) if actual == count => (),
             actual => violations.push(format!(
                 "{path}: {spelling} expected {count}, found {}",
@@ -123,86 +79,38 @@ fn violations<'a>(files: impl IntoIterator<Item = (String, &'a str)>) -> Vec<Str
     violations
 }
 
-fn sources() -> &'static [(String, String)] {
-    static FILES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+fn sources() -> &'static [(&'static str, &'static str)] {
+    static FILES: std::sync::OnceLock<Vec<(&str, &str)>> = std::sync::OnceLock::new();
     FILES.get_or_init(|| {
-        let root = acyclic_test_support::source_path("");
-        let mut files = Vec::new();
-        let mut pending = ROOTS.map(|name| root.join(name)).to_vec();
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(&directory).expect("source directory") {
-                let entry = entry.expect("source entry");
-                let path = entry.path();
-                #[cfg(windows)]
-                let directory = source_directory(&entry);
-                #[cfg(not(windows))]
-                let directory = path.is_dir();
-                if directory {
-                    let name = path.file_name().and_then(|name| name.to_str());
-                    if !matches!(name, Some("target" | "node_modules" | "vendor" | ".git")) {
-                        pending.push(path);
-                    }
-                    continue;
-                }
-                if path.extension().is_none_or(|extension| extension != "rs") {
-                    continue;
-                }
-                let relative = path
-                    .strip_prefix(&root)
-                    .expect("repository source")
-                    .to_str()
-                    .expect("UTF-8 source path")
-                    .replace('\\', "/");
-                // This scan spells every raw lock it forbids.
-                if relative == "rust/crates/native-runtime/src/file_lock_sources_tests.rs" {
-                    continue;
-                }
-                files.push((relative, std::fs::read_to_string(&path).expect("source")));
-            }
-        }
-        files
+        acyclic_test_support::repository_rust_sources()
+            .iter()
+            .copied()
+            // This policy spells its forbidden inputs; every other Rust source
+            // in every original root remains subject to the exact allowance.
+            .filter(|(path, _)| {
+                *path != "rust/crates/native-runtime/src/file_lock_sources_tests.rs"
+            })
+            .collect()
     })
 }
 
 #[test]
-fn enumerated_source_kinds_preserve_resolution_without_reopening_plain_entries() {
-    use std::cell::Cell;
-    let mut old_shape_detected = false;
-    for kind in [
-        EnumeratedKind::Plain { directory: false },
-        EnumeratedKind::Plain { directory: true },
-        EnumeratedKind::FollowPath,
-    ] {
-        for followed in [false, true] {
-            let calls = Cell::new(0);
-            let follow = || {
-                calls.set(calls.get() + 1);
-                followed
-            };
-            let result = kind.is_directory(follow);
-            let (expected, lookups) = match kind {
-                EnumeratedKind::Plain { directory } => (directory, 0),
-                EnumeratedKind::FollowPath => (followed, 1),
-            };
-            assert_eq!((result, calls.get()), (expected, lookups));
-            calls.set(0);
-            // The former path.is_dir route reopens every ordinary entry.
-            let old = follow();
-            old_shape_detected |= (old, calls.get()) != (expected, lookups);
-        }
+fn compiled_source_policy_borrows_every_input_without_target_file_opens() {
+    let files = sources();
+    assert!(files.len() > 3000, "source catalog lost its roots");
+    for (path, text) in files {
+        let original = acyclic_test_support::repository_rust_source(std::path::Path::new(path))
+            .expect("compiled source exists");
+        assert!(std::ptr::eq(text.as_ptr(), original.as_ptr()));
+        assert_eq!(*text, original);
     }
-    assert!(old_shape_detected);
 }
 
 #[test]
 fn every_file_lock_goes_through_the_explicitly_releasing_guard() {
     let files = sources();
     assert!(files.len() > 3000, "source scan lost its roots");
-    let found = violations(
-        files
-            .iter()
-            .map(|(path, text)| (path.clone(), text.as_str())),
-    );
+    let found = violations(files.iter().copied());
     assert!(found.is_empty(), "raw file locks: {found:#?}");
 }
 
@@ -211,14 +119,14 @@ fn planted_raw_file_locks_fail_the_scan() {
     let files = sources();
     let scan = |target: &str, plant: &str| {
         assert!(
-            files.iter().any(|(path, _)| path == target),
+            files.iter().any(|(path, _)| *path == target),
             "planted source target is absent: {target}"
         );
-        violations(files.iter().map(|(path, text)| {
+        violations(files.iter().copied().map(|(path, text)| {
             if path == target {
-                (path.clone(), plant)
+                (path, plant)
             } else {
-                (path.clone(), text.as_str())
+                (path, text)
             }
         }))
     };
