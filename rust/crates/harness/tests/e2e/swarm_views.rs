@@ -6,7 +6,7 @@ use super::{
 use acyclic_harness::{
     Error,
     client::{ClientViewHandle, QueryViewLimits, SwarmChange, query_verification::FileViews},
-    task_volume::{Change, FileValue, Generation, HeadSnapshot},
+    task_volume::{Change, Cursor, FileValue, Generation, HeadSnapshot},
 };
 use acyclic_stream::wire;
 use futures::channel::mpsc;
@@ -42,6 +42,24 @@ pub(super) struct State<'a> {
     full_records: usize,
     receipts: mpsc::UnboundedSender<Receipt>,
     status_receipts: Option<mpsc::UnboundedSender<Receipt>>,
+}
+
+// Preserve the canonical fold's complete segment metadata in the oracle.
+fn observed_snapshot(
+    views: &ClientViewHandle,
+    agent: &acyclic_stream::StreamPath,
+    cursor: Cursor,
+) -> acyclic_harness::Result<HeadSnapshot> {
+    views.read(|view| HeadSnapshot {
+        files: view.files(agent).cloned().collect(),
+        generation: Generation {
+            volume: cursor.volume,
+            epoch: cursor.epoch,
+            position: cursor.position,
+            commit: cursor.commit,
+        },
+        cursor,
+    })
 }
 
 impl<'a> State<'a> {
@@ -80,21 +98,10 @@ impl<'a> State<'a> {
     ) -> acyclic_harness::Result<Action> {
         let action = match update {
             SwarmChange::Agent { .. } | SwarmChange::Retired { .. } => Action::None,
-            SwarmChange::Snapshot { agent, cursor } => {
-                // Independent oracle uses the same canonical file fold. Only
-                // segment handles are cloned; production has a single cache.
-                let snapshot = views.read(|view| HeadSnapshot {
-                    files: view.files(&agent).cloned().collect(),
-                    generation: Generation {
-                        volume: cursor.volume,
-                        epoch: cursor.epoch,
-                        position: cursor.position,
-                        commit: cursor.commit,
-                    },
-                    cursor,
-                })?;
-                self.snapshot(publish::id(&agent)?, snapshot)?
-            }
+            SwarmChange::Snapshot { agent, cursor } => self.snapshot(
+                publish::id(&agent)?,
+                observed_snapshot(views, &agent, cursor)?,
+            )?,
             SwarmChange::Layout => {
                 let demand = views.read(|view| view.layout().clone())?;
                 let expected = &self.case.layouts[self.phase];

@@ -16,12 +16,10 @@ pub fn boxed_future<F: std::future::Future>(build: impl FnOnce() -> F) -> std::p
 
 #[cfg(test)]
 mod future_storage_tests {
-    fn payload() -> impl std::future::Future<Output = u8> {
-        async {
-            let bytes = [42_u8; 32_768];
-            std::future::pending::<()>().await;
-            bytes.first().copied().unwrap_or_default()
-        }
+    async fn payload() -> u8 {
+        let bytes = [42_u8; 32_768];
+        std::future::pending::<()>().await;
+        bytes.first().copied().unwrap_or_default()
     }
 
     fn bounded<const BOXED: bool>() {
