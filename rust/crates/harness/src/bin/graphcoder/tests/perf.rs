@@ -835,7 +835,7 @@ fn wheel_rows(height: u16, regions: bool, notches: usize) -> usize {
             .block_on(client::file_tui_inputs(
                 &mut rig.files,
                 &NoFiles,
-                effects.drain(..),
+                effects.iter().cloned(),
                 page,
                 rig.maximum_scroll,
                 |from, rows| rig.renderer.move_view(from, rows),

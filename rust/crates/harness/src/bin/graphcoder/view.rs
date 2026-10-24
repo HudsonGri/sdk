@@ -110,7 +110,7 @@ pub async fn run(
         client::file_tui_inputs(
             &mut commands,
             reader.as_ref(),
-            effects.drain(..),
+            effects.iter().cloned(),
             page_rows,
             maximum_scroll,
             |from, rows| renderer.move_view(from, rows),

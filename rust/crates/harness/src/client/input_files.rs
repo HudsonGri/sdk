@@ -238,7 +238,7 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
 pub async fn file_tui_inputs<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
     reader: &dyn ContentResidencyVerifier,
-    effects: impl IntoIterator<Item = InputEffect>,
+    effects: impl IntoIterator<Item = InputEffect, IntoIter: Clone>,
     page_rows: usize,
     maximum_scroll: usize,
     mut move_view: impl FnMut(
@@ -249,13 +249,16 @@ pub async fn file_tui_inputs<P: StreamProvider + ?Sized>(
     let mut effects = effects.into_iter().peekable();
     while let Some(effect) = effects.next() {
         if let Some(rows) = super::transcript_motion(&effect, page_rows) {
-            let motions = std::iter::once(rows).chain(std::iter::from_fn(|| {
-                let rows = effects
-                    .peek()
-                    .and_then(|effect| super::transcript_motion(effect, page_rows))?;
+            // Borrowed decoded effects are replayable across a competing layout
+            // publication. No motion buffer grows with the input burst.
+            let motions = std::iter::once(rows).chain(
+                effects
+                    .clone()
+                    .map_while(|effect| super::transcript_motion(&effect, page_rows)),
+            );
+            for _ in 1..motions.clone().count() {
                 effects.next();
-                Some(rows)
-            }));
+            }
             super::scroll_tui(files, motions, maximum_scroll, &mut move_view).await?;
         } else if let InputEffect::ScrollTo { anchor } = effect {
             super::scroll_files::seek_tui(files, anchor).await?;

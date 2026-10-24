@@ -141,7 +141,7 @@ async fn drive_from(
             file_tui_inputs(
                 &mut files,
                 &NoFiles,
-                effects.drain(..),
+                effects.iter().cloned(),
                 PAGE,
                 10_000,
                 move_model(10_000),
@@ -705,7 +705,7 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
                     .block_on(file_tui_inputs(
                         &mut files,
                         &NoFiles,
-                        motions.into_iter().map(InputEffect::Scroll),
+                        motions.iter().copied().map(InputEffect::Scroll),
                         PAGE,
                         10000,
                         move_model(10000),
@@ -716,7 +716,7 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
                     .block_on(file_tui_inputs(
                         &mut files,
                         &NoFiles,
-                        effects.drain(..),
+                        effects.iter().cloned(),
                         PAGE,
                         10000,
                         move_model(10000),
@@ -725,6 +725,7 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
             }
         });
         assert_eq!(offset(&files, 10000), 1000 + n * WHEEL_ROWS.unsigned_abs());
+        effects.clear();
         assert!(effects.is_empty());
         costs.push((measured.count_total, measured.bytes_total));
     }

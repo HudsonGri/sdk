@@ -101,12 +101,12 @@ fn folded_motion(
 /// Fold ordered motions against the latest followed source window, publishing once.
 pub async fn scroll_tui<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
-    motions: impl IntoIterator<Item = isize>,
+    motions: impl IntoIterator<Item = isize, IntoIter: Clone>,
     maximum_modal: usize,
     mut move_view: impl FnMut(Option<TranscriptAnchor>, isize) -> Option<TranscriptAnchor>,
 ) -> Result<()> {
-    let motions: Vec<_> = motions.into_iter().collect();
-    let modal_motion = folded_motion(motions.iter().copied(), maximum_modal);
+    let motions = motions.into_iter();
+    let modal_motion = folded_motion(motions.clone(), maximum_modal);
     files
         .update_state(CommandFileRoot::Session, "layout.json", |value| {
             if modal(value) {
@@ -121,7 +121,7 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
                     .insert("view_back".into(), serde_json::json!(next));
             } else {
                 let from = anchor(value)?;
-                let next = motions.iter().fold(from, |current, rows| {
+                let next = motions.clone().fold(from, |current, rows| {
                     move_view(current, rows.saturating_neg())
                 });
                 if next == from {

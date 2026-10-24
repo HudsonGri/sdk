@@ -103,7 +103,7 @@ async fn model<const BROKEN: bool>(motions: usize) {
     file_tui_inputs(
         &mut commands,
         &NoFiles,
-        effects.drain(..),
+        effects.iter().cloned(),
         8,
         10000,
         |from, rows| {
