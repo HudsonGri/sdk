@@ -8,6 +8,36 @@ import {copyBackDestination} from './buildbox.mjs';
 import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
 
+test('remote completion follows the live owner rather than expiring the job age',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'remote-completion-'));
+ try{
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  async function load(name,text){
+   const file=path.join(cwd,name+'.mjs');fs.writeFileSync(file,text+'\nexport {remoteRc};\n');
+   return (await import(file)).remoteRc;
+  }
+  const current=await load('current',source);
+  const former=await load('former',source
+   .replace('let lostAt = null;\n  for (;;) {\n    const r = await run(', 'const started = now();\n  for (;;) {\n    const r = await run(')
+   .replace(/    \/\/ A live remote owner[\s\S]*?    await pause\(/,'    if (now() - started > REATTACH_SEC * 1000) return null;\n    await pause('));
+  async function observe(poll,replies){
+   let clock=0,calls=0;
+   const result=await poll('/fixture/job',{
+    run:async()=>{assert.ok(calls<replies.length,'unexpected poll');const reply=replies[calls++];return {status:reply===null?255:0,stdout:reply??''};},
+    now:()=>clock,pause:async()=>{clock+=1_300_000;},
+   });
+   return {result,calls};
+  }
+  assert.deepEqual(await observe(current,['running','running','17']),{result:17,calls:3});
+  assert.deepEqual(await observe(former,['running','running','17']),{result:null,calls:2},'former job-age clock abandons a positively live owner');
+  assert.deepEqual(await observe(current,[null,'running',null,'running','0']),{result:0,calls:5},'each live owner observation ends the loss interval');
+  assert.deepEqual(await observe(current,[null,null]),{result:null,calls:2},'uninterrupted connection loss keeps the existing budget');
+  assert.deepEqual(await observe(current,['gone']),{result:null,calls:1});
+  assert.deepEqual(await observe(current,['101']),{result:101,calls:1});
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
 test('declared output stays outside the source snapshot during cleanup',()=>{
  const root=fs.mkdtempSync(path.join(tmpdir(),'source-output-custody-'));
  try{

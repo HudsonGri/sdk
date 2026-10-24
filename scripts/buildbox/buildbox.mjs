@@ -832,15 +832,21 @@ async function followStream(J, f, sink, st) {
   }
 }
 
-async function remoteRc(J) {
-  const t0 = Date.now();
+async function remoteRc(J, { run = sshRun, pause = sleep, now = Date.now } = {}) {
+  let lostAt = null;
   for (;;) {
-    const r = await sshRun(`cat ${J}.rc 2>/dev/null || { w=$(cat ${J}.wpid 2>/dev/null); [ -n "$w" ] && kill -0 $w 2>/dev/null && echo running || echo gone; }`, { timeout: 45000 });
+    const r = await run(`cat ${J}.rc 2>/dev/null || { w=$(cat ${J}.wpid 2>/dev/null); [ -n "$w" ] && kill -0 $w 2>/dev/null && echo running || echo gone; }`, { timeout: 45000 });
     const s = r.stdout.toString().trim();
     if (r.status === 0 && /^\d+$/.test(s)) return Number(s);
     if (r.status === 0 && s === 'gone') return null;
-    if (Date.now() - t0 > REATTACH_SEC * 1000) return null;
-    await sleep(r.status === 0 ? 2000 : 5000);
+    // A live remote owner is evidence of connectivity, regardless of job age.
+    // Only an uninterrupted loss of valid status consumes the reattach budget.
+    if (r.status === 0 && s === 'running') lostAt = null;
+    else {
+      if (lostAt === null) lostAt = now();
+      if (now() - lostAt > REATTACH_SEC * 1000) return null;
+    }
+    await pause(r.status === 0 ? 2000 : 5000);
   }
 }
 
