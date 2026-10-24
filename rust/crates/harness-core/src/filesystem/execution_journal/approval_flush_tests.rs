@@ -144,8 +144,8 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
             let mut measured = Vec::new();
             let mut opening = Vec::new();
             let mut former_native = None;
-            for entry in 0..3 {
-                let id = InteractionId::from_bytes([100 + entry + 3 * u8::from(approved); 16]);
+            for entry in 0..4 {
+                let id = InteractionId::from_bytes([100 + entry + 4 * u8::from(approved); 16]);
                 let request = Interaction::approval(
                     "Grouped settlement".into(),
                     operation,
@@ -285,6 +285,26 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
                             )
                             .await?;
                     }
+                    2 => {
+                        // Execute the preceding grouped settlement shape,
+                        // including its redundant canonical-before-file barrier.
+                        acyclic_stream::deferring_provider_durability(
+                            &*fixture.stream,
+                            host.resolve_latest(
+                                id,
+                                InteractionResponse::Approval {
+                                    approved,
+                                    reason: None,
+                                },
+                                &human,
+                                journal.owner.as_ref().map(|(owner, _)| owner),
+                            ),
+                        ).await?;
+                        let aggregate = host.aggregate(None).await?;
+                        assert!(aggregate.0.durable_receipt().await?.is_some());
+                        drop(aggregate);
+                        journal.published_decision(id, None).await?;
+                    }
                     _ => {
                         // Execute the former eager filesystem staging and
                         // canonical append, followed by the identical proof.
@@ -338,22 +358,16 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
                 "APPROVALS_REQUEST_FLUSHES shared={shared_provider} approved={approved} public={} native={} former={} former_native={former_native}",
                 opening[0], opening[1], opening[2],
             );
+            assert_eq!(measured[0] + 1, measured[2], "file settlement kept a redundant canonical barrier");
+            assert_eq!(measured[1] + 1, measured[2], "direct settlement kept a redundant canonical barrier");
             if shared_provider {
-                assert!(
-                    measured[0] < measured[2],
-                    "file settlement did not group staging: {measured:?}"
-                );
-                assert!(
-                    measured[1] < measured[2],
-                    "direct settlement did not group staging: {measured:?}"
-                );
+                assert_eq!(measured[2] + 1, measured[3], "settlement did not group staging: {measured:?}");
             } else {
-                assert_eq!(measured[0], measured[2], "file settlement deferred a foreign authority");
-                assert_eq!(measured[1], measured[2], "direct settlement deferred a foreign authority");
+                assert_eq!(measured[2], measured[3], "settlement deferred a foreign authority");
             }
             eprintln!(
-                "APPROVALS_SETTLEMENT_FLUSHES shared={shared_provider} approved={approved} file={} direct={} former={}",
-                measured[0], measured[1], measured[2]
+                "APPROVALS_SETTLEMENT_FLUSHES shared={shared_provider} approved={approved} file={} direct={} former_grouped={} former_eager={}",
+                measured[0], measured[1], measured[2], measured[3]
             );
         }
         Ok(())

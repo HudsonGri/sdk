@@ -216,8 +216,7 @@ where
         io: Option<&'io PreparationIo>,
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
-        let (read, receipt, _read) = host.read_durable(&aggregate.0, id, binding, io).await?;
-        drop(aggregate);
+        let (read, _read) = host.read_for_publication(&aggregate.0, id, binding, io)?;
         let (ticket, resolution) = admitted(read, io)?;
         let (Some(resolution), InteractionKind::Approval) = (&resolution, ticket.kind) else {
             return Err(canonical_boundary(
@@ -269,27 +268,31 @@ where
         })?;
         // The validation above bound the file's verdict to this outcome.
         let approved = matches!(resolution.outcome, InteractionOutcome::Approved {});
-        let resolution = receipt.ok_or_else(|| {
+        let file = if let Some(task_id) = self.approval_task_id() {
+            Some(
+                self.publish_decision_files(task_id, id, &principal, request_bytes, bytes, io)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        // The exact task-file publication shares this provider's device
+        // barrier with the preceding canonical resolution. Obtain the proof
+        // afterwards; neither accepted records nor a file alone release a verdict.
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("approval-receipt", 1_u64));
+        let resolution = aggregate.0.durable_receipt().await?.ok_or_else(|| {
             canonical_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "approval decision awaits durability",
             )
         })?;
-        let Some(task_id) = self.approval_task_id() else {
-            return Ok(PublishedDecision {
-                approved,
-                _resolution: resolution,
-                _file: None,
-            });
-        };
-        let proof = self
-            .publish_decision_files(task_id, id, &principal, request_bytes, bytes, io)
-            .await?;
+        drop(aggregate);
         Ok(PublishedDecision {
             approved,
             _resolution: resolution,
-            _file: Some(proof),
+            _file: file,
         })
     }
 
@@ -313,18 +316,20 @@ where
             )
         })?;
         let work = native_work(io);
-        files
-            .publish_durable(
-                &FileValue::new(
-                    FileKey::Task {
-                        task: task.clone(),
-                        file: TaskFile::ApprovalRequest(request.clone()),
-                    },
-                    request_bytes,
-                ),
-                work,
-            )
-            .await?;
+        let request_file = FileValue::new(
+            FileKey::Task {
+                task: task.clone(),
+                file: TaskFile::ApprovalRequest(request.clone()),
+            },
+            request_bytes,
+        );
+        // Stage this exact owner's request, then let the decision's mandatory
+        // device barrier cover both files. A fresh binding must not pay a
+        // preliminary barrier just to rediscover the request's durable prefix.
+        let staging = files.publish_owned(&request_file, work);
+        #[cfg(feature = "filesystem-local")]
+        let staging = acyclic_stream::deferring_provider_durability(&*self.stream, staging);
+        staging.await?;
         let key = FileKey::Task {
             task,
             file: TaskFile::ApprovalDecision {
@@ -338,6 +343,7 @@ where
         if proof.key() != &key {
             return Err(Error::Storage("durable proof names another file".into()));
         }
+        let _request = files.publish_durable(&request_file, work).await?;
         Ok(proof)
     }
 

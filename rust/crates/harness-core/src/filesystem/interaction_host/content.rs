@@ -96,10 +96,10 @@ where
         Self::admitted(aggregate, id, io)
     }
 
-    /// Reads the ticket and latest resolution together with the provider's
-    /// receipt that the conversation events they were reduced from are durable.
-    /// `None` for the receipt while any of them is only accepted.
-    pub(crate) async fn read_durable<'io>(
+    /// Validates the exact installation binding and copies its authoritative
+    /// ticket and resolution. The publication owner obtains the canonical
+    /// durable receipt after publishing the mandatory task files.
+    pub(crate) fn read_for_publication<'io>(
         &self,
         aggregate: &StreamAggregate<P>,
         id: InteractionId,
@@ -107,7 +107,6 @@ where
         io: Option<&'io PreparationIo>,
     ) -> Result<(
         Option<(InteractionTicket, Option<InteractionResolution>)>,
-        Option<acyclic_stream::DurableReceipt>,
         Option<DecodeReservation<'io>>,
     )> {
         if let Some((operation, digest)) = binding {
@@ -133,17 +132,14 @@ where
                 ));
             }
         }
-        // Invalid bindings cannot force a device flush merely by asking to
-        // install an unrelated tool.
+        // Invalid bindings cannot publish a file or force a device flush merely
+        // by asking to install an unrelated tool.
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let read = Self::admitted(aggregate, id, io)?;
         let hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
-        #[cfg(test)]
-        acyclic_test_support::differential::record(("approval-receipt", 1_u64));
-        let receipt = aggregate.durable_receipt().await?;
-        Ok((read, receipt, hold))
+        Ok((read, hold))
     }
 
     fn admitted(
