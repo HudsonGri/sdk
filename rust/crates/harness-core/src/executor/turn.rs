@@ -20,6 +20,7 @@ impl StockExecution<'_> {
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         let mut text = String::new();
+        let mut completed = Value::Null;
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
         for step in 0..input.max_steps {
@@ -34,13 +35,15 @@ impl StockExecution<'_> {
                     ModelPurpose::Response,
                 )?
                 .await?;
-            let (calls, metadata) = self.collect_turn_events(
+            let (calls, mut metadata) = self.collect_turn_events(
                 input,
                 step,
                 model_events,
                 &mut text,
                 &mut prior_messages,
             )?;
+            crate::model::usage::accumulate_members(&mut completed, &mut metadata, self.io)?;
+            completed = metadata;
             if calls.is_empty() {
                 // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -59,7 +62,7 @@ impl StockExecution<'_> {
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
-                    metadata,
+                    metadata: completed,
                     steps: step + 1,
                 }));
             }

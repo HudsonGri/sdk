@@ -185,6 +185,11 @@ where
         self
     }
 
+    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
+        self.executor = self.executor.with_role(role);
+        self
+    }
+
     #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.executor = self.executor.with_hooks(hooks);

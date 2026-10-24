@@ -500,6 +500,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    role: Option<String>,
     summary_source: Option<Box<FileRef>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
@@ -532,6 +533,7 @@ pub struct StockExecutor {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseProjection {
+    pub(crate) model: Model,
     pub(crate) context: crate::context::Context,
     pub(crate) canonical: Option<FileRef>,
     pub(crate) checkpoint: Option<FileRef>,

@@ -104,6 +104,12 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         {
             return result.map(Some);
         }
+        // Publishing the answer makes the client ready for its next command.
+        // Its target must already be durable at that cut (for example /compact
+        // immediately after a prompt); settlement cannot precede selection.
+        if let Ok(value) = &result {
+            self.apply_outcome(value).await?;
+        }
         let result_key = key(files::TaskFile::ExecutionResult(id.clone()));
         let result_budget = self.publication_byte_limit(result_key.clone())? as u64;
         loop {
@@ -124,9 +130,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         self.persist_activity().await?;
-        if let Ok(value) = &result {
-            self.apply_outcome(value).await?;
-        }
         result.map(Some)
     }
 }

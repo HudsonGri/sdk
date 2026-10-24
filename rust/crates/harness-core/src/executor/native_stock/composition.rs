@@ -8,6 +8,11 @@ pub(crate) struct NativeStockExecutor {
 }
 
 impl NativeStockExecutor {
+    /// Retains the role owned by this command without copying its string.
+    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
+        self.stock = self.stock.with_role(role);
+        self
+    }
     /// Consumes the command's funded registry; its original PreparationIo retains
     /// that custody until this executor is dropped. Copies the remaining configuration.
     pub(crate) fn new(

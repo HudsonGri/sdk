@@ -121,3 +121,6 @@ pub(crate) use names::namespace_to_host_path_with_work;
 pub use names::{host_path_to_namespace, namespace_to_host_path};
 #[cfg(windows)]
 pub(crate) use names::{namespace_component_wide, namespace_host_units_with_work};
+
+#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+mod hard_link_regression;

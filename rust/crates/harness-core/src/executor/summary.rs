@@ -28,15 +28,6 @@ impl StockExecution<'_> {
                 "summary step exceeds parent turn bounds",
             ));
         }
-        crate::context::validate_projected_context(&source, self.stock.limits, self.io)?;
-        crate::executor::with_history_io(self.io, |work| {
-            instruction.validate_limits(self.stock.limits, work)
-        })?;
-        let pinned = self.stock.summary_source.as_deref();
-        if pinned.is_none() {
-            stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
-        }
-        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let summary_output = self.output_budget()?;
         if summary_output.is_none() {
             return Err(stock_boundary(
@@ -45,49 +36,23 @@ impl StockExecution<'_> {
                 "summary requires a caller-selected output token budget",
             ));
         }
-        let source_bytes: Option<acyclic_stream::OwnedBytes> = if pinned.is_some() {
-            None
-        } else {
-            Some(match self.io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-                _ => crate::contract::canonical_json_bytes(&source)?.into(),
-            })
-        };
-        let source_digest = match pinned {
-            Some(file) => *file.descriptor().sha256(),
-            None => crate::model::hash_bytes(source_bytes.as_deref().unwrap(), self.io)?,
-        };
-        let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary source exceeds portable message count",
-            )
-        })?;
-        if source_messages == 0 {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary source is empty",
-            ));
-        }
+        let (source_bytes, source_digest, source_messages) =
+            self.prepare_summary(&source, &instruction)?;
         let revision = with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!("{}", blake3::Hash::from(source_digest).to_hex()),
                 work,
             )
         })?;
+        let pipeline = ContextPipeline::summary_source(source, revision, self.io)?;
         let executor = StockExecution {
             stock: self.stock,
             context: self.context,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             interactions: self.interactions,
             io: self.io,
-            summary: Some((
-                ContextPipeline::summary_source(source, revision, self.io)?,
-                summary_output,
-            )),
+            summary: Some((&pipeline, summary_output)),
+            selected_model: self.selected_model,
             compaction: once_cell::sync::OnceCell::new(),
         };
         let input = TurnInput {
@@ -134,6 +99,59 @@ impl StockExecution<'_> {
             text,
         )
         .await
+    }
+
+    fn prepare_summary(
+        &self,
+        source: &crate::context::Context,
+        instruction: &ModelContent,
+    ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
+        crate::context::validate_projected_context(source, self.stock.limits, self.io)?;
+        crate::executor::with_history_io(self.io, |work| {
+            instruction.validate_limits(self.stock.limits, work)
+        })?;
+        let pinned = self.stock.summary_source.as_deref();
+        if pinned.is_none() {
+            stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
+        }
+        stock_json_bound(instruction, self.stock.limits.file_bytes, self.io)?;
+        let source_bytes: Option<acyclic_stream::OwnedBytes> = if pinned.is_some() {
+            None
+        } else {
+            Some(match self.io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => io.encode(source, self.stock.limits.file_bytes, true)?,
+                _ => crate::contract::canonical_json_bytes(source)?.into(),
+            })
+        };
+        let source_digest = match pinned {
+            Some(file) => *file.descriptor().sha256(),
+            None => crate::model::hash_bytes(
+                source_bytes.as_deref().ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "summary source bytes are absent",
+                    )
+                })?,
+                self.io,
+            )?,
+        };
+        let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
+            stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "summary source exceeds portable message count",
+            )
+        })?;
+        if source_messages == 0 {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "summary source is empty",
+            ));
+        }
+        Ok((source_bytes, source_digest, source_messages))
     }
 
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {

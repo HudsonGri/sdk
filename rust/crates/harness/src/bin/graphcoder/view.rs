@@ -58,6 +58,7 @@ pub async fn run(
                 local.task_files().as_ref(),
                 commands
                     .active_task()
+                    .or(commands.selected_task()?)
                     .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
             )
             .await?;

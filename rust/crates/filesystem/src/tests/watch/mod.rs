@@ -994,3 +994,38 @@ fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn
     assert!(watch.confirmable()?);
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn access_notifications_are_metadata_only_and_do_not_feed_back()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("file");
+    std::fs::write(&file, b"unchanged")?;
+    let mut watch = NativeWatch::open(
+        directory.path(),
+        NativeWatchOptions::new(VolumeLimits::default()),
+    )?;
+    watch.begin_rescan()?;
+    watch.finish_rescan()?;
+    std::fs::File::open(&file)?.set_times(
+        std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH),
+    )?;
+    watch.fence(std::time::Duration::from_secs(1))?;
+    let cancellation = CancellationToken::new();
+    let batch = watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let WatchBatch::Changes { changes, .. } = batch else {
+        return Err("access mutation unexpectedly invalidated the watcher".into());
+    };
+    assert!(matches!(changes.as_slice(), [WatchChange::MetadataChanged(_)]));
+    // Metadata-only capture uses stat, which cannot generate another access
+    // notification. Reading the directory itself must not invalidate its root.
+    let _ = std::fs::metadata(&file)?;
+    let _ = std::fs::read_dir(directory.path())?.collect::<Result<Vec<_>, _>>()?;
+    watch.fence(std::time::Duration::from_secs(1))?;
+    assert!(matches!(
+        watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value,
+        WatchBatch::Changes { changes, .. } if changes.is_empty()
+    ));
+    Ok(())
+}

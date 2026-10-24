@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 mod model;
+pub use model::{ModelConfiguration, ModelRoles};
 mod model_selection;
 mod workspace;
 

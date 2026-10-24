@@ -60,6 +60,7 @@ impl Executor {
                         .unwrap_or_else(|| invocation.operation_id.to_string()),
                 )?;
                 let request = ChildRequest {
+                    role: input.role,
                     prompt: input.task,
                     model: None,
                     tools: None,

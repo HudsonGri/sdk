@@ -50,6 +50,8 @@ mod native_retry_tests;
 pub(crate) mod native_tests;
 #[path = "input/portable_projection_tests.rs"]
 mod portable_projection_tests;
+#[path = "prefix_stability_tests.rs"]
+mod prefix_stability_tests;
 #[path = "tool_name_tests.rs"]
 pub(crate) mod tool_name_tests;
 #[path = "transport_tests.rs"]
@@ -425,7 +427,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
         match adapter {
             Adapter::Anthropic => {
                 assert!(sent[0].url.ends_with("/messages"));
-                assert_eq!(body["system"], "system");
+                assert_eq!(body["system"][0]["text"], "system");
                 assert_eq!(body["max_tokens"], 64);
                 assert_eq!(sent[0].headers["x-api-key"], "scripted-key");
                 assert!(!sent[0].headers.contains_key("authorization"));

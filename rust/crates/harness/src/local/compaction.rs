@@ -34,7 +34,7 @@ pub(super) async fn select(
                 limits,
                 None,
             )?;
-            let count = provider.count_tokens(&request).await?;
+            let count = provider.count_policy_tokens(&request, limits).await?;
             let fixed = u32::try_from(count.validate(&request, &mut None)?).map_err(|_| {
                 Error::Invalid("fixed tool context exceeds provider capacity".into())
             })?;
