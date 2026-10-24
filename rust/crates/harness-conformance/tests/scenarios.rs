@@ -13,7 +13,6 @@ use acyclic_harness_conformance::{
     substrate::{self, Actors, remote::Request},
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
-use futures::{StreamExt, stream};
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 
@@ -28,42 +27,43 @@ async fn corpus_matches_original_driver_and_reports_every_case()
     let mut paths = vec![];
     scenario_data::discover(&root, &mut paths)?;
     let count = paths.len();
-    let results = stream::iter(paths.into_iter().map(|path| {
-        let root = &root;
-        async move {
-            let mut value = scenario_data::load_value(root, &path)?;
-            let requirements = runner::requirements(&value)?;
-            if requirements == ["executor"] || requirements == ["composer"] {
-                value
-                    .as_object_mut()
-                    .ok_or("missing recipe")?
-                    .remove("driver");
-                let result = if requirements == ["composer"] {
-                    check_local_composer(value).await
-                } else {
-                    check_local(value).await
-                };
-                result.map_err(|e| format!("{}: {e}", path.display()))?;
+    let results = runner::run_cases(
+        paths.into_iter().map(|path| {
+            let root = root.clone();
+            async move {
+                let mut value = scenario_data::load_value(&root, &path)?;
+                let requirements = runner::requirements(&value)?;
+                if requirements == ["executor"] || requirements == ["composer"] {
+                    value
+                        .as_object_mut()
+                        .ok_or("missing recipe")?
+                        .remove("driver");
+                    let result = if requirements == ["composer"] {
+                        check_local_composer(value).await
+                    } else {
+                        check_local(value).await
+                    };
+                    result.map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
             }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-        }
-    }))
-    .buffer_unordered(std::thread::available_parallelism()?.get())
-    .collect::<Vec<_>>()
-    .await;
+        }),
+        std::thread::available_parallelism()?,
+    )
+    .await?;
     for result in results {
         result?;
     }
     let (report, local) = tokio::join!(
         runner::run(
             &root,
-            &substrate::InProcess,
+            Arc::new(substrate::InProcess),
             None,
             std::thread::available_parallelism()?.get(),
         ),
         runner::run(
             &root,
-            &substrate::Local,
+            Arc::new(substrate::Local),
             None,
             std::thread::available_parallelism()?.get()
         )
@@ -86,6 +86,40 @@ async fn corpus_matches_original_driver_and_reports_every_case()
         count, report.passed, report.skipped
     );
     assert_eq!(serde_json::to_value(local)?, serde_json::to_value(report)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn admitted_cases_have_independent_task_ownership()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for concurrency in 1usize..=4 {
+        for count in 0..=8 {
+            let parent = tokio::task::try_id();
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = AtomicUsize::new(0);
+            let tasks = runner::run_cases(
+                (0..count).map(|_| {
+                    let active = Arc::clone(&active);
+                    peak.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    async move {
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        tokio::task::try_id()
+                    }
+                }),
+                concurrency.try_into()?,
+            )
+            .await?;
+            assert_eq!(tasks.len(), count);
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+            assert!(peak.load(Ordering::SeqCst) <= concurrency);
+            assert!(tasks.iter().all(|task| task.is_some() && *task != parent));
+            assert_eq!(
+                tasks.iter().collect::<std::collections::HashSet<_>>().len(),
+                count
+            );
+        }
+    }
     Ok(())
 }
 
@@ -149,7 +183,7 @@ async fn lost_contract_observation_fails_and_filter_never_drops_cases()
         volume,
         bindings,
     };
-    let report = runner::run(&corpus(), &broken, Some("core/text.json"), 1).await?;
+    let report = runner::run(&corpus(), Arc::new(broken), Some("core/text.json"), 1).await?;
     assert_eq!(report.failed, 1);
     assert_eq!(report.passed, 0);
     assert!(!report.success());
@@ -221,7 +255,7 @@ async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
             serde_json::to_vec(&value)?,
         )?;
     }
-    let result = runner::run(cases.path(), &host, None, 2).await;
+    let result = runner::run(cases.path(), Arc::new(host), None, 2).await;
     server.abort();
     let report = result?;
     assert_eq!(
@@ -289,7 +323,7 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
         r#"{"driver":"typo"}"#,
     )?;
     std::fs::write(directory.path().join("malformed.json"), "{")?;
-    let report = runner::run(directory.path(), &substrate::InProcess, None, 1).await?;
+    let report = runner::run(directory.path(), Arc::new(substrate::InProcess), None, 1).await?;
     assert_eq!(report.records.len(), 3);
     assert_eq!(report.failed, 3);
     assert!(!report.success());
@@ -325,11 +359,11 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
         include_bytes!("../../harness/tests/scenarios/core/text.json"),
     )?;
     for substrate in [
-        &substrate::Local as &dyn substrate::Substrate,
-        &substrate::InProcess,
+        Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
+        Arc::new(substrate::InProcess),
     ] {
         for filter in [None, Some("good")] {
-            let report = runner::run(directory.path(), substrate, filter, 4).await?;
+            let report = runner::run(directory.path(), Arc::clone(&substrate), filter, 4).await?;
             assert_eq!(report.records.len(), drivers.len() + 1);
             assert_eq!(report.failed, drivers.len());
             assert_eq!(report.passed, 1);
@@ -390,8 +424,8 @@ async fn client_oracles_reject_mutations_on_both_substrates()
         )?;
     }
     for substrate in [
-        &substrate::Local as &dyn substrate::Substrate,
-        &substrate::InProcess,
+        Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
+        Arc::new(substrate::InProcess),
     ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);
@@ -446,8 +480,8 @@ async fn composer_oracle_mutations_fail_on_both_substrates()
         )?;
     }
     for substrate in [
-        &substrate::Local as &dyn substrate::Substrate,
-        &substrate::InProcess,
+        Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
+        Arc::new(substrate::InProcess),
     ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);
