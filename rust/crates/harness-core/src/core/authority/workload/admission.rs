@@ -12,7 +12,8 @@ pub(in crate::core::authority) fn record(
 ) -> Result<Vec<u8>> {
     let timestamp = now();
     let trust = runtime.public.trust.read().map_err(unauthorized)?;
-    let capability = verify_trusted(&*trust, audience, scope, timestamp, work)?;
+    let capability = authenticate(&runtime.public, &*trust, scope, timestamp, work)?;
+    let capability = authorize_scope(&*trust, audience, scope, timestamp, capability, work)?;
     let (attributes, _) = scope_facts(&capability, false)?;
     let name = resource(audience)?;
     let signer = signer(id, runtime.seed(), timestamp, &name, None)?;
