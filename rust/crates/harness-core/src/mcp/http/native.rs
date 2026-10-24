@@ -201,24 +201,39 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn a_reserved_unlistening_endpoint_is_never_sent_not_indeterminate() -> Result<()> {
-        let socket =
-            tokio::net::TcpSocket::new_v4().map_err(|error| Error::Storage(error.to_string()))?;
-        socket
-            .bind("127.0.0.1:0".parse().unwrap())
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let address = socket
-            .local_addr()
-            .map_err(|error| Error::Storage(error.to_string()))?;
+    async fn failed_resolution_is_never_sent_not_indeterminate() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Refused(AtomicUsize);
+        impl reqwest::dns::Resolve for Refused {
+            fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        "fixture resolver returned no address",
+                    )
+                    .into())
+                })
+            }
+        }
+        // A bound, non-listening socket does not imply an immediate refusal on
+        // every OS. Failing before an address exists proves no HTTP bytes can
+        // have been dispatched, without a port race or a network deadline.
+        let resolver = Arc::new(Refused(AtomicUsize::new(0)));
+        let endpoint = "http://refused.invalid/mcp";
         let operation = OperationId::from_bytes([21; 16]);
-        let provider = Arc::new(NativeMcpHttpProvider::new(
-            reqwest::header::HeaderMap::new(),
-        )?);
+        let provider = Arc::new(NativeMcpHttpProvider(
+            crate::http::native::client_builder()
+                .no_proxy()
+                .dns_resolver(resolver.clone())
+                .build()
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        ));
         let result = provider
             .exchange(
                 operation,
                 McpHttpRequest {
-                    endpoint: format!("http://{address}/mcp"),
+                    endpoint: endpoint.into(),
                     method: "POST".into(),
                     headers: Default::default(),
                     body: b"{}".to_vec(),
@@ -231,7 +246,7 @@ mod tests {
             failure: crate::ModelTransportFailure::Connect }) if actual == operation));
         let transport = HttpMcpTransport::new(
             provider,
-            format!("http://{address}/mcp"),
+            endpoint.into(),
             Some("session".into()),
             1024,
             1000,
@@ -242,7 +257,7 @@ mod tests {
             Err(Error::HttpNotSent { operation: actual, failure: crate::ModelTransportFailure::Connect })
                 if actual == operation)
         );
-        drop(socket);
+        assert_eq!(resolver.0.load(Ordering::SeqCst), 2);
         Ok(())
     }
 }

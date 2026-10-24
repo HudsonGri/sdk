@@ -144,6 +144,14 @@ impl ClientBuilder {
     pub fn no_proxy(self) -> Self {
         Self(self.0.no_proxy())
     }
+    /// Uses a host-owned resolver without changing dispatch or replay policy.
+    #[must_use]
+    pub fn dns_resolver<R: reqwest::dns::Resolve + 'static>(
+        self,
+        resolver: std::sync::Arc<R>,
+    ) -> Self {
+        Self(self.0.dns_resolver(resolver))
+    }
     /// Adds a host-selected TLS trust root.
     #[must_use]
     pub fn add_root_certificate(self, root: reqwest::Certificate) -> Self {
