@@ -41,11 +41,16 @@ esac
   module=types.ModuleType('fixture');module.__file__=str(root/'gate-test-baseline.py');exec(compile(source,module.__file__,'exec'),module.__dict__)
   def run(argv,**kw):
    if argv[0]=='git':return subprocess.CompletedProcess(argv,0)
+   raise AssertionError('native dispatch must use the single pipe writer')
+  def popen(argv,**kw):
    env={**kw['env'],'PATH':str(root/'bin')+':'+os.environ['PATH'],'GATE_MAIN_TARGET_DIR':str(root/'cache')}
-   result=subprocess.run(['bash',str(work/'.gate-test-baseline.sh')],cwd=work,env=env,stdout=kw['stdout'],stderr=kw['stderr'])
-   return result if executor is None else subprocess.CompletedProcess(result.args,executor)
-  module.subprocess=types.SimpleNamespace(DEVNULL=subprocess.DEVNULL,STDOUT=subprocess.STDOUT,run=run,check_output=lambda *a,**k:json.dumps(metadata).encode())
-  module.shutil=types.SimpleNamespace(copyfile=shutil.copyfile,which=lambda name:name)
+   process=subprocess.Popen(['bash',str(work/'.gate-test-baseline.sh')],cwd=work,env=env,stdout=kw['stdout'],stderr=kw['stderr'])
+   if executor is not None:
+    wait=process.wait
+    process.wait=lambda *a,**k:(wait(*a,**k),executor)[1]
+   return process
+  module.subprocess=types.SimpleNamespace(DEVNULL=subprocess.DEVNULL,STDOUT=subprocess.STDOUT,PIPE=subprocess.PIPE,Popen=popen,run=run,check_output=lambda *a,**k:json.dumps(metadata).encode())
+  module.shutil=types.SimpleNamespace(copyfile=shutil.copyfile,copyfileobj=shutil.copyfileobj,which=lambda name:name)
   argv=sys.argv;sys.argv=['baseline',str(root),'a'*40,str(pr),'--scope',str(scope),'--baseline-log',str(baseline),'--worktree',str(work),'--results',str(results)]
   output=io.StringIO()
   try:
@@ -81,6 +86,32 @@ esac
    self.assertFalse(module.baseline_complete(f'test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc={status}\nGATE_TEST_BASELINE_EXECUTOR rc={status}\n'))
   for error in ['[buildbox] HOME guard INFRA: unavailable','error: GATE_RUNNER_INFRA missing manifest']:
    self.assertFalse(module.baseline_complete(error+'\ntest result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=101\nGATE_TEST_BASELINE_EXECUTOR rc=101\n'))
+ def test_pipe_writer_preserves_reopened_native_streams_and_nonzero_status(self):
+  module=types.ModuleType('transport')
+  source=HERE/'coordinator/gate-test-baseline.py'
+  exec(compile(source.read_text(),str(source),'exec'),module.__dict__)
+  # Native descendants reopening a regular inherited output get a separate
+  # offset. Use that actual descriptor boundary, not a simulated log writer.
+  program="""import os
+os.write(1,b'wrapper-header\\n')
+native=os.open('/proc/self/fd/1',os.O_WRONLY|os.O_TRUNC)
+os.write(native,b'cargo output\\x00\\xff\\n')
+os.close(native)
+os.write(2,b'error: first compiler diagnostic\\npanic lines\\n')
+raise SystemExit(101)
+"""
+  command=[sys.executable,'-B','-c',program]
+  expected=b'wrapper-header\ncargo output\x00\xff\nerror: first compiler diagnostic\npanic lines\n'
+  log=self.d/'pipe.log'
+  self.assertEqual(module.run_logged(command,log,cwd=self.d,env=os.environ),101)
+  self.assertEqual(log.read_bytes(),expected)
+  # The former direct-file transport loses the header and overwrites bytes.
+  legacy=self.d/'direct.log'
+  with legacy.open('wb') as output:
+   result=subprocess.run(command,cwd=self.d,stdout=output,stderr=subprocess.STDOUT)
+  self.assertEqual(result.returncode,101)
+  self.assertNotEqual(legacy.read_bytes(),expected)
+  self.assertNotIn(b'wrapper-header',legacy.read_bytes())
  def test_actual_verdict_qualifies_non_libtest_targets_without_hiding_new_failures(self):
   root=self.d;(root/'.codex-fleet').mkdir();(root/'flakes').write_text('')
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()
