@@ -491,3 +491,107 @@ async fn native_range_restoration_removes_oversized_row_on_follow_and_reopen()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn bounded_restoration_comparison_preserves_other_rows_and_reopen()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new().await?;
+    let baseline = "a".repeat(131_072);
+    fixture
+        .write(&[("a-large", Some(&baseline)), ("z-small", Some("before"))])
+        .await?;
+    let cancel = acyclic_fs::CancellationToken::new();
+    let workspace = fixture
+        .filesystem
+        .open_workspace(
+            fixture.volume.storage_name(&mut None)?,
+            BOUNDARY_BUDGET,
+            &cancel,
+        )
+        .await?
+        .value;
+    let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
+    let budget = acyclic_fs::WorkBudget {
+        source_bytes_read: 65_536,
+        ..BOUNDARY_BUDGET
+    };
+    let source = fixture.reader.file_query(&fixture.volume, budget).await?;
+    let mut stream = source.observe_diff(base.id(), 16).await?;
+    let initial = stream.next().await.ok_or("snapshot")??;
+    let mut view = DiffView::new(fixture.volume.clone(), initial.previous.clone())?;
+    view.apply(&initial, fixture.reader.as_ref(), LIMITS)
+        .await?;
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::workspace::IdempotencyKey::new(),
+            BOUNDARY_BUDGET,
+            &cancel,
+        )
+        .await?
+        .value;
+    transaction
+        .write_range(
+            "/a-large",
+            1,
+            vec![b'a'; baseline.len() - 2],
+            BOUNDARY_BUDGET,
+            &cancel,
+        )
+        .await?;
+    transaction.write_text("/z-small", "after!").await?;
+    let current = transaction
+        .commit::<acyclic_fs::workspace::WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            BOUNDARY_BUDGET,
+            &cancel,
+            |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?
+        .value;
+    let acyclic_fs::workspace::TransactionCommit::Committed(current) = current else {
+        return Err("range rewrite did not commit".into());
+    };
+    // Negative control: the former mandatory comparison cannot finish under
+    // this same query allowance. The optional hint cannot own publication.
+    let failed = current
+        .matches_content(&base, "/a-large", budget, &cancel)
+        .await;
+    assert!(matches!(
+        failed,
+        Err(acyclic_fs::OperationFailure {
+            error: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded { .. }),
+            ..
+        })
+    ));
+    let changed = stream.next().await.ok_or("range publication")??;
+    assert_eq!(changed.paths.len(), 2);
+    assert!(
+        !changed
+            .paths
+            .iter()
+            .find(|p| p.path == "a-large")
+            .ok_or("large path")?
+            .matches_base
+    );
+    view.apply(&changed, fixture.reader.as_ref(), LIMITS)
+        .await?;
+    assert_eq!(
+        view.files()["a-large"].omitted_bytes,
+        Some(baseline.len() as u64)
+    );
+    assert!(view.files()["z-small"].patch.contains("+after!"));
+    let mut reopened = source.observe_diff(base.id(), 16).await?;
+    let snapshot = reopened.next().await.ok_or("reopened snapshot")??;
+    let mut replay = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+    replay
+        .apply(&snapshot, fixture.reader.as_ref(), LIMITS)
+        .await?;
+    assert_eq!(view.files(), replay.files());
+    Ok(())
+}

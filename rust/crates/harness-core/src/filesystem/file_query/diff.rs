@@ -24,7 +24,13 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             &serde_json::to_vec(&base).map_err(|e| crate::Error::Invalid(e.to_string()))?,
         )
         .as_bytes();
-        let FileCut { workspace, current, cursor, records, .. } = self.open_cut(query, None, &io).await?;
+        let FileCut {
+            workspace,
+            current,
+            cursor,
+            records,
+            ..
+        } = self.open_cut(query, None, &io).await?;
         let baseline = self
             .reader
             .host
@@ -125,24 +131,67 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                 .into_iter()
                 .chain(after.as_ref().map(|(_, bytes)| *bytes))
                 .max();
-            let matches_base = match (&before, &after) {
-                (Some((_, left)), Some((_, right))) if left == right => io.sdk(
-                    current
-                        .matches_content(base, &format!("/{path}"), io, io.cancellation())
-                        .await,
-                )?,
-                _ => false,
-            };
             result.paths.push(DiffPath {
                 path,
                 base: before.map(|(source, _)| source),
                 current: after.map(|(source, _)| source),
                 largest_file_bytes,
-                matches_base,
+                matches_base: false,
             });
         }
+        Self::compare_publication(base, current, &mut result, io).await?;
         super::super::access::require_current(&current.workspace(), &permissions, io).await?;
         Ok(result)
+    }
+
+    async fn compare_publication(
+        base: &acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
+        current: &acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
+        result: &mut DiffPublication,
+        io: &PreparationIo,
+    ) -> crate::Result<()> {
+        // Equality is an optional hint: paths and immutable endpoints are the
+        // publication. Reserve half of the remaining allowance for this hint,
+        // leaving the original ledger available for the final authority fence.
+        // A denied comparison must not discard unrelated small-file changes.
+        let mut remaining = io.remaining()?;
+        remaining.peak_allocation_bytes = remaining
+            .peak_allocation_bytes
+            .saturating_sub(io.receipt().peak_allocation_bytes);
+        let allowance = comparison_allowance(remaining);
+        let mut spent = acyclic_fs::WorkCounters::UNCHARGED;
+        for change in &mut result.paths {
+            if change.base.is_none() || change.current.is_none() {
+                continue;
+            }
+            let remaining = spent
+                .remaining(allowance)
+                .map_err(acyclic_fs::FsError::from)?;
+            let (matched, work) = match current
+                .matches_content(
+                    base,
+                    &format!("/{}", change.path),
+                    remaining,
+                    io.cancellation(),
+                )
+                .await
+            {
+                Ok(receipt) => (Ok(receipt.value), receipt.work),
+                Err(failure) => (Err(failure.error), *failure.work),
+            };
+            // Failed comparisons still own their exact work receipt. No body or
+            // allocation escapes this bool projection.
+            io.charge(work)?;
+            spent = spent.checked_add(work).map_err(acyclic_fs::FsError::from)?;
+            match matched {
+                Ok(equal) => change.matches_base = equal,
+                Err(acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                    ..
+                })) => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 
     async fn endpoint(
@@ -181,5 +230,35 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             ) => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+// Separate optional content work from the mandatory publication/authority work.
+fn comparison_allowance(remaining: WorkBudget) -> WorkBudget {
+    WorkBudget {
+        authority_records_read: remaining.authority_records_read / 2,
+        authority_records_appended: remaining.authority_records_appended / 2,
+        authority_bytes_read: remaining.authority_bytes_read / 2,
+        authority_bytes_written: remaining.authority_bytes_written / 2,
+        object_probes: remaining.object_probes / 2,
+        backend_read_operations: remaining.backend_read_operations / 2,
+        backend_write_operations: remaining.backend_write_operations / 2,
+        durability_operations: remaining.durability_operations / 2,
+        page_reads: remaining.page_reads / 2,
+        page_writes: remaining.page_writes / 2,
+        object_bytes_read: remaining.object_bytes_read / 2,
+        object_bytes_written: remaining.object_bytes_written / 2,
+        bytes_hashed: remaining.bytes_hashed / 2,
+        bytes_copied: remaining.bytes_copied / 2,
+        bytes_encoded: remaining.bytes_encoded / 2,
+        source_bytes_read: remaining.source_bytes_read / 2,
+        source_path_components: remaining.source_path_components / 2,
+        source_entries_visited: remaining.source_entries_visited / 2,
+        output_bytes: remaining.output_bytes / 2,
+        items_examined: remaining.items_examined / 2,
+        items_returned: remaining.items_returned / 2,
+        allocation_operations: remaining.allocation_operations / 2,
+        peak_allocation_bytes: remaining.peak_allocation_bytes / 2,
+        materializations: remaining.materializations / 2,
     }
 }

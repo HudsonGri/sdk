@@ -67,8 +67,7 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen()
 }
 
 #[tokio::test]
-async fn guidance_tracks_deleted_files_and_temporary_plan_mode()
--> Result<(), Box<dyn std::error::Error>> {
+async fn guidance_tracks_deleted_goal_and_plan_files() -> Result<(), Box<dyn std::error::Error>> {
     let [goal, plan] = goal_and_plan();
     run([
         goal,
@@ -92,6 +91,16 @@ async fn guidance_tracks_deleted_files_and_temporary_plan_mode()
             false,
         ),
         ("hello", (false, false), None, false),
+    ])
+    .await
+}
+
+// Prompt-scoped plan mode has its own fresh lifecycle. It must not inherit
+// durable goal/plan files from the independent deletion lifecycle above.
+#[tokio::test]
+async fn temporary_plan_mode_does_not_persist_to_the_next_submission()
+-> Result<(), Box<dyn std::error::Error>> {
+    run([
         ("Use plan mode", (false, true), None, false),
         ("hello", (false, false), None, false),
     ])
@@ -175,7 +184,12 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
 
 async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std::error::Error>> {
     let fixture = fixture().await?;
-    for (prompt, expected, edit, blocked) in scenarios {
+    for (index, (prompt, expected, edit, blocked)) in scenarios.into_iter().enumerate() {
+        let started = std::time::Instant::now();
+        eprintln!(
+            "guidance scenario {index}/{N} start fixture={}",
+            fixture.workspace.display()
+        );
         if let Some(edit) = edit {
             fixture
                 .script
@@ -259,6 +273,10 @@ async fn run<const N: usize>(scenarios: [Scenario; N]) -> Result<(), Box<dyn std
                     .is_empty()
             );
         }
+        eprintln!(
+            "guidance scenario {index}/{N} settled and replayed in {:?}",
+            started.elapsed()
+        );
     }
     Ok(())
 }

@@ -17,7 +17,8 @@ pub struct DiffPath {
     /// Older publishers may omit it; their bounded reads still enforce limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub largest_file_bytes: Option<u64>,
-    /// Authorized query compared the immutable content, independent of chunk layout.
+    /// True certifies equal immutable content, independent of chunk layout.
+    /// False also covers comparisons omitted under the query's finite allowance.
     /// The path is still published so consumers remove a previously changed row.
     #[serde(default)]
     pub matches_base: bool,
