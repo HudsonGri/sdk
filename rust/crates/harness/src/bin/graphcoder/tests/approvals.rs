@@ -650,6 +650,7 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
     lines.concat()
 }
 async fn scenario(case: Case) {
+    let started = std::time::Instant::now();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let operation = OperationId::new();
@@ -675,6 +676,10 @@ async fn scenario(case: Case) {
     fixture.verify(&output);
     server.abort();
     let _ = server.await;
+    eprintln!(
+        "approval scenario {case:?}: {:.3}s",
+        started.elapsed().as_secs_f64()
+    );
 }
 macro_rules! cases { ($($name:ident => $case:ident),* $(,)?) => { $(
     #[tokio::test(flavor="multi_thread",worker_threads=2)]

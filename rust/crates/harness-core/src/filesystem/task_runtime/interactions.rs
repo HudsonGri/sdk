@@ -1,5 +1,18 @@
 use super::*;
 
+// A submission consumes the same authenticated private view that selected its
+// review. It cannot re-enter the public writer and reconstruct that view again.
+struct ApprovalBinding<P> {
+    task: TaskId,
+    admission: TaskAdmissionRecord,
+    files: Arc<crate::task_volume::TaskFiles<P>>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static APPROVAL_BINDINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
     P: StreamProvider + 'static,
@@ -17,17 +30,26 @@ where
         &self,
         task: TaskId,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<Arc<crate::task_volume::TaskFiles<P>>>> {
-        Box::pin(async move {
-            let files = self
-                .task_files
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("approval files are not bound".into()))?;
-            let admission = self.admission_observed(task, None).await?;
-            let (scope, _) = self.host.authenticated_scope(&admission, &mut None).await?;
-            match files.for_authenticated_scope(task, &scope, &scope).await? {
-                Some(files) => Ok(Arc::new(files)),
-                None => Ok(files.clone()),
-            }
+        Box::pin(async move { Ok(self.approval_binding(task).await?.files) })
+    }
+
+    async fn approval_binding(&self, task: TaskId) -> Result<ApprovalBinding<P>> {
+        let files = self
+            .task_files
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("approval files are not bound".into()))?;
+        let admission = self.admission_observed(task, None).await?;
+        #[cfg(test)]
+        APPROVAL_BINDINGS.with(|count| count.set(count.get() + 1));
+        let (scope, _) = self.host.authenticated_scope(&admission, &mut None).await?;
+        let files = match files.for_authenticated_scope(task, &scope, &scope).await? {
+            Some(files) => Arc::new(files),
+            None => files.clone(),
+        };
+        Ok(ApprovalBinding {
+            task,
+            admission,
+            files,
         })
     }
 
@@ -40,54 +62,66 @@ where
         responder: &'a Scope,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            let admission = self.admission_observed(task, None).await?;
-            if !admission
-                .grants
-                .contains(crate::contract::capability::INTERACTION_ROUTE)
-                || admission.policy != self.approval_policy_identity()
-                || admission.policy.is_none()
-            {
-                return Err(Error::Unauthorized(
-                    "task has no matching approval policy".into(),
-                ));
-            }
-            let files = self.approval_files(task).await?;
-            if self.outcome_observed(task, None).await?.is_some() {
-                let previous = files
-                    .snapshot(&crate::task_volume::Query::File(file.key.clone()), 1)
-                    .await?;
-                if !matches!(previous.files.as_slice(), [previous] if previous.bytes == file.bytes)
-                {
-                    return Err(Error::Conflict("task is already terminal".into()));
-                }
-            }
-            let owner = self
-                .interaction_owner
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("task conversation owner is not bound".into()))?;
-            let journal = FilesystemExecutionJournal::new(
-                self.stream.clone(),
-                self.filesystem.clone(),
-                &SchemaRegistry::new(),
-                crate::filesystem::FilesystemJournalBinding {
-                    volume: &self.volume,
-                    verifier: &self.verifier,
-                    scope: &self.signed,
-                    maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                    io: None,
-                },
-            )?
-            .for_approval_projection(task)
-            .with_optional_task_files(Some(files))?
-            .with_interaction_owner(
-                &owner.verifier,
-                &owner.schemas,
-                &owner.scope,
-                &owner.volume,
-                None,
-            )?;
-            journal.write_approval_decision(file, responder).await
+            let binding = self.approval_binding(task).await?;
+            self.write_bound_approval(binding, file, responder).await
         })
+    }
+
+    async fn write_bound_approval(
+        &self,
+        binding: ApprovalBinding<P>,
+        file: &crate::task_volume::FileValue,
+        responder: &Scope,
+    ) -> Result<()> {
+        let ApprovalBinding {
+            task,
+            admission,
+            files,
+        } = binding;
+        if !admission
+            .grants
+            .contains(crate::contract::capability::INTERACTION_ROUTE)
+            || admission.policy != self.approval_policy_identity()
+            || admission.policy.is_none()
+        {
+            return Err(Error::Unauthorized(
+                "task has no matching approval policy".into(),
+            ));
+        }
+        if self.outcome_observed(task, None).await?.is_some() {
+            let previous = files
+                .snapshot(&crate::task_volume::Query::File(file.key.clone()), 1)
+                .await?;
+            if !matches!(previous.files.as_slice(), [previous] if previous.bytes == file.bytes) {
+                return Err(Error::Conflict("task is already terminal".into()));
+            }
+        }
+        let owner = self
+            .interaction_owner
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("task conversation owner is not bound".into()))?;
+        let journal = FilesystemExecutionJournal::new(
+            self.stream.clone(),
+            self.filesystem.clone(),
+            &SchemaRegistry::new(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                io: None,
+            },
+        )?
+        .for_approval_projection(task)
+        .with_optional_task_files(Some(files))?
+        .with_interaction_owner(
+            &owner.verifier,
+            &owner.schemas,
+            &owner.scope,
+            &owner.volume,
+            None,
+        )?;
+        journal.write_approval_decision(file, responder).await
     }
 
     /// Binds the existing conversation owner for task approval/question tickets.
@@ -170,8 +204,8 @@ where
                     )?,
                 },
             };
-            let files = self.approval_files(task).await?;
-            let snapshot = files.snapshot(&Query::File(key), 1).await?;
+            let binding = self.approval_binding(task).await?;
+            let snapshot = binding.files.snapshot(&Query::File(key), 1).await?;
             let [review] = snapshot.files.as_slice() else {
                 return Err(Error::Unauthorized(
                     "policy service has no admitted review".into(),
@@ -219,7 +253,7 @@ where
                 None,
                 &mut None,
             )?;
-            self.write_approval_decision(task, file, &responder).await
+            self.write_bound_approval(binding, file, &responder).await
         })
     }
 
