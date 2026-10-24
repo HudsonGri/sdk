@@ -223,8 +223,6 @@ use validation::*;
 #[cfg(test)]
 #[path = "../default_tools_tests.rs"]
 mod tests;
-pub(super) use codec::{
-    decode, encode, recursive_box, recursive_reject,
-};
+pub(super) use codec::{decode, encode, recursive_box, recursive_reject};
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use codec::{recursive_transition_owned_bytes, recursive_value_owned_bytes};

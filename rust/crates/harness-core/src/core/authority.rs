@@ -3,7 +3,9 @@ use super::*;
 mod runtime_signing;
 mod workload;
 /// Kind of independently ordered durable aggregate.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AggregateKind {
@@ -26,7 +28,9 @@ pub const AUTHORITY_ID_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
 pub const AUTHORITY_ID_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 
 /// Stable identity of one independently ordered history.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Authority {

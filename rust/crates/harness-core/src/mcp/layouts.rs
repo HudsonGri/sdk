@@ -6,8 +6,8 @@ use rmcp::model::{
     InputResponses, JsonObject, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, MetaObject, PaginatedRequestParams, Prompt,
     PromptArgument, PromptMessage, ReadResourceRequestParams, ReadResourceResult,
-    RequestMetaObject, Resource, ResourceContents, ResourceTemplate, ResultType, Role,
-    TextContent, Tool, ToolAnnotations,
+    RequestMetaObject, Resource, ResourceContents, ResourceTemplate, ResultType, Role, TextContent,
+    Tool, ToolAnnotations,
 };
 use serde_json::Value;
 use std::borrow::Cow;
@@ -83,7 +83,10 @@ impl HeapLayout for Role {
         seq: None,
         map: Some(Alloc::INLINE),
         tagged: false,
-        fields: &[("user", &JsonLayout::Scalar), ("assistant", &JsonLayout::Scalar)],
+        fields: &[
+            ("user", &JsonLayout::Scalar),
+            ("assistant", &JsonLayout::Scalar)
+        ],
         elements: &[],
         flatten: &[],
     });
@@ -96,7 +99,10 @@ impl HeapLayout for IconTheme {
         seq: None,
         map: Some(Alloc::INLINE),
         tagged: false,
-        fields: &[("light", &JsonLayout::Scalar), ("dark", &JsonLayout::Scalar)],
+        fields: &[
+            ("light", &JsonLayout::Scalar),
+            ("dark", &JsonLayout::Scalar)
+        ],
         elements: &[],
         flatten: &[],
     });
@@ -110,7 +116,10 @@ impl HeapLayout for CacheScope {
         seq: None,
         map: Some(Alloc::INLINE),
         tagged: false,
-        fields: &[("public", &JsonLayout::Scalar), ("private", &JsonLayout::Scalar)],
+        fields: &[
+            ("public", &JsonLayout::Scalar),
+            ("private", &JsonLayout::Scalar)
+        ],
         elements: &[],
         flatten: &[],
     });

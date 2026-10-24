@@ -168,7 +168,9 @@ impl ChildRequest {
 }
 
 /// Files owned by a parent below `agents/<ref>/`.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ChildFile {

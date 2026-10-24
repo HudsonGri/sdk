@@ -5,7 +5,9 @@ pub(crate) struct MemoryStoreEntry {
     pub(crate) kind: MemoryStoreEntryKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum MemoryStoreEntryKind {
     File,

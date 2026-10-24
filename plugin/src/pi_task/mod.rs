@@ -152,8 +152,8 @@ mod codec;
 mod definition;
 mod execution;
 mod state;
-use codec::*;
 pub(crate) use codec::control_reply;
+use codec::*;
 use state::*;
 #[cfg(test)]
 #[path = "../pi_task_tests.rs"]

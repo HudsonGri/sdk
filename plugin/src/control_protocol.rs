@@ -75,7 +75,17 @@ impl ProtocolOffer {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, acyclic_harness::HeapLayout)]
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    acyclic_harness::HeapLayout,
+)]
 #[heap_layout(crate = acyclic_harness)]
 #[serde(transparent)]
 pub(crate) struct RequestId(String);
@@ -102,7 +112,18 @@ impl RequestId {
 
 /// Identifies one logical operation across every transmission of its
 /// envelope: 122 random bits, unique without any coordination.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, acyclic_harness::HeapLayout)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    acyclic_harness::HeapLayout,
+)]
 #[heap_layout(crate = acyclic_harness)]
 #[serde(transparent)]
 pub(crate) struct OperationId(uuid::Uuid);

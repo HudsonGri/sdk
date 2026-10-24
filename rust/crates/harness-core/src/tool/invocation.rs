@@ -11,7 +11,8 @@ pub struct ToolInvocation {
     /// Registered tool name.
     pub name: String,
     /// Schema-validated arguments.
-    #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub arguments: Value,
 }
 
@@ -108,7 +109,8 @@ fn valid_call_id(call_id: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ToolResult {
     /// Schema-validated structured value.
-    #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub value: Value,
 }
 
