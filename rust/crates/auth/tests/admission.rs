@@ -86,7 +86,7 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
             .authorize(&trust, &expired, PolicyDecision::Allow)
             .is_err()
     );
-    let mut forged = proof.clone();
+    let mut forged = proof;
     *forged.workload.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
     assert!(forged.authenticate_history(&trust, signed::NOW).is_err());
     assert!(forged.verify_history(&trust, &request, [7; 32]).is_err());
