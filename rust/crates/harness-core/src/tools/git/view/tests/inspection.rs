@@ -104,7 +104,7 @@ async fn native_diff_keeps_the_committed_side_when_references_match() -> TestRes
 
 #[tokio::test]
 async fn native_agent_diff_uses_the_current_physical_view() -> TestResult {
-    native_diff_comparison(&[(&["diff", "agents/self"], 0), (&["diff", "agents/peer"], 0)]).await
+    native_diff_comparison(&[(&["diff", "agents/self"], 0), (&["diff", "agents/peer"], 1)]).await
 }
 
 async fn native_diff_comparison(commands: &[(&[&str], u64)]) -> TestResult {
@@ -119,13 +119,18 @@ async fn native_diff_comparison(commands: &[(&[&str], u64)]) -> TestResult {
     )
     .await?;
     let cancellation = CancellationToken::new();
-    let peer = fs
-        .create_workspace("peer", WorkBudget::UNBOUNDED, &cancellation)
-        .await?
-        .value;
-    peer.write_text("/file", "physical edit\n").await?;
+    // Agent views share the repository's file identities through a fork.
+    // The peer keeps committed bytes, so this agent's physical edit differs.
+    let peer_view = View::Volume(&workspace)
+        .fork(
+            "peer",
+            OperationId::from_bytes([93; 16]),
+            PublicationPermit::Unrestricted,
+        )
+        .await?;
+    let peer = peer_view.workspace();
     WorkspaceGraph::new(store.clone())
-        .register_root(&peer)
+        .register_root(peer)
         .await?;
     let repository = GitCompatRepository::new(workspace.id(), store.clone());
     repository
