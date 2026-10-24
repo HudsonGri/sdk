@@ -36,7 +36,17 @@ const RAW_LOCKS: [&str; 12] = [
 ];
 
 /// Exact remaining raw spellings: (file, spelling, count).
-const ALLOWED: [(&str, &str, usize); 4] = [
+const ALLOWED: [(&str, &str, usize); 6] = [
+    (
+        "rust/crates/native-runtime/src/file_lock/wait/linux.rs",
+        "flock(",
+        1,
+    ),
+    (
+        "rust/crates/native-runtime/src/file_lock/wait/windows.rs",
+        "LockFileEx",
+        1,
+    ),
     // The guard itself.
     (
         "rust/crates/native-runtime/src/file_lock.rs",

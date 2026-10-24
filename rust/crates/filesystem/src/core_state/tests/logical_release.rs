@@ -255,12 +255,16 @@ fn record_release_control(unwind: bool) {
     let mut control = None;
     let mut live_conflict = false;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_lock_with_retry(
+        with_lock_until(
             &mut paths,
             |_| {
                 control = Some(ForkControl::start()?);
                 live_conflict = matches!(
-                    with_lock_with_retry(&mut probe, |_| Ok(()), |_| false),
+                    with_lock_until(
+                        &mut probe,
+                        |_| Ok(()),
+                        Instant::now() + Duration::from_millis(20)
+                    ),
                     Err(LocalCoreStateStoreError::LockTimeout(_))
                 );
                 assert!(
@@ -269,10 +273,15 @@ fn record_release_control(unwind: bool) {
                 );
                 Ok(())
             },
-            |_| false,
+            Instant::now() + Duration::from_millis(20),
         )
     }));
-    let released_error = with_lock_with_retry(&mut probe, |_| Ok(()), |_| false).err();
+    let released_error = with_lock_until(
+        &mut probe,
+        |_| Ok(()),
+        Instant::now() + Duration::from_millis(20),
+    )
+    .err();
     let status = control
         .as_mut()
         .expect("record action reached pre_exec")
@@ -291,8 +300,12 @@ fn record_release_control(unwind: bool) {
         live_conflict,
         "a live record action must exclude another writer"
     );
-    with_lock_with_retry(&mut probe, |_| Ok(()), |_| false)
-        .expect("exec closed the inherited record descriptor");
+    with_lock_until(
+        &mut probe,
+        |_| Ok(()),
+        Instant::now() + Duration::from_millis(20),
+    )
+    .expect("exec closed the inherited record descriptor");
     assert!(
         released_error.is_none(),
         "record action end (unwind={unwind}) must release before child exec: {released_error:?}"
