@@ -411,7 +411,9 @@ fn premature_cancelled_waiter_refund_is_detected() {
 }
 
 fn release_broadcast(head_only: bool) {
-    for cancel in 0..3 {
+    // Prove broadcast without cancellation's independent successor wake too.
+    // Otherwise a negative control can accidentally borrow that second path.
+    for cancel in [None, Some(0), Some(1), Some(2)] {
         loom::model(move || {
             let (sender, _receiver) = crate::sync::mpsc::sync_channel(1);
             let workers = NativeWorkers::single(sender, AdmissionState::new());
@@ -427,15 +429,23 @@ fn release_broadcast(head_only: bool) {
             workers.admission.lock().unwrap().broken_broadcast = head_only;
             let admission = workers.admission.clone();
             let notifier = thread::spawn(move || crate::notify_capacity_released(&admission));
-            crate::remove_capacity_waiter(&workers, Some(nodes[cancel].clone()));
+            if let Some(cancel) = cancel {
+                crate::remove_capacity_waiter(&workers, Some(nodes[cancel].clone()));
+            }
             notifier.join().unwrap();
-            for (index, node) in nodes.into_iter().enumerate() {
-                if index != cancel {
+            // Observe the entire broadcast before cleanup: unlinking an
+            // earlier node wakes its successor and would mask a lost wake.
+            for (index, flag) in flags.iter().enumerate() {
+                if Some(index) != cancel {
                     assert_ne!(
-                        flags[index].0.load(Ordering::SeqCst),
+                        flag.0.load(Ordering::SeqCst),
                         0,
                         "capacity broadcast lost a live waiter"
                     );
+                }
+            }
+            for (index, node) in nodes.into_iter().enumerate() {
+                if Some(index) != cancel {
                     crate::remove_capacity_waiter(&workers, Some(node));
                 }
             }

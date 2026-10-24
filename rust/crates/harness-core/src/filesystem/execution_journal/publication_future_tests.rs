@@ -438,15 +438,17 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
                     65_536,
                 )
                 .await?;
-                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
+                // Verification ports do not keep runtime signing custody alive.
+                // This publishing fixture must retain its complete runtime owner.
+                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture))
             })
             .unwrap()
     };
     for conditional in [false, true] {
         let [expected, actual] =
-            differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
+            differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, fixture), old| {
                 runtime.block_on(async {
-                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host), conditional)
+                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(fixture.host.clone()), conditional)
                         .await
                         .unwrap();
                     let snapshot = journal
@@ -494,9 +496,9 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
     // Simulate an append accepted before its projection was published. A
     // matching retry must heal that gap without another canonical append.
     for omitted_publication in [true, false] {
-        let (journal, host) = initialize();
+        let (journal, fixture) = initialize();
         runtime.block_on(async {
-            turn(&journal, true, "chunk", 1, false, Some(host), false)
+            turn(&journal, true, "chunk", 1, false, Some(fixture.host.clone()), false)
                 .await
                 .unwrap();
             let files = journal.task_files.as_ref().unwrap();

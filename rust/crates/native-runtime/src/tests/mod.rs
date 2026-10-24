@@ -353,7 +353,11 @@ impl NativeReadMeter for ReadBudgetMeter {
         let previous = self.memory.fetch_sub(bytes, Ordering::AcqRel);
         assert!(previous >= bytes);
         if previous == bytes
-            && let Some(retired) = self.memory_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+            && let Some(retired) = self
+                .memory_retired
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
         {
             let _ = retired.send(());
         }

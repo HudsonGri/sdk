@@ -174,7 +174,10 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
         submit(&mut task);
         let release = || {
             entered.recv().unwrap();
-            *meter.memory_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retired_tx.clone());
+            *meter
+                .memory_retired
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retired_tx.clone());
             meter.cancelled.store(true, Ordering::Release);
             release_tx.send(()).unwrap();
         };
