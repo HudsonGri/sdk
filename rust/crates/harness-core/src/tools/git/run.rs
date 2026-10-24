@@ -48,7 +48,7 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = crate::Result<()>> + Send,
 {
-    Box::pin(run_inner(workspace, args, None, before_effect)).await
+    run_inner(workspace, args, None, before_effect).await
 }
 
 /// Runs an inspection with disposable working-tree objects and no publication.
@@ -68,7 +68,7 @@ where
             "native inspection requires a read-only command without publication authority".into(),
         ));
     }
-    Box::pin(run_inner(workspace, args, Some(view), before_effect)).await
+    run_inner(workspace, args, Some(view), before_effect).await
 }
 
 async fn run_inner<'a, F, Fut>(
@@ -81,87 +81,93 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = crate::Result<()>> + Send,
 {
-    before_effect().await?;
-    let read_only = is_read_only(args);
-    let permit = workspace.lease.as_ref().map_or(
-        PublicationPermit::Unrestricted,
-        OperationWindowLease::publication_permit,
-    );
-    let patch = Box::pin(git_apply_patch(workspace.view, workspace.root, args)).await?;
-    let (ignore, merge_drivers) = Box::pin(git_policy(if read_only {
-        View::Volume(workspace.view.workspace())
-    } else {
-        workspace.view
-    }))
-    .await?;
-    let ignore = ignore.reserving(workspace.reserved);
-    let repository =
-        crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
-    let tree = if read_only {
-        Box::pin(readonly::workspace_tree(workspace.view)).await?
-    } else {
-        Box::pin(git_workspace_tree(workspace.view, args, Some(permit))).await?
-    };
-    let store = if read_only {
-        workspace.store.inspecting()
-    } else {
-        workspace.store.clone()
-    };
-    let executor = WorkspaceGitExecutor {
-        before_effect: &before_effect,
-        fs: workspace.filesystem,
-        store: &store,
-        current: workspace.view.workspace().clone(),
-        lazy_current: workspace.view,
-        inspection: inspection.map(|view| (tree, view)),
-        read_only,
-        repository_id: workspace.repository,
-        ignore,
-        repository,
-        permit,
-        lease: workspace.lease.take(),
-        merge_drivers,
-        merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
-        switched: Mutex::new(None),
-    };
-    if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
-        before_effect().await?;
-        let output = Box::pin(executor.diff_agent(branch, tree)).await?;
-        before_effect().await?;
-        return Ok(output);
-    }
-    let command = if let Some(identity) = workspace.checkout {
-        execute(
-            &workspace,
-            &store,
-            args,
-            tree,
-            patch.as_deref(),
-            &RootMaterializingGitExecutor {
-                inner: &executor,
-                root: workspace.root,
-                source_root_identity: identity,
-            },
-        )
-        .await?
-    } else {
-        execute(&workspace, &store, args, tree, patch.as_deref(), &executor).await?
-    };
-    let command = match command {
-        Some(GitCommandOutput::Status(status)) => {
+    // Erase the shared command future here, so host dispatchers cannot inherit
+    // its complete storage/inspection type graph when proving Send.
+    let operation: acyclic_stream::BoxProviderFuture<'_, crate::Result<Output>> =
+        Box::pin(async move {
             before_effect().await?;
-            // Keep native tree inspection's future independent of the complete
-            // command dispatch future (which also contains publication paths).
-            let status = Box::pin(executor.status_read_only(status)).await?;
-            before_effect().await?;
-            Some(GitCommandOutput::Status(status))
-        }
-        command => command,
-    };
-    Ok(Output {
-        command: command.map(|output| without_host_paths(output, &executor.repository)),
-        switched: executor.switched_workspace()?,
-    })
+            let read_only = is_read_only(args);
+            let permit = workspace.lease.as_ref().map_or(
+                PublicationPermit::Unrestricted,
+                OperationWindowLease::publication_permit,
+            );
+            let patch = Box::pin(git_apply_patch(workspace.view, workspace.root, args)).await?;
+            let (ignore, merge_drivers) = Box::pin(git_policy(if read_only {
+                View::Volume(workspace.view.workspace())
+            } else {
+                workspace.view
+            }))
+            .await?;
+            let ignore = ignore.reserving(workspace.reserved);
+            let repository = crate::filesystem::workspace_policy::git_view_policy("")
+                .reserving(workspace.reserved);
+            let tree = if read_only {
+                Box::pin(readonly::workspace_tree(workspace.view)).await?
+            } else {
+                Box::pin(git_workspace_tree(workspace.view, args, Some(permit))).await?
+            };
+            let store = if read_only {
+                workspace.store.inspecting()
+            } else {
+                workspace.store.clone()
+            };
+            let executor = WorkspaceGitExecutor {
+                before_effect: &before_effect,
+                fs: workspace.filesystem,
+                store: &store,
+                current: workspace.view.workspace().clone(),
+                lazy_current: workspace.view,
+                inspection: inspection.map(|view| (tree, view)),
+                read_only,
+                repository_id: workspace.repository,
+                ignore,
+                repository,
+                permit,
+                lease: workspace.lease.take(),
+                merge_drivers,
+                merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
+                switched: Mutex::new(None),
+            };
+            if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
+                before_effect().await?;
+                let output = Box::pin(executor.diff_agent(branch, tree)).await?;
+                before_effect().await?;
+                return Ok(output);
+            }
+            let command = if let Some(identity) = workspace.checkout {
+                execute(
+                    &workspace,
+                    &store,
+                    args,
+                    tree,
+                    patch.as_deref(),
+                    &RootMaterializingGitExecutor {
+                        inner: &executor,
+                        root: workspace.root,
+                        source_root_identity: identity,
+                    },
+                )
+                .await?
+            } else {
+                execute(&workspace, &store, args, tree, patch.as_deref(), &executor).await?
+            };
+            let command = match command {
+                Some(GitCommandOutput::Status(status)) => {
+                    before_effect().await?;
+                    // Keep native tree inspection's future independent of the complete
+                    // command dispatch future (which also contains publication paths).
+                    let status = Box::pin(executor.status_read_only(status)).await?;
+                    before_effect().await?;
+                    Some(GitCommandOutput::Status(status))
+                }
+                command => command,
+            };
+            Ok(Output {
+                command: command.map(|output| without_host_paths(output, &executor.repository)),
+                switched: executor.switched_workspace()?,
+            })
+        });
+    operation.await
 }
 
 /// Keeps host paths out of listings, including from history captured before
