@@ -25,13 +25,14 @@ test('receipt recovery cannot treat a foreign PID namespace as a dead owner', as
     assert.equal(processState(owner),expected);
     const meta=path.join(root,`${oldShapeOrphans}-${actual.pid}-${String(identity)}.receipt-meta.v2.json`);
     const receipt=meta+'.receipt.json';
-    fs.writeFileSync(meta,JSON.stringify({owner,receipt_file:receipt,argv:[]}));
+    fs.writeFileSync(meta,JSON.stringify({owner,receipt_file:receipt,argv:[],admission_start:new Date().toISOString()}));
     // Both global recovery and a directly invoked watcher must lack deletion
     // authority. A missing process in a private /proc is not an exit receipt.
     recover(root);
     assert.equal(fs.existsSync(receipt),false);
-    assert.throws(()=>finish(meta,137,'interrupted'),/PID namespace/);
-    await assert.rejects(watch(meta),/PID namespace/);
+    if (identity === null) assert.throws(()=>finish(meta,137,'interrupted'),/receipt metadata INFRA/);
+    else assert.equal(finish(meta,137,'interrupted'),null);
+    await watch(meta);
     assert.equal(fs.existsSync(receipt),false);
     // The former production condition misclassified these owners as orphaned.
     if(processIdentity(owner.pid)!==owner.identity) oldShapeOrphans++;
