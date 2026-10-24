@@ -8,6 +8,73 @@ import {copyBackDestination} from './buildbox.mjs';
 import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
 
+test('copy-back failures retain their transport evidence in the terminal receipt',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'copy-back-evidence-'));
+ const saved=process.env.BUILD_SLOT_REMOTE_FETCH;
+ const savedDestination=process.env.BUILD_SLOT_REMOTE_FETCH_DIR;
+ try{
+  process.env.BUILD_SLOT_REMOTE_FETCH='artifact';
+  process.env.BUILD_SLOT_REMOTE_FETCH_DIR=cwd;
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  async function load(name,text){
+   const file=path.join(cwd,name+'.mjs');fs.writeFileSync(file,text+'\nexport {copyBack};\n');
+   return import(file);
+  }
+  const current=await load('current',source);
+  const former=await load('former',source
+   .replace("throw copyBackFailure('archive read', group.archive, result)","throw new Error('missing declared-output archive')")
+   .replace('copy_back_failure: ctx.copyBackFailure ?? null, ',''));
+  const prefix='/mnt/bb/jobs/fixture',archive=prefix+'.exports/0.tar.gz';
+  const manifest=Buffer.from(JSON.stringify([{archive,count:1,target:false}]));
+  const stages=[
+   {stage:'manifest read',path:prefix+'.exports/manifest.json',status:255,signal:'SIGKILL',timedOut:true,stderr:'transport interrupted',stdout:Buffer.alloc(0)},
+   {stage:'archive read',path:archive,status:255,signal:null,timedOut:false,stderr:'connection closed',stdout:Buffer.from([0,255,1])},
+   {stage:'archive extraction',path:archive,status:2,signal:null,timedOut:false,stderr:Buffer.from('invalid gzip header'),stdout:Buffer.alloc(0)},
+  ];
+  async function fail(module,row){
+   const commands=[];
+   const run=async command=>{
+    commands.push(command);
+    assert.ok(command.startsWith('cat '),'failed exports must remain owned for diagnosis');
+    if(row.stage==='manifest read'||command===`cat ${archive}`&&row.stage==='archive read')return row;
+    return {status:0,stdout:command===`cat ${prefix}.exports/manifest.json`?manifest:Buffer.from('archive'),stderr:''};
+   };
+   const extract=(program,args,options)=>{
+    assert.equal(row.stage,'archive extraction');assert.equal(program,'tar');
+    assert.deepEqual(args,['-xzf','-','-C',cwd,'--no-same-owner']);
+    assert.deepEqual(options.input,Buffer.from('archive'));return row;
+   };
+   let error;
+   try{await module.copyBack(prefix,cwd,'unused','unused','.',{run,extract});}catch(caught){error=caught;}
+   assert.ok(error,'the failed transfer must reject');
+   assert.equal(commands.length,row.stage==='manifest read'?1:2,'there is no transfer retry or export deletion');
+   return error;
+  }
+  for(const [index,row] of stages.entries()){
+   const error=await fail(current,row);
+   const expected={stage:row.stage,path:row.path,exit_status:row.status,signal:row.signal,timed_out:row.timedOut,stderr:String(row.stderr),received_bytes:row.stdout.length};
+   assert.deepEqual(error.copyBack,expected,error.stack);
+   assert.match(error.message,/failed \(rc (255|2), signal/);
+   const metaFile=path.join(cwd,`meta-${index}.json`),receipt=path.join(cwd,`terminal-${index}.json`);
+   fs.writeFileSync(metaFile,JSON.stringify({owner:processOwner(),side:'client',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   const terminal=current.endReceipt({metaFile,termination:'infra',copyBackFailure:error.copyBack},1);
+   assert.equal(terminal.exit_status,1);assert.equal(terminal.termination,'infra');
+   assert.deepEqual(JSON.parse(fs.readFileSync(receipt)).copy_back_failure,expected);
+  }
+  const oldError=await fail(former,stages[1]);
+  assert.equal(oldError.message,'missing declared-output archive');
+  assert.equal(oldError.copyBack,undefined,'former generic error loses transport identity');
+  const metaFile=path.join(cwd,'former-meta.json'),receipt=path.join(cwd,'former-terminal.json');
+  fs.writeFileSync(metaFile,JSON.stringify({owner:processOwner(),side:'client',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+  assert.equal(former.endReceipt({metaFile,termination:'infra',copyBackFailure:stages[1]},1).copy_back_failure,undefined,'former terminal writer loses even captured evidence');
+ }finally{
+  if(saved===undefined)delete process.env.BUILD_SLOT_REMOTE_FETCH;else process.env.BUILD_SLOT_REMOTE_FETCH=saved;
+  if(savedDestination===undefined)delete process.env.BUILD_SLOT_REMOTE_FETCH_DIR;else process.env.BUILD_SLOT_REMOTE_FETCH_DIR=savedDestination;
+  fs.rmSync(cwd,{recursive:true,force:true});
+ }
+});
+
 test('launch acknowledgement always has a published wrapper owner',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'launch-owner-'));
  try{
