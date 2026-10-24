@@ -18,8 +18,11 @@ use acyclic_fs::WorkCounters;
 mod authentication;
 mod provenance;
 mod provider;
-use authentication::authenticate;
+use authentication::CreationRequest;
 pub(in crate::filesystem) use provenance::CreatedProvenance;
+
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod tests;
 
 /// Trusted creation verifier with host-managed signing authority.
 pub struct FilesystemResourceCreationProvider<A, O> {
