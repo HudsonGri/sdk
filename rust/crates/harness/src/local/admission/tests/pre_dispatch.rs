@@ -207,7 +207,10 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                         &serde_json::to_vec(&source).map_err(crate::local::storage)?,
                         "application/json",
                         "summary source",
-                        crate::conversation::ContentAccess { ceiling: None, io: None },
+                        crate::conversation::ContentAccess {
+                            ceiling: None,
+                            io: None,
+                        },
                     )?
                     .await?
                     .0,
@@ -226,12 +229,15 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                 &bytes,
                 "application/json",
                 "model input",
-                crate::conversation::ContentAccess { ceiling: None, io: None },
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: None,
+                },
             )?
             .await?
             .0;
         let (receive, model) = harness
-            .finish_turn_inputs(operation, payload, publisher.as_ref())
+            .finish_turn_inputs(operation, payload, publisher.as_ref())?
             .await?;
         drop(publisher);
         let task = admitted_task(
@@ -246,7 +252,7 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                         model,
                     },
                     None,
-                )
+                )?
                 .await?,
         )?;
         let result = harness.resume(task).await;

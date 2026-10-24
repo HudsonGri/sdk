@@ -414,7 +414,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 generation,
                 ceiling,
                 io,
-            )
+            )?
             .await?;
         drop(retry);
         drop(retry_hold);

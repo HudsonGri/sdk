@@ -10,7 +10,7 @@ use crate::{
 pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
     let dispatches = fixture.provider.dispatches();
     let turn = harness
-        .current_turn()
+        .current_turn()?
         .await?
         .0
         .expect("retained root turn")
