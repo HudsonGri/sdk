@@ -22,6 +22,28 @@ def load_helper():
 
 
 class ImmutableWindowsInputTests(unittest.TestCase):
+    def test_fixture_binding_uses_admitted_identity_for_every_binary_target(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as directory:
+            records = Path(directory)
+            binary = records / 'bin' / 'immutable-export.exe'
+            binary.parent.mkdir()
+            binary.write_bytes(b'admitted fixture')
+            test = {'target': 'cli', 'test': True, 'name': 'driver.exe'}
+            for target in ['acyclic', 'graphcoder', 'another-host']:
+                row = {'target': target, 'test': False, 'name': binary.name}
+                manifest = {'artifacts': [test, row]}
+                self.assertEqual(helper['fixture_binary'](records, manifest), binary.resolve())
+                if target != 'acyclic':
+                    old = next((item for item in manifest['artifacts'] if not item['test'] and item['target'] == 'acyclic'), None)
+                    self.assertIsNone(old, 'the former target-specific selector drops this admitted fixture')
+            self.assertIsNone(helper['fixture_binary'](records, {'artifacts': [test]}))
+            with self.assertRaisesRegex(RuntimeError, 'Ambiguous normal executable fixture'):
+                helper['fixture_binary'](records, {'artifacts': [test, row, dict(row, target='second')]})
+            binary.unlink()
+            with self.assertRaisesRegex(RuntimeError, 'Missing admitted normal executable fixture'):
+                helper['fixture_binary'](records, manifest)
+
     def test_payload_survives_producer_cleanup_and_owns_exact_config(self):
         helper = load_helper()
         helper['REMOTE'] = 'import json; print(json.dumps(CONFIG, ensure_ascii=False))'
