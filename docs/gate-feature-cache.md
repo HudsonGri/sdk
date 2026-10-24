@@ -76,11 +76,22 @@ artifacts, diagnostics and statuses live in private job temporary storage, so
 generated outputs do not pollute the source inventory. Legacy runners retain
 their existing output location when private custody is absent.
 
+Privileged tooling controls pass Python's `-B` flag across sudo rather than
+depending on an inherited environment variable. Importing an installer must
+not create root-owned bytecode in an uploaded checkout and prevent its later
+retirement. Source-copy retirement keeps one stable tomb name and the original
+source lease, including after an incomplete removal; another admission cannot
+rename that tomb repeatedly or bypass the original lease. The installer requires
+the independent retirement controls before publishing tools.
+
 Controls run on bb2:
 
 ```sh
 python3 scripts/gate-target-cache.test.py
+python3 scripts/with-xwin-cache.test.py
 python3 scripts/buildbox/cargo_cache.test.py
+python3 scripts/buildbox/install.test.py
+python3 scripts/buildbox/prune.test.py
 node --test --test-concurrency=1 scripts/pr-gate-checks.test.mjs scripts/main-gate-checks.test.mjs
 ```
 
