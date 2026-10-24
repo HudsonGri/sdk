@@ -29,6 +29,17 @@ class HangTests(unittest.TestCase):
         self.assertIn('hung test second', hang.unfinished(text, 124))
         self.assertIn('second, identity_processes', hang.unfinished(text, 124))
 
+    def test_late_completions_after_watchdog_are_read_before_any_verdict(self):
+        source = (HERE/'gate-hang.py').read_text()
+        old = {'__name__':'early_stop_control'}
+        exec(compile(source.replace('watchdog = True', 'watchdog = True\n            break'), 'early-stop-control', 'exec'), old)
+        for status in ['ok', 'FAILED', 'ignored']:
+            with self.subTest(status=status):
+                text = START+SLOW+KILLED+f'test identity_processes ... {status}\n'
+                self.assertIsNone(hang.unfinished(text, 124))
+                self.assertIn('hung test identity_processes', old['unfinished'](text, 124))
+        self.assertIsNone(hang.unfinished(START+SLOW+KILLED+'     Running tests/next.rs (/tmp/next)\n', 124))
+
     def test_actual_coordinator_separates_source_hang_from_transport_loss(self):
         source = (HERE/'pr-gate.sh').read_text()
         block = source[source.index('# An ended client stream'):source.index('# A successful payload')]
@@ -40,6 +51,7 @@ class HangTests(unittest.TestCase):
                 (START+SLOW, 124, False, 4),
                 (START+SLOW+KILLED, 224, False, 4),
                 (START+SLOW+'test identity_processes ... ok\n'+KILLED, 124, False, 4),
+                (START+SLOW+KILLED+'test identity_processes ... ok\n', 124, False, 4),
                 (START+SLOW+KILLED, 124, True, 4),
             ]:
                 log = root/'gate.log'; log.write_text(text)

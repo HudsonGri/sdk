@@ -19,6 +19,7 @@ WATCHDOG = re.compile(r'^\[buildbox\] hang reaper: .*presumed hung .*killed \(rc
 def unfinished(text, executor_rc):
     active = None
     pending = {}
+    watchdog = False
     for line in text.splitlines():
         running = RUNNING.match(line)
         if running:
@@ -33,10 +34,12 @@ def unfinished(text, executor_rc):
         if finished:
             pending.pop(finished.group(1), None)
         if WATCHDOG.match(line):
-            if executor_rc == 124 and active and pending:
-                names = list(reversed(pending))
-                return f'hung test {names[0]} in {active}; unfinished cases: {", ".join(names)}; confirmed idle-watchdog cutoff rc=124'
-            return None
+            watchdog = True
+    # The wrapper's stderr and the child's stdout can be forwarded in either
+    # order. A completion arriving after the watchdog still retires the case.
+    if watchdog and executor_rc == 124 and active and pending:
+        names = list(reversed(pending))
+        return f'hung test {names[0]} in {active}; unfinished cases: {", ".join(names)}; confirmed idle-watchdog cutoff rc=124'
     return None
 
 
