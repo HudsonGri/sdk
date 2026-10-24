@@ -358,17 +358,18 @@ fn task_view_destination(
 ) -> Result<(std::path::PathBuf, MountOptions)> {
     let options = MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual);
     let name = crate::identity::fresh_uuid().to_string();
+    #[cfg(all(target_os = "linux", test))]
+    let shared =
+        crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS).is_none();
+    #[cfg(all(target_os = "linux", not(test)))]
+    let shared = true;
     #[cfg(target_os = "linux")]
-    {
-        let _ = mount_directory;
+    if shared {
         let root = acyclic_fs::shared_view_root().map_err(storage)?;
-        Ok((root.join(name), options.shared()))
+        return Ok((root.join(name), options.shared()));
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        std::fs::create_dir_all(mount_directory).map_err(storage)?;
-        let path = mount_directory.join(name);
-        std::fs::create_dir(&path).map_err(storage)?;
-        Ok((path, options))
-    }
+    std::fs::create_dir_all(mount_directory).map_err(storage)?;
+    let path = mount_directory.join(name);
+    std::fs::create_dir(&path).map_err(storage)?;
+    Ok((path, options))
 }

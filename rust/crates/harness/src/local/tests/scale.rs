@@ -556,7 +556,10 @@ async fn run_agents(
     // Diagnosis samples finely and keeps what the peak's descriptors name.
     let diagnosing = crate::native_environment::variable("ACYCLIC_SCALE_DIAG").is_some();
     if diagnosing {
-        println!("scale diag baseline fds={:#?}", descriptor_shapes(directory));
+        println!(
+            "scale diag baseline fds={:#?}",
+            descriptor_shapes(directory)
+        );
     }
     let sampler = {
         let (peak, sampling) = (peak.clone(), sampling.clone());
@@ -832,6 +835,9 @@ struct Run {
     children: u64,
     leaked_per_agent: u64,
     retain_child_views: bool,
+    /// Mount each task view as its own native instance instead of a view of
+    /// the process's shared one: the shared instance's negative control.
+    unshared_task_views: bool,
     /// Bound the cost counted from the cold baseline: the marginal cost's
     /// negative control.
     from_baseline: bool,
@@ -843,6 +849,7 @@ impl Run {
         children: 0,
         leaked_per_agent: 0,
         retain_child_views: false,
+        unshared_task_views: false,
         from_baseline: false,
     };
     #[cfg(feature = "native-execution")]
@@ -906,6 +913,11 @@ fn bounded_run(run: &Run) -> Result<std::process::Output> {
         command.env(crate::local::children::RETAIN_CHILD_VIEWS, "1");
     } else {
         command.env_remove(crate::local::children::RETAIN_CHILD_VIEWS);
+    }
+    if run.unshared_task_views {
+        command.env(crate::local::children::UNSHARED_TASK_VIEWS, "1");
+    } else {
+        command.env_remove(crate::local::children::UNSHARED_TASK_VIEWS);
     }
     command.output().map_err(storage)
 }
@@ -975,17 +987,34 @@ fn settled_children_cost_is_bounded() -> Result<()> {
     expect_run(&Run::CHILDREN, None)
 }
 
-/// Settled children that keep their task views exceed the bounds, so the
-/// bounds see each retained view.
+/// Settled children that keep task views mounted as instances of their own
+/// exceed the bounds, so the bounds see each retained instance.
 #[test]
 #[cfg(feature = "native-execution")]
 fn retained_child_views_fail_the_bound() -> Result<()> {
     expect_run(
         &Run {
             retain_child_views: true,
+            unshared_task_views: true,
             ..Run::CHILDREN
         },
         Some("per-agent ceilings exceeded"),
+    )
+}
+
+/// Retained task views that are views of the process's shared instance cost
+/// no mount, thread or descriptor, so even children that keep them stay
+/// within the bounds; `retained_child_views_fail_the_bound` is the same run
+/// with an instance per view.
+#[test]
+#[cfg(all(target_os = "linux", feature = "native-execution"))]
+fn retained_shared_child_views_stay_within_the_bound() -> Result<()> {
+    expect_run(
+        &Run {
+            retain_child_views: true,
+            ..Run::CHILDREN
+        },
+        None,
     )
 }
 
