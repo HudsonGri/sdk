@@ -211,7 +211,7 @@ mod tests {
         let Admission::Accepted(RuntimeTask::Durable { task_id: task, .. }) =
             local.submit(OperationId::new(), "parent").await?
         else {
-            panic!("admission");
+            return Err(Error::Invalid("fixture admission was not accepted".into()));
         };
         let mut client = LocalFileClient::open(local.clone(), OperationId::new()).await?;
         drop(client.attachment.take());
@@ -240,8 +240,12 @@ mod tests {
             tasks: Arc::new(std::sync::Mutex::new(vec![task])),
         };
         assert!(futures::poll!(Box::pin(client.approvals.next()).as_mut()).is_pending());
-        locked.await.unwrap();
-        release.send(()).unwrap();
+        locked
+            .await
+            .map_err(|_| Error::Storage("fixture gate did not enter".into()))?;
+        release
+            .send(())
+            .map_err(|()| Error::Storage("fixture gate lost its release".into()))?;
         // IO is ready, but only polling discovery releases the actual gate.
         // Probe once without a deadline; the parked-owner control is Pending.
         let mut output = Vec::new();
