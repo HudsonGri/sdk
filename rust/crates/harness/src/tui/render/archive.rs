@@ -97,6 +97,36 @@ impl Archive {
         }
         false
     }
+    fn refresh_pending(&mut self, files: &FileQueryView, owner: &OutputOwner) -> bool {
+        let same_pending =
+            self.pending.len() == files.pending_prompts(owner).count()
+                && self
+                    .pending
+                    .iter()
+                    .zip(files.pending_prompts(owner))
+                    .all(|((old, _), key)| {
+                        old.key == *key
+                            && files.files().get(key).is_some_and(|new| {
+                                old.segments.len() == new.segments.len()
+                                    && old.segments.iter().zip(&new.segments).all(|(a, b)| {
+                                        a.as_ptr() == b.as_ptr() && a.len() == b.len()
+                                    })
+                            })
+                    });
+        if !same_pending {
+            self.pending = files
+                .pending_prompts(owner)
+                .filter_map(|key| {
+                    Some((
+                        files.files().get(key)?.clone(),
+                        prompt_rows(&files.command_prompt(key)?),
+                    ))
+                })
+                .collect();
+            return true;
+        }
+        false
+    }
     pub(super) fn update(&mut self, source: Option<(&FileQueryView, OutputOwner)>) -> usize {
         self.dropped = 0;
         let Some((files, owner)) = source else {
@@ -167,33 +197,7 @@ impl Archive {
             self.origins
                 .extend(super::source_rows::identity(key), self.stream.len());
         }
-        let same_pending =
-            self.pending.len() == files.pending_prompts(&owner).count()
-                && self
-                    .pending
-                    .iter()
-                    .zip(files.pending_prompts(&owner))
-                    .all(|((old, _), key)| {
-                        old.key == *key
-                            && files.files().get(key).is_some_and(|new| {
-                                old.segments.len() == new.segments.len()
-                                    && old.segments.iter().zip(&new.segments).all(|(a, b)| {
-                                        a.as_ptr() == b.as_ptr() && a.len() == b.len()
-                                    })
-                            })
-                    });
-        if !same_pending {
-            self.pending = files
-                .pending_prompts(&owner)
-                .filter_map(|key| {
-                    Some((
-                        files.files().get(key)?.clone(),
-                        prompt_rows(&files.command_prompt(key)?),
-                    ))
-                })
-                .collect();
-            dirty = true;
-        }
+        dirty |= self.refresh_pending(files, &owner);
         if !dirty {
             return self.rows.len();
         }

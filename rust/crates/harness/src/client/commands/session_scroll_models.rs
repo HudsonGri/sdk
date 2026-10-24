@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
+use acyclic_test_support::boxed_future as boxed;
 use std::future::Future;
 
 // Production volume/provider synchronization uses query_sync's Loom locks.
@@ -10,11 +11,6 @@ const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> 
 // construction temporaries alongside the modeled operation's polling frames
 // can still exhaust Loom's fixed coroutine stack. The factory keeps those
 // lifetimes disjoint, without changing the scheduler or its stack size.
-#[inline(never)]
-fn boxed<F: Future>(operation: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
-    Box::pin(operation())
-}
-
 fn complete<F: Future>(operation: impl FnOnce() -> F) -> F::Output {
     loom::future::block_on(boxed(operation))
 }

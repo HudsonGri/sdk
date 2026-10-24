@@ -6,7 +6,7 @@ use super::{
 use acyclic_harness::{
     Error,
     client::{ClientViewHandle, QueryViewLimits, SwarmChange, query_verification::FileViews},
-    task_volume::{Change, FileValue, Generation, HeadFile, HeadSnapshot},
+    task_volume::{Change, FileValue, Generation, HeadSnapshot},
 };
 use acyclic_stream::wire;
 use futures::channel::mpsc;
@@ -84,18 +84,7 @@ impl<'a> State<'a> {
                 // Independent oracle uses the same canonical file fold. Only
                 // segment handles are cloned; production has a single cache.
                 let snapshot = views.read(|view| HeadSnapshot {
-                    files: view
-                        .files(&agent)
-                        .map(|file| HeadFile {
-                            segment_sequences: Vec::new(),
-                            publication: file.publication,
-                            channel: file.channel,
-                            key: file.key.clone(),
-                            segments: file.segments.clone(),
-                            length: file.length,
-                            through_sequence: file.through_sequence,
-                        })
-                        .collect(),
+                    files: view.files(&agent).cloned().collect(),
                     generation: Generation {
                         volume: cursor.volume,
                         epoch: cursor.epoch,

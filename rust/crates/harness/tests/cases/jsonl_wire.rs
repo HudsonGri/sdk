@@ -287,5 +287,10 @@ fn checked_in_wire_corpus() {
     ] {
         assert!(jsonl::parse_request(line).is_err());
     }
-    assert!(jsonl::parse_snapshot(seed!("snapshot-segments")).is_err());
+    for line in [
+        seed!("snapshot-segments"),
+        seed!("snapshot-without-source-segments"),
+    ] {
+        assert!(jsonl::parse_snapshot(line).is_err());
+    }
 }

@@ -317,6 +317,9 @@ fn persisted_anchor_requires_source_provenance() {
     );
     encoded.as_object_mut().unwrap().remove("origin");
     assert!(serde_json::from_value::<TranscriptAnchor>(encoded.clone()).is_err());
-    encoded["origin"] = serde_json::Value::Null;
+    encoded
+        .as_object_mut()
+        .unwrap()
+        .insert("origin".into(), serde_json::Value::Null);
     assert!(serde_json::from_value::<TranscriptAnchor>(encoded).is_err());
 }
