@@ -3,9 +3,10 @@ use super::*;
 use crate::task_volume::{ChildFile, ChildState, ChildStatus, Component, FileKey, FileValue};
 
 struct Fixture {
+    // Retire retained views while their checkout and state still exist.
+    owner: HostWorkspaceOwner,
     checkout: tempfile::TempDir,
     _state: tempfile::TempDir,
-    owner: HostWorkspaceOwner,
     parent: TaskId,
 }
 
@@ -55,6 +56,36 @@ impl Fixture {
             )
             .await
     }
+}
+
+#[tokio::test]
+async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
+    for host in ["codex", "claude-code", "pi"] {
+        let mut fixture = Fixture::for_host(host).await?;
+        let child = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Fork {
+                    parent: fixture.parent,
+                    reference: "retained-at-shutdown".into(),
+                },
+            )
+            .await?;
+        let view = child["cwd"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("fixture child cwd absent".into()))?;
+        native_write(&Path::new(view).join("retained.txt"), b"native child")?;
+        let checkout = fixture.checkout.path().to_path_buf();
+        let state = fixture._state.path().to_path_buf();
+        drop(fixture);
+        assert!(
+            !checkout.exists(),
+            "checkout cleanup traversed a live native view"
+        );
+        assert!(!state.exists(), "native state outlived fixture shutdown");
+    }
+    Ok(())
 }
 
 // Negative control: this same lifecycle on the previous per-tool ledger leaves

@@ -30,9 +30,10 @@ pub(in crate::local) fn native_write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 struct Fixture {
+    // The harness owns native projections below checkout and uses state on drop.
+    harness: LocalHarness,
     checkout: tempfile::TempDir,
     state: tempfile::TempDir,
-    harness: LocalHarness,
 }
 
 impl Fixture {
@@ -103,6 +104,34 @@ impl Fixture {
         )
         .await
     }
+}
+
+#[tokio::test]
+async fn native_workspace_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
+    let fixture = Fixture::open().await?;
+    let parent = fixture.task(None).await?;
+    let mounts = fixture
+        .harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("fixture workspace".into()))?
+        .held_task_mount_root()?;
+    let workspace = fixture.attach(&parent, mounts.path()).await?;
+    native_write(
+        &workspace.path().join(".volumes/scratch/retained.txt"),
+        b"native private volume",
+    )?;
+    drop(workspace);
+    drop(parent);
+    drop(mounts);
+    let checkout = fixture.checkout.path().to_path_buf();
+    let state = fixture.state.path().to_path_buf();
+    drop(fixture);
+    assert!(
+        !checkout.exists(),
+        "checkout cleanup traversed a live native view"
+    );
+    assert!(!state.exists(), "native state outlived fixture shutdown");
+    Ok(())
 }
 
 #[tokio::test]
