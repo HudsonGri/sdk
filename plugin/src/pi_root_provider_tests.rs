@@ -443,7 +443,6 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
         writeback_digest_value,
     };
     let fixture = Fixture::new(project()).await;
-    let work = &fixture.startup;
     for name in [".git", ".system", ".volumes"] {
         std::fs::write(fixture.native.join(name), "host-owned").unwrap();
     }
