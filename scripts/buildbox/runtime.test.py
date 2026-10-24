@@ -73,12 +73,20 @@ class RuntimeTests(unittest.TestCase):
         env.pop('BB_JOB_ACTIVE',None)
         args=['bash',str(script),'cargo','metadata','--format-version','1','--no-deps']
         result=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
-        job.cleanup_runtime(str(meta)+'.runtime')
+        # The captured worker owns JOBS as well as its runtime receipt. The
+        # imported operator worker must refuse this fixture-owned generation.
+        runtime=Path(str(meta)+'.runtime')
+        home=Path(json.loads(runtime.read_text())['hermetic_home'])
+        with self.assertRaisesRegex(RuntimeError,'refusing cleanup outside'):
+            job.cleanup_runtime(runtime)
+        self.assertTrue(home.exists(),'negative control must preserve the owned runtime')
+        self.assertEqual(subprocess.run([sys.executable,str(self.d/'worker.py'),'cleanup',str(runtime)],capture_output=True).returncode,0)
+        self.assertFalse(home.exists())
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(json.loads(result.stdout)['packages'][0]['name'],'gate-stdout-fixture')
         self.assertIn(b'BB_DISK_FREE',result.stderr);self.assertIn(b'GATE_HOME_GUARD',result.stderr)
         script.write_text(script.read_text().replace(str(self.d/'worker.py'),str(self.worker(True))))
         bad=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
-        job.cleanup_runtime(str(meta)+'.runtime')
+        self.assertEqual(subprocess.run([sys.executable,str(self.d/'negative.py'),'cleanup',str(meta)+'.runtime'],capture_output=True).returncode,0)
         self.assertEqual(bad.returncode,0,bad.stderr.decode())
         with self.assertRaises(json.JSONDecodeError):json.loads(bad.stdout)
     def test_native_cold_entry_propagates_disabled_policy_before_execution(self):
