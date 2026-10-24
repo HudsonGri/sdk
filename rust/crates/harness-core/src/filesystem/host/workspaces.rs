@@ -220,29 +220,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
-        let generation = crate::conversation::BoundedContentFuture::new(None, || {
-            self.apply_generation_unmeasured(
+        let generation = self
+            .apply_generation_unmeasured(
                 workspace,
                 expected_generation,
                 mutations,
                 idempotency_key,
                 true,
                 FilePublication::Replace(None),
-            )
-        })?
-        .await?;
+            )?
+            .await?;
         self.generation_ref_id(generation.id(), None)
     }
 
-    async fn apply_generation_unmeasured(
-        &self,
-        workspace: &WorkspaceRef,
-        expected_generation: Option<&GenerationRef>,
-        mutations: &[WorkspaceMutation],
-        idempotency_key: &IdempotencyKey,
+    fn apply_generation_unmeasured<'a>(
+        &'a self,
+        workspace: &'a WorkspaceRef,
+        expected_generation: Option<&'a GenerationRef>,
+        mutations: &'a [WorkspaceMutation],
+        idempotency_key: &'a IdempotencyKey,
         invalidate_metadata: bool,
-        publication: FilePublication<'_>,
-    ) -> Result<Generation<A, O>> {
+        publication: FilePublication<'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = acyclic_fs::CancellationToken::new();
@@ -279,7 +278,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 publication,
                 budget,
                 &cancellation,
-            )
+            )?
             .await?;
             loop {
                 let committed = transaction
@@ -336,18 +335,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )),
                 };
             }
-        })?
-        .await
+        })
     }
 
-    async fn stage_unmeasured(
-        transaction: &mut acyclic_fs::Transaction<A, O>,
-        mutations: &[WorkspaceMutation],
+    fn stage_unmeasured<'a>(
+        transaction: &'a mut acyclic_fs::Transaction<A, O>,
+        mutations: &'a [WorkspaceMutation],
         invalidate_metadata: bool,
-        publication: FilePublication<'_>,
+        publication: FilePublication<'a>,
         budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> Result<()> {
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(None, || async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -441,8 +439,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
             Ok(())
-        })?
-        .await
+        })
     }
 
     /// Resolves the current immutable head under the caller's work context.
@@ -632,7 +629,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &key,
                     false,
                     publication,
-                )
+                )?
                 .await
             });
         };

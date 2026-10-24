@@ -107,7 +107,7 @@ where
                 None,
                 None,
                 io,
-            )
+            )?
             .await
     }
 

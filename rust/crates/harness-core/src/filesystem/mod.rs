@@ -214,21 +214,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         clippy::too_many_lines,
         reason = "one implementation pins the complete staged file contract"
     )]
-    async fn put_content_impl<B: ContentInput + ?Sized>(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        input: &B,
-        media_type: &str,
-        display_name: &str,
+    fn put_content_impl<'a, B: ContentInput + ?Sized>(
+        &'a self,
+        volume: &'a VolumeRef,
+        grant: &'a ContentGrant,
+        path: &'a str,
+        input: &'a B,
+        media_type: &'a str,
+        display_name: &'a str,
         maximum_bytes: u64,
-        idempotency_key: &IdempotencyKey,
+        idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
-        expected_generation: Option<&GenerationRef>,
-        ceiling: Option<&crate::Capabilities>,
-        io: Option<&fork_preparer_io::PreparationIo>,
-    ) -> Result<FileRef>
+        expected_generation: Option<&'a GenerationRef>,
+        ceiling: Option<&'a crate::Capabilities>,
+        io: Option<&'a fork_preparer_io::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>
     where
         A: 'static,
         O: 'static,
@@ -510,8 +510,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             grant.recheck(io)?;
             Ok(reference)
-        })?
-        .await
+        })
     }
     async fn read_retained_file(
         &self,
