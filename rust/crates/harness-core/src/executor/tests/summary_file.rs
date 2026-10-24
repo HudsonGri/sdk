@@ -260,6 +260,7 @@ fn summary_sequence_sends_summary_only_facts_and_new_turns_to_the_next_request()
                         &journal,
                         provider.clone(),
                         "original input".into(),
+                        1024,
                     )
                     .await?;
                     let source = |keep| {
