@@ -371,8 +371,8 @@ pub(crate) fn open_ascii_leaf<W: NativeHostWork, const N: usize>(
     work: &mut W,
 ) -> Result<File, W::Error> {
     #[cfg(unix)]
-    let name = std::ffi::CStr::from_bytes_with_nul(&name.units)
-        .map_err(|_| W::invalid_request())?;
+    let name =
+        std::ffi::CStr::from_bytes_with_nul(&name.units).map_err(|_| W::invalid_request())?;
     #[cfg(windows)]
     let name = &name.units[..N - 1];
     open_native_leaf(parent, name, options, work)
@@ -433,19 +433,25 @@ mod prepared_leaf_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         let root = test_root(temporary.path())?;
-        let preparation = NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        ).map_err(|(error, _)| error)?;
+        let preparation =
+            NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .map_err(|(error, _)| error)?;
         let name = prepare_ascii_leaf(*b"literal & %.lock\0", &preparation)?;
-        let mut work = DemandWork::new(WorkBudget {
-            items_examined: if cfg!(windows) { 15 } else { 0 },
-            allocation_operations: 0,
-            peak_allocation_bytes: 0,
-            bytes_encoded: 0,
-            ..WorkBudget::UNBOUNDED
-        }, &crate::CancellationToken::new());
+        let mut work = DemandWork::new(
+            WorkBudget {
+                items_examined: if cfg!(windows) { 15 } else { 0 },
+                allocation_operations: 0,
+                peak_allocation_bytes: 0,
+                bytes_encoded: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &crate::CancellationToken::new(),
+        );
         let file = open_ascii_leaf(
-            &root.directory, &name, &NativeOpenOptions::ReadWriteCreate, &mut work,
+            &root.directory,
+            &name,
+            &NativeOpenOptions::ReadWriteCreate,
+            &mut work,
         )?;
         assert!(file.metadata()?.is_file());
         assert_eq!(work.work.bytes_encoded, 0);
@@ -457,7 +463,10 @@ mod prepared_leaf_tests {
         let before = preparation.receipt();
         let live = preparation.live_allocation_bytes();
         let file = open_ascii_leaf(
-            &root.directory, &name, &NativeOpenOptions::Read, &mut &preparation,
+            &root.directory,
+            &name,
+            &NativeOpenOptions::Read,
+            &mut &preparation,
         )?;
         let after = preparation.receipt();
         assert_eq!(after.bytes_encoded, before.bytes_encoded);
@@ -473,14 +482,20 @@ mod prepared_leaf_tests {
     #[test]
     fn prepared_ascii_constructor_exhausts_every_byte_and_rejects_non_components()
     -> Result<(), Box<dyn std::error::Error>> {
-        let work = NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        ).map_err(|(error, _)| error)?;
+        let work =
+            NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .map_err(|(error, _)| error)?;
         for byte in u8::MIN..=u8::MAX {
             let result = prepare_ascii_leaf([b'a', byte, 0], &work);
-            assert_eq!(result.is_ok(), byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':'));
+            assert_eq!(
+                result.is_ok(),
+                byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':')
+            );
             if let Ok(name) = result {
-                assert_eq!(name.units, [NativeUnit::from(b'a'), NativeUnit::from(byte), 0]);
+                assert_eq!(
+                    name.units,
+                    [NativeUnit::from(b'a'), NativeUnit::from(byte), 0]
+                );
             }
         }
         assert!(prepare_ascii_leaf([], &work).is_err());
