@@ -7,7 +7,7 @@
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[path = "../src/native_mount/view_table.rs"]
+#[path = "../src/native_mount/shared/view_table.rs"]
 mod view_table;
 
 use loom::sync::Arc;

@@ -180,7 +180,31 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Mounts the complete workspace or one exact subtree as a native directory.
+    /// Mounts the workspace as a task view: the one public way to mount a
+    /// per-agent view. On Linux and Windows the view is a namespace of the
+    /// process's one shared native instance, at a fresh path that no other
+    /// view of the process has had or will have, so it costs no mount,
+    /// thread or descriptor of its own; [`Mount::path`] names it. Elsewhere,
+    /// until a shared instance serves the platform, it is an instance of its
+    /// own at such a path.
+    pub async fn mount_view(
+        &self,
+        options: MountOptions,
+    ) -> Result<Mount<A, O>, MountLifecycleError> {
+        let destination = super::super::shared_view_destination()?;
+        #[cfg(any(target_os = "linux", windows))]
+        return self.mount(destination, options.shared()).await;
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            std::fs::create_dir(&destination).map_err(NativeMountError::Io)?;
+            self.mount(destination, options).await
+        }
+    }
+
+    /// Mounts the complete workspace or one exact subtree as a native
+    /// directory at `destination`, as an instance of its own: for a single
+    /// mount such as a user's checkout. A task view is mounted with
+    /// [`Self::mount_view`] instead.
     pub async fn mount(
         &self,
         destination: impl AsRef<Path>,

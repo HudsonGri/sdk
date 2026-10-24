@@ -10,7 +10,7 @@
 //! next start. One directory lock orders creation against reaping, so a
 //! root is never reaped between its creation and its owner's lock.
 
-use super::{NativeMountError, detach_native_mount_destination_after_crash, registry};
+use super::super::{NativeMountError, registry};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -27,9 +27,9 @@ struct Root {
 
 static ROOT: OnceLock<Result<Root, std::sync::Arc<std::io::Error>>> = OnceLock::new();
 
-/// This process's root for shared views: a view at `root.join(name)`,
-/// mounted with [`MountOptions::shared`](crate::MountOptions::shared), is a
-/// namespace of the one instance mounted at the root.
+/// This process's root for shared views: every view
+/// [`Workspace::mount_view`](crate::Workspace::mount_view) mounts is a
+/// namespace `root.join(name)` of the one instance mounted at the root.
 ///
 /// The first call reaps the roots of dead processes.
 pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
@@ -55,6 +55,49 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
             error.to_string(),
         ))),
     }
+}
+
+/// Names issued by [`shared_view_destination`] and not yet listed. A name
+/// leaves the set when its view is listed, so no name is ever listed twice
+/// and the set holds only names in flight.
+static ISSUED: std::sync::Mutex<(u64, Option<std::collections::HashSet<u64>>)> =
+    std::sync::Mutex::new((0, None));
+
+const ISSUED_PREFIX: &str = "v";
+
+/// A fresh destination for a shared view: a name in this process's root
+/// that no view of the process has had or will have. A Windows view must
+/// be mounted at one: ProjFS names a view's entries by path alone, so a
+/// late callback from a handle opened in a retired view would reach any
+/// later view of the same name.
+pub fn shared_view_destination() -> Result<PathBuf, NativeMountError> {
+    let root = shared_view_root()?;
+    let mut issued = ISSUED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    issued.0 += 1;
+    let serial = issued.0;
+    issued.1.get_or_insert_default().insert(serial);
+    Ok(root.join(format!("{ISSUED_PREFIX}{serial:016x}")))
+}
+
+/// Claims an issued, never listed name for its view; false for any other.
+#[cfg(windows)]
+pub(in crate::native_mount) fn claim_issued_name(name: &std::ffi::OsStr) -> bool {
+    let Some(serial) = name
+        .to_str()
+        .and_then(|name| name.strip_prefix(ISSUED_PREFIX))
+        .filter(|digits| digits.len() == 16)
+        .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+    else {
+        return false;
+    };
+    ISSUED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .1
+        .as_mut()
+        .is_some_and(|unlisted| unlisted.remove(&serial))
 }
 
 fn create_root(roots: &Path, name: &str) -> std::io::Result<Root> {
@@ -108,17 +151,29 @@ fn reap_dead_roots(roots: &Path) -> usize {
     reaped
 }
 
+/// Detaches and removes a dead process's root; false leaves it for the
+/// next start. Detaching is the adapter's: only it knows how its OS binds a
+/// root.
 fn reap_root(root: &Path) -> bool {
     match std::fs::symlink_metadata(root) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
-        _ => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        _ => detach_dead_root(root),
     }
-    let [fence, ..] = match super::native_mount_control_paths(root) {
+}
+
+#[cfg(windows)]
+use super::super::projfs::detach_dead_shared_root as detach_dead_root;
+
+/// A FUSE or NFS root is a mount fenced like any native mount: a fence
+/// left by the dead owner names the mount to detach.
+#[cfg(not(windows))]
+fn detach_dead_root(root: &Path) -> bool {
+    let [fence, ..] = match super::super::native_mount_control_paths(root) {
         Ok(paths) => paths,
         Err(_) => return false,
     };
     if fence.exists()
-        && let Err(error) = detach_native_mount_destination_after_crash(root)
+        && let Err(error) = super::super::detach_native_mount_destination_after_crash(root)
     {
         tracing::warn!(%error, root = %root.display(), "a dead shared root was not detached");
         return false;
@@ -160,6 +215,29 @@ pub(super) mod tests {
         let next = create_root(roots.path(), "next")?;
         assert!(!roots.path().join("live").exists());
         assert!(next.path.is_dir());
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod issued_name_tests {
+    use super::*;
+
+    /// An issued name is claimed once; a reused, forged or foreign name is
+    /// never claimed, so no two shared ProjFS views ever share a name.
+    #[test]
+    fn issued_names_are_claimed_exactly_once() -> Result<(), NativeMountError> {
+        let destination = shared_view_destination()?;
+        let name = destination.file_name().unwrap_or_default();
+        assert!(claim_issued_name(name));
+        assert!(!claim_issued_name(name), "a listed name was claimed again");
+        let unissued = format!("{ISSUED_PREFIX}{:016x}", u64::MAX);
+        for forged in [unissued.as_str(), "v1", "task", ""] {
+            assert!(
+                !claim_issued_name(std::ffi::OsStr::new(forged)),
+                "{forged:?}"
+            );
+        }
         Ok(())
     }
 }

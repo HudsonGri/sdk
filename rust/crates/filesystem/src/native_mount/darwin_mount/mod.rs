@@ -5,7 +5,7 @@
     reason = "drives the embedded C NFSv4 transport through FFI"
 )]
 
-use super::view_ledger::{copy_work, same_work, scan_work};
+use super::view_ledger::{copy_work, scan_work};
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountAttributeWriteMode, MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath,
@@ -36,10 +36,8 @@ const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);
-const CALLBACK_DRAIN_POLL: Duration = Duration::from_millis(1);
 
 mod work_scope;
-use work_scope::*;
 mod callback_gate;
 use callback_gate::*;
 mod change_labels;

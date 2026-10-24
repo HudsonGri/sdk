@@ -49,9 +49,8 @@ mod view_gate;
 pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
-// Only the Linux shared FUSE instance serves views today.
-#[cfg(target_os = "linux")]
-mod view_table;
+// The one OS-neutral core of every shared native instance.
+mod shared;
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
@@ -181,43 +180,11 @@ fn create_metadata(clock: &clock::Clock, mode: u32, kind: u32, uid: u32, gid: u3
     }
 }
 
-#[cfg(target_os = "linux")]
-fn errno(error: &MountSourceError) -> i32 {
-    match error.semantic_error() {
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::NotDirectory => libc::ENOTDIR,
-        MountSourceError::IsDirectory => libc::EISDIR,
-        MountSourceError::DirectoryNotEmpty => libc::ENOTEMPTY,
-        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
-        MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
-        MountSourceError::NativeWork(error) => native_materialization_errno(error),
-        MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
-        MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
-        MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
-        MountSourceError::Stale | MountSourceError::Cancelled => libc::ESTALE,
-        MountSourceError::Engine(_)
-        | MountSourceError::Work(_)
-        | MountSourceError::Filesystem(_)
-        | MountSourceError::ServicesNotInitialized
-        | MountSourceError::ServiceUnavailable(_)
-        | MountSourceError::MutationFinalization { .. }
-        | MountSourceError::OriginalSnapshotUnavailable
-        | MountSourceError::Indeterminate
-        | MountSourceError::PublicationRetryLimit
-        | MountSourceError::NativeRecordJson(_, _)
-        | MountSourceError::NativeRecordLockTimeout(_, _)
-        | MountSourceError::NativeRecordOwnershipConflict(_, _)
-        | MountSourceError::NativeRecordContextTransaction(_, _)
-        | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
-        MountSourceError::Metadata(_) => libc::EIO,
-        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-        MountSourceError::NativeWatchOriginalIo(_)
-        | MountSourceError::NativeWatchOriginalBackend(_) => libc::EIO,
-    }
+/// The errno every native callback answers for a failure, as the shared
+/// classification spells it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
+    shared::outcome::CallbackFailure::of(error).errno()
 }
 
 #[cfg(target_os = "windows")]
@@ -270,7 +237,7 @@ fn start_driver_into<F>(
 where
     F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
 {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     if request.shared {
         return Err(NativeMountError::UnsupportedTarget);
     }
@@ -304,9 +271,9 @@ pub use error::*;
 mod fence_io;
 mod recovery;
 mod registry;
-mod shared_root;
-pub use shared_root::shared_view_root;
 pub use recovery::*;
+pub(crate) use shared::shared_view_destination;
+pub use shared::shared_view_root;
 mod startup;
 pub use startup::*;
 mod session;

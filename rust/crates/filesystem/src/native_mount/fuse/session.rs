@@ -383,9 +383,12 @@ impl FuseSession {
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         // Lock order: customer session -> driver state -> original work ledger.
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // A shared view holds no fence; its retirement removes its directory.
+        if state.shared.is_some() {
+            return Ok(());
+        }
+        state
             .retirement
             .as_mut()
             .and_then(|packet| packet.destination_guard.as_mut())

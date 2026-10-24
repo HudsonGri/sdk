@@ -204,7 +204,6 @@ impl CheckoutTools {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
-        let (path, options) = task_view_destination(&self.workspace.mount_directory)?;
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -218,7 +217,8 @@ impl CheckoutTools {
             mounts: mounts.unwrap_or_else(|| Arc::clone(&self.workspace.mounts)),
             context_line: self.workspace.context_line().into(),
             processes: self.workspace.processes.clone(),
-            path: path.clone(),
+            // The mounted view's path, set below before any use.
+            path: std::path::PathBuf::new(),
             fresh: false,
             mount_directory: self.workspace.mount_directory.clone(),
             view,
@@ -231,8 +231,8 @@ impl CheckoutTools {
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
         let initial_view = selected.workspace().id();
-        let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
-        workspace.path = path;
+        let mounted = Arc::new(mount_task_view!(selected, &self.workspace.mount_directory)?);
+        workspace.path = mounted.path().to_path_buf();
         workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
         workspace.mounted = Some(mounted);
         workspace.mounts = workspace.mounts_at(&workspace.path).await?;
@@ -293,8 +293,8 @@ impl CheckoutTools {
             return Ok(workspace.clone());
         }
         owner.verify_owner(None)?.await?;
-        let (path, options) = task_view_destination(&self.workspace.mount_directory)?;
-        let mounted = Arc::new(view.mount(&path, options).await.map_err(storage)?);
+        let mounted = Arc::new(mount_task_view!(view, &self.workspace.mount_directory)?);
+        let path = mounted.path().to_path_buf();
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -349,27 +349,33 @@ pub(super) async fn from_selected<T, V>(
     create(active.unwrap_or(original)).await
 }
 
-/// A fresh destination for one task view's mount. On Linux every task view
-/// in the process is a namespace of the one shared native instance, so a
-/// view costs no mount, thread or descriptor of its own; elsewhere each view
-/// mounts its own instance on a fresh directory.
-fn task_view_destination(
+/// Mounts a task view of `$view`: a view of the process's one shared
+/// native instance, which costs no mount, thread or descriptor of its own.
+/// A scale run's negative control mounts an instance per view instead.
+macro_rules! mount_task_view {
+    ($view:expr, $mount_directory:expr) => {{
+        let options = MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual);
+        match unshared_task_view_destination($mount_directory)? {
+            Some(path) => $view.mount(&path, options).await,
+            None => $view.mount_view(options).await,
+        }
+        .map_err(storage)
+    }};
+}
+use mount_task_view;
+
+/// The negative control's fresh directory for an instance of its own; no
+/// other build mounts a task view but as a shared view.
+fn unshared_task_view_destination(
     mount_directory: &std::path::Path,
-) -> Result<(std::path::PathBuf, MountOptions)> {
-    let options = MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual);
-    let name = crate::identity::fresh_uuid().to_string();
-    #[cfg(all(target_os = "linux", test))]
-    let shared =
-        crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS).is_none();
-    #[cfg(all(target_os = "linux", not(test)))]
-    let shared = true;
-    #[cfg(target_os = "linux")]
-    if shared {
-        let root = acyclic_fs::shared_view_root().map_err(storage)?;
-        return Ok((root.join(name), options.shared()));
+) -> Result<Option<std::path::PathBuf>> {
+    #[cfg(test)]
+    if crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS).is_some() {
+        std::fs::create_dir_all(mount_directory).map_err(storage)?;
+        let path = mount_directory.join(crate::identity::fresh_uuid().to_string());
+        std::fs::create_dir(&path).map_err(storage)?;
+        return Ok(Some(path));
     }
-    std::fs::create_dir_all(mount_directory).map_err(storage)?;
-    let path = mount_directory.join(name);
-    std::fs::create_dir(&path).map_err(storage)?;
-    Ok((path, options))
+    let _ = mount_directory;
+    Ok(None)
 }

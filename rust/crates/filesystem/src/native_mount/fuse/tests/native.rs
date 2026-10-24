@@ -328,7 +328,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     let prefix = failure.1;
     assert_eq!(
         core.finish::<Option<MountLookup>>(Err(failure)),
-        Err(libc::ESTALE)
+        Err(libc::ECANCELED)
     );
     assert!(core.handler_failed.load(Ordering::Acquire));
     let retained = core

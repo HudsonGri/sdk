@@ -1007,7 +1007,7 @@ fn retained_child_views_fail_the_bound() -> Result<()> {
 /// within the bounds; `retained_child_views_fail_the_bound` is the same run
 /// with an instance per view.
 #[test]
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(any(target_os = "linux", windows), feature = "native-execution"))]
 fn retained_shared_child_views_stay_within_the_bound() -> Result<()> {
     expect_run(
         &Run {

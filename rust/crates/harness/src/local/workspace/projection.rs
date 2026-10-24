@@ -6,6 +6,8 @@ use crate::sync::owned::{OwnedMutexGuard, lock_owned};
 pub(in crate::local) struct Native {
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
     discard: bool,
+    /// The binding's link and the shared view it names, removed with the view.
+    binding: Option<(PathBuf, PathBuf)>,
 }
 
 impl std::ops::Deref for Native {
@@ -20,6 +22,14 @@ impl Drop for Native {
         // Keep callbacks and the destination fence inside the last owner.
         if let Err(error) = self.mount.abandon() {
             tracing::error!(?error, "workspace mount retirement failed");
+        }
+        // The view's name is never reissued, so a link this leaves names
+        // nothing; removing it leaves the binding as it was before entry.
+        #[cfg(any(target_os = "linux", windows))]
+        if let Some((destination, view)) = &self.binding
+            && let Err(error) = volumes::unlink_binding(destination, view)
+        {
+            tracing::error!(?error, "volume binding link was not removed");
         }
     }
 }
@@ -103,13 +113,33 @@ impl MountedVolume {
                 Path::new(relative),
                 self.workspace.workspace().id().volume_id(),
             )?;
-            volumes::prepare_mount_directory(root, Path::new(relative))?;
             let options = if read_only {
                 acyclic_fs::MountOptions::read_only()
             } else {
                 acyclic_fs::MountOptions::read_write()
                     .publication(acyclic_fs::MountPublication::Manual)
             };
+            // A projection is a view of the process's shared instance, and
+            // the binding links to it: a running command costs no instance,
+            // thread pool or descriptor of its own. Each projection is a
+            // fresh view name that no other view ever has, so a binding left
+            // naming a retired view (by a crash) resolves to nothing, never
+            // to another projection's data.
+            #[cfg(any(target_os = "linux", windows))]
+            if volumes::shared_projections() {
+                volumes::prepare_binding(root, Path::new(relative))?;
+                let mut native = Native {
+                    mount: self.workspace.workspace().mount_view(options).await?,
+                    discard: false,
+                    binding: None,
+                };
+                let view = native.mount.path().to_path_buf();
+                // A failed link drops the view, which retires it.
+                volumes::link_binding(&self.destination, &view)?;
+                native.binding = Some((self.destination.clone(), view));
+                return Ok(native);
+            }
+            volumes::prepare_mount_directory(root, Path::new(relative))?;
             self.workspace
                 .workspace()
                 .mount(&self.destination, options)
@@ -117,6 +147,7 @@ impl MountedVolume {
                 .map(|mount| Native {
                     mount,
                     discard: false,
+                    binding: None,
                 })
                 .map_err(Error::from)
         })

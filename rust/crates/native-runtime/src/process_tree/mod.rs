@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 mod capture;
 #[cfg(windows)]
 mod custodian;
+#[cfg(windows)]
+mod spawner;
 mod events;
 mod pump;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInput};

@@ -3,15 +3,16 @@
 //! The session's root (inode 1) is a synthetic directory with one entry per
 //! live view. A view's inodes are `serial * VIEW_INODE_SPAN + 1 ..` (see
 //! [`ProjectionState::new`]), so every kernel request names its view in the
-//! inode's high bits. Requests are routed through [`ViewTable::enter`]: a
-//! retired or unknown serial answers `ESTALE` and never reaches a core, and
-//! retirement waits for every admitted request. Requests that span two views
+//! inode's high bits. Requests are routed through the shared core's
+//! [`NamedViews`]: a retired or unknown serial answers `ESTALE` and never
+//! reaches a core, and retirement waits for every admitted request. Requests that span two views
 //! (`rename`, `link`, `copy_file_range`) answer `EXDEV`. Kernel cache
 //! invalidation for every view runs on one thread.
 
 use super::*;
-use crate::native_mount::view_table::{ViewLease, ViewOwner, ViewTable};
-use std::collections::{BTreeMap, VecDeque};
+use crate::native_mount::shared::view_table::ViewLease;
+use crate::native_mount::shared::views::{NamedView, NamedViews};
+use std::collections::VecDeque;
 use std::sync::Condvar;
 use std::sync::atomic::AtomicBool;
 
@@ -32,19 +33,11 @@ pub(super) fn view_root_inode(serial: u64) -> u64 {
 }
 
 pub(super) struct SharedViews {
-    table: Arc<ViewTable<FuseProjection>>,
-    names: RwLock<ViewNames>,
+    views: Arc<NamedViews<Vec<u8>, FuseProjection>>,
     root_attr: FileAttr,
     notifier: OnceLock<Notifier>,
     pending: Mutex<PendingInvalidations>,
     invalidation: Condvar,
-}
-
-#[derive(Default)]
-struct ViewNames {
-    by_name: HashMap<Vec<u8>, u64>,
-    by_serial: BTreeMap<u64, Vec<u8>>,
-    closed: bool,
 }
 
 #[derive(Default)]
@@ -81,7 +74,7 @@ impl SharedWake {
 /// kernel's entry for the name.
 pub(super) struct SharedViewEntry {
     views: Arc<SharedViews>,
-    owner: Option<ViewOwner<FuseProjection>>,
+    view: NamedView<Vec<u8>, FuseProjection>,
     core: Arc<ProjectionCore>,
     name: Vec<u8>,
 }
@@ -93,23 +86,12 @@ impl SharedViewEntry {
 
     /// Retires the view; returns whether this call retired it.
     pub(super) fn retire(&mut self) -> bool {
-        let Some(owner) = self.owner.take() else {
-            return false;
-        };
-        let serial = owner.serial().get();
-        {
-            let mut names = self
-                .views
-                .names
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
-            names.by_name.remove(&self.name);
-            names.by_serial.remove(&serial);
-        }
         // Stopping first fails the view's queued and blocked requests fast;
         // retirement then waits for every request already admitted.
-        self.core.stop();
-        drop(owner.retire());
+        let core = &self.core;
+        if self.view.retire_after(|| core.stop()).is_none() {
+            return false;
+        }
         if let Some(notifier) = self.views.notifier.get() {
             // The kernel may still cache the name. A late lookup of it now
             // misses, and a late request on its inodes answers ESTALE.
@@ -129,8 +111,7 @@ impl SharedViews {
     pub(super) fn new(uid: u32, gid: u32) -> Arc<Self> {
         let now = SystemTime::now();
         Arc::new(Self {
-            table: Arc::new(ViewTable::new(MAX_SERIAL)),
-            names: RwLock::new(ViewNames::default()),
+            views: Arc::new(NamedViews::new(MAX_SERIAL)),
             root_attr: FileAttr {
                 ino: INodeNo(ROOT_INODE),
                 size: 0,
@@ -168,60 +149,37 @@ impl SharedViews {
         if name.is_empty() || name.contains(&b'/') || name == b"." || name == b".." {
             return Err(NativeMountError::InvalidDestination);
         }
-        let mut names = self.names.write().unwrap_or_else(PoisonError::into_inner);
-        if names.closed {
-            return Err(NativeMountError::Lifecycle("shared mount is stopping"));
-        }
-        if names.by_name.contains_key(name) {
-            return Err(NativeMountError::InvalidDestination);
-        }
-        let serial = self
-            .table
-            .reserve()
-            .map_err(|_| NativeMountError::Lifecycle("view serials are exhausted"))?;
-        let number = serial.get();
-        let core = build(number * VIEW_INODE_SPAN)?;
-        if let Some(notifier) = self.notifier.get() {
-            let _ = core.notifier.set(notifier.clone());
-        }
-        let _ = core.shared_wake.set(Arc::new(SharedWake {
-            views: Arc::downgrade(self),
-            serial: number,
-            queued: AtomicBool::new(false),
-        }));
-        let owner = ViewTable::insert_reserved(
-            &self.table,
-            serial,
-            FuseProjection {
-                core: Arc::clone(&core),
+        let mut built = None;
+        let view = self.views.insert(name.to_vec(), |serial| {
+            let core = build(serial * VIEW_INODE_SPAN)?;
+            if let Some(notifier) = self.notifier.get() {
+                let _ = core.notifier.set(notifier.clone());
+            }
+            let _ = core.shared_wake.set(Arc::new(SharedWake {
+                views: Arc::downgrade(self),
+                serial,
+                queued: AtomicBool::new(false),
+            }));
+            built = Some(Arc::clone(&core));
+            Ok(FuseProjection {
+                core,
                 // One session serves views of different sources, so it
-                // answers every directory open rather than letting the kernel
-                // skip them for all views.
+                // answers every directory open rather than letting the
+                // kernel skip them for all views.
                 skips_opendir: false,
-            },
-        );
-        names.by_name.insert(name.to_vec(), number);
-        names.by_serial.insert(number, name.to_vec());
+            })
+        })?;
         Ok(SharedViewEntry {
             views: Arc::clone(self),
-            owner: Some(owner),
-            core,
+            core: built.ok_or(NativeMountError::InvalidDestination)?,
+            view,
             name: name.to_vec(),
         })
     }
 
     /// Refuses new views and stops every listed view's core.
     pub(super) fn close(&self) {
-        let serials: Vec<u64> = {
-            let mut names = self.names.write().unwrap_or_else(PoisonError::into_inner);
-            names.closed = true;
-            names.by_serial.keys().copied().collect()
-        };
-        for serial in serials {
-            if let Some(view) = self.table.enter(serial) {
-                view.core.stop();
-            }
-        }
+        self.views.close(|view| view.core.stop());
     }
 
     pub(super) fn stop_invalidator(&self) {
@@ -235,7 +193,7 @@ impl SharedViews {
     fn view(&self, inode: INodeNo) -> Result<ViewLease<FuseProjection>, i32> {
         match serial_of(inode.0) {
             0 => Err(libc::EACCES),
-            serial => self.table.enter(serial).ok_or(libc::ESTALE),
+            serial => self.views.enter(serial).ok_or(libc::ESTALE),
         }
     }
 
@@ -251,13 +209,7 @@ impl SharedViews {
         // Entry offsets: "." is 1, ".." is 2, and the view with serial `s`
         // is `s + 2`, so a listing resumes after its last view.
         let first = offset.saturating_sub(2).saturating_add(1).max(1);
-        let names = self.names.read().unwrap_or_else(PoisonError::into_inner);
-        names
-            .by_serial
-            .range(first..)
-            .take(limit)
-            .map(|(serial, name)| (*serial, name.clone()))
-            .collect()
+        self.views.listed_from(first, limit)
     }
 }
 
@@ -292,18 +244,10 @@ impl Filesystem for SharedDispatch {
             ));
         }
         let span = callback_span!(TRACE, lookup, ino = parent.0);
-        let serial = self
-            .0
-            .names
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .by_name
-            .get(name.as_bytes())
-            .copied();
-        let Some(view) = serial.and_then(|serial| self.0.table.enter(serial)) else {
+        let Some((serial, view)) = self.0.views.enter_name(name.as_bytes()) else {
             return reply.error(errno_on(&span, libc::ENOENT));
         };
-        let root = view_root_inode(view.serial().get());
+        let root = view_root_inode(serial);
         respond!(
             view.core,
             reply,
@@ -628,7 +572,7 @@ impl Filesystem for SharedDispatch {
             for (serial, name) in batch {
                 offset = serial + 2;
                 // A view retired since it was listed is left out.
-                let Some(view) = self.0.table.enter(serial) else {
+                let Some(view) = self.0.views.enter(serial) else {
                     continue;
                 };
                 let attributes = view
@@ -817,7 +761,7 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &Notifier) {
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
-        let Some(view) = views.table.enter(serial) else {
+        let Some(view) = views.views.enter(serial) else {
             continue;
         };
         if let Some(wake) = view.core.shared_wake.get() {
