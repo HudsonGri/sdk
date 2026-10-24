@@ -62,8 +62,13 @@ cargo metadata --locked --offline --no-deps --format-version 1 > .gate-pr-metada
 export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
 : > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
-chmod +x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" || exit 2
+test_runner="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
+if [ -f scripts/gate-target-cache.py ]; then
+  test_runner=$(python3 scripts/gate-target-cache.py runner "$test_runner") || exit 2
+else
+  chmod +x "$test_runner" || exit 2
+fi
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 # Keep registry dependencies warm, but never reuse workspace codegen from an
 # interrupted job or another boot. Cargo's incremental objects can survive an
 # aborted build with references to anonymous constants from another LLVM unit.
@@ -71,6 +76,10 @@ chmod +x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER" || exit 2
 gate_cache_prepare(){
   local target=$1 boot=$2 prior workspace_args=() name
   mkdir -p "$target" || return 2
+  # Job-owned targets have no prior mutable state. Only the receipt/mount
+  # oracle may select this path; retain legacy interruption protection outside
+  # canonical jobs. Cargo validates completed immutable snapshot fingerprints.
+  if [ "$gate_private_targets" = 1 ]; then return 0; fi
   prior=$(cat "$target/.gate-cache-boot" 2>/dev/null || true)
   if [ "$prior" != "$boot" ] || [ -e "$target/.gate-cache-inflight" ]; then
     echo "GATE_CACHE_INVALIDATE target=$target reason=boot-change-or-interrupted-build workspace-only"
@@ -87,6 +96,7 @@ gate_cache_prepare(){
 }
 gate_cache_finish(){
   local target=$1 output=$2 status=${3:-0}
+  if [ "$gate_private_targets" = 1 ]; then return 0; fi
   # A normal Cargo/test failure remains a verdict. An externally terminated
   # compiler leaves this cache dirty; the next job invalidates it, never retries
   # or changes the verdict of the current run.
@@ -103,6 +113,11 @@ target_root=${CARGO_TARGET_DIR:-target}
 test_target="$target_root/.gate-pr-tests"
 clippy_target="$target_root/.gate-pr-clippy"
 export CARGO_TARGET_DIR="$test_target"
+gate_private_targets=0
+if [ -f scripts/gate-target-cache.py ] && \
+   python3 scripts/gate-target-cache.py private "$test_target" "$clippy_target"; then
+  gate_private_targets=1
+fi
 gate_cache_prepare "$test_target" "$gate_boot" || exit 2
 gate_cache_prepare "$clippy_target" "$gate_boot" || exit 2
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going "${clippy_pkgs[@]}" --all-targets --all-features --message-format=short \

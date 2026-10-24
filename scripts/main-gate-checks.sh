@@ -41,7 +41,11 @@ export GATE_FUZZ_EXECUTABLES="$PWD/.gate-fuzz-executables"
 : > "$GATE_FUZZ_EXECUTABLES" || exit 2
 export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 test_runner="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
-chmod +x "$test_runner" || exit 2
+if [ -f scripts/gate-target-cache.py ]; then
+  test_runner=$(python3 scripts/gate-target-cache.py runner "$test_runner") || exit 2
+else
+  chmod +x "$test_runner" || exit 2
+fi
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going --workspace --all-targets --all-features --message-format=short \
     -- --cap-lints warn > .gate-clippy.out 2>&1; echo $? > .gate-clippy.rc ) &
