@@ -60,7 +60,7 @@ def merge(repo, worktree, state, prs, alerts):
             g.park(pr, 'merge-failed', reason, head=pin['heads'][str(pr)])
             with (state/'held-pending.txt').open('a', encoding='utf-8') as queue:
                 queue.write(str(pr)+'\n'); queue.flush(); os.fsync(queue.fileno())
-            g.alert('GATE_MERGE_HELD', f'#{pr} head={pin["heads"][str(pr)]}: {reason}; held until a changed head or coordinator recovery')
+            g.alert('GATE_MERGE_HELD', f'#{pr} head={pin["heads"][str(pr)]}: {reason}; gate-speed annotation: held until a changed head or explicit repository recovery')
 
 
 def main():
