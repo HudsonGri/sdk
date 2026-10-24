@@ -1,7 +1,9 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
 mod runtime_signing;
+mod verified_scope;
 mod workload;
+pub(crate) use verified_scope::VerifiedScope;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -694,15 +696,18 @@ impl AuthorityVerifier {
 
     /// Copies the verifier using the caller's ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        match work.as_deref_mut() {
-            Some(work) => Ok(Self {
-                id: work.clone_text(&self.id)?,
-                public: self.public.clone(),
-                admission: self.admission.clone(),
-                audience: work.clone_authority(&self.audience)?,
-            }),
-            None => Ok(self.clone()),
+        if work.is_none() {
+            return Ok(self.clone());
         }
+        let mut quota = CodecQuota::new(work, 0)?;
+        let copied = Self {
+            id: copying::copy_text(&self.id, &mut quota)?,
+            public: self.public.clone(),
+            admission: self.admission.clone(),
+            audience: copying::copy_authority(&self.audience, &mut quota)?,
+        };
+        quota.transfer();
+        Ok(copied)
     }
 
     /// Verifies issuer identity and the complete immutable grant.
@@ -813,6 +818,14 @@ impl AuthorityVerifier {
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
+        self.verify_event_capability(event, work).map(|_| ())
+    }
+
+    fn verify_event_capability(
+        &self,
+        event: &Event,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
         if event.scope.issuer != self.id {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
@@ -838,7 +851,7 @@ impl AuthorityVerifier {
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
         let digest = self.event_digest(event, work)?;
         workload::verify_record(
             self,
@@ -1035,6 +1048,7 @@ impl AuthorityVerifier {
             &["effect:run", &provider],
             work,
         )
+        .map(|_| ())
     }
 }
 
