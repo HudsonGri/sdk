@@ -23,8 +23,10 @@ fn crashed_owner() -> TestResult {
         return Ok(());
     };
     let root = PathBuf::from(root);
+    let began = Instant::now();
     let (source, _, work) = checkout_context(MountPublication::Manual)?;
     let _owned = crate::mount_native(request(&root.join("owned"), &source)?, source.clone())?;
+    phase(began, "child-owned-mounted");
     // Another user of the same NFS transport is not an SDK-owned destination.
     let (foreign, _, _) = checkout_context(MountPublication::Manual)?;
     let mut session = None;
@@ -36,6 +38,7 @@ fn crashed_owner() -> TestResult {
         &mut None,
         |_| Ok(()),
     )?;
+    phase(began, "child-foreign-mounted");
     println!("RECLAIM_READY");
     std::io::stdout().flush()?;
     let mut command = String::new();
@@ -110,6 +113,7 @@ fn check_startup_recovery(
     deny_direct_unmount: bool,
     startup: impl FnOnce() -> Result<(), NativeMountError>,
 ) -> TestResult {
+    let began = Instant::now();
     let root = CrashRoots(Some(tempfile::tempdir()?));
     let canonical = root
         .0
@@ -122,6 +126,7 @@ fn check_startup_recovery(
     }
     let (live_root, _live_source, mut live, _) = live_mount()?;
     let live_socket = mount_socket(live_root.path())?;
+    phase(began, "live-mounted");
     let mut child = Command::new(std::env::current_exe()?)
         .args(["--exact", CHILD, "--ignored", "--nocapture"])
         .env("ACYCLIC_RECLAIM_TEST_ROOT", &canonical)
@@ -140,6 +145,7 @@ fn check_startup_recovery(
     ready?;
     child.kill()?;
     child.wait()?;
+    phase(began, "crash-witness-ready");
     // Negative witness: SIGKILL itself leaves both kernel mounts behind.
     let mounted = |path: &Path| -> Result<bool, NativeMountError> {
         Ok(super::super::reclaim::mount_table()?.iter().any(|mount| {
@@ -165,6 +171,7 @@ fn check_startup_recovery(
     } else {
         startup()?;
     }
+    phase(began, "startup-retired");
     assert!(
         !mounted(&canonical.join("owned"))?,
         "startup left the crashed SDK mount attached"
@@ -176,15 +183,23 @@ fn check_startup_recovery(
     assert_eq!(mount_socket(live_root.path())?, live_socket);
     let (source, _, _) = checkout_context(MountPublication::Manual)?;
     let mut replacement = crate::mount_native(request(&canonical.join("owned"), &source)?, source)?;
+    phase(began, "replacement-mounted");
     std::fs::write(canonical.join("owned/reconnected"), b"ready")?;
     assert_eq!(
         std::fs::read(canonical.join("owned/reconnected"))?,
         b"ready"
     );
+    phase(began, "replacement-writable");
     replacement.stop()?;
+    phase(began, "replacement-stopped");
     live.stop()?;
+    phase(began, "live-stopped");
     println!(
         "RECLAIM_RECOVERY_VERIFIED owned=retired live=preserved foreign=preserved replacement=writable"
     );
     Ok(())
+}
+
+fn phase(began: Instant, name: &str) {
+    eprintln!("RECLAIM_PHASE name={name} seconds={:.6}", began.elapsed().as_secs_f64());
 }
