@@ -178,5 +178,13 @@ fn startup_recovery_preserves_the_locked_fence_through_denied_work() -> TestResu
         inode
     );
     assert!(destination.is_dir());
+    // Exercise the old ordinary-release shape as the negative control: it
+    // removes the shared inode even though startup must preserve that entry.
+    let mut ordinary = MountDestinationGuard::acquire_canonical(&destination)?;
+    ordinary.release(&mut &original)?;
+    assert!(
+        !fence.exists(),
+        "ordinary fence release must fail the startup inode-preservation oracle"
+    );
     Ok(())
 }
