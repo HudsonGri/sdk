@@ -9,6 +9,106 @@ fn fixture() -> AuthorityIssuer {
         },
     )
 }
+
+#[test]
+fn retained_authentication_rechecks_exact_claims_current_trust_time_and_audience() -> Result<()> {
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    let scope = issuer.issue(
+        "root",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let timestamp = now();
+    let first = verify(&verifier, issuer.audience(), &scope, timestamp, &mut None)?;
+    let second = verify(&verifier, issuer.audience(), &scope, timestamp, &mut None)?;
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    // Negative control: the former path authenticates an already known chain again.
+    let fresh = verify_trusted(
+        &issuer.public_workload_trust()?,
+        issuer.audience(),
+        &scope,
+        timestamp,
+        &mut None,
+    )?;
+    assert!(!std::sync::Arc::ptr_eq(&first, &fresh));
+    for field in 0..7 {
+        let mut forged = scope.clone();
+        match field {
+            0 => forged.id.push_str("-changed"),
+            1 => forged.capabilities = Capabilities::new(["effect:plan"]),
+            2 => forged.agent = Some(AgentId::from_bytes([3; 16])),
+            3 => forged.parent_proof = Some([4; 32]),
+            4 => *forged.proof = [5; 32],
+            5 => forged.issuer.push_str("-foreign"),
+            _ => {
+                let byte = forged.workload.get_mut(20).ok_or_else(|| {
+                    Error::Invalid("fixture workload has no signature byte".into())
+                })?;
+                *byte ^= 1;
+            }
+        }
+        assert!(verifier.verify(&forged, &mut None).is_err());
+    }
+    let other = Authority {
+        kind: AggregateKind::Task,
+        id: "other".into(),
+    };
+    assert!(verify(&verifier, &other, &scope, timestamp, &mut None).is_err());
+    assert!(
+        verify(
+            &verifier,
+            issuer.audience(),
+            &scope,
+            first.effective().expires_at_unix_seconds(),
+            &mut None
+        )
+        .is_err()
+    );
+    verifier
+        .public
+        .trust
+        .write()
+        .map_err(unauthorized)?
+        .minimum_key_epoch = 2;
+    assert!(verifier.verify(&scope, &mut None).is_err());
+    verifier
+        .public
+        .trust
+        .write()
+        .map_err(unauthorized)?
+        .minimum_key_epoch = 1;
+    verifier.verify(&scope, &mut None)?;
+    issuer.revoke_workload(&scope)?;
+    assert!(verifier.verify(&scope, &mut None).is_err());
+    // A saved successful decision would incorrectly accept the same retained proof.
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    Ok(())
+}
+
+#[test]
+fn authentication_owner_replaces_its_only_retained_chain() -> Result<()> {
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    let root = issuer.issue(
+        "root",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let child = issuer.attenuate(&root, "child", root.capabilities())?;
+    let first = verify(&verifier, issuer.audience(), &root, now(), &mut None)?;
+    let old = std::sync::Arc::downgrade(&first);
+    verify(&verifier, issuer.audience(), &child, now(), &mut None)?;
+    let replaced = verify(&verifier, issuer.audience(), &root, now(), &mut None)?;
+    assert!(!std::sync::Arc::ptr_eq(&first, &replaced));
+    drop(first);
+    assert!(old.upgrade().is_none());
+    Ok(())
+}
 #[test]
 fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_audience()
 -> Result<()> {

@@ -11,6 +11,39 @@ use prost::Message;
 mod admission;
 pub(super) use admission::{live_record, record, verify_record};
 
+pub(super) struct AuthenticatedWorkload {
+    digest: [u8; 32],
+    capability: std::sync::Arc<VerifiedCapability>,
+}
+
+fn authenticate(
+    public: &runtime_signing::PublicAuthority,
+    trust: &dyn verify::Trust,
+    scope: &Scope,
+    timestamp: u64,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::sync::Arc<VerifiedCapability>> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+        io.hashed_bytes(scope.workload.len() as u64)?;
+    }
+    let digest = *blake3::hash(&scope.workload).as_bytes();
+    let mut retained = public.workload.lock().map_err(unauthorized)?;
+    if let Some(authenticated) = retained.as_ref()
+        && authenticated.digest == digest
+    {
+        return Ok(authenticated.capability.clone());
+    }
+    let capability = std::sync::Arc::new(
+        verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
+    );
+    *retained = Some(AuthenticatedWorkload {
+        digest,
+        capability: capability.clone(),
+    });
+    Ok(capability)
+}
+
 const CLAIM: &str = "harness.scope.";
 const ACTION: &str = "harness/execute";
 const CERTIFICATE_SECONDS: u64 = 30 * 24 * 60 * 60;
@@ -273,17 +306,13 @@ pub(super) fn verify(
     scope: &Scope,
     timestamp: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<VerifiedCapability> {
+) -> Result<std::sync::Arc<VerifiedCapability>> {
     if scope.issuer != verifier.id {
         return Err(unauthorized("foreign issuer"));
     }
-    verify_trusted(
-        &*verifier.public.trust.read().map_err(unauthorized)?,
-        audience,
-        scope,
-        timestamp,
-        work,
-    )
+    let trust = verifier.public.trust.read().map_err(unauthorized)?;
+    let capability = authenticate(&verifier.public, &*trust, scope, timestamp, work)?;
+    authorize_scope(&*trust, audience, scope, timestamp, capability, work)
 }
 pub(super) fn verify_trusted(
     trust: &dyn verify::Trust,
@@ -291,11 +320,27 @@ pub(super) fn verify_trusted(
     scope: &Scope,
     timestamp: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<VerifiedCapability> {
+) -> Result<std::sync::Arc<VerifiedCapability>> {
     if let Some(io) = work.as_deref() {
         io.check_cancellation()?;
     }
-    let capability = verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?;
+    let capability = std::sync::Arc::new(
+        verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
+    );
+    authorize_scope(trust, audience, scope, timestamp, capability, work)
+}
+
+fn authorize_scope(
+    trust: &dyn verify::Trust,
+    audience: &Authority,
+    scope: &Scope,
+    timestamp: u64,
+    capability: std::sync::Arc<VerifiedCapability>,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::sync::Arc<VerifiedCapability>> {
+    if let Some(io) = work.as_deref() {
+        io.check_cancellation()?;
+    }
     if capability.account_id().map_err(unauthorized)? != scope.issuer {
         return Err(unauthorized("foreign account"));
     }
