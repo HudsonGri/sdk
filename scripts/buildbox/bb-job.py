@@ -201,6 +201,8 @@ def run(argv):
     JOBS.mkdir(parents=True,exist_ok=True)
     job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
     env=dict(os.environ); real_home=Path('/home/var')
+    # The plan belongs to this receipt owner, never to commands or nested jobs.
+    export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)
     # sudo/runuser may strip admission env across the mount-namespace boundary.
     # The admitted wrapper persists it before privilege changes.
     admission_file=Path(meta+'.admission')
@@ -261,10 +263,10 @@ def run(argv):
         child=OwnedCommand(argv,env,register_command)
         rc=child.wait(); rc=128-rc if rc<0 else rc
         child.close()
-        if rc==0 and env.get('BB_JOB_EXPORT_SPEC'):
+        if rc==0 and export_spec:
             try:
                 from job_exports import prepare
-                prepare(json.loads(env['BB_JOB_EXPORT_SPEC']), env['CARGO_TARGET_DIR'])
+                prepare(json.loads(export_spec), env['CARGO_TARGET_DIR'])
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224

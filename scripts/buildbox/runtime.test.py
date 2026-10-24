@@ -28,7 +28,7 @@ class RuntimeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
     def tearDown(self):self.temp.cleanup()
-    def worker(self,negative=False,cleanup_failure=False,custody_negative=False):
+    def worker(self,negative=False,cleanup_failure=False,custody_negative=False,export_negative=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("real_home=Path('/home/var')",f'real_home=Path({str(self.d/"real-home")!r})')
@@ -36,13 +36,18 @@ class RuntimeTests(unittest.TestCase):
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
         if custody_negative:source=source.replace('start_new_session=True)', 'start_new_session=False)')
+        if export_negative:
+            boundary="export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)"
+            self.assertEqual(source.count(boundary),1)
+            source=source.replace(boundary,"export_spec=env.get('BB_JOB_EXPORT_SPEC')")
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,export_negative=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
         env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
+        env.pop('BB_JOB_EXPORT_SPEC',None)
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
+        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure,export_negative=export_negative)),*argv],cwd=self.d,env=env,capture_output=True)
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
 
     def custody_case(self, interrupted, negative=False):
@@ -70,6 +75,7 @@ os.waitpid(child,0)
         env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),
              'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
+        env.pop('BB_JOB_EXPORT_SPEC',None)
         worker=subprocess.Popen([sys.executable,str(self.worker(custody_negative=negative)),
             sys.executable,'-c',code,str(fifo),str(marker),
             'normal' if interrupted is None else 'signal'],
@@ -224,6 +230,44 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result.stdout,b'child output')
         self.assertIn(b'[buildbox] export INFRA:',result.stderr)
         self.assertIn('export_error',runtime);self.assertTrue(runtime['targets_removed'])
+
+    def test_export_plan_never_crosses_into_a_nested_job(self):
+        import tarfile
+        for negative in [False,True]:
+            with self.subTest(negative=negative):
+                prefix=Path('/mnt/bb/jobs')/f'r19-export-owner-{os.getpid()}-{negative}'
+                start=Path(str(prefix)+'.t0');start.touch()
+                output=self.d/f'parent-{negative}.txt'
+                meta=self.d/f'nested-{negative}'
+                code='''import os,subprocess,sys
+from pathlib import Path
+env=dict(os.environ,BB_JOB_ACTIVE='0',BUILD_SLOT_RECEIPT_META=sys.argv[2])
+result=subprocess.run([sys.executable,sys.argv[1],sys.executable,'-c','print("nested output")'],env=env,capture_output=True)
+sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr)
+if result.returncode:sys.exit(result.returncode)
+Path(sys.argv[3]).write_text('parent output after nested cleanup')
+'''
+                spec={'prefix':str(prefix),'cwd':str(self.d),'paths':[output.name],'build':False}
+                try:
+                    result,runtime=self.run_job([sys.executable,'-c',code,str(self.d/'worker.py'),str(meta),str(output)],
+                        extra={'BB_CACHE_DISABLED':'1','BB_JOB_EXPORT_SPEC':json.dumps(spec)},export_negative=negative)
+                    self.assertEqual(result.returncode,224 if negative else 0,result.stderr.decode())
+                    self.assertEqual(result.stdout,b'nested output\n')
+                    self.assertTrue(runtime['home_removed'])
+                    inner=json.loads(Path(str(meta)+'.runtime').read_text())
+                    self.assertTrue(inner['home_removed'])
+                    if negative:
+                        self.assertIn('missing declared output',inner['export_error'])
+                        self.assertFalse(output.exists())
+                    else:
+                        self.assertNotIn('export_error',inner)
+                        rows=json.loads(Path(str(prefix)+'.exports/manifest.json').read_text())
+                        self.assertEqual(len(rows),1)
+                        with tarfile.open(rows[0]['archive']) as archive:
+                            self.assertEqual(archive.extractfile(output.name).read(),b'parent output after nested cleanup')
+                finally:
+                    start.unlink()
+                    shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
 
     def test_glibc_pinned_export_keeps_the_requested_local_path(self):
         prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
