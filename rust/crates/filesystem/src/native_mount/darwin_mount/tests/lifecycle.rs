@@ -84,7 +84,10 @@ fn accepted_retirement_wakes_its_owner_after_the_caller_leaves() -> TestResult {
         // condition-variable wait. No mount or caller-owned poll drives it.
         let deadline = Instant::now() + Duration::from_secs(1);
         while owner.state().failure.is_none() {
-            assert!(Instant::now() < deadline, "provider must retain pending work");
+            assert!(
+                Instant::now() < deadline,
+                "provider must retain pending work"
+            );
             std::thread::yield_now();
         }
         release.send(())?;
