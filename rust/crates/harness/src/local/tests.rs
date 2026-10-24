@@ -780,9 +780,9 @@ mod interrupted_turns;
 mod retained_failure;
 
 #[cfg(any(test, feature = "native-execution"))]
-mod checked_commands;
-#[cfg(any(test, feature = "native-execution"))]
 mod capture_latency;
+#[cfg(any(test, feature = "native-execution"))]
+mod checked_commands;
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 mod checkout;
 #[cfg(all(any(test, feature = "native-execution"), windows))]
