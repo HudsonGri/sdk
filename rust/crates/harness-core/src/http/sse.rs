@@ -252,7 +252,7 @@ impl Decoder {
         Ok(frame)
     }
 
-    /// Completes a bare CR delimiter at EOF, otherwise rejects unfinished events.
+    /// Completes a bare CR delimiter at EOF; comments cannot create a pending event.
     pub fn finish(&mut self) -> Result<Option<Frame>> {
         let frame = if self.cr {
             self.cr = false;
@@ -260,7 +260,7 @@ impl Decoder {
         } else {
             None
         };
-        if self.bytes != 0 || !self.line.is_empty() || !self.data.is_empty() {
+        if !self.data.is_empty() || (!self.line.is_empty() && !self.line.starts_with(b":")) {
             return Err(self.truncated());
         }
         Ok(frame)
