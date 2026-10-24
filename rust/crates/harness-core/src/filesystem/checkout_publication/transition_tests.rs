@@ -217,6 +217,71 @@ async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits(
         .assert_resume_and_acknowledgement(Adapter::Git)
         .await
 }
+
+#[tokio::test]
+async fn selected_approval_binds_original_root_transition_paths_and_creator() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let publication = fixture.publication(OperationId::new())?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    let mut journal = publication
+        .prepare(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+        )
+        .await?;
+    let paths = vec!["note".into()];
+    let encode =
+        |journal: &MaterializationJournal, paths: &[String], creator| -> TestResult<Vec<u8>> {
+            Ok(serde_json::to_vec(&publication.approval_value(
+                &fixture.from,
+                &fixture.to,
+                paths,
+                journal,
+                creator,
+            )?)?)
+        };
+    let original = encode(&journal, &paths, "original creator")?;
+    assert_ne!(original, encode(&journal, &paths, "foreign creator")?);
+    assert!(encode(&journal, &["note-other".into()], "original creator").is_err());
+    assert!(encode(&journal, &[], "original creator").is_err());
+    assert!(
+        publication
+            .approval_value(
+                &fixture.to,
+                &fixture.to,
+                &paths,
+                &journal,
+                "original creator"
+            )
+            .is_err()
+    );
+    let original_identity = journal.root_identity;
+    journal.root_identity = Some([0; 16]);
+    assert!(encode(&journal, &paths, "original creator").is_err());
+    // The former raw tuple encoder accepts a foreign-root or unselected plan;
+    // callers must obtain the validated view from the shared publication owner.
+    assert!(serde_json::to_vec(&journal).is_ok());
+    journal.root_identity = original_identity;
+    journal.phase = acyclic_fs::MaterializationPhase::Applying;
+    assert!(encode(&journal, &paths, "original creator").is_err());
+    journal.phase = acyclic_fs::MaterializationPhase::Prepared;
+    assert_eq!(original, encode(&journal, &paths, "original creator")?);
+    let applied = publication
+        .publish(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+            || std::future::ready(Ok(())),
+        )
+        .await?;
+    assert_eq!(original, encode(&applied, &paths, "original creator")?);
+    Ok(())
+}
 #[tokio::test]
 async fn multi_root_adapter_resumes_original_checkout_and_preserves_acknowledged_edits()
 -> TestResult {

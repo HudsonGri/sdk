@@ -78,6 +78,34 @@ fn configured(
         .tools(tools))
 }
 
+async fn resume_with_hook_evidence(
+    harness: &LocalHarness,
+    task: crate::TaskId,
+) -> Result<crate::executor::TurnOutput> {
+    let result = harness.resume(task).await;
+    if result.is_err() {
+        let snapshot = harness
+            .task_files()
+            .snapshot(
+                &crate::task_volume::Query::Task(crate::task_volume::Component::new(
+                    task.to_string(),
+                )?),
+                4096,
+            )
+            .await?;
+        for file in snapshot.files {
+            let key = file.key.path();
+            if key.contains("hook-") || key.contains("/approvals/") {
+                eprintln!(
+                    "APPROVALS_HOOK_EVIDENCE {key} {}",
+                    String::from_utf8_lossy(&file.bytes)
+                );
+            }
+        }
+    }
+    result
+}
+
 fn fixture(root: &Path) -> Result<std::path::PathBuf> {
     std::fs::create_dir(root.join("workspace")).map_err(super::super::storage)?;
     std::fs::create_dir_all(root.join("home/.claude")).map_err(super::super::storage)?;
@@ -124,7 +152,7 @@ async fn guards_use_aliases_revalidate_replacements_and_retain_post_tool_feedbac
     ];
     let harness = LocalHarness::open(configured(root.path(), provider.clone(), tools)?).await?;
     let task = super::context::admitted(harness.submit(OperationId::new(), "guard tools").await?)?;
-    let output = harness.resume(task).await?;
+    let output = resume_with_hook_evidence(&harness, task).await?;
     assert_eq!(output.text, "finished");
     assert_eq!(harness.resume(task).await?, output);
     assert_eq!(
@@ -227,7 +255,7 @@ async fn reopening_after_tool_hooks_reuses_both_phases_and_the_effective_invocat
             .submit(OperationId::new(), "recover guarded call")
             .await?,
     )?;
-    let mut pending = Box::pin(harness.resume(task));
+    let mut pending = Box::pin(resume_with_hook_evidence(&harness, task));
     tokio::select! {
         _ = async { assert_eq!(received.next().await, Some(())); assert_eq!(received.next().await, Some(())); } => {},
         result = &mut pending => panic!("did not reach the post-tool provider cut: {result:?}"),
@@ -285,11 +313,14 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
         .map_err(super::super::storage)?;
         let executed = Arc::new(Mutex::new(Vec::new()));
         let provider = scripted([calls(&["guarded"]), ScriptedTurn::Text("finished".into())]);
-        let harness = LocalHarness::open(configured(
-            root.path(),
-            provider,
-            vec![guarded("guarded", &["Write"], &executed)],
-        )?)
+        let harness = LocalHarness::open(
+            configured(
+                root.path(),
+                provider,
+                vec![guarded("guarded", &["Write"], &executed)],
+            )?
+            .approval_policy(crate::approvals::ApprovalPolicy::default()),
+        )
         .await?;
         let task =
             super::context::admitted(harness.submit(OperationId::new(), "guard tool").await?)?;
@@ -354,77 +385,88 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
             .await?;
         assert_eq!(observed.snapshot.take().unwrap().files.len(), 128);
         let decide = async {
-            let request = loop {
-                let change = observed.changes.next().await.expect("approval follow")?;
-                if let Some(file) = change.file.into_iter().chain(change.files).find(|file| {
-                    matches!(
-                        file.key,
-                        FileKey::Task {
-                            file: TaskFile::ApprovalRequest(_),
-                            ..
-                        }
-                    )
-                }) {
-                    let request = FileApproval::decode(&file)?;
-                    assert_eq!(request.key()?, file.key);
-                    break request;
-                }
-            };
-            // Negative control: the former all-history selection now exceeds 128.
-            assert!(
-                harness
-                    .task_files()
-                    .snapshot(&Query::Approvals(Component::new(task.to_string())?), 128)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                executed.lock().unwrap().is_empty(),
-                "tool ran before approval"
-            );
-            let decision_key = FileKey::Task {
-                task: Component::new(task.to_string())?,
-                file: TaskFile::ApprovalDecision {
-                    request: Component::new(request.id.to_string())?,
-                    principal: Component::new("user")?,
-                },
-            };
-            let snapshot = harness.task_files().snapshot(&request.query()?, 4).await?;
-            // Negative control: an ordinary agent writer cannot approve itself.
-            assert!(matches!(
-                harness
-                    .task_files()
-                    .write(
-                        snapshot.generation,
-                        &FileValue::new(decision_key, b"{}".to_vec())
-                    )
-                    .await,
-                Err(crate::task_volume::Error::Unauthorized)
-            ));
-            let mut client = crate::client::CommandSession::open_local(
-                &harness,
-                uuid::Uuid::new_v4(),
-                65536,
-                32,
-            )
-            .await?;
-            client
-                .write_state(
-                    crate::client::CommandFileRoot::Session,
-                    "layout.json",
-                    &json!({"selected_task":task}),
+            let mut requests = std::collections::BTreeSet::new();
+            // The hook and the configured tool policy are independent
+            // obligations. Approval of one must never authorize the other.
+            for _ in 0..if approved { 2 } else { 1 } {
+                let request = loop {
+                    let change = observed.changes.next().await.expect("approval follow")?;
+                    if let Some(file) = change.file.into_iter().chain(change.files).find(|file| {
+                        matches!(
+                            file.key,
+                            FileKey::Task {
+                                file: TaskFile::ApprovalRequest(_),
+                                ..
+                            }
+                        )
+                    }) {
+                        let request = FileApproval::decode(&file)?;
+                        assert_eq!(request.key()?, file.key);
+                        break request;
+                    }
+                };
+                assert!(
+                    requests.insert(request.id),
+                    "approval request was dispatched twice"
+                );
+                // Negative control: the former all-history selection now exceeds 128.
+                assert!(
+                    harness
+                        .task_files()
+                        .snapshot(&Query::Approvals(Component::new(task.to_string())?), 128)
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    executed.lock().unwrap().is_empty(),
+                    "tool ran before approval"
+                );
+                let decision_key = FileKey::Task {
+                    task: Component::new(task.to_string())?,
+                    file: TaskFile::ApprovalDecision {
+                        request: Component::new(request.id.to_string())?,
+                        principal: Component::new("user")?,
+                    },
+                };
+                let snapshot = harness.task_files().snapshot(&request.query()?, 4).await?;
+                // Negative control: an ordinary agent writer cannot approve itself.
+                assert!(matches!(
+                    harness
+                        .task_files()
+                        .write(
+                            snapshot.generation,
+                            &FileValue::new(decision_key, b"{}".to_vec())
+                        )
+                        .await,
+                    Err(crate::task_volume::Error::Unauthorized)
+                ));
+                let mut client = crate::client::CommandSession::open_local(
+                    &harness,
+                    uuid::Uuid::new_v4(),
+                    65536,
+                    32,
                 )
                 .await?;
-            struct NoReads;
-            impl crate::conversation::ContentResidencyVerifier for NoReads {}
-            assert_eq!(
                 client
-                    .submit(if approved { "yes" } else { "no" }, &NoReads)
-                    .await?,
-                request.binding()?.operation_id
-            );
-            let saved = harness.task_files().snapshot(&request.query()?, 4).await?;
-            assert!(saved.files.iter().any(|file| request.decision(&file.key, &file.bytes).unwrap() == Some(approved)));
+                    .write_state(
+                        crate::client::CommandFileRoot::Session,
+                        "layout.json",
+                        &json!({"selected_task":task}),
+                    )
+                    .await?;
+                struct NoReads;
+                impl crate::conversation::ContentResidencyVerifier for NoReads {}
+                assert_eq!(
+                    client
+                        .submit(if approved { "yes" } else { "no" }, &NoReads)
+                        .await?,
+                    request.binding()?.operation_id
+                );
+                let saved = harness.task_files().snapshot(&request.query()?, 4).await?;
+                assert!(saved.files.iter().any(|file| {
+                    request.decision(&file.key, &file.bytes).unwrap() == Some(approved)
+                }));
+            }
             Ok::<_, Error>(())
         };
         let (output, decision) = futures::join!(harness.resume(task), decide);
@@ -437,6 +479,11 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
             );
         }
         assert_eq!(executed.lock().unwrap().len(), usize::from(approved));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("workspace/hook-runs"))
+                .map_err(super::super::storage)?,
+            "ask\n"
+        );
         harness.close().await?;
     }
     Ok(())

@@ -13,6 +13,7 @@ use std::{
 
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
 const EXCLUDED_NAMES: &[&str] = &[".git", ".system", ".volumes"];
+mod approval;
 
 /// One native checkout and its same-filesystem operation staging directory.
 pub struct CheckoutPublication {

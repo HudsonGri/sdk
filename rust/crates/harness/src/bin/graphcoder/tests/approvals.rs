@@ -140,10 +140,13 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
     }
     policy
 }
-fn response_text(text: &str) -> String {
-    let event = json!({"type":"response.output_text.delta","delta":text});
+fn response_text(text: &str, streamed: &str) -> String {
+    let event = json!({"type":"response.output_text.delta","delta":streamed});
+    let completed = json!({"type":"response.output_item.done", "output_index":0,
+        "item":{"type":"message","role":"assistant","content":[
+            {"type":"output_text","text":text}]}});
     format!(
-        "data: {event}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n"
+        "data: {event}\n\ndata: {completed}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n"
     )
 }
 fn call(name: &str, arguments: &Value, sequence: usize) -> String {
@@ -282,7 +285,15 @@ impl Fixture {
             Case::Chain => "ask",
             _ => "allow",
         };
-        response_text(&json!({"verdict":verdict,"reason":"independent review"}).to_string())
+        let final_text = json!({"verdict":verdict,"reason":"independent review"}).to_string();
+        // The denial scenario must block the real effect even if streamed
+        // text provisionally allowed it before the authoritative final message.
+        let streamed = if matches!(self.case, Case::LlmDeny) {
+            json!({"verdict":"allow","reason":"provisional"}).to_string()
+        } else {
+            final_text.clone()
+        };
+        response_text(&final_text, &streamed)
     }
     fn model(&self, body: &Value) -> String {
         if body.get("model").unwrap() == "reviewer" {
