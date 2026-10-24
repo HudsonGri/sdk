@@ -39,10 +39,16 @@ def _owned_path(value):
 
 
 def prepare():
-    """Publish this identity in the runtime receipt before calling enter."""
+    """Allocate one delegated descendant set; enter before creating effects."""
     parent = current_group()
     path = _owned_path(str(parent / ('owned-' + uuid.uuid4().hex)))
     path.mkdir()
+    # The outer mount adapter starts as root in a user-delegated group.
+    # Preserve that delegation for the receipt owner's later kernel join.
+    owner = parent.stat()
+    if os.geteuid() == 0:
+        for entry in [path, *path.iterdir()]:
+            os.chown(entry, owner.st_uid, owner.st_gid)
     identity = path.stat()
     return {'boot_id': boot_id(), 'path': str(path),
             'device': identity.st_dev, 'inode': identity.st_ino}

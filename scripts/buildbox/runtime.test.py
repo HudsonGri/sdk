@@ -51,10 +51,18 @@ class RuntimeTests(unittest.TestCase):
         source=source.replace("'/home/var'",repr(str(self.real_home)))
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
-        if cleanup_failure:source=source.replace('if job.exists(): remove_home(job)','raise OSError("cleanup control")')
+        if cleanup_failure:
+            before='if home.exists():remove_home(home)'
+            self.assertIn(before,source,'cleanup control must mutate the actual deletion site')
+            source=source.replace(before,'raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
+    def receipt(self,gate=False):
+        fd,name=tempfile.mkstemp(prefix='fixture-',suffix='.receipt-meta.v2.json',dir=self.d)
+        os.close(fd)
+        meta=Path(name);meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
+        return meta
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
-        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
+        meta=self.receipt(gate)
         env={**fixture_environment(),'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
@@ -72,7 +80,7 @@ class RuntimeTests(unittest.TestCase):
         # Actual entrypoint; only installed helper locations/receipt ownership
         # are redirected to this isolated fixture. Cargo is the real tool.
         script=self.d/'build-slot';script.write_text((HERE/'build-slot').read_text().replace('/home/var/bin/bb-job.py',str(self.worker())))
-        meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
+        meta=self.receipt()
         # Metadata does not compile. Endpoint ownership/startup have separate
         # controls; do not start two real servers for this stdout-only fixture.
         env={**fixture_environment(),'BUILD_SLOT_RECEIPT_WRAPPED':'1','BB_ADMITTED':'1','BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
@@ -91,6 +99,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(json.loads(result.stdout)['packages'][0]['name'],'gate-stdout-fixture')
         self.assertIn(b'BB_DISK_FREE',result.stderr);self.assertIn(b'GATE_HOME_GUARD',result.stderr)
         script.write_text(script.read_text().replace(str(self.d/'worker.py'),str(self.worker(True))))
+        meta=self.receipt();env['BUILD_SLOT_RECEIPT_META']=str(meta)
         bad=subprocess.run(args,cwd=self.d,env=env,capture_output=True)
         self.assertEqual(subprocess.run([sys.executable,str(self.d/'negative.py'),'cleanup',str(meta)+'.runtime'],capture_output=True).returncode,0)
         self.assertEqual(bad.returncode,0,bad.stderr.decode())
@@ -603,6 +612,126 @@ finally:a.close();b.close()
             process.stdout.close();process.stderr.close()
 
     def ticket(self,seq,tenant,tier=2):return {'seq':seq,'tenant':tenant,'tier':tier,'cls':'compile'}
+
+    def test_outer_setup_failure_before_home_cleans_generated_scratch(self):
+        worker=self.worker()
+        generator=self.d/'generator.mjs'
+        generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {launchScript};\n')
+        shutil.copyfile(HERE/'buildbox-receipt.mjs',self.d/'buildbox-receipt.mjs')
+        probe=self.d/'generate-setup.mjs'
+        probe.write_text('''import {launchScript} from './generator.mjs';import fs from 'node:fs';
+const prefix=process.argv[2];
+const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
+const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],prefix,'','sdk','',id,60,true,{repo:'sdk',argv:['true']});
+const setup=[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.setup\\b/g)][0];
+let body=Buffer.from(setup[1],'base64').toString();
+body=body.slice(0,body.indexOf('# Host-shaped target dirs'));
+body=body.replaceAll('/mnt/bb/locks/unit',process.argv[3]);
+fs.writeFileSync(prefix+'.setup',body+'\\nexit 7\\n');
+''')
+        for negative in [False,True]:
+            prefix=self.d/'jobs'/f'early-failure-{negative}'
+            runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
+            subprocess.run([job.NODE,str(probe),str(prefix),str(self.d/'unit-locks')],check=True,capture_output=True)
+            result=subprocess.run([sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),'bash',str(prefix)+'.setup'],capture_output=True)
+            self.assertEqual(result.returncode,7,result.stderr)
+            self.assertNotIn('hermetic_home',json.loads(runtime.read_text()))
+            for suffix in ['.targets','.tmp']:self.assertTrue(Path(str(prefix)+suffix).exists())
+            cleaner=worker
+            if negative:
+                cleaner=self.d/'old-home-precondition.py'
+                source=worker.read_text().replace('original_home=runtime_home(runtime)',"original_home=Path(runtime['hermetic_home'])")
+                self.assertNotEqual(source,worker.read_text());cleaner.write_text(source)
+            try:
+                clean=subprocess.run([sys.executable,str(cleaner),'cleanup',str(runtime),str(prefix)],capture_output=True)
+                self.assertEqual(clean.returncode,224 if negative else 0,clean.stderr)
+                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative)
+                if not negative:self.assertTrue(json.loads(runtime.read_text())['setup_closed'])
+            finally:
+                with patch.object(job,'JOBS',self.d/'jobs'):job.cleanup_runtime(runtime,prefix)
+
+    def test_cleanup_before_outer_launch_closes_the_constructor(self):
+        worker=self.worker()
+        for negative in [False,True]:
+            prefix=self.d/'jobs'/f'late-launch-{negative}'
+            runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
+            cleaner=worker
+            if negative:
+                cleaner=self.d/'old-missing-runtime.py'
+                source=worker.read_text().replace("runtime=json.loads(Path(file).read_text()) if Path(file).exists() else {}","runtime=json.loads(Path(file).read_text())")
+                self.assertNotEqual(source,worker.read_text());cleaner.write_text(source)
+            clean=subprocess.run([sys.executable,str(cleaner),'cleanup',str(runtime),str(prefix)],capture_output=True)
+            self.assertEqual(clean.returncode,224 if negative else 0,clean.stderr)
+            marker=Path(str(prefix)+'.targets')
+            code=f'from pathlib import Path;Path({str(marker)!r}).mkdir()'
+            launched=subprocess.run([sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),sys.executable,'-c',code],capture_output=True)
+            self.assertEqual(launched.returncode==0,negative,launched.stderr)
+            self.assertEqual(marker.exists(),negative,'terminal setup cannot create late scratch')
+            with patch.object(job,'JOBS',self.d/'jobs'):job.cleanup_runtime(runtime,prefix)
+
+    def test_root_mount_setup_and_user_payload_share_one_custody(self):
+        for negative in [False,True]:
+            worker=self.worker()
+            if negative:
+                custody=self.d/'job_custody.py';source=custody.read_text()
+                mutant=source.replace('if os.geteuid() == 0:','if False:')
+                self.assertNotEqual(source,mutant);custody.write_text(mutant)
+            prefix=self.d/'jobs'/f'root-setup-{negative}'
+            runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
+            meta=Path(str(prefix)+'.receipt-meta.v2.json');meta.write_text('{}')
+            env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BB_CACHE_DISABLED':'1','PYTHONDONTWRITEBYTECODE':'1'}
+            env.pop('BB_JOB_ACTIVE',None)
+            code='import os;print("owned-payload",os.getuid())'
+            result=subprocess.run(['sudo','-n','--preserve-env',sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,f'owned-payload {os.getuid()}\n'.encode())
+            record=json.loads(runtime.read_text())
+            self.assertEqual(record['outer_setup'],str(prefix))
+            home=Path(record['hermetic_home']);self.assertTrue(home.exists())
+            self.assertEqual(Path(str(runtime)+'.setup-lock').stat().st_uid,os.getuid())
+            self.assertEqual(Path(record['custody']['path']).stat().st_uid,0 if negative else os.getuid())
+            try:
+                with patch.object(job,'JOBS',self.d/'jobs'):
+                    if negative:
+                        with self.assertRaises(PermissionError):job.cleanup_runtime(runtime,prefix)
+                        self.assertTrue(home.exists(),'missing delegation refuses cleanup')
+                    else:job.cleanup_runtime(runtime,prefix)
+            finally:
+                if negative:
+                    subprocess.run(['sudo','-n',sys.executable,'-B',str(worker),'cleanup',str(runtime),str(prefix)],check=True,capture_output=True)
+            self.assertFalse(home.exists())
+            self.assertTrue(json.loads(runtime.read_text())['setup_closed'])
+
+    def test_missing_runtime_cannot_authorize_unrecorded_scratch_or_foreign_prefix(self):
+        prefix=self.d/'jobs'/'unrecorded';self.worker()
+        runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
+        marker=Path(str(prefix)+'.targets');marker.mkdir();(marker/'keep').write_text('private')
+        with patch.object(job,'JOBS',self.d/'jobs'):
+            with self.assertRaisesRegex(RuntimeError,'no custody proof'):job.cleanup_runtime(runtime,prefix)
+        self.assertEqual((marker/'keep').read_text(),'private')
+        with self.assertRaisesRegex(ValueError,'outside /mnt/bb/jobs'):job.outer_prefix(self.d/'foreign')
+
+    def test_runtime_only_cleanup_uses_the_owned_outer_binding(self):
+        worker=self.worker()
+        for negative in [False,True]:
+            prefix=self.d/'jobs'/f'bound-cleanup-{negative}'
+            runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
+            code=f'from pathlib import Path;[Path({str(prefix)!r}+suffix).mkdir() for suffix in [".targets",".tmp"]]'
+            subprocess.run([sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),sys.executable,'-c',code],check=True,capture_output=True)
+            cleaner=worker
+            if negative:
+                cleaner=self.d/'old-optional-prefix.py'
+                source=worker.read_text().replace('                prefix=bound\n','')
+                self.assertNotEqual(source,worker.read_text());cleaner.write_text(source)
+            try:
+                clean=subprocess.run([sys.executable,str(cleaner),'cleanup',str(runtime)],capture_output=True)
+                self.assertEqual(clean.returncode,0,clean.stderr)
+                self.assertTrue(json.loads(runtime.read_text())['setup_closed'])
+                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative)
+            finally:
+                record=json.loads(runtime.read_text())
+                proof=job.job_custody.join(record['custody'])
+                with patch.object(job,'JOBS',self.d/'jobs'):job.cleanup_outer(prefix,proof,record['custody'])
 
     def test_killed_generated_wrapper_cleans_outer_scratch_with_negative_control(self):
         worker=self.worker()

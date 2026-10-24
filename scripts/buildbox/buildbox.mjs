@@ -747,7 +747,7 @@ chmod go-w ${SH ? `/mnt/bb/targets ${SH} ` : ''}$T /mnt/bb /mnt/bb/home /mnt/bb/
 # scope to var, so jobs (local e2e's heap cgroups, via /home/var/bin/bbcg/systemd-run) can build cgroups inside the job.
 # Only a cgroup that is a bbjobs.slice scope is ever touched.
 S=; [ -e /etc/systemd/system/bbjobs.slice ] && S='systemd-run --scope -q --slice=bbjobs.slice -p Delegate=yes --'
-setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
+setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; exec python3 /home/var/bin/bb-job.py outer-setup ${J}.receipt-meta.v2.json.runtime ${J} bash ${J}.setup' >> $J.out 2>> $J.err < /dev/null 8>&- &
 p=$!; echo $p > $J.pid
 node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # Hang reaper (2026-10-18, crit-bslot): the job's scope cgroup must use 5 s of CPU per 10 min; a job under that (a deadlocked
@@ -768,9 +768,23 @@ node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 wait $p; rc=$?; [ -e $J.ceiling ] && rc=124; [ -e $J.idle ] && rc=124
 # Last use for bb-target-prune's LRU (2026-10-20 lane-loop): it reads the unit dir's own mtime, which builds inside
 # .host-targets/ never change, so an inner-loop target used minutes ago was evicted as the oldest (solo-hib, lane-loop).
-touch ${TD} $T 2>/dev/null || true
+touch ${TD} 2>/dev/null || true
 rm -f $J.sh
 exit $rc`;
+  // Scratch and mount preparation belong to the same descendant set as the
+  // payload. The constructor publishes custody before this script can run.
+  const setupStart = wrapper.indexOf(`T=${TD}\n`);
+  const setupEnd = wrapper.indexOf('# Each job is its own Delegate=yes scope');
+  if (setupStart < 0 || setupEnd <= setupStart) throw new Error('missing outer setup boundary');
+  const setup = `set -eu\nJ=${J}\n` + wrapper.slice(setupStart, setupEnd) + `
+chown -R var ${TD} ${J}.tmp
+mount --bind ${src} /work/src
+mount --bind "$T" /work/target
+mount --bind ${TD}/.host-targets /mnt/bb/home/targets
+mount --bind ${TD}/.host-src /mnt/bb/home/src
+mount --bind ${J}.tmp /tmp
+exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh`;
+  wrapper = wrapper.slice(0, setupStart) + wrapper.slice(setupEnd);
   const boundary = wrapper.indexOf('while [ "$(awk');
   if (boundary < 0) throw new Error('missing remote admission boundary');
   const admissionSave = q("import {atomic} from '/home/var/bin/buildbox-receipt.mjs';atomic(process.argv[1],{tier:process.env.BB_ADMIT_TIER,tenant:process.env.BB_ADMIT_TENANT,wait_seconds:Number(process.env.BB_ADMIT_WAIT_SECONDS),build_jobs:Number(process.env.CARGO_BUILD_JOBS)});");
@@ -781,11 +795,12 @@ exit $rc`;
 /home/var/bin/bb-admit ${jobTier} ${q(tenant)} -- bash ${J}.admitted >> ${J}.out 2>> ${J}.err
 exit $?`;
   return `set -eu
-J=${J}; mkdir -p /mnt/bb/jobs ${TD} ${src} /mnt/bb/home/src /mnt/bb/home/targets
+J=${J}; mkdir -p /mnt/bb/jobs ${src} /mnt/bb/home/src /mnt/bb/home/targets
 [ ! -e $J.wpid ] || { echo launched; exit 0; }  # idempotent: a retried launch never starts a second job
 echo ${Buffer.from(RECEIPT_TOOL).toString('base64')} | base64 -d > $J.receipt-tool.mjs
 echo ${Buffer.from(JSON.stringify({ ...receipt, ledger: undefined, receipt_file: J + '.receipt.json', log_file: J + '.out', stderr_file: J + '.err', job_prefix: J, side: 'bb2' })).toString('base64')} | base64 -d > $J.receipt-meta.v2.json
 echo ${Buffer.from(inner).toString('base64')} | base64 -d > $J.sh
+echo ${Buffer.from(setup).toString('base64')} | base64 -d > $J.setup
 echo ${Buffer.from(admitted).toString('base64')} | base64 -d > $J.admitted
 echo ${Buffer.from(wrapper).toString('base64')} | base64 -d > $J.wrap
 touch $J.t0 $J.hb $J.out $J.err

@@ -156,6 +156,11 @@ impl ClientRenderer {
             changed
         };
         self.transcript_changed = self.transcript_changed.min(changed);
+        if self.task.busy() {
+            self.transcript.extend(approvals::rows(
+                selected.as_ref().map(|(files, task)| files.task(task)),
+            ));
+        }
         let (changed, rows) = self.task.reasoning();
         self.reasoning_rows.truncate(changed);
         self.reasoning_rows.extend_from_slice(&rows[changed..]);
@@ -173,10 +178,6 @@ impl ClientRenderer {
         ]);
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
-        if self.busy {
-            self.notices
-                .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
-        }
         self.compose_notices();
     }
 
