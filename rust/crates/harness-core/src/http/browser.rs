@@ -25,9 +25,23 @@ pub struct Request {
     /// Explicit headers.
     pub headers: BTreeMap<String, String>,
     /// Exact request body.
-    pub body: bytes::Bytes,
+    pub body: Body,
     /// Optional whole-exchange deadline, retained through body consumption.
     pub timeout_ms: Option<u32>,
+}
+
+/// Bodies are either pinned bytes or an immutable host Blob. A Blob needs no materialization.
+pub enum Body {
+    /// Owned byte snapshot.
+    Bytes(bytes::Bytes),
+    /// Immutable browser-owned bytes, retained through fetch admission.
+    Blob(web_sys::Blob),
+}
+
+impl From<bytes::Bytes> for Body {
+    fn from(bytes: bytes::Bytes) -> Self {
+        Self::Bytes(bytes)
+    }
 }
 
 type Timer = (timer::Timeout, Closure<dyn FnMut()>);
@@ -118,8 +132,12 @@ pub fn start(fetch: Function, request: Request, signal: Option<AbortSignal>) -> 
     init.set_credentials(RequestCredentials::Omit);
     init.set_redirect(RequestRedirect::Error);
     init.set_signal(Some(&state.abort.signal()));
-    if !request.body.is_empty() {
-        init.set_body(Uint8Array::from(request.body.as_ref()).as_ref());
+    match request.body {
+        Body::Bytes(bytes) if !bytes.is_empty() => {
+            init.set_body(Uint8Array::from(bytes.as_ref()).as_ref());
+        }
+        Body::Blob(blob) => init.set_body(blob.as_ref()),
+        Body::Bytes(_) => {}
     }
     let headers = Headers::new().map_err(|_| invalid())?;
     for (name, value) in request.headers {
