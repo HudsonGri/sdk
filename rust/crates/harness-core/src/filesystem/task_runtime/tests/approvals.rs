@@ -87,7 +87,6 @@ async fn setup() -> Result<Initialized> {
                     })?,
                 },
             },
-            None,
             &mut None,
         )
         .await?;

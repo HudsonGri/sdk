@@ -65,7 +65,6 @@ async fn bind(fixture: &Fixture, conversation: &AuthorityIssuer) -> Result<()> {
                     agent: AgentId::from_bytes([1; 16]),
                 },
             },
-            None,
             &mut None,
         )
         .await?;
@@ -424,7 +423,6 @@ async fn indeterminate(
                     }),
                 },
             },
-            None,
             &mut None,
         )
         .await?;
