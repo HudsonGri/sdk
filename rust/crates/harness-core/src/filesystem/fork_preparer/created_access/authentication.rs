@@ -20,10 +20,11 @@ pub(super) struct CreationRequest<'a> {
     digest: [u8; 32],
     canonical_digest: [u8; 32],
     index: usize,
+    journal: super::journal::CreationJournal,
 }
 
 impl<'a> CreationRequest<'a> {
-    pub(super) fn new<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub(super) async fn new<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         host: &FilesystemHost<A, O>,
         request: &'a ResourcePreparationRequest,
         proof: &'a ResourceCreationProofRef,
@@ -86,6 +87,7 @@ impl<'a> CreationRequest<'a> {
         let canonical_digest = crate::model::hash_bytes(&canonical, Some(io))?;
         drop(canonical);
         drop(hold);
+        let journal = super::journal::CreationJournal::bind(host, &fork, maximum, io).await?;
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("created request binding", 1u64));
         Ok(Self {
@@ -95,6 +97,7 @@ impl<'a> CreationRequest<'a> {
             digest,
             canonical_digest,
             index,
+            journal,
         })
     }
 
@@ -107,6 +110,7 @@ impl<'a> CreationRequest<'a> {
             digest: self.digest,
             canonical_digest: self.canonical_digest,
             index: self.index,
+            journal: self.journal,
         }
     }
 
@@ -136,22 +140,14 @@ impl<'a> CreationRequest<'a> {
             ));
         }
         let maximum = request.maximum_bytes.min(MAX_REPORT_BYTES);
-        let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
-        if !read_claim(host, &journal, fork, maximum, Some(io)).await? {
-            return Err(Error::Unauthorized(
-                "fork preparation request is not retained".into(),
-            ));
-        }
-        let report = read_report(host, &journal, fork, maximum, Some(io))
-            .await?
-            .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
-        let seed = report.into_seed(&mut Some(&mut io.history_io()))?;
-        let binding = seed_digest(&seed, maximum, Some(io))?;
+        self.journal.verify(host, io).await?;
+        let seed = &self.journal.seed;
+        let binding = self.journal.binding;
         let mut selected: Option<AuthenticatedAllocation> = None;
         let mut original_origin = None;
         for (number, volume) in creation_volumes(fork).enumerate() {
             let (mut claim, held) = host
-                .read_fork_allocation(&seed, volume, binding, maximum, Some(io))
+                .read_fork_allocation(seed, volume, binding, maximum, Some(io))
                 .await?;
             let origin = claim.task_origin.as_ref().ok_or_else(|| {
                 Error::Unauthorized(
@@ -287,8 +283,8 @@ impl<'a> CreationRequest<'a> {
             });
         }
         let mut granted = BTreeSet::new();
-        for reference in seed.reference_grants {
-            require_reference_donor(&selected.origin.source_grants, &reference, None)?;
+        for reference in &seed.reference_grants {
+            require_reference_donor(&selected.origin.source_grants, reference, None)?;
             if reference
                 .attachment_manifest
                 .as_ref()
@@ -306,7 +302,9 @@ impl<'a> CreationRequest<'a> {
                     ));
                 }
                 if selected.authority.is_some() && granted.insert(capability) {
-                    selected.reference_files.push(reference.file);
+                    selected
+                        .reference_files
+                        .push(reference.file.copy(&mut Some(&mut io.history_io()))?);
                 }
             }
         }

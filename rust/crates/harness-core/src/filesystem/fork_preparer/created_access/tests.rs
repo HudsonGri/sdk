@@ -19,7 +19,14 @@ fn compare_binding<'a>(
 ) -> Result<CreationRequest<'a>> {
     let (bound, trace) = differential::observe::<_, _, Operation>(
         || (),
-        |_| CreationRequest::new(&fixture.filesystem, request, proof, io),
+        |_| {
+            runtime.block_on(CreationRequest::new(
+                &fixture.filesystem,
+                request,
+                proof,
+                io,
+            ))
+        },
     );
     let bound = bound?;
     assert_eq!(binding_count(trace), 1);
@@ -51,7 +58,8 @@ fn compare_binding<'a>(
         || (),
         |_| {
             runtime.block_on(async {
-                let repeated = CreationRequest::new(&fixture.filesystem, request, proof, io)?;
+                let repeated =
+                    CreationRequest::new(&fixture.filesystem, request, proof, io).await?;
                 repeated
                     .authenticate(&fixture.filesystem, owner, Some(io))
                     .await
@@ -101,40 +109,165 @@ fn retained_creation_request(native: bool) -> Result<()> {
         id: "created-owner".into(),
     };
     let bound = compare_binding(&runtime, &fixture, request, proof, &io, owner)?;
+    negative_boundaries(&runtime, &fixture, &bound, request, proof, &io, owner)?;
+    changed_allocation(&runtime, &fixture, &bound, &io, owner, &created.private)?;
+    changed_journal(
+        &runtime,
+        &fixture,
+        &bound,
+        &io,
+        owner,
+        created.seed.operation_id,
+    )?;
+    let rebound = runtime.block_on(CreationRequest::new(
+        &fixture.filesystem,
+        request,
+        proof,
+        &io,
+    ))?;
+    runtime.block_on(rebound.authenticate(&fixture.filesystem, owner, Some(&io)))?;
+    io.remaining()?;
+    cancel.cancel();
+    assert!(matches!(
+        runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(&io))),
+        Err(Error::NativeFilesystem { source, .. })
+            if matches!(source.as_ref(), acyclic_fs::FsError::Cancelled(_)
+                | acyclic_fs::FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::Cancelled))
+    ));
+    Ok(())
+}
+
+fn negative_boundaries(
+    runtime: &tokio::runtime::Runtime,
+    fixture: &CreationFixture,
+    bound: &CreationRequest<'_>,
+    request: &ResourcePreparationRequest,
+    proof: &ResourceCreationProofRef,
+    io: &PreparationIo,
+    owner: &Authority,
+) -> Result<()> {
     let mut foreign = (*owner).clone();
     foreign.id.push_str("-foreign");
     assert!(matches!(
-        runtime.block_on(bound.authenticate(&fixture.filesystem, &foreign, Some(&io))),
+        runtime.block_on(bound.authenticate(&fixture.filesystem, &foreign, Some(io))),
         Err(Error::Unauthorized(_))
     ));
     let other = FilesystemHost::new(acyclic_fs::Fs::memory(), &fixture.filesystem_provider, None)?;
+    let missing = runtime
+        .block_on(bound.authenticate(&other, owner, Some(io)))
+        .err()
+        .ok_or_else(|| Error::Invalid("foreign store was accepted".into()))?;
     assert!(
         matches!(
-            runtime.block_on(bound.authenticate(&other, owner, Some(&io))),
-            Err(Error::Unauthorized(_))
+            &missing,
+            Error::NativeWorkspace { source, .. }
+                if matches!(source.as_ref(), acyclic_fs::WorkspaceError::Filesystem(
+                    acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::Missing)))
         ),
-        "retained parsing must never stand in for the protected journal"
+        "retained parsing must never stand in for the protected journal: {missing:?}"
     );
     let mut forged = request.clone();
     forged.child.operation_id = OperationId::from_bytes([7; 16]);
-    let forged = CreationRequest::new(&fixture.filesystem, &forged, proof, &io)?;
+    let forged = runtime.block_on(CreationRequest::new(
+        &fixture.filesystem,
+        &forged,
+        proof,
+        io,
+    ))?;
     assert!(matches!(
-        runtime.block_on(forged.authenticate(&fixture.filesystem, owner, Some(&io))),
+        runtime.block_on(forged.authenticate(&fixture.filesystem, owner, Some(io))),
         Err(Error::Unauthorized(_))
     ));
     let mut forged = proof.clone();
     forged.evidence = forged.resource.clone();
     assert!(matches!(
-        CreationRequest::new(&fixture.filesystem, request, &forged, &io),
+        runtime.block_on(CreationRequest::new(
+            &fixture.filesystem,
+            request,
+            &forged,
+            io
+        )),
         Err(Error::Unauthorized(_))
     ));
-    io.remaining()?;
-    cancel.cancel();
-    assert!(
-        runtime
-            .block_on(bound.authenticate(&fixture.filesystem, owner, Some(&io)))
-            .is_err()
-    );
+    Ok(())
+}
+
+fn changed_journal(
+    runtime: &tokio::runtime::Runtime,
+    fixture: &CreationFixture,
+    bound: &CreationRequest<'_>,
+    io: &PreparationIo,
+    owner: &Authority,
+    operation: OperationId,
+) -> Result<()> {
+    let journal = preparation_journal(&fixture.filesystem_provider, operation, Some(io))?;
+    runtime.block_on(fixture.filesystem.apply(
+        &journal,
+        None,
+        &[WorkspaceMutation::PutFile {
+            path: "/changed-generation".into(),
+            bytes: b"changed".to_vec().into(),
+        }],
+        &IdempotencyKey::new("changed-generation")?,
+    ))?;
+    let refused = runtime
+        .block_on(bound.authenticate(&fixture.filesystem, owner, Some(io)))
+        .err()
+        .ok_or_else(|| Error::Invalid("changed journal was accepted".into()))?;
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+fn changed_allocation(
+    runtime: &tokio::runtime::Runtime,
+    fixture: &CreationFixture,
+    bound: &CreationRequest<'_>,
+    io: &PreparationIo,
+    owner: &Authority,
+    volume: &VolumeRef,
+) -> Result<()> {
+    let journal = allocation_ref(&fixture.filesystem_provider, volume, Some(io))?;
+    let original = runtime.block_on(fixture.filesystem.read(
+        &journal,
+        None,
+        "/claim.json",
+        MAX_REPORT_BYTES,
+        None,
+    ))?;
+    let mut claim: crate::filesystem::fork_preparer::AllocationClaim =
+        crate::contract::json_from_slice(&original)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    claim
+        .task_origin
+        .as_mut()
+        .ok_or_else(|| Error::Invalid("fixture claim has no task origin".into()))?
+        .owner
+        .id
+        .push_str("-changed");
+    let changed = serde_json::to_vec(&claim).map_err(|error| Error::Invalid(error.to_string()))?;
+    runtime.block_on(fixture.filesystem.apply(
+        &journal,
+        None,
+        &[WorkspaceMutation::PutFile {
+            path: "/claim.json".into(),
+            bytes: changed.into(),
+        }],
+        &IdempotencyKey::new("change-allocation-owner")?,
+    ))?;
+    assert!(matches!(
+        runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io))),
+        Err(Error::Unauthorized(_))
+    ));
+    runtime.block_on(fixture.filesystem.apply(
+        &journal,
+        None,
+        &[WorkspaceMutation::PutFile {
+            path: "/claim.json".into(),
+            bytes: original,
+        }],
+        &IdempotencyKey::new("restore-allocation-owner")?,
+    ))?;
+    runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io)))?;
     Ok(())
 }
 

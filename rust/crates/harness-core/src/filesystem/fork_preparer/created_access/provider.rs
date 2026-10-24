@@ -43,7 +43,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         proof: &ResourceCreationProofRef,
         io: &PreparationIo,
     ) -> Result<CreatedResourceReceipt> {
-        let bound = CreationRequest::new(&self.host, request, proof, io)?;
+        let bound = CreationRequest::new(&self.host, request, proof, io).await?;
         let allocation = bound
             .authenticate(&self.host, self.issuer.audience(), Some(io))
             .await?;
