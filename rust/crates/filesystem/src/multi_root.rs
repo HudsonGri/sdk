@@ -16,7 +16,7 @@ use crate::{
     WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
     WorkspaceLineageStore, WorkspaceName, WorkspaceRootId,
 };
-use acyclic_stream::ProviderTask;
+use acyclic_stream::{ProviderPlatform, ProviderTask};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -146,7 +146,7 @@ pub struct MultiRootConflictFinish {
 }
 
 /// Durable optimistic store for publication decisions.
-pub trait MultiRootPublicationStore: Send + Sync {
+pub trait MultiRootPublicationStore: ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -200,7 +200,7 @@ pub trait MultiRootPublicationStore: Send + Sync {
 }
 
 /// Root-specific publisher backed by the ordinary join and materializer APIs.
-pub trait MultiRootPublisher: Send + Sync {
+pub trait MultiRootPublisher: ProviderPlatform {
     /// Publisher error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -280,7 +280,7 @@ pub trait MultiRootPublisher: Send + Sync {
 }
 
 /// Resolves one authenticated workspace identity for core publication.
-pub trait WorkspaceResolver<A, O>: Send + Sync {
+pub trait WorkspaceResolver<A, O>: ProviderPlatform {
     /// Resolver failure.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -293,8 +293,8 @@ pub trait WorkspaceResolver<A, O>: Send + Sync {
 
 impl<A, O, S> WorkspaceResolver<A, O> for (crate::Fs<A, O>, WorkspaceGraph<S>)
 where
-    A: AsyncAuthorityStore + Send + Sync,
-    O: AsyncObjectStore + Send + Sync,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
     S: WorkspaceLineageStore,
 {
     type Error = WorkspaceLineageError<S::Error>;
@@ -318,7 +318,7 @@ where
 }
 
 /// Applies one logically published root generation to its host checkout.
-pub trait MultiRootMaterializer<A, O>: Send + Sync {
+pub trait MultiRootMaterializer<A, O>: ProviderPlatform {
     /// Materialization failure.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -468,7 +468,7 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
 }
 
 /// Authorization boundary for direct-parent and root-binding validation.
-pub trait MultiRootPublicationAuthorizer: Send + Sync {
+pub trait MultiRootPublicationAuthorizer: ProviderPlatform {
     /// Authorizer error.
     type Error: std::error::Error + Send + Sync + 'static;
 

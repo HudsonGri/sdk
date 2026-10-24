@@ -5,8 +5,8 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, GenerationId, IdempotencyKey,
     WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
-use serde::{Deserialize, Serialize};
 use acyclic_stream::{ProviderPlatform, ProviderTask};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::future::Future;
 use thiserror::Error;
@@ -163,7 +163,8 @@ impl<S: WorkspaceLineageStore + ?Sized> WorkspaceLineageStore for std::sync::Arc
     fn load(
         &self,
         id: WorkspaceId,
-    ) -> impl Future<Output = Result<Option<WorkspaceLineageRecord>, Self::Error>> + ProviderTask {
+    ) -> impl Future<Output = Result<Option<WorkspaceLineageRecord>, Self::Error>> + ProviderTask
+    {
         (**self).load(id)
     }
 

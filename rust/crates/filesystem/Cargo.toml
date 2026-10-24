@@ -21,6 +21,11 @@ path = "tests/main.rs"
 name = "shared_storage_contract"
 path = "tests/shared_storage_contract.rs"
 
+[[test]]
+name = "lineage_platform"
+path = "tests/lineage_platform.rs"
+required-features = ["memory"]
+
 [[bench]]
 name = "lease_paths"
 harness = false
