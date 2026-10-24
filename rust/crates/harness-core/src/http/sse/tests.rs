@@ -28,6 +28,27 @@ fn chunking_cannot_change_framing_utf8_or_truncation() {
 }
 
 #[test]
+fn comments_at_eof_never_publish_or_invalidate_a_completed_event() {
+    for suffix in [
+        ": keepalive",
+        ": keepalive\n",
+        ": first\n: second",
+        ": 🦀\r\n",
+    ] {
+        let input = format!("data: complete\n\n{suffix}");
+        for width in 1..=input.len() {
+            assert_eq!(
+                decode_chunks(input.as_bytes(), width, 128).unwrap(),
+                ["complete"]
+            );
+            assert!(
+                decode_chunks(format!("data: partial\n{suffix}").as_bytes(), width, 128).is_err()
+            );
+        }
+    }
+}
+
+#[test]
 fn each_event_has_its_own_bound_before_buffer_growth() {
     for width in 1..32 {
         assert_eq!(
