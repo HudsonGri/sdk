@@ -707,23 +707,22 @@ fs.writeFileSync(prefix+'.setup',body+'\\nexit 7\\n');
             env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BB_CACHE_DISABLED':'1','PYTHONDONTWRITEBYTECODE':'1'}
             env.pop('BB_JOB_ACTIVE',None)
             code='import os;print("owned-payload",os.getuid())'
-            result=subprocess.run(['sudo','-n','--preserve-env',sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
-            self.assertEqual(result.returncode,0,result.stderr)
-            self.assertEqual(result.stdout,f'owned-payload {os.getuid()}\n'.encode())
-            record=json.loads(runtime.read_text())
-            self.assertEqual(record['outer_setup'],str(prefix))
-            home=Path(record['hermetic_home']);self.assertTrue(home.exists())
-            self.assertEqual(Path(str(runtime)+'.setup-lock').stat().st_uid,os.getuid())
-            self.assertEqual(Path(record['custody']['path']).stat().st_uid,0 if negative else os.getuid())
             try:
+                result=subprocess.run(['sudo','-n','--preserve-env',sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(result.stdout,f'owned-payload {os.getuid()}\n'.encode())
+                record=json.loads(runtime.read_text())
+                self.assertEqual(record['outer_setup'],str(prefix))
+                home=Path(record['hermetic_home']);self.assertTrue(home.exists())
+                self.assertEqual(Path(str(runtime)+'.setup-lock').stat().st_uid,os.getuid())
+                self.assertEqual(Path(record['custody']['path']).stat().st_uid,0 if negative else os.getuid())
                 with patch.object(job,'JOBS',self.d/'jobs'):
                     if negative:
                         with self.assertRaises(PermissionError):job.cleanup_runtime(runtime,prefix)
                         self.assertTrue(home.exists(),'missing delegation refuses cleanup')
                     else:job.cleanup_runtime(runtime,prefix)
             finally:
-                if negative:
-                    subprocess.run(['sudo','-n',sys.executable,'-B',str(worker),'cleanup',str(runtime),str(prefix)],check=True,capture_output=True)
+                subprocess.run(['sudo','-n',sys.executable,'-B',str(worker),'cleanup',str(runtime),str(prefix)],check=True,capture_output=True)
             self.assertFalse(home.exists())
             self.assertTrue(json.loads(runtime.read_text())['setup_closed'])
 
