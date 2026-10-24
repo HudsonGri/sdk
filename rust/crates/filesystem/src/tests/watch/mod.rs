@@ -1002,10 +1002,9 @@ fn access_notifications_are_metadata_only_and_do_not_feed_back()
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("file");
     std::fs::write(&file, b"unchanged")?;
-    let mut watch = NativeWatch::open(
-        directory.path(),
-        NativeWatchOptions::new(VolumeLimits::default()),
-    )?;
+    // Exercise the held, demand-registered capture watcher. The recursive
+    // notify adapter has no bounded fence and deliberately requires a rescan.
+    let mut watch = NativeWatch::open(directory.path(), measured_watch_options())?;
     watch.begin_rescan()?;
     watch.finish_rescan()?;
     std::fs::File::open(&file)?.set_times(
@@ -1015,7 +1014,9 @@ fn access_notifications_are_metadata_only_and_do_not_feed_back()
     let cancellation = CancellationToken::new();
     let batch = watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value;
     let WatchBatch::Changes { changes, .. } = batch else {
-        return Err("access mutation unexpectedly invalidated the watcher".into());
+        return Err(
+            format!("access mutation unexpectedly invalidated the watcher: {batch:?}").into(),
+        );
     };
     assert!(matches!(changes.as_slice(), [WatchChange::MetadataChanged(_)]));
     // Metadata-only capture uses stat, which cannot generate another access
