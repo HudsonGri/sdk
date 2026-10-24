@@ -40,6 +40,30 @@ test("handled failures retain exact task and reason identity across subsequent a
   assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
 });
 
+test("owner exit permits recovery before a live descendant releases inherited pipes", async () => {
+  const processes = new Processes();
+  let descendant;
+  try {
+    const leaf = "require('node:net').createServer().listen(0,'127.0.0.1',()=>console.log(JSON.stringify({pid:process.pid})))";
+    const parent = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'inherit',detached:true,windowsHide:true})`;
+    const owner = processes.start(process.execPath, ["-e", parent]);
+    descendant = (await new Events(owner.child.stdout, owner.closed).wait(event => event.pid)).pid;
+    let pipesClosed = false;
+    owner.closed.then(() => { pipesClosed = true; });
+    owner.child.kill("SIGKILL");
+    const exit = await owner.exited;
+    assert.ok(exit.signal || exit.code !== 0);
+    process.kill(descendant, 0);
+    assert.equal(pipesClosed, false, "negative control: waiting for close would prevent recovery");
+    process.kill(descendant, "SIGKILL");
+    await owner.closed;
+    descendant = undefined;
+  } finally {
+    if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; } }
+    await processes.close();
+  }
+});
+
 test("case selection rejects misspellings before starting either executable", async () => {
   const processes = new Processes();
   try {
@@ -63,6 +87,13 @@ test("request assertions reject omitted, duplicated, unmatched and fabricated re
   assert.throws(() => requests(fixture, [valid[0], { ...valid[1], status: 409 }]), /unmatched/);
   assert.throws(() => requests(fixture, [valid[0], record(1, [{ role: "user", content: "REAL_RESULT" }])]), /actual tool result missing/);
   assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], record(1, [{ type: "function_call_output", output: '{"error":"failed"}' }])]), /unexpected tool error/);
+  const rejected = record(1, [{ type: "function_call_output", output: "tool executor rejected the admitted call (conflict): workspace generation changed" }]);
+  assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], rejected]), /unexpected tool error/);
+  requests({ ...fixture, assert: { requests: 2, tool_errors: ["workspace generation changed"] } }, [valid[0], rejected]);
+  const gemini = [{ path: "models/tiny:streamGenerateContent", step: 0, status: 200,
+    body: { contents: [{ role: "user", parts: [{ functionResponse: { name: "bash", response: { text: "REAL_RESULT" } } }] }] } }];
+  requests({ model: { steps: [{}] }, assert: { requests: 1, tool_contains: ["REAL_RESULT"] } }, gemini);
+  assert.throws(() => requests({ model: { steps: [{}] }, assert: { requests: 1, tool_contains: ["FORGED"] } }, gemini), /actual tool result missing/);
 });
 
 test("native result projection and nested JSONL assertions retain identity", () => {

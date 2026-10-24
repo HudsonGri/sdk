@@ -377,7 +377,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 .push(CommitCondition::Tail { path, expected: 1 });
         }
         let outcome = self
-            .commit(
+            .publish_with_policy(
                 request,
                 lease.map(|(_, _, expires)| expires),
                 work,
