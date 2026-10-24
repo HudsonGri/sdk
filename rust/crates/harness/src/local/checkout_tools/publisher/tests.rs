@@ -427,6 +427,17 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .map_err(storage)?
         .value
         .id();
+    let capture_key = acyclic_fs::IdempotencyKey::from_bytes(
+        capture::capture_operation(write_capture(operation, original.path()), 1).into_bytes(),
+    );
+    let captured = view
+        .workspace()
+        .operation_generation(capture_key, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .map(|generation| generation.id());
+    eprintln!("publication diagnostic: staged={:?} head={before:?} capture={captured:?}", publisher.staged_generation(&replacement)?);
     std::fs::write(directory.path().join("path.txt"), b"later user edit").map_err(storage)?;
     assert_republished(
         &publisher
