@@ -2,6 +2,9 @@
 
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 Windows MSVC executables must be cross-built on bb2; run Windows suites serially.
+ConPTY preparation has no local PowerShell compiler entry point: cross-build
+`scripts/graphcoder-conpty.cs` on bb2 and supply its executable as
+`E2E_CONPTY_HOST` before running a Windows PTY case.
 The Windows `owned-process.cs` host must also be cross-compiled on bb2 and
 its absolute executable supplied as `E2E_PROCESS_HOST`. External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
@@ -38,6 +41,16 @@ The strict helper launcher also owns its complete process tree. Its active
 nine-second budget cancels and drains the scope; cancellation always fails
 qualification, including when a late child summary reports success.
 
+Set `E2E_SCRATCH_ROOT` to an absolute owned directory before any Windows
+invocation; this lane uses `D:/lane-scratch/e2e-gate/`. Windows has no system-temp
+fallback. The old independent `E2E_WORKSPACE_ROOT` and `E2E_NTFS_ROOT` selectors
+are rejected. Fixture profiles, temporary files, helper workers, Git and the
+mock all use the same scratch ownership boundary. `E2E_OUTPUT` can separately
+select a durable evidence directory. Remove the owned scratch after retaining
+the reports and retiring every process/mount. Helper scratch is removed at its
+completion barrier. The secondary Windows case directory remains a distinct
+fixture; two directories on D: do not constitute a ReFS-versus-NTFS proof.
+
 `coverage.json` maps every A1–A26 target to real case identities and names the
 owner of remaining scope gaps. Missing rows, unknown identities, duplicate
 identities, unmapped cases and recorded gaps fail qualification. A mapped row
@@ -47,6 +60,13 @@ Supplying case IDs after the two executables runs a diagnostic selection. Its
 receipt has `qualification: false`; a successful selection never qualifies the
 complete platform. The full run requires both passing cases and coverage.
 Known product failures retain their assertions and fail normally.
+
+`instructions-and-skills` checks discovery without loading an unselected skill
+body. `skill-invocation` selects `/inventory` through headless and real-PTY
+composer input, then requires the instruction markers, selected body and expanded
+arguments in the actual model request. Both paths use the retained skill catalog
+and its pinned body reader. A live inventory that requires a body must select
+the skill explicitly; listing available skill metadata does not invoke it.
 
 `matrix.json` embeds each case's complete captures and acknowledged requests.
 The identical JSON is published to retained job stdout before writing the export
@@ -78,10 +98,15 @@ before running cases:
 node scripts/graphcoder-e2e/artifacts.mjs specification.json /absolute/fresh-job-bundle
 ```
 
-The specification is a JSON array of `{name, target, test, cargo_json}` entries.
+The specification is a JSON array of `{name, target, test, cargo_json, kind?}` entries.
 `target` is the exact Cargo target name, `test` is its `profile.test` boolean,
 and `cargo_json` names the producer's `--message-format=json` output. The tool
-requires exactly one executable for every entry and a new destination directory.
+requires exactly one artifact for every entry and a new destination directory.
+`kind` defaults to `executable`; `cdylib` selects one Cargo `cdylib` record and its
+single `.so`, `.dylib` or `.dll` filename. Import libraries, debug symbols and
+Rust libraries cannot satisfy that selection. Executables and native libraries
+share the same copy, hash and manifest admission; callers choose the destination
+name (for example, `binding.node`) rather than guessing a target-cache path.
 It opens each source once, streams it into the owned bundle and publishes a
 manifest with paths and SHA-256 only after all copies complete. Execute those
 bundle paths in the same job. A previous job's Cargo path is not an artifact
