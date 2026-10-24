@@ -60,6 +60,7 @@ pub struct EffectAttestation {
     /// Terminal or explicitly unknown result.
     pub status: EffectStatus,
     #[serde(with = "super::capability_bytes")]
+    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub(in crate::core) proof: Vec<u8>,
 }
 

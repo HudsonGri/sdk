@@ -218,6 +218,7 @@ impl CreationFixture {
             private,
             parent_scope,
             verifier,
+            issuer,
         })
     }
 
@@ -233,6 +234,7 @@ impl CreationFixture {
             private,
             parent_scope,
             verifier,
+            issuer,
         } = self.fork_setup(task_fork).await?;
         if task_fork {
             assert!(matches!(

@@ -203,6 +203,7 @@ pub struct Event {
     pub scope: RecordedScope,
     /// Sealed Ed25519 workload descendant and runtime receipt for this event.
     #[serde(with = "super::capability_bytes")]
+    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub attestation: Vec<u8>,
     /// Optional causal predecessor in another aggregate.
     pub causal_parent: Option<EventReference>,
