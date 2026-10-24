@@ -8,15 +8,23 @@ pub(super) fn operation<T>(
     write: bool,
     attempt: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, LocalStreamError> {
-    let Some(work) = work else {
-        return attempt().map_err(Into::into);
-    };
-    page::observe(Some(work), work.meter.check())?;
     let kind = if write {
         NativeOperationKind::Write
     } else {
         NativeOperationKind::Read
     };
+    operation_kind(work, kind, attempt)
+}
+
+fn operation_kind<T>(
+    work: Option<&Arc<crate::memory::Work>>,
+    kind: NativeOperationKind,
+    attempt: impl FnOnce() -> std::io::Result<T>,
+) -> Result<T, LocalStreamError> {
+    let Some(work) = work else {
+        return attempt().map_err(Into::into);
+    };
+    page::observe(Some(work), work.meter.check())?;
     let mut ticket = page::observe(
         Some(work),
         NativeOperationReservation::new(Arc::clone(&work.meter), kind, 1),
@@ -31,19 +39,24 @@ pub(super) fn operation<T>(
     Ok(output)
 }
 
+pub(super) fn sync_directory(
+    path: &Path,
+    durability: super::super::LocalDurability,
+    work: Option<&Arc<crate::memory::Work>>,
+) -> Result<(), LocalStreamError> {
+    operation_kind(work, NativeOperationKind::Durability, || {
+        acyclic_native_runtime::sync_parent(path, super::super::native_durability(durability))
+    })
+}
+
 pub(super) fn sync(
     file: &File,
     durability: super::super::LocalDurability,
     work: Option<&Arc<crate::memory::Work>>,
 ) -> Result<(), LocalStreamError> {
-    page::observe(
-        work,
-        acyclic_native_runtime::sync_file(
-            file,
-            super::super::native_durability(durability),
-            work.map(|work| work.meter.as_ref()),
-        ),
-    )
+    operation_kind(work, NativeOperationKind::Durability, || {
+        acyclic_native_runtime::sync_file(file, super::super::native_durability(durability), None)
+    })
 }
 
 pub(super) struct LocalPath {

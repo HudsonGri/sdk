@@ -2,7 +2,8 @@
 //! it does not walk earlier publications or rebuild an in-memory projection.
 use super::*;
 
-const STATE_BYTES: usize = 16 + 2 * 53;
+const STATE_BYTES: usize = 16 + 32 + 2 * 53;
+pub(super) const ROOT_BYTES: u64 = (STATE_BYTES + page::HEADER_BYTES) as u64;
 const SLOT_BYTES: usize = 8 + 52 + 32;
 const SLOT_DOMAIN: &[u8] = b"acyclic.stream.cold.root-slot/v1\0";
 
@@ -10,6 +11,7 @@ const SLOT_DOMAIN: &[u8] = b"acyclic.stream.cold.root-slot/v1\0";
 pub(super) struct Root {
     pub(super) decision: u64,
     pub(super) committed_at_micros: u64,
+    pub(super) hierarchy_version: crate::CommitId,
     pub(super) points: Option<PageRef>,
     pub(super) children: Option<PageRef>,
 }
@@ -48,6 +50,8 @@ impl Root {
         decision.copy_from_slice(&self.decision.to_le_bytes());
         let (time, rest) = rest.split_at_mut(8);
         time.copy_from_slice(&self.committed_at_micros.to_le_bytes());
+        let (version, rest) = rest.split_at_mut(32);
+        version.copy_from_slice(self.hierarchy_version.as_bytes());
         let (points, children) = rest.split_at_mut(53);
         put_optional(points, self.points);
         put_optional(children, self.children);
@@ -63,7 +67,10 @@ impl Root {
         Ok(reference)
     }
 
-    pub(super) fn load(io: &mut impl PageIo, reference: PageRef) -> Result<Self, LocalStreamError> {
+    pub(super) fn load(
+        io: &mut impl PageRead,
+        reference: PageRef,
+    ) -> Result<Self, LocalStreamError> {
         let page = io.read(reference)?;
         if page.kind != PageKind::Root {
             return Err(LocalStreamError::Corrupt);
@@ -77,6 +84,10 @@ impl Root {
             .split_first_chunk::<8>()
             .ok_or(LocalStreamError::Corrupt)?;
         let committed_at_micros = u64::from_le_bytes(*time);
+        let (version, rest) = rest
+            .split_first_chunk::<32>()
+            .ok_or(LocalStreamError::Corrupt)?;
+        let hierarchy_version = crate::CommitId::from_bytes(*version);
         input = rest;
         let points = optional(&mut input, reference)?;
         let children = optional(&mut input, reference)?;
@@ -86,6 +97,7 @@ impl Root {
         Ok(Self {
             decision,
             committed_at_micros,
+            hierarchy_version,
             points,
             children,
         })

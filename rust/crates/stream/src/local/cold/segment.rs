@@ -8,6 +8,7 @@ mod header;
 mod tests;
 
 use header::{HEADER_BYTES, PREFIX_BYTES, SLOT_BYTES};
+pub(super) const DATA_START: u64 = HEADER_BYTES as u64;
 
 pub(super) struct Segment {
     pub(super) file: File,

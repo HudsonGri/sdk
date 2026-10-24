@@ -63,7 +63,7 @@ pub(super) fn append(io: &mut impl PageIo, record: &Record) -> Result<PageRef, L
     io.append(PageKind::Fact, &output.bytes)
 }
 
-pub(super) fn read(io: &mut impl PageIo, reference: PageRef) -> Result<Record, LocalStreamError> {
+pub(super) fn read(io: &mut impl PageRead, reference: PageRef) -> Result<Record, LocalStreamError> {
     let work = io.work().cloned();
     let page = io.read(reference)?;
     if page.kind != PageKind::Fact {

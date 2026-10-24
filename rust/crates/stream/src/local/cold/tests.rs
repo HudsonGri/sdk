@@ -23,7 +23,7 @@ impl Disk {
     }
 }
 
-impl PageIo for Disk {
+impl PageRead for Disk {
     fn work(&self) -> Option<&Arc<crate::memory::Work>> {
         self.work.as_ref()
     }
@@ -31,6 +31,8 @@ impl PageIo for Disk {
         self.reads += 1;
         page::read(&self.file, reference, self.work())
     }
+}
+impl PageIo for Disk {
     fn append(&mut self, kind: PageKind, body: &[u8]) -> Result<PageRef, LocalStreamError> {
         page::append(&self.file, 0, &mut self.end, kind, body, self.work.as_ref())
     }
