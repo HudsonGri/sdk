@@ -253,7 +253,9 @@ impl ForeignMount {
 
     fn stop(&mut self) -> Result<(), NativeMountError> {
         self.session
-            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&self.work))
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(
+                &self.work,
+            ))
     }
 }
 
@@ -261,7 +263,10 @@ impl Drop for ForeignMount {
     fn drop(&mut self) {
         if let Err(error) = self.stop() {
             eprintln!("foreign fixture retirement failed: {error}");
-            assert!(std::thread::panicking(), "foreign fixture retirement failed");
+            assert!(
+                std::thread::panicking(),
+                "foreign fixture retirement failed"
+            );
         }
     }
 }
