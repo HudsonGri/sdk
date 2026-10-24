@@ -39,30 +39,20 @@ impl Running {
         Ok(())
     }
 }
-#[derive(Default)]
-struct EventLines {
-    bytes: Vec<u8>,
-    oversized: bool,
+struct EventLines(acyclic_native_runtime::lines::LineBuffer);
+impl Default for EventLines {
+    fn default() -> Self {
+        Self(acyclic_native_runtime::lines::LineBuffer::new(65_536))
+    }
 }
 impl EventLines {
     fn push(&mut self, chunk: &[u8]) -> Vec<Value> {
-        self.bytes.extend_from_slice(chunk);
-        let mut events = Vec::new();
-        while let Some(end) = self.bytes.iter().position(|byte| *byte == b'\n') {
-            let bytes = self.bytes.drain(..=end).collect::<Vec<_>>();
-            if !self.oversized
-                && end <= 65_536
-                && let Ok(event) = serde_json::from_slice(&bytes)
-            {
-                events.push(event);
-            }
-            self.oversized = false;
-        }
-        if self.bytes.len() > 65_536 {
-            self.bytes.clear();
-            self.oversized = true;
-        }
-        events
+        self.0
+            .push(chunk)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter_map(|line| serde_json::from_str(&line).ok())
+            .collect()
     }
 }
 struct Sessions {
@@ -603,7 +593,7 @@ mod tests {
         let mut events = EventLines::default();
         for _ in 0..16 {
             assert!(events.push(&[b'x'; 8192]).is_empty());
-            assert!(events.bytes.len() <= 65_536);
+            assert!(events.0.buffered_bytes() <= 65_536);
         }
         assert_eq!(
             events.push(b"\n{\"type\":\"thread.started\",\"thread_id\":\"native\"}\n"),

@@ -19,6 +19,7 @@ bytes.workspace = true
 blake3 = { workspace = true, optional = true }
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
+tokio-util = { workspace = true, features = ["codec"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
