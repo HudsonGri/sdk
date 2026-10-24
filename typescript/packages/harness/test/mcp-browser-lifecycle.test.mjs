@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import init, { WasmMcpHttpTransport } from "../generated/wasm/acyclic_harness_wasm.js";
-import { createBrowserMcpHttpProvider } from "../src/mcp-http.ts";
+import { createBrowserMcpHttpProvider } from "../dist/mcp-http.js";
 
 await init({ module_or_path: readFileSync(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)) });
 const operation = suffix => `00000000-0000-0000-0000-${suffix.toString().padStart(12, "0")}`;
