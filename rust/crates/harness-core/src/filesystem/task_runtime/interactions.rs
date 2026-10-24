@@ -8,6 +8,13 @@ struct ApprovalBinding<P> {
     files: Arc<crate::task_volume::TaskFiles<P>>,
 }
 
+#[derive(Clone, Copy)]
+enum ApprovalWait {
+    Absent,
+    Pending,
+    Resolved,
+}
+
 #[cfg(test)]
 std::thread_local! {
     pub(super) static APPROVAL_BINDINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -302,6 +309,20 @@ where
         invocation: &crate::tool::ToolInvocation,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<bool> {
+        Ok(matches!(
+            self.tool_approval_status(context, definition, invocation, io)
+                .await?,
+            ApprovalWait::Resolved
+        ))
+    }
+
+    async fn tool_approval_status(
+        &self,
+        context: &TaskContext,
+        definition: &ToolDefinition,
+        invocation: &crate::tool::ToolInvocation,
+        io: Option<&super::super::PreparationIo>,
+    ) -> Result<ApprovalWait> {
         #[cfg(not(target_arch = "wasm32"))]
         let local_io = approval_io(io)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -319,7 +340,7 @@ where
             ));
         }
         let Some(policy) = &self.policy else {
-            return Ok(false);
+            return Ok(ApprovalWait::Absent);
         };
         let task = context.durable_task_id().ok_or_else(|| {
             observed::boundary(
@@ -347,8 +368,26 @@ where
                 "approval policy differs from admission",
             ));
         }
+        self.approval_wait(context, &identity, definition, invocation, io)
+            .await
+    }
+
+    // Readiness only observes the exact owner's ticket. It never authorizes
+    // execution; the stock executor consumes the durable decision again.
+    async fn approval_wait(
+        &self,
+        context: &TaskContext,
+        identity: &crate::registry::ComponentIdentity,
+        definition: &ToolDefinition,
+        invocation: &crate::tool::ToolInvocation,
+        io: Option<&super::super::PreparationIo>,
+    ) -> Result<ApprovalWait> {
+        let task = context
+            .durable_task_id()
+            .ok_or_else(|| Error::Unauthorized("approval wait has no task".into()))?;
+        let work = io.and_then(super::super::PreparationIo::original_native_work);
         let (operation, digest) =
-            crate::runtime::tool_approval_binding(task, &identity, definition, invocation, work)?;
+            crate::runtime::tool_approval_binding(task, identity, definition, invocation, work)?;
         if let Some(io) = io {
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
@@ -360,7 +399,7 @@ where
         let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
         let host = self.interaction_host(io)?;
         match host.read_request(id, io).await? {
-            None => return Ok(false),
+            None => return Ok(ApprovalWait::Absent),
             Some(Interaction::Approval {
                 operation_id,
                 action_digest,
@@ -398,7 +437,11 @@ where
             .is_some_and(|resolution| resolution.outcome.is_terminal());
         drop(read);
         drop(read_hold);
-        Ok(ready)
+        Ok(if ready {
+            ApprovalWait::Resolved
+        } else {
+            ApprovalWait::Pending
+        })
     }
 
     /// Inspects retained artifacts without an executor or passive task lease.
@@ -575,6 +618,22 @@ where
                 {
                     continue;
                 }
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                let (invocation, pre_hook) = {
+                    let mut invocation = invocation;
+                    let mut output = if io.is_none() {
+                        self.retained_pre_tool_hook(context, &invocation).await?
+                    } else {
+                        None
+                    };
+                    if let Some(output) = &mut output
+                        && !output.blocks()
+                        && let Some(arguments) = output.updated_input.take()
+                    {
+                        invocation.arguments = arguments;
+                    }
+                    (invocation, output)
+                };
                 if records
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
@@ -652,12 +711,75 @@ where
                 {
                     continue;
                 }
-                return self
-                    .tool_approval_ready(context, definition, &invocation, io)
-                    .await;
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                if pre_hook
+                    .as_ref()
+                    .is_some_and(crate::hooks::HookOutput::blocks)
+                {
+                    return Ok(true);
+                }
+                match self
+                    .tool_approval_status(context, definition, &invocation, io)
+                    .await?
+                {
+                    ApprovalWait::Resolved => return Ok(true),
+                    ApprovalWait::Pending => return Ok(false),
+                    ApprovalWait::Absent => {
+                        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                        if pre_hook
+                            .as_ref()
+                            .is_some_and(|output| output.approval.is_some())
+                        {
+                            let identity = crate::hooks::effects::approval_identity(
+                                *input.context_manifest.descriptor().sha256(),
+                            );
+                            return Ok(matches!(
+                                self.approval_wait(context, &identity, definition, &invocation, io)
+                                    .await?,
+                                ApprovalWait::Resolved
+                            ));
+                        }
+                        return Ok(false);
+                    }
+                }
             }
         }
         Ok(false)
+    }
+
+    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+    async fn retained_pre_tool_hook(
+        &self,
+        context: &TaskContext,
+        invocation: &crate::tool::ToolInvocation,
+    ) -> Result<Option<crate::hooks::HookOutput>> {
+        if context.task_files().is_none() {
+            return Ok(None);
+        }
+        let task = context
+            .durable_task_id()
+            .ok_or_else(|| Error::Unauthorized("hook wait has no task".into()))?;
+        let files = self.approval_files(task).await?;
+        let event = crate::hooks::HookEvent::PreToolUse;
+        // The same claim/outcome owner serves passive observation. Starting is
+        // disabled, so a wait check cannot acquire or execute a hook claim.
+        crate::hooks::effects::run_once::<_, _, _, _, _, true>(
+            &files.inner,
+            (
+                task,
+                crate::hooks::effects::phase_operation(invocation.operation_id, event),
+                event.name(),
+            ),
+            context.scope().limits().file_bytes,
+            false,
+            || std::future::ready(Ok((Vec::new(), None))),
+            || {
+                std::future::ready(Err(Error::Invalid(
+                    "passive hook observation attempted execution".into(),
+                )))
+            },
+        )
+        .await
     }
 
     pub(in crate::filesystem) fn bind_context_interactions(

@@ -526,6 +526,23 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     .unwrap()
     .to_hex()
     .to_string();
+    // Recover after candidate publication, before host publication. The fork
+    // owner's original generation must remain the exact approval baseline.
+    let recovered =
+        build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
+            .await
+            .unwrap();
+    assert_eq!(
+        digest_pi_value(
+            &writeback_digest_value(&root, &recovered, &prepared).unwrap(),
+            1_048_576,
+            work,
+        )
+        .unwrap()
+        .to_hex()
+        .to_string(),
+        digest
+    );
     assert!(
         publish_writeback(
             &root,
@@ -589,16 +606,16 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     // Restoring the former direct native publication path cannot acknowledge
     // the retained completion after the shared owner retired its staging tree.
     let old = acyclic_fs::publish_native_generation_transition(
-        &candidate,
-        &candidate,
+        &generations.candidate,
+        &generations.candidate,
         &fixture.resources.store,
         acyclic_fs::NativeWorkspacePublication {
             root: root.publication.root(),
             source_root_identity: root.identity,
             operation_directory: root.publication.directory(),
             operation_id: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-            from: candidate.id(),
-            to: candidate.id(),
+            from: generations.candidate.id(),
+            to: generations.candidate.id(),
             excluded_names: &[".git"],
             options: &options,
             budget: work.budget(),

@@ -80,7 +80,7 @@ impl StockExecution<'_> {
         let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
             Error::Unsupported("tool hook workspace execution is not bound".into())
         })?;
-        let phase = phase_operation(invocation.operation_id, event);
+        let phase = crate::hooks::effects::phase_operation(invocation.operation_id, event);
         let context =
             crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id, None)?;
         match executor
@@ -119,11 +119,7 @@ impl StockExecution<'_> {
             TaskId::from_bytes(operation.into_bytes()),
             |(_, task, _)| *task,
         );
-        let identity = ComponentIdentity {
-            name: "hooks.pre-tool".into(),
-            version: "1".into(),
-            digest: hooks.manifest,
-        };
+        let identity = crate::hooks::effects::approval_identity(hooks.manifest);
         let ((approval, request), _hold) = tool_approval_request(
             task,
             &identity,
@@ -236,16 +232,6 @@ fn step_operation(operation: OperationId, step: u32) -> OperationId {
     hasher.update(b"harness:stop-hook:v1\0");
     hasher.update(&operation.into_bytes());
     hasher.update(&step.to_le_bytes());
-    let mut id = [0; 16];
-    id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(id)
-}
-
-pub(crate) fn phase_operation(tool: OperationId, event: HookEvent) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"harness:tool-hook:v1\0");
-    hasher.update(&tool.into_bytes());
-    hasher.update(event.name().as_bytes());
     let mut id = [0; 16];
     id.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
     OperationId::from_bytes(id)
