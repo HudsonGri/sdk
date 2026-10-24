@@ -13,6 +13,14 @@ export function atomic(file, value) {
   const parent = fs.openSync(path.dirname(file), 'r');
   try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
 }
+// A PID is meaningful only in the namespace in which it was recorded.
+export function pidNamespace() {
+  try { return fs.readlinkSync('/proc/self/ns/pid'); } catch { return null; }
+}
+export function canObserveOwner(owner) {
+  const namespace = pidNamespace();
+  return namespace !== null && owner?.pid_namespace === namespace;
+}
 export function processIdentity(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ');
@@ -23,7 +31,7 @@ export function processIdentity(pid) {
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 export function arm(file, meta, pid = process.pid) {
   atomic(file, { exec_start: null, toolchain: null, ...meta,
-    owner: { pid: Number(pid), identity: processIdentity(pid) } });
+    owner: { pid: Number(pid), identity: processIdentity(pid), pid_namespace: pidNamespace() } });
   const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], {
     detached: true, stdio: 'ignore'
   });
@@ -52,6 +60,7 @@ export function execution(metaFile) {
 export function finish(metaFile, rc, category, extra = {}) {
   const m = read(metaFile);
   if (!m) throw new Error(`missing receipt metadata: ${metaFile}`);
+  if (!canObserveOwner(m.owner)) return null;
   const file = m.receipt_file;
   if (fs.existsSync(file)) return read(file);
   // mkdir serializes the wrapper, independent watcher and reboot recovery.
@@ -61,7 +70,7 @@ export function finish(metaFile, rc, category, extra = {}) {
   catch (e) {
     if (e.code !== 'EEXIST') throw e;
     const owner = read(lock + '/owner');
-    if (!owner || processIdentity(owner.pid) !== owner.identity) {
+    if (!owner || (canObserveOwner(owner) && processIdentity(owner.pid) !== owner.identity)) {
       try {
         if (Date.now() - fs.statSync(lock).mtimeMs < 1000) return null;
         fs.rmSync(lock, { recursive: true, force: true });
@@ -69,7 +78,7 @@ export function finish(metaFile, rc, category, extra = {}) {
     }
     return null;
   }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid) });
+  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid), pid_namespace: pidNamespace() });
   try {
     if (fs.existsSync(file)) return read(file);
     const runtimeFile = metaFile + '.runtime';
@@ -117,13 +126,13 @@ function ledgerRecord(ledger, out) {
       if (e.code !== 'EEXIST') throw e;
       const owner = read(lock + '/owner');
       try {
-        if ((!owner || processIdentity(owner.pid) !== owner.identity) && Date.now() - fs.statSync(lock).mtimeMs > 1000)
+        if ((!owner || (canObserveOwner(owner) && processIdentity(owner.pid) !== owner.identity)) && Date.now() - fs.statSync(lock).mtimeMs > 1000)
           fs.rmSync(lock, { recursive: true, force: true });
       } catch (err) { if (err.code !== 'ENOENT') throw err; }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
   }
-  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid) });
+  atomic(lock + '/owner', { pid: process.pid, identity: processIdentity(process.pid), pid_namespace: pidNamespace() });
   try {
     let lines = [], previous = '';
     try { previous = fs.readFileSync(ledger, 'utf8'); lines = previous.split('\n'); } catch {}
@@ -137,6 +146,7 @@ function ledgerRecord(ledger, out) {
 }
 export async function watch(metaFile, interval = 1000) {
   const m = read(metaFile);
+  if (!canObserveOwner(m?.owner)) return;
   for (;;) {
     if (fs.existsSync(m.receipt_file)) {
       if (m.ledger) ledgerRecord(m.ledger, read(m.receipt_file));
@@ -164,6 +174,7 @@ export function recover(dir) {
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.receipt-meta.v2.json') && !name.endsWith('.receipt-meta.json')) continue;
     const file = path.join(dir, name), m = read(file);
+    if (!canObserveOwner(m?.owner)) continue;
     const terminal = m?.receipt_file && read(m.receipt_file);
     if (terminal && m.ledger) {
       if (!seen.has(m.ledger)) {
@@ -175,7 +186,7 @@ export function recover(dir) {
         ledgerRecord(m.ledger, terminal); seen.get(m.ledger).add(terminal.receipt_file);
       }
     }
-    if (m?.owner && !fs.existsSync(m.receipt_file) && processIdentity(m.owner.pid) !== m.owner.identity) {
+    if (!fs.existsSync(m.receipt_file) && processIdentity(m.owner.pid) !== m.owner.identity) {
       const job = read(file + '.job');
       if (job && processIdentity(job.pid) === job.identity) {
         const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
