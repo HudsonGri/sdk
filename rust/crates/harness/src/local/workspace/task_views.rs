@@ -4,7 +4,38 @@ use super::*;
 use acyclic_fs::PublicationPermit;
 use acyclic_fs::{CancellationToken, IdempotencyKey, MountOptions, WorkBudget};
 
+pub(super) fn shared_destination(
+    admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
+) -> Result<PathBuf> {
+    let root = match admission.get() {
+        Some(admitted) => acyclic_fs::shared_view_root_in(admitted),
+        None => acyclic_fs::shared_view_root(),
+    }
+    .map_err(storage)?;
+    Ok(root.join(crate::identity::fresh_uuid().to_string()))
+}
+
 impl LocalWorkspace {
+    /// All task views enter the filesystem's shared instance. The host may
+    /// select its already admitted workspace namespace; ordinary harnesses
+    /// share the process root. No host adapter mounts a task view itself.
+    fn task_view_destination(&self) -> Result<(PathBuf, MountOptions)> {
+        let options = MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual);
+        #[cfg(all(target_os = "linux", test))]
+        if crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS)
+            .is_some()
+        {
+            let root = self.held_task_mount_root()?;
+            let path = root
+                .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
+                .map_err(storage)?;
+            return Ok((path.path().to_path_buf(), options));
+        }
+        Ok((
+            shared_destination(&self.task_view_admission)?,
+            options.shared(),
+        ))
+    }
     pub(in crate::local) async fn fork_task(
         &self,
         task: TaskId,
@@ -79,12 +110,7 @@ impl LocalWorkspace {
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
         owner.verify_owner(None)?.await?;
-        let path = self
-            .held_task_mount_root()?
-            .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
-            .map_err(storage)?
-            .path()
-            .to_path_buf();
+        let (path, options) = self.task_view_destination()?;
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -94,30 +120,24 @@ impl LocalWorkspace {
                 view.workspace().id(),
                 Arc::clone(&self.mounts),
             ))),
+            children: StateArc::new(Default::default()),
             mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
             context_line: self.context_line().into(),
             processes: self.processes.clone(),
             path: path.clone(),
             fresh: false,
             mount_directory: self.mount_directory.clone(),
+            task_view_admission: Arc::clone(&self.task_view_admission),
             view,
             mounted: None,
-            identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
+            identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
             filesystem: self.filesystem.clone(),
             store: self.store.clone(),
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
         let initial_view = selected.workspace().id();
-        let mounted = Arc::new(
-            selected
-                .mount(
-                    &path,
-                    MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-                )
-                .await
-                .map_err(storage)?,
-        );
+        let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
         workspace.path = path;
         workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
         workspace.mounted = Some(mounted);
@@ -137,7 +157,6 @@ impl LocalWorkspace {
             initial_view,
             workspace: None,
             watcher: None,
-            children: Default::default(),
             allocated_mounts: Default::default(),
             mounts: Arc::clone(&workspace.mounts),
             initialized: true,
@@ -169,20 +188,8 @@ impl LocalWorkspace {
             return Ok(workspace.clone());
         }
         owner.verify_owner(None)?.await?;
-        let path = self
-            .held_task_mount_root()?
-            .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
-            .map_err(storage)?
-            .path()
-            .to_path_buf();
-        let mounted = Arc::new(
-            view.mount(
-                &path,
-                MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-            )
-            .await
-            .map_err(storage)?,
-        );
+        let (path, options) = self.task_view_destination()?;
+        let mounted = Arc::new(view.mount(&path, options).await.map_err(storage)?);
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -211,10 +218,12 @@ impl LocalWorkspace {
                 view.workspace().id(),
                 Arc::clone(&mounts),
             ))),
+            children: StateArc::new(Default::default()),
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
             path,
             fresh: false,
             mount_directory: self.mount_directory.clone(),
+            task_view_admission: Arc::clone(&self.task_view_admission),
             view,
             mounted: Some(mounted),
             filesystem: self.filesystem.clone(),

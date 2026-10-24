@@ -36,6 +36,7 @@ fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error
         volume_id: VolumeId::new(),
         destination: root.path().to_path_buf(),
         writable: true,
+        shared: false,
     };
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;

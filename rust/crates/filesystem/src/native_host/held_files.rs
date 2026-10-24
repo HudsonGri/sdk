@@ -85,10 +85,7 @@ impl HostRoot {
             directory_path(&self.directory, relative, false, work)
         })?;
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     #[cfg(any(test, feature = "native-mount"))]
@@ -120,10 +117,10 @@ impl HostRoot {
 
     /// A second handle on the same held directory.
     pub(crate) fn try_clone<W: NativeHostWork>(&self, work: &mut W) -> Result<Self, W::Error> {
-        Ok(Self {
-            directory: clone_directory(&self.directory, work)?,
-            identity: self.identity,
-        })
+        Ok(Self::from_parts(
+            clone_directory(&self.directory, work)?,
+            self.identity,
+        ))
     }
 
     /// The directory at `relative` below this root, each missing component
@@ -174,10 +171,7 @@ impl HostRoot {
             Some(identity) => identity,
             None => directory_identity(&directory, work)?,
         };
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     /// The `N` bytes published at `leaf` in this directory, after publishing

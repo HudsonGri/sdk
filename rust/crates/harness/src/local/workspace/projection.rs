@@ -111,22 +111,39 @@ impl MountedVolume {
         options: acyclic_fs::MountOptions,
     ) -> Result<Entered> {
         enter(&self.native, &self.users, async || {
-            #[cfg(windows)]
-            volumes::recover_volume_after_crash(
-                root,
-                Path::new(relative),
-                self.workspace.workspace().id().volume_id(),
-            )?;
-            volumes::prepare_mount_directory(root, Path::new(relative))?;
-            self.workspace
+            if root.join(relative) != self.destination {
+                return Err(Error::Invalid(
+                    "projection differs from its volume binding".into(),
+                ));
+            }
+            let path = super::task_views::shared_destination(&self.task_view_admission)?;
+            let mount = self
+                .workspace
                 .workspace()
-                .mount(&self.destination, options)
+                .mount(&path, options.shared())
                 .await
-                .map(|mount| Native {
-                    mount,
-                    discard: false,
-                })
-                .map_err(Error::from)
+                .map_err(Error::from)?;
+            let native = Native {
+                mount,
+                discard: false,
+            };
+            // This is the binding's reserved alias, not authored project
+            // content. On restart it can still name the preceding process's
+            // retired root. Replace only the link itself; never follow it or
+            // write its old target. A regular file/nonempty directory fails.
+            let previous = match std::fs::symlink_metadata(&self.destination) {
+                Ok(metadata) if metadata.file_type().is_symlink() => Some(
+                    self.destination
+                        .parent()
+                        .ok_or_else(|| Error::Invalid("projection alias has no parent".into()))?
+                        .join(std::fs::read_link(&self.destination).map_err(storage)?),
+                ),
+                Ok(_) => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(storage(error)),
+            };
+            volumes::bind_alias(&self.destination, &path, previous.as_deref())?;
+            Ok(native)
         })
         .await
     }

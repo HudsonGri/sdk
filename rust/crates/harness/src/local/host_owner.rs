@@ -18,6 +18,17 @@ mod tests;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
+    /// Test-only snapshot of the view owner, using the shared OS sampler and
+    /// N/2N oracle. It never samples or executes a native child process.
+    #[cfg(feature = "test-support")]
+    ResourceProbe {
+        /// Task authorizing the query.
+        task: TaskId,
+        /// Retained child population at this measurement.
+        agents: u64,
+        /// Prior N snapshot: population, descriptors, threads and mounts.
+        previous: Option<[u64; 4]>,
+    },
     /// Discover native children from the shared input index, without histories.
     Sessions {
         /// Owning parent task.
@@ -121,6 +132,38 @@ impl HostWorkspaceOwner {
     /// model, a native host, a shell command or another harness tool.
     pub async fn dispatch(&mut self, operation: OperationId, action: HostAction) -> Result<Value> {
         match action {
+            #[cfg(feature = "test-support")]
+            HostAction::ResourceProbe {
+                task,
+                agents,
+                previous,
+            } => {
+                use acyclic_native_runtime::testing::{
+                    sample_process_resources, scale::ViewResources,
+                };
+                self.attach(task).await?;
+                let process = sample_process_resources().map_err(storage)?;
+                let current = ViewResources { agents, process };
+                let exceeded = previous
+                    .map(|[agents, descriptors, threads, mounts]| {
+                        ViewResources {
+                            agents,
+                            process: acyclic_native_runtime::testing::ProcessResources {
+                                descriptors,
+                                threads,
+                                mounts,
+                                ..Default::default()
+                            },
+                        }
+                        .exceeded(current)
+                    })
+                    .transpose()
+                    .map_err(storage)?;
+                Ok(
+                    json!({"counts": [agents, process.descriptors, process.threads, process.mounts],
+                    "exceeded": exceeded}),
+                )
+            }
             HostAction::Sessions { parent } => {
                 self.attach(parent).await?;
                 let references = self

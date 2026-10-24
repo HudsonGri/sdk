@@ -483,9 +483,12 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
     let mut checks = 0;
+    // The readiness marker is a file, which raises no capture event, so the
+    // owner check runs on its own schedule too.
     let error = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            crate::CaptureSchedule::new(Duration::from_secs(5))
+                .checking_every(Duration::from_millis(5)),
             4096,
             None,
             || {
@@ -629,9 +632,11 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     });
     let input = vec![b'i'; BULK_BYTES];
     let mut checks = 0;
+    // A stalled reader raises no event, so intent is rechecked on schedule.
     let failure = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            crate::CaptureSchedule::new(Duration::from_secs(5))
+                .checking_every(Duration::from_millis(5)),
             4096,
             Some(crate::CaptureInput::Literal(&input)),
             || {
@@ -1116,4 +1121,111 @@ fn exit_observation_retains_group_leader_until_cleanup() {
         Some(libc::SIGKILL)
     );
     tree.terminate(None).expect("reap signal exit");
+}
+
+#[cfg(all(feature = "test-support", unix))]
+mod seeded_capture {
+    use super::ProcessTree;
+    use crate::testing::Schedule;
+    use crate::{CaptureHandler, CaptureSchedule, ProcessInput, ProcessOutput};
+    use std::{io, process::Stdio, time::Duration};
+
+    struct Collect(Vec<u8>);
+
+    impl CaptureHandler for Collect {
+        fn check(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput> {
+            if let ProcessOutput::Stdout(bytes) = chunk {
+                self.0.extend_from_slice(bytes);
+            }
+            Ok(ProcessInput::default())
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Observed {
+        trace: Vec<String>,
+        boundaries: Vec<&'static str>,
+        polls: Vec<(u64, &'static str)>,
+        stdout: Vec<u8>,
+    }
+
+    /// Captures `script` in a seeded scope; `scheduled` forces the turns
+    /// the scope would otherwise see as one physical submission.
+    fn seeded(script: &str, scheduled: bool) -> io::Result<Observed> {
+        let mut command = crate::shell_command(script, Some("sh"));
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let tree = ProcessTree::spawn(&mut command)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (schedule, mut boundaries) = Schedule::seeded(71);
+            let capture = CaptureSchedule::new(Duration::from_secs(30));
+            let collect = Collect(Vec::new());
+            let operation = async move {
+                if scheduled {
+                    tree.capture_scheduled(capture, 64, None, collect).await
+                } else {
+                    tree.capture(capture, 64, None, collect).await
+                }
+            };
+            let mut operation = Box::pin(schedule.scope(operation));
+            let mut phases = Vec::new();
+            let outcome = loop {
+                tokio::select! {
+                    biased;
+                    boundary = boundaries.recv() => {
+                        let boundary = boundary.expect("lost process boundary");
+                        phases.push(boundary.name);
+                        boundary.release();
+                    },
+                    outcome = &mut operation => break outcome?,
+                }
+            };
+            schedule.drained().await;
+            let output = outcome.result.map_err(|failure| failure.error)?;
+            assert!(output.status.success());
+            assert_eq!(output.stdout, outcome.handler.0);
+            Ok(Observed {
+                trace: schedule.trace(),
+                boundaries: phases,
+                polls: schedule.polls(),
+                stdout: output.stdout,
+            })
+        })
+    }
+
+    fn one_submission(observed: &Observed) -> bool {
+        observed
+            .trace
+            .iter()
+            .filter(|event| event.starts_with("native:"))
+            .count()
+            == 1
+    }
+
+    #[test]
+    fn seeded_capture_is_one_submission_however_output_arrives() -> io::Result<()> {
+        let steady = seeded("printf dst", false)?;
+        assert_eq!(steady.stdout, b"dst");
+        assert!(one_submission(&steady), "{steady:?}");
+        // The same output split across readiness events, so a turn at a time
+        // takes at least as many turns. The seeded schedule must not see it.
+        let split = seeded("printf d; sleep 0.05; printf st", false)?;
+        assert_eq!(steady, split, "OS readiness reached the seeded schedule");
+        // Negative control: scheduling the same capture a turn at a time
+        // exposes its turns, which the oracle rejects.
+        let scheduled = seeded("printf dst", true)?;
+        assert_eq!(scheduled.stdout, b"dst");
+        assert!(!one_submission(&scheduled), "{scheduled:?}");
+        Ok(())
+    }
 }

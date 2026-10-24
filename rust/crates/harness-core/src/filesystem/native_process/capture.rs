@@ -86,138 +86,269 @@ pub(crate) async fn capture_checked(
     .map(|(output, ())| output)
 }
 
-// Ownership stays in the worker until process cleanup finishes, even if its
-// awaiting task is cancelled. The checkout Loom model uses this same boundary.
-pub(crate) fn with_custody<T, R>(mut custody: T, operation: impl FnOnce(&mut T) -> R) -> (R, T) {
-    let result = operation(&mut custody);
-    (result, custody)
+/// The owner callbacks of one spawned capture, moved between its turns.
+struct Handler<T, O, C> {
+    custody: T,
+    observer: O,
+    check: C,
+    exchange: Option<crate::mcp::stdio::McpStdioExchange>,
+    /// The exchange's native allocation, held until capture ends.
+    _hold: crate::NativeCustody,
+}
+
+impl<T, O, C> acyclic_native_runtime::CaptureHandler for Handler<T, O, C>
+where
+    T: Send + 'static,
+    O: FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>
+        + Send
+        + 'static,
+    C: Fn() -> std::io::Result<()> + Send + 'static,
+{
+    fn check(&mut self) -> std::io::Result<()> {
+        (self.check)()
+    }
+
+    fn observe(
+        &mut self,
+        chunk: acyclic_native_runtime::ProcessOutput<'_>,
+    ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
+        observe_exchange(
+            &mut self.custody,
+            &mut self.observer,
+            &mut self.exchange,
+            chunk,
+        )
+    }
+}
+
+fn observe_exchange<T>(
+    custody: &mut T,
+    observer: &mut impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>,
+    exchange: &mut Option<crate::mcp::stdio::McpStdioExchange>,
+    chunk: acyclic_native_runtime::ProcessOutput<'_>,
+) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
+    observer(custody, chunk)?;
+    let acyclic_native_runtime::ProcessOutput::Stdout(chunk) = chunk else {
+        return Ok(Default::default());
+    };
+    let Some(exchange) = exchange.as_mut() else {
+        return Ok(Default::default());
+    };
+    if exchange.is_complete() {
+        return Ok(Default::default());
+    }
+    let (bytes, _hold) = exchange
+        .push(chunk, None)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    Ok(acyclic_native_runtime::ProcessInput {
+        bytes,
+        complete: exchange.is_complete(),
+    })
+}
+
+type CaptureResult = std::io::Result<
+    std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
+>;
+
+/// What the spawn turn left: a finished result, or a running capture.
+enum Started<T, H> {
+    Finished(CaptureResult, T),
+    Running {
+        tree: acyclic_native_runtime::ProcessTree,
+        schedule: acyclic_native_runtime::CaptureSchedule,
+        maximum_output: usize,
+        input: Option<acyclic_native_runtime::OwnedCaptureInput>,
+        handler: H,
+    },
 }
 
 #[doc(hidden)]
 pub async fn capture_with_custody<T: Send + 'static>(
     invocation: Invocation,
-    mut observer: impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>
+    observer: impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>
     + Send
     + 'static,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
     custody: T,
 ) -> Result<(Option<NativeProcessResult>, T)> {
     // Native capture callbacks may await durable publication on Tokio's
-    // blocking pool, so retain main's independent native host service.
-    let (output, custody) = acyclic_native_runtime::run_blocking_io(
+    // blocking pool, so they run on main's independent native host service.
+    // Spawning runs there too; the running child then holds no worker: the
+    // capture awaits readiness between its turns.
+    let started = acyclic_native_runtime::run_blocking_io(
         move || {
-            with_custody(custody, |custody| {
-                let mut command = Command::new(&invocation.executable);
-                if !invocation.inherit_environment {
-                    command.env_clear();
-                }
-                command
-                    .args(&invocation.argv)
-                    .current_dir(&invocation.cwd)
-                    .envs(&invocation.environment)
-                    .stdin(
-                        if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
-                            Stdio::piped()
-                        } else {
-                            Stdio::null()
-                        },
-                    )
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                check()?;
-                let mut next_check = std::time::Instant::now();
-                let poll = || {
-                    if std::time::Instant::now() >= next_check {
-                        check()?;
-                        next_check = std::time::Instant::now()
-                            + Duration::from_millis(u64::from(invocation.cancellation_poll_ms));
-                    }
-                    Ok(())
-                };
-                let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
-                let maximum_output = invocation.maximum_output_bytes;
-                let exchange = invocation
-                    .mcp_stdio
-                    .as_ref()
-                    .map(|request| request.exchange(None))
-                    .transpose()
-                    .map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
-                    })?;
-                let (mut exchange, first, _hold) = match exchange {
-                    Some((exchange, first, hold)) => (Some(exchange), first, hold),
-                    None => (None, Vec::new(), None),
-                };
-                let input = invocation
-                    .mcp_stdio
-                    .as_ref()
-                    .map(|request| acyclic_native_runtime::CaptureInput::Exchange {
-                        initial: &first,
-                        maximum: request.maximum_bytes as usize,
-                    })
-                    .or_else(|| {
-                        invocation
-                            .standard_input
-                            .as_deref()
-                            .map(acyclic_native_runtime::CaptureInput::Literal)
-                    });
-                let mut observe = |chunk: acyclic_native_runtime::ProcessOutput<'_>| {
-                    observer(custody, chunk)?;
-                    let acyclic_native_runtime::ProcessOutput::Stdout(chunk) = chunk else {
-                        return Ok(Default::default());
-                    };
-                    let Some(exchange) = exchange.as_mut() else {
-                        return Ok(Default::default());
-                    };
-                    if exchange.is_complete() {
-                        return Ok(Default::default());
-                    }
-                    let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                    })?;
-                    Ok(acyclic_native_runtime::ProcessInput {
-                        bytes,
-                        complete: exchange.is_complete(),
-                    })
-                };
-                #[cfg(feature = "test-support")]
-                if let Some(output) = acyclic_native_runtime::testing::capture_process(
-                    acyclic_native_runtime::testing::ProcessCapture {
-                        command: &command,
-                        timeout,
-                        maximum: maximum_output,
-                        input,
-                    },
-                    &mut || check(),
-                    &mut observe,
-                ) {
-                    return Ok(output);
-                }
-                let mut process = match &invocation.process_custody {
-                    Some(custody) => acyclic_native_runtime::ProcessTree::spawn_in_custody(
-                        &mut command,
-                        custody,
-                    )?,
-                    None => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
-                };
-                let output = process.wait_with_output(
-                    timeout,
-                    maximum_output,
+            let mut handler = Handler {
+                custody,
+                observer,
+                check,
+                exchange: None,
+                _hold: None,
+            };
+            match start(&invocation, &mut handler) {
+                Ok(Ok((tree, input))) => Started::Running {
+                    tree,
+                    schedule: acyclic_native_runtime::CaptureSchedule::new(Duration::from_millis(
+                        u64::from(invocation.timeout_ms),
+                    ))
+                    .checking_every(Duration::from_millis(u64::from(
+                        invocation.cancellation_poll_ms,
+                    ))),
+                    maximum_output: invocation.maximum_output_bytes,
                     input,
-                    poll,
-                    observe,
-                    None,
-                    None,
-                );
-                Ok::<_, std::io::Error>(output)
-            })
+                    handler,
+                },
+                Ok(Err(output)) => Started::Finished(Ok(output), handler.custody),
+                Err(error) => Started::Finished(Err(error), handler.custody),
+            }
         },
         None,
     )
     .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
     .await
     .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
+    let (output, custody) = match started {
+        Started::Finished(output, custody) => (output, custody),
+        Started::Running {
+            tree,
+            schedule,
+            maximum_output,
+            input,
+            handler,
+        } => {
+            // Ownership stays with the spawned capture until process cleanup
+            // finishes, even if its awaiting task is cancelled.
+            let outcome = acyclic_native_runtime::spawn(tree.capture(
+                schedule,
+                maximum_output,
+                input,
+                handler,
+            ))
+            .await
+            .and_then(|outcome| outcome)
+            .map_err(|error| {
+                Error::Storage(format!("native process observer interrupted: {error}"))
+            })?;
+            (Ok(outcome.result), outcome.handler.custody)
+        }
+    };
     Ok((result(output), custody))
+}
+
+/// A spawned tree and its owned input, or the output an installed test
+/// provider answered with instead of a process.
+type Spawned = std::result::Result<
+    (
+        acyclic_native_runtime::ProcessTree,
+        Option<acyclic_native_runtime::OwnedCaptureInput>,
+    ),
+    std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
+>;
+
+/// Checks intent, opens the exchange and spawns the tree.
+fn start<T>(
+    invocation: &Invocation,
+    handler: &mut Handler<
+        T,
+        impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>,
+        impl Fn() -> std::io::Result<()>,
+    >,
+) -> std::io::Result<Spawned> {
+    let mut command = Command::new(&invocation.executable);
+    if !invocation.inherit_environment {
+        command.env_clear();
+    }
+    command
+        .args(&invocation.argv)
+        .current_dir(&invocation.cwd)
+        .envs(&invocation.environment)
+        .stdin(
+            if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            },
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    (handler.check)()?;
+    let exchange = invocation
+        .mcp_stdio
+        .as_ref()
+        .map(|request| request.exchange(None))
+        .transpose()
+        .map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+        })?;
+    let (exchange, first, hold) = match exchange {
+        Some((exchange, first, hold)) => (Some(exchange), first, hold),
+        None => (None, Vec::new(), None),
+    };
+    handler.exchange = exchange;
+    handler._hold = hold;
+    #[cfg(feature = "test-support")]
+    {
+        let input = invocation
+            .mcp_stdio
+            .as_ref()
+            .map(|request| acyclic_native_runtime::CaptureInput::Exchange {
+                initial: &first,
+                maximum: request.maximum_bytes as usize,
+            })
+            .or_else(|| {
+                invocation
+                    .standard_input
+                    .as_deref()
+                    .map(acyclic_native_runtime::CaptureInput::Literal)
+            });
+        let Handler {
+            custody,
+            observer,
+            check,
+            exchange,
+            ..
+        } = handler;
+        let mut observe = |chunk: acyclic_native_runtime::ProcessOutput<'_>| {
+            observe_exchange(custody, observer, exchange, chunk)
+        };
+        let interval = Duration::from_millis(u64::from(invocation.cancellation_poll_ms));
+        let mut next_check = std::time::Instant::now();
+        let mut poll = || {
+            if std::time::Instant::now() >= next_check {
+                check()?;
+                next_check = std::time::Instant::now() + interval;
+            }
+            Ok(())
+        };
+        if let Some(output) = acyclic_native_runtime::testing::capture_process(
+            acyclic_native_runtime::testing::ProcessCapture {
+                command: &command,
+                timeout: Duration::from_millis(u64::from(invocation.timeout_ms)),
+                maximum: invocation.maximum_output_bytes,
+                input,
+            },
+            &mut poll,
+            &mut observe,
+        ) {
+            return Ok(Err(output));
+        }
+    }
+    let input = match &invocation.mcp_stdio {
+        Some(request) => Some(acyclic_native_runtime::OwnedCaptureInput::Exchange {
+            initial: first,
+            maximum: request.maximum_bytes as usize,
+        }),
+        None => invocation
+            .standard_input
+            .clone()
+            .map(acyclic_native_runtime::OwnedCaptureInput::Literal),
+    };
+    let tree = match &invocation.process_custody {
+        Some(custody) => {
+            acyclic_native_runtime::ProcessTree::spawn_in_custody(&mut command, custody)?
+        }
+        None => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
+    };
+    Ok(Ok((tree, input)))
 }
 
 fn result(

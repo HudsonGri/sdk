@@ -73,6 +73,11 @@ impl StateGuard<'_> {
             unreachable!("the guard owns its lock until drop");
         };
         self.core.invalidation.notify_all();
+        if let Some(wake) = self.core.shared_wake.get()
+            && state.invalidation_wanted()
+        {
+            wake.wake();
+        }
         #[cfg(all(test, acyclic_fs_loom))]
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
@@ -91,6 +96,11 @@ impl Drop for StateGuard<'_> {
             return;
         };
         let mut superseded = std::mem::take(&mut state.superseded_attributes);
+        let wake = self
+            .core
+            .shared_wake
+            .get()
+            .filter(|_| state.invalidation_wanted());
         drop(state);
         #[cfg(test)]
         DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
@@ -102,6 +112,9 @@ impl Drop for StateGuard<'_> {
         let notify = true;
         if notify {
             self.core.invalidation.notify_all();
+        }
+        if let Some(wake) = wake {
+            wake.wake();
         }
         if let Some(notifier) = self.core.notifier.get() {
             for (inode, credit) in superseded.iter_mut() {
@@ -156,6 +169,11 @@ pub(super) struct ProjectionCore {
     pub(super) handler_failed: AtomicBool,
     pub(super) handler_error: Mutex<FuseHandlerReports>,
     pub(super) callback_guard: Option<Arc<dyn NativeMountCallbackGuard>>,
+    /// Set for a view of a shared session, whose one invalidator serves
+    /// every view: pending invalidation queues this view there.
+    pub(super) shared_wake: OnceLock<Arc<super::shared::SharedWake>>,
+    /// The shared invalidator's blocked key for this view.
+    pub(super) shared_blocked: Mutex<Option<InvalidationKey>>,
     source_original_work: Option<Work>,
     allocation_custody: Arc<crate::demand::NativeMountAllocationCustody>,
     _allocation: NativeAllocation,
@@ -208,6 +226,7 @@ impl ProjectionCore {
         writable: bool,
         uid: u32,
         gid: u32,
+        inode_base: u64,
         work: &Work,
     ) -> Result<Arc<Self>, NativeMountError> {
         let source_original_work = fuse_native_source_original(source.as_ref(), Some(work))?;
@@ -221,8 +240,8 @@ impl ProjectionCore {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let mut state = ProjectionState::new(writable, uid, gid);
-        state.next_inode = ROOT_INODE;
+        let mut state = ProjectionState::new(writable, uid, gid, inode_base);
+        state.next_inode = state.root_inode;
         state.intern_projected(
             FuseOwned::empty(MountPath::root()),
             &root,
@@ -243,6 +262,8 @@ impl ProjectionCore {
             handler_failed: AtomicBool::new(false),
             handler_error: Mutex::new(FuseHandlerReports::default()),
             callback_guard,
+            shared_wake: OnceLock::new(),
+            shared_blocked: Mutex::new(None),
             source_original_work,
             allocation_custody,
             _allocation: allocation,
@@ -439,7 +460,11 @@ impl ViewObserver for ProjectionCore {
         }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.invalidation.notified = state.invalidation.notified.max(Some(position));
+        drop(state);
         self.invalidation.notify_all();
+        if let Some(wake) = self.shared_wake.get() {
+            wake.wake();
+        }
     }
 }
 

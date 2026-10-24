@@ -88,8 +88,8 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
         {
             let active = mounts_in(fixture.path()).unwrap();
             assert!(
-                active.contains(&view),
-                "shutdown qualification requires a live child mount: {view:?}; active={active:?}"
+                active.iter().any(|root| view.starts_with(root)),
+                "shutdown qualification requires a child in a live shared mount: {view:?}; active={active:?}"
             );
         }
         assert!(

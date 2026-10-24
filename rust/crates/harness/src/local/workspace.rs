@@ -24,6 +24,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
+    pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
     pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
@@ -45,6 +46,8 @@ pub struct LocalWorkspace {
     pub(super) fresh: bool,
     pub(super) view: View,
     pub(super) mount_directory: PathBuf,
+    /// Optional sandbox admission shared by the root and all descendants.
+    pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) mounted: Option<
         Arc<
             acyclic_fs::native_mount::LazyMount<
@@ -63,6 +66,11 @@ pub struct LocalWorkspace {
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
+    /// Child task views, indexed apart from `state` so a child never waits on
+    /// this owner's running command.
+    pub(super) children: StateArc<
+        super::checkout_tools::child_views::ChildViews<super::checkout_tools::CheckoutTools>,
+    >,
     pub(super) mounts: Arc<Mounts>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
@@ -110,8 +118,6 @@ impl LocalWorkspace {
         path: &Path,
         inherited: Option<&Mounts>,
     ) -> Result<Arc<Mounts>> {
-        #[cfg(not(any(target_os = "linux", windows)))]
-        let _ = inherited;
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
@@ -128,16 +134,7 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        #[cfg(any(target_os = "linux", windows))]
         volumes::link(path, &mut mounts, inherited)?;
-        #[cfg(not(any(target_os = "linux", windows)))]
-        volumes::attach(
-            &self.filesystem,
-            &self.store,
-            &acyclic_fs::hold_root(path).map_err(storage)?,
-            &mut mounts,
-        )
-        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -194,7 +191,14 @@ impl LocalWorkspace {
             None,
             private.map(|volume| ("scratch".into(), volume, None)),
         )?;
-        volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &root,
+            &mut mounts,
+            &self.task_view_admission,
+        )
+        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -325,6 +329,9 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
+    if native_mounts {
+        volumes::exclude_state(&root)?;
+    }
     #[cfg(test)]
     setup_probe::before_setup(&path);
     let setup = if native_mounts {
@@ -348,8 +355,9 @@ pub(super) async fn open(
         None,
         native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
+    let task_view_admission = Arc::new(std::sync::OnceLock::new());
     if let Some(setup) = &setup {
-        volumes::attach(filesystem, &store, setup, &mut mounts).await?;
+        volumes::attach(filesystem, &store, setup, &mut mounts, &task_view_admission).await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();
@@ -368,11 +376,13 @@ pub(super) async fn open(
         fresh,
         view,
         mount_directory,
+        task_view_admission,
         mounted: None,
         filesystem: filesystem.clone(),
         store,
         identity,
         state,
+        children: StateArc::new(Default::default()),
         context_line,
         mounts,
         processes,

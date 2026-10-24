@@ -186,6 +186,7 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
+        let _startup = super::super::admit_mount_startup().await?;
         let work = options.work(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -233,6 +234,7 @@ where
                 volume_id: self.id().volume_id(),
                 destination: session_destination.0,
                 writable: options.writable,
+                shared: options.shared,
             },
             Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
             &work,

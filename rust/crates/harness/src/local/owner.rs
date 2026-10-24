@@ -2,7 +2,7 @@ pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
 use std::{fs, io::Read};
 #[cfg(feature = "native-execution")]
-mod exclusion;
+pub(in crate::local) mod exclusion;
 
 /// Root of every project's default harness state: the per-user local data directory. This is the only place the
 /// harness consults that directory. Unit tests cannot reach it: a test that does not inject

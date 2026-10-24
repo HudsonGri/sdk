@@ -49,6 +49,9 @@ mod view_gate;
 pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
+// Only the Linux shared FUSE instance serves views today.
+#[cfg(target_os = "linux")]
+mod view_table;
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
@@ -135,6 +138,23 @@ fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
 /// Entries a driver requests from the source per directory page.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 const DIRECTORY_PAGE_SIZE: u32 = 256;
+/// Callback threads one mount runs, whatever the host's core count: enough
+/// that callbacks proceed while others block in the source, and a constant
+/// cost per live mount.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CALLBACK_THREADS: u32 = 8;
+/// Descriptors one mount's startup holds at once: its destination probe, the
+/// device and the session's own copy of it, the mount helper's channel pair
+/// and diagnostic file, and the root it validates.
+const MOUNT_STARTUP_DESCRIPTORS: usize = 8;
+
+/// Admits one mount's startup descriptors from the process-wide allowance,
+/// waiting while other startups and materializations hold it, so mounts that
+/// start together cannot exhaust the process's descriptors.
+async fn admit_mount_startup()
+-> Result<acyclic_native_runtime::DescriptorAdmission, NativeMountError> {
+    Ok(acyclic_native_runtime::admit_descriptors(MOUNT_STARTUP_DESCRIPTORS).await?)
+}
 /// Named attributes a driver requests from the source per page.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
@@ -250,6 +270,10 @@ fn start_driver_into<F>(
 where
     F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
 {
+    #[cfg(not(target_os = "linux"))]
+    if request.shared {
+        return Err(NativeMountError::UnsupportedTarget);
+    }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         #[cfg(target_os = "linux")]
@@ -280,7 +304,9 @@ pub use error::*;
 mod fence_io;
 mod recovery;
 mod registry;
+mod shared_root;
 pub use recovery::*;
+pub use shared_root::{shared_view_root, shared_view_root_in};
 mod startup;
 pub use startup::*;
 mod session;

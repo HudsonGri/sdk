@@ -54,6 +54,7 @@ pub struct MountOptions {
     pub(super) work: Option<NativeMaterializationWork>,
     pub(super) callback_guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(super) native_original: Option<NativeMaterializationWork>,
+    pub(crate) shared: bool,
 }
 
 impl MountOptions {
@@ -94,6 +95,7 @@ impl MountOptions {
             work: None,
             callback_guard: None,
             native_original: None,
+            shared: false,
         }
     }
 
@@ -105,6 +107,18 @@ impl MountOptions {
             publication: MountPublication::Manual,
             ..Self::read_write()
         }
+    }
+
+    /// Serves the mount as one view of the process's shared native instance
+    /// at the destination's parent, named by the destination's last
+    /// component, instead of mounting a native instance of its own. The
+    /// destination must not exist; the parent must be a directory reserved
+    /// for shared views. A view costs no mount, thread or descriptor of its
+    /// own. Linux only; elsewhere the mount fails as an unsupported target.
+    #[must_use]
+    pub const fn shared(mut self) -> Self {
+        self.shared = true;
+        self
     }
 
     /// Projects one exact workspace directory as the native mount root.

@@ -112,6 +112,7 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
+    admission: &Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     for (relative, mount) in mounts.mounts_mut() {
@@ -142,6 +143,7 @@ pub(super) async fn attach(
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,
+            task_view_admission: Arc::clone(admission),
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(crate::sync::SyncMutex::new(0)),
             execution: StateArc::new(AsyncMutex::new(())),
@@ -379,7 +381,6 @@ mod binding_paths {
 // FUSE's elevated helper cannot traverse an owner-only mount, and ProjFS cannot
 // start a virtualization root at a placeholder in another projection. Retain
 // the already bound volume instead of mounting again below the task view.
-#[cfg(any(target_os = "linux", windows))]
 pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>) -> Result<()> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
@@ -401,51 +402,58 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>)
             create_mount_directory(root, parent)?;
         }
         let path = root.join(relative);
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                let linked = std::fs::read_link(&path).map_err(mount_io)?;
-                let linked = path
-                    .parent()
-                    .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?
-                    .join(linked);
-                if canonical_destination(&linked)? != canonical_destination(target)? {
-                    let expected = previous.ok_or_else(|| {
-                        Error::Conflict("volume alias names another binding".into())
-                    })?;
-                    if canonical_destination(&linked)?
-                        != canonical_destination(&expected.destination)?
-                    {
-                        return Err(Error::Conflict("volume alias names another binding".into()));
-                    }
-                    // A fork inherits the parent's SDK alias in its authored
-                    // cut. Before exposing this new view, replace only that
-                    // exact authenticated binding with the child's volume.
-                    unlink_directory_alias(&path).map_err(mount_io)?;
-                    link_directory(target, &path).map_err(mount_io)?;
-                }
-            }
-            Ok(metadata) if metadata.is_dir() => {
-                // remove_dir atomically refuses a nonempty directory; user
-                // content is never replaced to install a volume binding.
-                std::fs::remove_dir(&path).map_err(mount_io)?;
-                link_directory(target, &path).map_err(mount_io)?;
-            }
-            Ok(_) => {
-                return Err(Error::Conflict(
-                    "volume alias replaces a project file".into(),
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                link_directory(target, &path).map_err(mount_io)?;
-            }
-            Err(error) => return Err(mount_io(error)),
-        }
+        bind_alias(
+            &path,
+            target,
+            previous.map(|source| source.destination.as_path()),
+        )?;
         mount.native_root = Some(target.to_path_buf());
     }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+/// Rebinds only an empty SDK directory or the exact preceding alias.
+pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) -> Result<()> {
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let linked = std::fs::read_link(&path).map_err(mount_io)?;
+            let linked = path
+                .parent()
+                .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?
+                .join(linked);
+            if canonical_destination(&linked)? != canonical_destination(target)? {
+                let expected = previous
+                    .ok_or_else(|| Error::Conflict("volume alias names another binding".into()))?;
+                if canonical_destination(&linked)? != canonical_destination(expected)? {
+                    return Err(Error::Conflict("volume alias names another binding".into()));
+                }
+                // A fork inherits the parent's SDK alias in its authored
+                // cut. Before exposing this new view, replace only that
+                // exact authenticated binding with the child's volume.
+                unlink_directory_alias(&path).map_err(mount_io)?;
+                link_directory(target, &path).map_err(mount_io)?;
+            }
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            // remove_dir atomically refuses a nonempty directory; user
+            // content is never replaced to install a volume binding.
+            std::fs::remove_dir(&path).map_err(mount_io)?;
+            link_directory(target, &path).map_err(mount_io)?;
+        }
+        Ok(_) => {
+            return Err(Error::Conflict(
+                "volume alias replaces a project file".into(),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            link_directory(target, &path).map_err(mount_io)?;
+        }
+        Err(error) => return Err(mount_io(error)),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn unlink_directory_alias(path: &Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
 }
@@ -457,7 +465,6 @@ fn unlink_directory_alias(path: &Path) -> std::io::Result<()> {
 
 // A command retires its physical projection. Resolve its held parent rather
 // than requiring that transient destination to exist when validating an alias.
-#[cfg(any(target_os = "linux", windows))]
 fn canonical_destination(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
@@ -468,7 +475,7 @@ fn canonical_destination(path: &Path) -> Result<PathBuf> {
     Ok(std::fs::canonicalize(parent).map_err(mount_io)?.join(name))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, path)
 }
@@ -478,32 +485,18 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(target, path)
 }
 
-// Recover only SDK-owned mount destinations. The existing recovery API takes
-// the exclusive destination fence before probing or detaching the driver, so
-// a live owner is rejected and authored host residue is retained.
-pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
-    let destination = root.join(relative);
-    let controls = acyclic_fs::native_mount_control_paths(&destination)?;
-    let mut excluded = vec![destination.clone(), root.join(".volumes/recovery")];
-    excluded.extend(
-        controls
-            .iter()
-            .filter(|path| path.starts_with(root))
-            .cloned(),
-    );
-    exclude::exclude_mount_paths(root, &excluded).map_err(mount_io)?;
-    if let Some(parent) = relative.parent() {
-        create_mount_directory(root, parent)?;
-    }
-    let [fence, ..] = controls;
-    match std::fs::symlink_metadata(fence) {
-        Ok(_) => acyclic_fs::detach_native_mount_destination_after_crash(&destination)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(mount_io(error)),
-    }
-    create_mount_directory(root, relative)
+/// Reserve SDK state in the original checkout once, before the source cut.
+/// Physical projections live under the shared root; aliases remain reserved.
+pub(super) fn exclude_state(root: &acyclic_fs::HeldRoot) -> Result<()> {
+    exclude::exclude_mount_paths(
+        root,
+        &[
+            Path::new(super::super::host_workspace::HOST_VIEW_ROOT),
+            Path::new(SCRATCH_PATH),
+            Path::new(".acyclic-sdk"),
+        ],
+    )
 }
-
 /// Each binding supplies its durable logical volume identity. The destination
 /// fence and physical receipt must agree before any authored file is moved.
 #[cfg(windows)]
@@ -589,7 +582,7 @@ mod tests {
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
         let error =
-            prepare_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
+            create_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
                 .expect_err("the mount parent is absent");
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(error), ..
@@ -604,7 +597,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.path().join(".volumes"))
             .map_err(storage)?;
         assert!(matches!(
-            prepare_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
+            create_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
             Err(Error::Invalid(_))
         ));
         assert!(!outside.path().join("scratch").exists());

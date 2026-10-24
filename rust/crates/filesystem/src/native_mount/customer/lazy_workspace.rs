@@ -137,6 +137,7 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
+        let _startup = super::super::admit_mount_startup().await?;
         let work = options.work(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -176,6 +177,7 @@ where
             volume_id,
             destination: session_destination.0,
             writable: options.writable,
+            shared: options.shared,
         };
         let source = Arc::new(
             match LazyMountSource::new(

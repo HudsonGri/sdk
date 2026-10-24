@@ -53,6 +53,11 @@ impl HostWorkspace {
             ));
         }
         verify_root(&admitted_mount_root)?;
+        let root = Arc::new(admitted_mount_root.try_clone().map_err(storage)?);
+        let admitted = workspace.task_view_admission.get_or_init(|| root);
+        if admitted.identity() != admitted_mount_root.identity() {
+            return Err(Error::Conflict("host task-view admission changed".into()));
+        }
         workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
         acyclic_fs::initialize_native_mount_services().map_err(storage)?;
         let mut result = Self {

@@ -163,6 +163,20 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     );
     let grandchild = fixture.task(Some(fork.task())).await?;
     let nested = fork.fork(&child, &grandchild).await?;
+    assert_eq!(
+        fork.path().parent(),
+        nested.path().parent(),
+        "all native descendants use one shared mount root"
+    );
+    for view in [&fork, &nested] {
+        let private =
+            std::fs::canonicalize(view.path().join(".volumes/scratch")).map_err(storage)?;
+        assert_eq!(
+            private.parent(),
+            view.path().parent(),
+            "private volumes must share the project view's native instance"
+        );
+    }
     assert!(
         nested
             .path()
