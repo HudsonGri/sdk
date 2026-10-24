@@ -101,11 +101,12 @@ if [ "$rc" = 224 ] || [ "$payloads" != 1 ] || [ "$payload_rc" != "$rc" ]; then
   exit 4
 fi
 
-# A new strict target requirement cannot inherit a PASS from main's old gap.
-windows_reason=$(bash Q:/lanes/gate-windows-runtime-verdict.sh "$log"); windows_status=$?
-if [ "$windows_status" != 0 ]; then
-  if [ "$windows_status" = 4 ] || [ "$rc" = 224 ]; then kind=INFRA; code=4; else kind=FAIL; code=1; fi
-  v="$kind #$n: $(printf '%s' "$windows_reason" | tr '\n' ';' | cut -c1-900) log=$log"
+# Validate an owned preflight failure before requiring later compiler phases.
+# The same checker owns execution policy and required-phase interpretation.
+phase_reason=$(bash Q:/lanes/gate-checks.sh --required-phases "$log"); phase_status=$?
+if [ "$phase_status" != 0 ]; then
+  if [ "$phase_status" = 4 ] || [ "$rc" = 224 ]; then kind=INFRA; code=4; else kind=FAIL; code=1; fi
+  v="$kind #$n: $(printf '%s' "$phase_reason" | tr '\n' ';' | cut -c1-900) log=$log"
   echo "GATE $v"
   echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
   exit "$code"

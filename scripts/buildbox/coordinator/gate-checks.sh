@@ -1,4 +1,54 @@
 #!/bin/bash
+gate_preflight_verdict() (
+  log=$1
+  count=$(grep -ac '^GATE_RUSTFMT ' "$log")
+  [ "$count" != 0 ] || exit 0
+  result=$(sed -nE 's/^GATE_RUSTFMT rc=(-?[0-9]+) seconds=[0-9]+ scope=.*$/\1/p' "$log")
+  if [ "$count" != 1 ] || ! [[ "$result" =~ ^-?[0-9]+$ ]]; then
+    echo 'Rust formatting completion has missing or inconsistent identity'
+    exit 4
+  fi
+  [ "$result" != 0 ] || exit 0
+  if grep -aqE 'No space left on device|signal: (9|15), SIG(KILL|TERM)' "$log"; then
+    echo 'Rust formatter was interrupted or its build infrastructure failed'
+    exit 4
+  fi
+  if [ "$result" != 1 ] || grep -aq '^spawn rustfmt ENOENT$' "$log"; then
+    echo "Rust formatter executor/tool failed (rc=$result)"
+    exit 4
+  fi
+  echo 'Rust formatting qualification failed'
+  grep -aE '^Diff in |^error:|^GATE_RUSTFMT ' "$log" | head -20
+  exit 1
+)
+
+gate_required_phases_verdict() (
+  log=$1
+  gate_preflight_verdict "$log"; preflight_rc=$?
+  [ "$preflight_rc" = 0 ] || exit "$preflight_rc"
+  # Strict phase: never subtract historical main findings. Exit4 is incomplete.
+  if ! grep -aq '^GATE_WINDOWS_RUNTIME_REQUIRED ' "$log"; then exit 0; fi
+  if ! grep -aq '^GATE_WINDOWS_RUNTIME_CLIPPY rc=' "$log"; then
+    echo 'Windows runtime clippy did not complete'
+    exit 4
+  fi
+  if grep -aqE 'No space left on device|signal: (9|15), SIG(KILL|TERM)|^GATE_WINDOWS_RUNTIME_CLIPPY rc=(12[89]|1[3-9][0-9]|2[0-9][0-9]) ' "$log"; then
+    echo 'Windows runtime check was interrupted or its build infrastructure failed'
+    exit 4
+  fi
+  if grep -aqE '^GATE_WINDOWS_RUNTIME_CLIPPY rc=[1-9][0-9]* ' "$log"; then
+    echo 'strict Windows runtime clippy failed'
+    awk '/^GATE_WINDOWS_RUNTIME_START / { inside=1 } inside { print } /^GATE_WINDOWS_RUNTIME_CLIPPY / { inside=0 }' "$log" \
+      | grep -aE '^GATE_WINDOWS_RUNTIME_CLIPPY |\.rs:[0-9]+:[0-9]+: error|^error(\[E[0-9]+\])?:' | head -12
+    exit 1
+  fi
+  if [ "$(grep -ac '^GATE_WINDOWS_RUNTIME_CLIPPY rc=0 .* target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all$' "$log")" != 1 ]; then
+    echo 'Windows runtime clippy completion has missing or inconsistent dispatch identity'
+    exit 4
+  fi
+  exit 0
+)
+
 # One strict Windows runtime phase, used by PRs, main and lane prechecks.
 gate_windows_runtime_clippy() (
   set -u
@@ -41,6 +91,11 @@ if [ "${1:-}" = --windows-runtime-only ]; then
   gate_windows_runtime_clippy
   exit "$?"
 fi
+if [ "${1:-}" = --required-phases ] || [ "${1:-}" = --preflight-only ]; then
+  [ "$#" = 2 ] && [ -f "$2" ] || { echo 'error: phase verdict requires one readable log' >&2; exit 4; }
+  if [ "$1" = --preflight-only ]; then gate_preflight_verdict "$2"; else gate_required_phases_verdict "$2"; fi
+  exit "$?"
+fi
 
 exec 2>&1
 # The reviewed runner owns workspace, browser and feature coverage. Missing
@@ -53,11 +108,26 @@ main_output=$(mktemp -d "${TMPDIR:-/tmp}/gate-main-qualification.XXXXXXXX") || e
 bash scripts/main-gate-checks.sh "$@" | tee "$main_output/main.out" | sed -u '/^GATE_DONE rc=/d'
 main_status=("${PIPESTATUS[@]}")
 main_rc=${main_status[0]}
-if [ "${main_status[1]}" != 0 ] || [ "${main_status[2]}" != 0 ]; then main_rc=2; fi
+if [ "${main_status[1]}" != 0 ] || [ "${main_status[2]}" != 0 ]; then
+  echo 'error: could not retain reviewed main runner output'
+  echo 'GATE_DONE rc=224'
+  exit 224
+fi
 mapfile -t completed < <(grep -a '^GATE_DONE rc=' "$main_output/main.out")
 if [ "${#completed[@]}" != 1 ] || [ "${completed[0]:-}" != "GATE_DONE rc=$main_rc" ]; then
   echo 'error: reviewed main runner completion does not match its executor result'
-  main_rc=2
+  echo 'GATE_DONE rc=224'
+  exit 224
+fi
+gate_preflight_verdict "$main_output/main.out"; preflight_rc=$?
+if [ "$preflight_rc" != 0 ]; then
+  rc=$main_rc
+  [ "$rc" != 0 ] || rc=$preflight_rc
+  # A failed tool cannot be qualified as a source formatting verdict.
+  [ "$preflight_rc" != 4 ] || rc=224
+  echo "GATE_MAIN_QUALIFICATION main_rc=$main_rc preflight_rc=$preflight_rc"
+  echo "GATE_DONE rc=$rc"
+  exit "$rc"
 fi
 # The canonical runner must complete its owned phase; never attempt it again.
 windows_features_rc=0

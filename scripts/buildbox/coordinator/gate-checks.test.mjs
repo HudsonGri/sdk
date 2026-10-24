@@ -24,6 +24,13 @@ function fixture(run) {
     put('scripts/gate-test-runner.sh', readFileSync(join(scripts, 'gate-test-runner.sh')));
     put('scripts/main-gate-checks.sh', `#!/bin/bash
 echo main >> phases
+if [ -n "$FORMAT_RC" ]; then
+ echo 'Diff in fixture.rs:1:'
+ echo "GATE_RUSTFMT rc=$FORMAT_RC seconds=0 scope="
+ if [ "$COMPLETION" != missing ]; then echo "GATE_DONE rc=$FORMAT_RC"; fi
+ if [ "$COMPLETION" = duplicate ]; then echo "GATE_DONE rc=$FORMAT_RC"; fi
+ exit "$FORMAT_RC"
+fi
 echo "GATE_WINDOWS_FEATURES rc=$FEATURE_RC"
 if [ "$COMPLETION" != missing ]; then echo "GATE_DONE rc=$MAIN_RC"; fi
 if [ "$COMPLETION" = duplicate ]; then echo "GATE_DONE rc=$MAIN_RC"; fi
@@ -49,7 +56,7 @@ esac
       TMPDIR: cwd, CARGO_TARGET_DIR: join(cwd, 'target'),
       GATE_WINDOWS_RUNTIME_TARGET_DIR: '', GATE_WINDOWS_RUNTIME_OUTPUT_DIR: join(cwd, 'output'),
       RUSTFLAGS: '--cap-lints warn', CARGO_ENCODED_RUSTFLAGS: '--cap-lints\x1fwarn',
-      STRICT_RC: '0', MAIN_RC: '0', FEATURE_RC: '0', COMPLETION: 'normal' };
+      STRICT_RC: '0', MAIN_RC: '0', FEATURE_RC: '0', COMPLETION: 'normal', FORMAT_RC: '' };
     const invoke = (adapter, extra = {}) => {
       rmSync(join(cwd, 'strict.jsonl'), { force: true });
       rmSync(join(cwd, 'phases'), { force: true });
@@ -120,7 +127,7 @@ test('missing shared policy refuses PR dispatch instead of falling back to a sec
 test('main requires its reviewed runner, exact completion and its owned feature result without retry', () => fixture(({ cwd, put, invoke }) => {
   for (const [overrides, expected] of [
     [{ MAIN_RC: '101' }, 101], [{ FEATURE_RC: '101' }, 2],
-    [{ COMPLETION: 'missing' }, 2], [{ COMPLETION: 'duplicate' }, 2],
+    [{ COMPLETION: 'missing' }, 224], [{ COMPLETION: 'duplicate' }, 224],
   ]) {
     const result = invoke('main', overrides);
     assert.equal(result.status, expected, result.stdout + result.stderr);
@@ -129,7 +136,7 @@ test('main requires its reviewed runner, exact completion and its owned feature 
   }
   put('scripts/main-gate-checks.sh', '#!/bin/bash\necho "GATE_WINDOWS_FEATURES rc=0"\necho "GATE_DONE rc=0"\nexit 101\n');
   const mismatch = invoke('main');
-  assert.equal(mismatch.status, 2);
+  assert.equal(mismatch.status, 224);
   assert.match(mismatch.stdout, /completion does not match/);
   rmSync(join(cwd, 'scripts/main-gate-checks.sh'));
   const missing = invoke('main');
@@ -157,4 +164,98 @@ test('completion and missing-runner negative controls expose fabricated main suc
   put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace('exit 224', 'exit 0'));
   rmSync(join(cwd, 'scripts/main-gate-checks.sh'));
   assert.equal(invoke('main').status, 0);
+}));
+
+test('main preserves completed preflight source failures without starting a compiler', () => fixture(({ put, invoke }) => {
+  for (const [format, expected] of [[1, 1], [127, 224]]) {
+    const result = invoke('main', { FORMAT_RC: String(format) });
+    assert.equal(result.status, expected, result.stdout + result.stderr);
+    assert.equal(result.calls.length, 0);
+    assert.deepEqual(result.phases, ['main']);
+    assert.deepEqual(result.stdout.match(/^GATE_DONE rc=\d+$/gm), ['GATE_DONE rc=' + expected]);
+  }
+  for (const completion of ['missing', 'duplicate']) {
+    const result = invoke('main', { FORMAT_RC: '1', COMPLETION: completion });
+    assert.equal(result.status, 224, result.stdout + result.stderr);
+    assert.equal(result.calls.length, 0);
+  }
+  put('scripts/main-gate-checks.sh', '#!/bin/bash\necho "GATE_RUSTFMT rc=1 seconds=0 scope="\necho "GATE_DONE rc=0"\nexit 1\n');
+  assert.equal(invoke('main').status, 224, 'inconsistent payload remains INFRA before preflight');
+  put('scripts/main-gate-checks.sh', '#!/bin/bash\necho "GATE_RUSTFMT rc=1 seconds=0 scope="\necho "GATE_DONE rc=1"\nexit 1\n');
+  // Bypassing the shared preflight verdict launches clippy after a format failure.
+  put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace('gate_preflight_verdict "$main_output/main.out"; preflight_rc=$?', 'preflight_rc=0'));
+  assert.equal(invoke('main', { FORMAT_RC: '1' }).calls.length, 1);
+}));
+
+test('required-phase policy distinguishes formatting, missing execution and exact strict dispatch', () => fixture(({ cwd, put }) => {
+  const log = join(cwd, 'verdict.log');
+  const required = 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
+  const success = 'GATE_WINDOWS_RUNTIME_CLIPPY rc=0 seconds=1 target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
+  const format = 'Diff in fixture.rs:1:\nGATE_RUSTFMT rc=1 seconds=0 scope=\n';
+  const verdict = (text) => {
+    writeFileSync(log, text);
+    return spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks.sh', '--required-phases', log], { cwd, encoding: 'utf8' });
+  };
+  for (const [text, expected] of [[required + format, 1], [required, 4], [required + success, 0],
+    [required + success.replace('windows-gnu', 'windows-msvc'), 4],
+    [required + success + success, 4], [required + success.replace('rc=0', 'rc=101'), 1],
+    [format + format, 4], [format.replace('rc=1', 'rc=bad'), 4],
+    [format.replace('rc=1', 'rc=127'), 4], [format + 'spawn rustfmt ENOENT\n', 4],
+    [format + 'No space left on device\n', 4], [format + 'signal: 9, SIGKILL\n', 4]]) {
+    const result = verdict(text);
+    assert.equal(result.status, expected, result.stdout + result.stderr);
+  }
+  assert.match(verdict(required + format).stdout, /Diff in fixture.rs:1:/);
+  // The previous strict-first ordering mistakes a format rejection for INFRA.
+  put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace('gate_preflight_verdict "$log"; preflight_rc=$?', 'preflight_rc=0'));
+  assert.equal(verdict(required + format).status, 4);
+}));
+
+test('actual coordinator validates executor before formatting and never retries a completed rejection', () => fixture(({ cwd, put }) => {
+  const source = readFileSync(join(coordinator, 'pr-gate.sh'), 'utf8');
+  const from = source.indexOf('# An ended client stream');
+  const to = source.indexOf('# One selector owns');
+  assert.ok(from >= 0 && to > from);
+  const publicScript = join(cwd, 'coordinator.sh');
+  const chunk = source.slice(from, to).replaceAll('Q:/lanes', join(cwd, 'scripts/buildbox/coordinator'));
+  put('coordinator.sh', '#!/bin/bash\n' + chunk + '\nexit 0\n');
+  mkdirSync(join(cwd, '.codex-fleet'));
+  const log = join(cwd, 'verdict.log');
+  const required = 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
+  const format = 'Diff in fixture.rs:1:\nGATE_RUSTFMT rc=1 seconds=0 scope=\n';
+  const run = (text, rc) => {
+    writeFileSync(log, required + text);
+    return spawnSync('bash', [publicScript], { cwd, encoding: 'utf8', env: { ...process.env, HOME: cwd, log, rc: String(rc), n: 'fixture' } });
+  };
+  const failed = run(format + 'GATE_DONE rc=1\n', 1);
+  assert.equal(failed.status, 1, failed.stdout + failed.stderr);
+  assert.match(failed.stdout, /GATE FAIL #fixture: Rust formatting qualification failed/);
+  assert.match(failed.stdout, /Diff in fixture.rs:1:/);
+  assert.equal(run(format, 1).status, 4, 'cutoff never becomes a source verdict');
+  assert.equal(run(format + 'GATE_DONE rc=0\n', 1).status, 4, 'executor mismatch never becomes a source verdict');
+  assert.equal(run(format + 'GATE_DONE rc=1\n', 224).status, 4, 'executor infra never becomes a source verdict');
+  put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace('gate_preflight_verdict "$log"; preflight_rc=$?', 'preflight_rc=0'));
+  assert.equal(run(format + 'GATE_DONE rc=1\n', 1).status, 4, 'old ordering is the INFRA-loop negative');
+}));
+
+
+test('public lint verdict uses the same required-phase policy and retains typed INFRA', () => fixture(({ cwd, put }) => {
+  put('scripts/buildbox/coordinator/gate-checks-verdict.sh', readFileSync(join(coordinator, 'gate-checks-verdict.sh')));
+  const log = join(cwd, 'verdict.log');
+  const base = join(cwd, 'baseline.log');
+  writeFileSync(base, 'GATE_CLIPPY rc=0\n');
+  const required = 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
+  const format = 'Diff in fixture.rs:1:\nGATE_RUSTFMT rc=1 seconds=0 scope=\n';
+  const success = 'GATE_WINDOWS_RUNTIME_CLIPPY rc=0 seconds=1 target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
+  const run = (text) => {
+    writeFileSync(log, text + 'GATE_CLIPPY rc=0\n');
+    return spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks-verdict.sh', log, base], { cwd, encoding: 'utf8' });
+  };
+  for (const [text, rc] of [[required + format, 1], [required, 4], [required + success, 0],
+    [required + success.replace('rc=0', 'rc=101'), 1]]) {
+    const result = run(text);
+    assert.equal(result.status, rc, result.stdout + result.stderr);
+  }
+  put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace('gate_preflight_verdict "$log"; preflight_rc=$?', 'preflight_rc=0'));
+  assert.equal(run(required + format).status, 4, 'the old ordering also breaks the public lint verdict');
 }));
