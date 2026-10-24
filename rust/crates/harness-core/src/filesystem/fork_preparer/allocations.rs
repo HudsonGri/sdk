@@ -12,6 +12,13 @@ pub(super) fn creation_volumes(request: &ForkRequest) -> impl Iterator<Item = &V
 }
 
 pub(super) fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Item = &VolumeRef>> {
+    Ok(seed_creation_roles(seed)?.map(|(_, volume)| volume))
+}
+
+fn seed_creation_roles(
+    seed: &ForkSeed,
+) -> Result<impl Iterator<Item = (crate::fork::ForkSeedVolume, &VolumeRef)>> {
+    use crate::fork::ForkSeedVolume;
     let project = seed
         .resources
         .iter()
@@ -21,9 +28,11 @@ pub(super) fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Ite
         })
         .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
     Ok([
-        Some(&seed.child_private_volume),
-        Some(project),
-        seed.child_result_volume.as_ref(),
+        Some((ForkSeedVolume::Private, &seed.child_private_volume)),
+        Some((ForkSeedVolume::Project, project)),
+        seed.child_result_volume
+            .as_ref()
+            .map(|volume| (ForkSeedVolume::Result, volume)),
     ]
     .into_iter()
     .flatten())
@@ -324,6 +333,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "fork allocation belongs to another Filesystem provider".into(),
             ));
         }
+        // A child volume belongs to the one operation whose key created it, so
+        // two operations can never claim the same volume.
+        for (role, volume) in seed_creation_roles(seed)? {
+            self.require_seed_creation(seed.operation_id, role, volume)
+                .await?;
+        }
         let claim = AllocationClaim {
             operation_id: seed.operation_id,
             preparation_digest: digest,
@@ -367,6 +382,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         Ok(())
+    }
+
+    async fn require_seed_creation(
+        &self,
+        operation: OperationId,
+        role: crate::fork::ForkSeedVolume,
+        volume: &VolumeRef,
+    ) -> Result<()> {
+        let key = ForkSeed::creation_key(operation, role)?;
+        let operation = acyclic_fs::OperationId::from_bytes(
+            bounded_io::operation_key(&key, None)?.into_bytes(),
+        );
+        let reference = bounded_io::content_workspace(&self.provider, volume, None)?;
+        let workspace = self.open(&reference, None).await?;
+        let name = std::str::from_utf8(reference.as_resource().key())
+            .map_err(|_| Error::Invalid("workspace reference key must be UTF-8".into()))?;
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let (created, recorded) = self
+            .filesystem
+            .workspace_for_creation_operation(
+                name,
+                workspace.volume_config(),
+                operation,
+                &io,
+                io.cancellation(),
+            )
+            .await;
+        let created = match created {
+            Err(acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::CreationRejected)) => {
+                recorded?;
+                None
+            }
+            created => io.sdk((created, recorded))?,
+        };
+        created.map(drop).ok_or_else(|| {
+            Error::Conflict("fork child volume was not created by this fork operation".into())
+        })
     }
 
     /// Reads the original protected claim through the same bounded codec as publication verification.
