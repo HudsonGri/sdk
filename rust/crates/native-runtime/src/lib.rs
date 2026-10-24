@@ -70,7 +70,7 @@ pub(crate) use file::{
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;
-pub use file_lock::{FileLock, FileLockCancellation, FileLockMode};
+pub use file_lock::{FileLock, FileLockMode};
 mod recovery;
 pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
 mod directory;

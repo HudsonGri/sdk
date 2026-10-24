@@ -26,6 +26,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const RECORD_LOCK_DEADLINE: Duration = Duration::from_secs(5);
+const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
 const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
