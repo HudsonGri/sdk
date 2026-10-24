@@ -12,6 +12,18 @@ import bb_cargo_cache as cache
 
 
 class LocalTargetLease(unittest.TestCase):
+    def test_request_diagnostics_preserve_key_and_hash_every_component(self):
+        store=cache.store
+        meta={'repo':'sdk','source':{'content_sha256':'tree'},'argv':['cargo','check']}
+        env={'BB_TARGET_REQUEST_SHA256':'payload','SECRET_FIXTURE':'private-value'}
+        with patch.object(store,'tool_identity',return_value=['tool-fixture']):
+            components={}
+            key=store.request_key(meta,env,Path('/job'),components=components)
+            self.assertEqual(key,store.request_key(meta,env,Path('/job')))
+            self.assertEqual(set(components),{'version','source','argv','cwd','environment','tools','target'})
+            self.assertTrue(all(len(value)==64 for value in components.values()))
+            self.assertNotIn('private-value',repr(components))
+
     def test_catalog_lease_reaps_other_key_stages_and_excludes_live_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'staging').mkdir()

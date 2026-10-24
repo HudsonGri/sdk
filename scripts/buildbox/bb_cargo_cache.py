@@ -98,7 +98,8 @@ def run(argv):
     meta['argv'] = ['cargo'] + build
     env['CARGO_TARGET_DIR'] = str(target)
     job = Path(env['BB_JOB_HOME']).parent
-    key = store.request_key(meta, env, job)
+    identity = {}
+    key = store.request_key(meta, env, job, components=identity)
     if not key:
         os.execv(CARGO, [CARGO] + argv)
     target.mkdir(parents=True, exist_ok=True)
@@ -107,6 +108,7 @@ def run(argv):
     local_started = time.monotonic()
     with local_target_leases(job, target) as local:
         session = store.Session(store.ROOT, key, target)
+        session.receipt['request_identity'] = identity
         session.receipt['local_wait_seconds'] = time.monotonic() - local_started
         try:
             # Cargo is authoritative for existing private files. Do not merge a

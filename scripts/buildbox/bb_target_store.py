@@ -71,7 +71,7 @@ def tool_identity():
     return result
 
 
-def request_key(meta, env, job):
+def request_key(meta, env, job, components=None):
     source = meta.get('source') or {}
     tree = source.get('content_sha256')
     payload = env.get('BB_TARGET_REQUEST_SHA256')
@@ -87,9 +87,14 @@ def request_key(meta, env, job):
         if name in ignored or name.startswith(('BUILD_SLOT_', 'BB_', 'SCCACHE_')):
             continue
         selected[name] = value.replace(str(job), '$JOB')
-    return digest({'version': VERSION, 'source': source, 'argv': meta['argv'],
-                   'cwd': str(Path.cwd()), 'environment': digest(selected),
-                   'tools': tool_identity(), 'target': env.get('CARGO_TARGET_DIR')})
+    inputs = {'version': VERSION, 'source': source, 'argv': meta['argv'],
+              'cwd': str(Path.cwd()), 'environment': digest(selected),
+              'tools': tool_identity(), 'target': env.get('CARGO_TARGET_DIR')}
+    if components is not None:
+        # Diagnose missed reuse without persisting argument/environment bodies.
+        # This is observational: the exact original key payload is unchanged.
+        components.update({name: digest(value) for name, value in inputs.items()})
+    return digest(inputs)
 
 
 def inspect_tree(root):
