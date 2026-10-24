@@ -51,7 +51,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "n" | "no" => false,
                 _ => return Err(Error::Invalid("approval requires yes or no".into())),
             };
-            self.approvals.as_ref().ok_or_else(|| Error::Unauthorized("client has no authenticated approval connection".into()))?.decide(file, approved).await?;
+            self.approvals
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Unauthorized("client has no authenticated approval connection".into())
+                })?
+                .decide(file, approved)
+                .await?;
             return Ok(Some(request.binding()?.operation_id));
         }
         Ok(None)
@@ -88,8 +94,22 @@ mod tests {
             assert!(observed.snapshot.take().unwrap().files.is_empty());
             use futures::StreamExt as _;
             let operation_id = OperationId::new();
-            let request_key = files::FileKey::Task { task: component(task.to_string())?, file: files::TaskFile::ApprovalRequest(component(crate::InteractionId::new().to_string())?) };
-            let request_file = files::FileValue::new(request_key, serde_json::to_vec(&crate::interaction::Interaction::Approval { prompt: "approve action".into(), operation_id, action_digest: [7; 32], subject: crate::interaction::ApprovalSubject::Opaque {} }).map_err(codec)?);
+            let request_key = files::FileKey::Task {
+                task: component(task.to_string())?,
+                file: files::TaskFile::ApprovalRequest(component(
+                    crate::InteractionId::new().to_string(),
+                )?),
+            };
+            let request_file = files::FileValue::new(
+                request_key,
+                serde_json::to_vec(&crate::interaction::Interaction::Approval {
+                    prompt: "approve action".into(),
+                    operation_id,
+                    action_digest: [7; 32],
+                    subject: crate::interaction::ApprovalSubject::Opaque {},
+                })
+                .map_err(codec)?,
+            );
             let request = files::FileApproval::decode(&request_file)?;
             volume.append(volume.head().await?, &request_file).await?;
             let opened = observed.changes.next().await.unwrap()?;
@@ -168,7 +188,12 @@ mod tests {
             assert_eq!(volume.snapshot(&query, 4).await?.files.len(), 1);
             // A raw volume handle is not an authenticated human connection.
             // The former writer accepted this same yes/no input and persisted a verdict.
-            assert!(matches!(client.submit(if approved { "y" } else { "n" }, &NoReads).await, Err(Error::Unauthorized(_))));
+            assert!(matches!(
+                client
+                    .submit(if approved { "y" } else { "n" }, &NoReads)
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
             assert_eq!(volume.snapshot(&query, 4).await?.files.len(), 1);
             assert_eq!(volume.snapshot(&pending, 1).await?.files.len(), 1);
             assert!(

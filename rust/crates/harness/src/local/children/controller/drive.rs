@@ -16,12 +16,24 @@ impl LocalHarness {
             let mut inherited_stopped = false;
             let approver_done = acyclic_fs::CancellationToken::new();
             let approver_passive = acyclic_fs::CancellationToken::new();
-            let signals = ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone(), parent_passive: approver_passive.clone() };
+            let signals = ChildSignals {
+                inherited: inherited.clone(),
+                parent_done: approver_done.clone(),
+                parent_passive: approver_passive.clone(),
+            };
             let mut children = self.initial_child_drivers(&files, &signals).await?;
             let scoped = draining::Commands::new(self, commands);
             let cancellation = &scoped.cancellation;
             let drained = &scoped.drained;
-            let parent = self.advance_parent(task, commands, &scoped, &control, cancellation, &approver_done, &approver_passive);
+            let parent = self.advance_parent(
+                task,
+                commands,
+                &scoped,
+                &control,
+                cancellation,
+                &approver_done,
+                &approver_passive,
+            );
             futures::pin_mut!(parent);
             let mut parent_done = false;
             let mut detached_approval = false;
@@ -103,7 +115,9 @@ impl LocalHarness {
                     }
                 }
             }).await;
-            if result.is_err() { approver_done.cancel(); }
+            if result.is_err() {
+                approver_done.cancel();
+            }
             drain_parent(
                 result,
                 parent.as_mut(),
@@ -152,7 +166,11 @@ impl LocalHarness {
                     Arc::clone(files),
                     reference,
                     request,
-                    Some(ChildSignals { inherited: signals.inherited.clone(), parent_done: signals.parent_done.clone(), parent_passive: signals.parent_passive.clone() }),
+                    Some(ChildSignals {
+                        inherited: signals.inherited.clone(),
+                        parent_done: signals.parent_done.clone(),
+                        parent_passive: signals.parent_passive.clone(),
+                    }),
                 ));
             }
         }
@@ -175,29 +193,42 @@ impl LocalHarness {
         approver_done: &acyclic_fs::CancellationToken,
         approver_passive: &acyclic_fs::CancellationToken,
     ) -> Result<DriveState> {
-        let state = crate::package::harness::worker::advance_while(self, task, scoped, control.as_ref(), || async {
-            if cancellation.is_cancelled()
-                || commands
-                    .invocation_cancellation()
-                    .is_some_and(|token| token.is_cancelled())
-            {
-                return Ok(false);
-            }
-            match control {
-                None => Ok(true),
-                Some(crate::local::approvals::Inbox { files, reference, .. }) => Ok(super::super::commands::state(
-                    files,
-                    reference,
-                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                )
-                .await?
-                    == ChildState::Running),
-            }
-        })
+        let state = crate::package::harness::worker::advance_while(
+            self,
+            task,
+            scoped,
+            control.as_ref(),
+            || async {
+                if cancellation.is_cancelled()
+                    || commands
+                        .invocation_cancellation()
+                        .is_some_and(|token| token.is_cancelled())
+                {
+                    return Ok(false);
+                }
+                match control {
+                    None => Ok(true),
+                    Some(crate::local::approvals::Inbox {
+                        files, reference, ..
+                    }) => Ok(super::super::commands::state(
+                        files,
+                        reference,
+                        usize::try_from(self.limits.render_bytes).map_err(storage)?,
+                    )
+                    .await?
+                        == ChildState::Running),
+                }
+            },
+        )
         .await?;
-        if state == DriveState::AwaitingApproval { approver_passive.cancel(); }
+        if state == DriveState::AwaitingApproval {
+            approver_passive.cancel();
+        }
         match coordination(|| self.runtime.task_host().terminal_status(task)).await? {
-            Some(crate::Outcome::Indeterminate { operation_id, cause }) => return Err(cause.into_error(operation_id)),
+            Some(crate::Outcome::Indeterminate {
+                operation_id,
+                cause,
+            }) => return Err(cause.into_error(operation_id)),
             Some(_) => approver_done.cancel(),
             None => {}
         }

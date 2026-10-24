@@ -444,10 +444,10 @@ finally:a.close();b.close()
         env={'BB_JOB_EXPORT_SPEC':json.dumps(spec),'CARGO_TARGET_DIR':str(self.d)}
         meta=str(prefix)+'.receipt-meta.v2.json'
         try:
-            job.export_job_outputs(meta,env)
+            job.export_job_outputs(meta,env['BB_JOB_EXPORT_SPEC'],env)
             manifest=output/'manifest.json';manifest.write_bytes(b'owner-only')
             with self.assertRaisesRegex(RuntimeError,'another receipt'):
-                job.export_job_outputs(str(prefix)+'.foreign.receipt-meta.v2.json',env)
+                job.export_job_outputs(str(prefix)+'.foreign.receipt-meta.v2.json',env['BB_JOB_EXPORT_SPEC'],env)
             self.assertEqual(manifest.read_bytes(),b'owner-only')
             # The former unbound call lets a foreign fixture overwrite it.
             exports.prepare(spec,str(self.d))

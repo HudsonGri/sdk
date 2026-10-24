@@ -422,7 +422,7 @@ fn expired_historical_event(issuer: &AuthorityIssuer) -> Result<Event> {
         &issuer.id,
         &issuer.runtime.workload,
         admitted_at,
-        &name,
+        Some(&name),
         None,
     )?;
     let mut scope = Scope {

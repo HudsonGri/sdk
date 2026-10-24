@@ -142,7 +142,9 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             return Err(Error::LimitExceeded);
         }
         let pending = index.approvals.files(index, task);
-        let available = maximum.checked_sub(pending.len()).ok_or(Error::LimitExceeded)?;
+        let available = maximum
+            .checked_sub(pending.len())
+            .ok_or(Error::LimitExceeded)?;
         let mut files = Vec::new();
         for kind in 0..=7 {
             for ((_, _, sequence), key) in index

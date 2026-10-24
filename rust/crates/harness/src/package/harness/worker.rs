@@ -44,85 +44,85 @@ where
     Fut: Future<Output = Result<bool>> + Send,
 {
     Box::pin(async move {
-    let worker = crate::distributed::Worker {
-        id: format!("local-{}", crate::identity::fresh_uuid()),
-        available: Default::default(),
-        labels: Default::default(),
-    };
-    let mut attempt = match Box::pin(
-        local
-            .task_runtime()
-            .task_host()
-            .recover_work(task, &mut None),
-    )
-    .await?
-    {
-        crate::distributed::WorkPull::Claimed(lease) => Some(
+        let worker = crate::distributed::Worker {
+            id: format!("local-{}", crate::identity::fresh_uuid()),
+            available: Default::default(),
+            labels: Default::default(),
+        };
+        let mut attempt = match Box::pin(
             local
-                .task_runtime()
-                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                .await,
-        ),
-        crate::distributed::WorkPull::Unresolved { error, .. } => {
-            if local
                 .task_runtime()
                 .task_host()
-                .outcome(task)
-                .await?
-                .is_none()
-            {
-                return Err(error);
-            }
-            None
-        }
-        crate::distributed::WorkPull::Idle => {
-            local
-                .task_runtime()
-                .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                .await?
-        }
-    };
-    loop {
-        match attempt {
-            Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
-                return Err(error);
-            }
-            Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                crate::filesystem::TaskWorkerOutcome::Yielded { lease },
-            )) => {
-                attempt = Some(
-                    local
-                        .task_runtime()
-                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                        .await,
-                );
-            }
-            Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                crate::filesystem::TaskWorkerOutcome::Suspended { .. },
-            ))
-            | None => {
-                if !continue_work().await? {
-                    break;
-                }
-                if local.service_approvals(task, commands, inbox).await?
-                    == DriveState::AwaitingApproval
+                .recover_work(task, &mut None),
+        )
+        .await?
+        {
+            crate::distributed::WorkPull::Claimed(lease) => Some(
+                local
+                    .task_runtime()
+                    .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                    .await,
+            ),
+            crate::distributed::WorkPull::Unresolved { error, .. } => {
+                if local
+                    .task_runtime()
+                    .task_host()
+                    .outcome(task)
+                    .await?
+                    .is_none()
                 {
-                    return Ok(DriveState::AwaitingApproval);
+                    return Err(error);
                 }
-                // Only an authenticated wake makes a passive command claimable.
-                // Without one, run_operation returns None and yields control.
-                attempt = local
+                None
+            }
+            crate::distributed::WorkPull::Idle => {
+                local
                     .task_runtime()
                     .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                    .await?;
-                if attempt.is_none() {
-                    break;
-                }
+                    .await?
             }
-            _ => break,
+        };
+        loop {
+            match attempt {
+                Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
+                    return Err(error);
+                }
+                Some(crate::filesystem::TaskWorkerAttempt::Progress(
+                    crate::filesystem::TaskWorkerOutcome::Yielded { lease },
+                )) => {
+                    attempt = Some(
+                        local
+                            .task_runtime()
+                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                            .await,
+                    );
+                }
+                Some(crate::filesystem::TaskWorkerAttempt::Progress(
+                    crate::filesystem::TaskWorkerOutcome::Suspended { .. },
+                ))
+                | None => {
+                    if !continue_work().await? {
+                        break;
+                    }
+                    if local.service_approvals(task, commands, inbox).await?
+                        == DriveState::AwaitingApproval
+                    {
+                        return Ok(DriveState::AwaitingApproval);
+                    }
+                    // Only an authenticated wake makes a passive command claimable.
+                    // Without one, run_operation returns None and yields control.
+                    attempt = local
+                        .task_runtime()
+                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
+                        .await?;
+                    if attempt.is_none() {
+                        break;
+                    }
+                }
+                _ => break,
+            }
         }
-    }
-    local.refresh_command_task(task).await?;
-    Ok(DriveState::Quiescent)
+        local.refresh_command_task(task).await?;
+        Ok(DriveState::Quiescent)
     })
 }

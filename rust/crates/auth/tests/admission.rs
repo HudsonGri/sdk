@@ -77,7 +77,11 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
     ] {
         let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
         assert!(retained.check_request(current, changed, payload).is_err());
-        assert!(authenticated.authorize_history(current, changed, payload).is_err());
+        assert!(
+            authenticated
+                .authorize_history(current, changed, payload)
+                .is_err()
+        );
         assert!(proof.verify_history(current, changed, payload).is_err());
         assert!(
             saved_allow,

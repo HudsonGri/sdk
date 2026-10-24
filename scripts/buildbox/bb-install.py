@@ -81,7 +81,7 @@ def qualify(source, user):
                 ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
                 ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
                 ['python3', 'cargo_cache.test.py'], ['python3', 'custody.test.py'],
-                ['python3', 'windows-input.test.py']]
+                ['python3', 'command_custody.test.py'], ['python3', 'windows-input.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
         subprocess.run(['runuser', '-u', user, '--', *command], cwd=source, check=True, stdout=sys.stderr)
