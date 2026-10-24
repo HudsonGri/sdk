@@ -15,6 +15,7 @@ categories = ["filesystem"]
 test-support = ["dep:blake3", "tokio/macros", "tokio/time", "tokio/test-util"]
 
 [dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
 blake3 = { workspace = true, optional = true }
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.

@@ -21,6 +21,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-host-platform",
  "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-test-support",
@@ -438,6 +439,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -494,7 +496,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "which",
  "zeroize",
 ]
 
@@ -505,6 +506,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
  "blake3",
@@ -525,7 +527,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "which",
 ]
 
 [[package]]
@@ -626,6 +627,13 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vte",
+]
+
+[[package]]
+name = "acyclic-host-platform"
+version = "0.2.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -773,6 +781,7 @@ name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-grpc-observability",
+ "acyclic-host-platform",
  "acyclic-test-support",
  "blake3",
  "bytes",
