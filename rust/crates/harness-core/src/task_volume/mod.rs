@@ -1,4 +1,5 @@
 //! Logical task files over single-event appends and immutable segment views.
+mod approval_queries;
 mod child;
 mod child_queries;
 mod child_result;
@@ -25,6 +26,11 @@ mod publication;
 mod recent;
 #[doc(hidden)]
 pub use publication::publish;
+#[doc(hidden)]
+pub use publication::{DurableFile, publish_durable};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_open;
+mod opening;
 mod refresh;
 mod schema;
 mod segment;
@@ -57,7 +63,6 @@ use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
-use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
@@ -109,6 +114,9 @@ pub enum Error {
     /// An execution-owner condition failed without publishing any task files.
     #[error("task-volume execution fence conflict")]
     FenceConflict,
+    /// The provider has not yet confirmed this file in its durable prefix.
+    #[error("task file awaits durability")]
+    AwaitingDurability,
     /// Cursor identity or position cannot be resumed in this history/query.
     #[error("task-volume query reset required")]
     ResetRequired,
@@ -210,7 +218,7 @@ impl FileValue {
             && !matches!(
                 self.key,
                 FileKey::Child {
-                    file: ChildFile::Request,
+                    file: ChildFile::Request | ChildFile::Inbox(_),
                     ..
                 }
             )
@@ -251,6 +259,8 @@ struct Header {
 struct StoredFile {
     file: FileValue,
     position: u64,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    native_metadata_bytes: u64,
 }
 
 #[derive(Default)]
@@ -262,6 +272,7 @@ struct Index {
     commit: CommitId,
     files: FileIndex,
     commands: command_query::Commands,
+    approvals: approval_queries::Pending,
     views: recent::Views,
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
 }
@@ -318,73 +329,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             identity.to_hex()
         ))?)
     }
-    /// Opens or atomically initializes a volume, then reconstructs its logical index.
-    pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
-        let initialize = match provider.watermarks(path.clone()).await {
-            Ok(acyclic_stream::StreamWatermarks { accepted: 0, .. })
-            | Err(StreamError::NotFound) => true,
-            Ok(_) => false,
-            Err(error) => return Err(error.into()),
-        };
-        if initialize {
-            let header = Header {
-                volume: crate::identity::fresh_uuid(),
-                epoch: crate::identity::fresh_uuid(),
-                schema: SCHEMA,
-            };
-            provider
-                .append(AppendRequest {
-                    path: path.clone(),
-                    records: vec![
-                        serde_json::to_vec(&header)
-                            .map_err(|_| Error::InvalidSegment)?
-                            .into(),
-                    ],
-                    if_tail: Some(0),
-                    idempotency_key: None,
-                })
-                .await?;
-        }
-        Self::open_existing(provider, path).await
-    }
-
-    /// Opens a published volume without creating or writing any state.
-    pub async fn open_existing(provider: Arc<P>, path: StreamPath) -> Result<Self> {
-        let mut records = provider
-            .read(ReadRequest {
-                path: path.clone(),
-                from: 0,
-                limit: 1,
-            })
-            .await?;
-        let record = records.next().await.ok_or(Error::ResetRequired)??;
-        if record.sequence != 0 {
-            return Err(Error::InvalidSegment);
-        }
-        let header: Header =
-            serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if !matches!(header.schema, 2 | 3 | SCHEMA) {
-            return Err(Error::InvalidSegment);
-        }
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(path.as_str().as_bytes());
-        hasher.update(header.volume.as_bytes());
-        let scope = *hasher.finalize().as_bytes();
-        let volume = Self {
-            provider,
-            path,
-            index: Mutex::new(Index {
-                volume: scope,
-                epoch: header.epoch,
-                next: 1,
-                commit: record.commit_id,
-                ..Index::default()
-            }),
-        };
-        volume.refresh().await?;
-        Ok(volume)
-    }
-
     /// Current publication fence without copying the file index.
     pub async fn head(&self) -> Result<Generation> {
         self.refresh().await?;
@@ -430,10 +374,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             write,
             conditions,
             deadline_unix_millis,
-            false,
+            Mode::Append,
             work,
         )
         .await
+        .map(|(generation, _)| generation)
     }
 
     /// Creates one file only if absent at the exact query generation. Unlike an
@@ -457,29 +402,31 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             write,
             conditions,
             deadline_unix_millis,
-            true,
+            Mode::Create,
             work,
         )
         .await
+        .map(|(generation, _)| generation)
     }
 
-    async fn publish(
+    pub(super) async fn publish(
         &self,
         expected: Generation,
         write: &Write,
         conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
-        create_only: bool,
+        mode: Mode,
         work: NativeWork<'_>,
-    ) -> Result<Generation> {
+    ) -> Result<(Generation, bool)> {
         let Some((request, files, next)) = self
-            .prepare_append(expected, write, conditions, create_only, work)
+            .prepare_append(expected, write, conditions, mode, work)
             .await?
         else {
-            return Ok(expected);
+            return Ok((expected, false));
         };
         self.commit_append(expected, request, files, next, deadline_unix_millis)
             .await
+            .map(|generation| (generation, true))
     }
 
     async fn prepare_append(
@@ -487,7 +434,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         expected: Generation,
         write: &Write,
         mut conditions: Vec<CommitCondition>,
-        create_only: bool,
+        mode: Mode,
         work: NativeWork<'_>,
     ) -> Result<Option<(CommitRequest, FileValue, u64)>> {
         self.refresh().await?;
@@ -495,14 +442,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
         }
-        if create_only && index.files.contains_key(&write.key) {
+        if mode == Mode::Create && index.files.contains_key(&write.key) {
             return Err(Error::ImmutableConflict(write.key.clone()));
         }
         validate_file(&index, write)?;
-        if index
-            .files
-            .get(&write.key)
-            .is_some_and(|stored| &stored.file == write)
+        if mode != Mode::Acknowledged
+            && index
+                .files
+                .get(&write.key)
+                .is_some_and(|stored| &stored.file == write)
         {
             return Ok(None);
         }
@@ -732,6 +680,18 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     Ok(())
 }
 
+/// How a publication treats an identical accepted copy of its file.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Mode {
+    /// Succeed without a new record.
+    Append,
+    /// Fail: creation must be the first copy.
+    Create,
+    /// Commit this publisher's own copy, so success carries the provider's
+    /// acknowledgement of a commit that includes the exact file.
+    Acknowledged,
+}
+
 // The only mutation of the file index; derived views and command indexes
 // fold the same replacement, never a separately maintained copy of it.
 fn apply(index: &mut Index, file: FileValue, position: u64) {
@@ -747,11 +707,18 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
             .or_default()
             .push(file.key.clone());
     }
+    index.approvals.record(&index.files, &file.key);
     let command = index.commands.prepare(&index.files, &file.key);
     let display = recent::Views::prepare(&file, position);
-    let previous = index
-        .files
-        .insert(file.key.clone(), StoredFile { file, position });
+    let previous = index.files.insert(
+        file.key.clone(),
+        StoredFile {
+            file,
+            position,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata_bytes: 0,
+        },
+    );
     index.views.record(display, previous.as_ref());
     index.commands.record(command, position, previous.is_some());
 }

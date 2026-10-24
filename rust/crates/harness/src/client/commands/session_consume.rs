@@ -96,12 +96,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         } else {
             execute(operation, task_id, resolution).await
         };
-        if claimed
-            && matches!(
-                &result,
-                Err(Error::Indeterminate(_) | Error::CommandIndeterminate { .. })
-            )
-        {
+        if matches!(
+            &result,
+            Err(Error::Indeterminate(_) | Error::CommandIndeterminate { .. })
+        ) {
             return result.map(Some);
         }
         let result_key = key(files::TaskFile::ExecutionResult(id.clone()));
