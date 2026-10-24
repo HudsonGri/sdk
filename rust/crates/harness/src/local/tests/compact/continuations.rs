@@ -317,7 +317,7 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     // under the admission gate, and agree on one admission. Before, both
     // captured outside it at once and could stage different positions.
     let captures = &super::super::super::compact::HISTORY_CAPTURES;
-    captures.with(|captures| captures.set((0, 0)));
+    captures.with(|captures| *captures.lock().unwrap() = (0, 0));
     let (raced, retried) = tokio::join!(
         local.submit_to(second, Some(first), "SECOND_PROMPT"),
         local.submit_to(second, Some(first), "SECOND_PROMPT"),
@@ -325,7 +325,7 @@ async fn completed_turns_continue_one_conversation_without_compaction() -> Resul
     let continued = admitted(raced?);
     assert_eq!(admitted(retried?), continued);
     assert_eq!(
-        captures.with(std::cell::Cell::get),
+        captures.with(|captures| *captures.lock().unwrap()),
         (0, 1),
         "history captures overlapped outside the admission gate"
     );

@@ -260,33 +260,43 @@ impl LocalHarness {
 
 #[cfg(test)]
 thread_local! {
-    /// History captures in flight on this thread, and their peak.
-    pub(in crate::local) static HISTORY_CAPTURES: std::cell::Cell<(usize, usize)> =
-        const { std::cell::Cell::new((0, 0)) };
+    /// Captures initiated on this thread, including those resumed elsewhere.
+    pub(in crate::local) static HISTORY_CAPTURES: std::sync::Arc<std::sync::Mutex<(usize, usize)>> =
+        std::sync::Arc::new(std::sync::Mutex::new((0, 0)));
 }
 
 #[cfg(test)]
-struct Capturing;
+struct Capturing(std::sync::Arc<std::sync::Mutex<(usize, usize)>>);
 
 #[cfg(test)]
 impl Capturing {
     fn enter() -> Self {
-        HISTORY_CAPTURES.with(|captures| {
-            let (active, peak) = captures.get();
-            captures.set((active + 1, peak.max(active + 1)));
-        });
-        Self
+        let counter = HISTORY_CAPTURES.with(std::sync::Arc::clone);
+        {
+            let mut captures = counter.lock().unwrap();
+            captures.0 += 1;
+            captures.1 = captures.1.max(captures.0);
+        }
+        Self(counter)
     }
 }
 
 #[cfg(test)]
 impl Drop for Capturing {
     fn drop(&mut self) {
-        HISTORY_CAPTURES.with(|captures| {
-            let (active, peak) = captures.get();
-            captures.set((active - 1, peak));
-        });
+        self.0.lock().unwrap().0 -= 1;
     }
+}
+
+#[test]
+fn history_capture_counter_follows_its_guard_across_worker_threads() {
+    HISTORY_CAPTURES.with(|captures| *captures.lock().unwrap() = (0, 0));
+    let guard = Capturing::enter();
+    std::thread::scope(|scope| scope.spawn(move || drop(guard)).join().unwrap());
+    assert_eq!(
+        HISTORY_CAPTURES.with(|captures| *captures.lock().unwrap()),
+        (0, 1)
+    );
 }
 
 fn append_source(text: &mut String, suffix: &str, limits: Limits) -> Result<()> {
