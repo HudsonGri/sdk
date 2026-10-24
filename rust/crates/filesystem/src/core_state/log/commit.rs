@@ -104,16 +104,7 @@ impl CoreLog {
         let needed = self.dirty.len().checked_add(dirty).ok_or(
             crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
         )?;
-        if let Some(work) = work {
-            reserve_retained_slots(&mut self.dirty, needed, work, &mut self.slots)?;
-        } else if let Some(allocation) = &self.slots {
-            let original = allocation.work().clone();
-            reserve_retained_slots(&mut self.dirty, needed, &original, &mut self.slots)?;
-        } else {
-            self.dirty
-                .try_reserve(dirty)
-                .map_err(std::io::Error::other)?;
-        }
+        reserve_retained_slots(&mut self.dirty, needed, work, &mut self.slots)?;
         work.map(|work| {
             work.reserve_work(Residents::installation_work(count)?)
                 .map_err(LocalCoreStateStoreError::from)
