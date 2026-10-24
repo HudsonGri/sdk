@@ -98,7 +98,7 @@ where
 #[tokio::test]
 async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
     let provider = Arc::new(text_model(1));
-    let unaccounted = Arc::new(text_model(1).without_accounting());
+    let disabled_provider = Arc::new(text_model(1));
     let policy = crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
         response_reserve_tokens: 1_024,
         recent_tokens: 2_048,
@@ -132,7 +132,7 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
         .builder()
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
-            unaccounted.clone(),
+            disabled_provider.clone(),
         )
         .grant(capability::MODEL_GENERATE)
         .compaction(crate::context::CompactionPolicy::Disabled)
@@ -147,11 +147,11 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
     let requests = provider
         .requests()
         .into_iter()
-        .chain(unaccounted.requests())
+        .chain(disabled_provider.requests())
         .collect::<Vec<_>>();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].max_output_tokens, Some(1_024));
-    assert_eq!(requests[1].max_output_tokens, None);
+    assert_eq!(requests[1].max_output_tokens, Some(4_096));
     Ok(())
 }
 

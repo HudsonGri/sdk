@@ -109,7 +109,7 @@ impl StockExecution<'_> {
             tool_hooks: Option<(&'static str, &'a [u8; 32])>,
             inherited_prefix: Option<&'a FileRef>,
             compaction: &'a crate::context::CompactionPolicy,
-            model_capacity: Option<crate::context::ModelContextCapacity>,
+            model_capacity: crate::context::ModelContextCapacity,
             #[serde(skip_serializing_if = "Option::is_none")]
             task_id: Option<TaskId>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,7 +127,7 @@ impl StockExecution<'_> {
         });
         preparation_digest(
             &Request {
-                executor: "acyclic.stock.v9",
+                executor: "acyclic.stock.v10",
                 conversation_id: self.conversation_id(),
                 summary_source: self.stock.summary_source.as_deref(),
                 input,

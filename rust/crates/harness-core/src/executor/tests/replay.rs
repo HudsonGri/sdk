@@ -106,7 +106,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_max_output_tokens(8_192)?;
+    .with_max_output_tokens(1_024)?;
     let journal = Journal::default();
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -125,12 +125,12 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         )?
         .request()
         .max_output_tokens,
-        Some(8_192)
+        Some(1_024)
     );
     assert!(
         executor
             .clone()
-            .with_max_output_tokens(16_384)?
+            .with_max_output_tokens(2_048)?
             .model_step(&journal, &input, 0, &[])
             .await
             .is_err()
@@ -190,7 +190,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
     executor.execute(input.clone(), journal.as_ref()).await?;
     executor.execute(input.clone(), journal.as_ref()).await?;
     let mut expected = root.request().clone();
-    expected.max_output_tokens = None;
+    expected.max_output_tokens = Some(4_096);
     expected.messages.push(ModelMessage {
         role: ModelRole::User,
         content: input.input.clone(),
@@ -263,7 +263,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         model
             .requests()
             .iter()
-            .all(|request| request.max_output_tokens.is_none())
+            .all(|request| request.max_output_tokens == Some(4096))
     );
     let changed = Limits {
         model_steps: 3,
@@ -761,11 +761,11 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         let request = &requests[0];
         assert!(request.messages.starts_with(&root.request().messages));
         assert_eq!(
-            request.messages.last().unwrap().content,
+            request.messages[1].content,
             ModelContent::Text("required convention".into())
         );
         assert_eq!(
-            request.messages[1 + usize::from(expect_environment)].content,
+            request.messages[2 + usize::from(expect_environment)].content,
             ModelContent::Text("child task".into())
         );
         assert!(request.messages.len() <= message_limit);

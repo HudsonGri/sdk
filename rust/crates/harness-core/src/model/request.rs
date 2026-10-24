@@ -380,6 +380,7 @@ impl PreparedModelRequest {
     pub fn request(&self) -> &ModelRequest {
         &self.request
     }
+    #[cfg(test)]
     pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
         self.request.messages
     }
