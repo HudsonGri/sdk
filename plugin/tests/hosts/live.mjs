@@ -11,7 +11,7 @@
 // outside the workspace are outside the host's writable roots, as they are
 // for a real user.
 //
-//   node live.mjs --host codex|claude-code --binary <acyclic executable> [--keep]
+//   node live.mjs --host codex|claude-code --binary <acyclic executable> [--model <claude model, default claude-haiku-5-5>] [--keep]
 //
 // Prints one JSON verdict line; evidence stays in the fixture directory.
 import { spawn, spawnSync } from "node:child_process";
@@ -143,7 +143,8 @@ function hostCommand() {
     ]];
   }
   return [hostBinary("claude"), [
-    "-p", PROMPT, "--output-format", "stream-json", "--verbose", "--include-hook-events",
+    // Every run against a real Anthropic model uses Haiku, to keep cost down.
+    "-p", PROMPT, "--model", argument("--model", "claude-haiku-5-5"), "--output-format", "stream-json", "--verbose", "--include-hook-events",
     // Edits are accepted inside the working directories only; shell
     // commands are allowed for the steps the prompt names and nothing else.
     "--permission-mode", "acceptEdits",
