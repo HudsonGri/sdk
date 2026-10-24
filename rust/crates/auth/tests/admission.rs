@@ -22,6 +22,14 @@ fn authenticated_admission_transfers_the_single_verified_workload() -> TestResul
         .record(&workload, &request, [7; 32], &[8; 32])?;
     let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
     let identity = authenticated.workload().block_ids().as_ptr();
+    authenticated.check_request(&trust, &request, [7; 32])?;
+    authenticated.check_request(&trust, &request, [7; 32])?;
+    assert!(
+        authenticated
+            .check_request(&trust, &request, [9; 32])
+            .is_err()
+    );
+    assert_eq!(identity, authenticated.workload().block_ids().as_ptr());
     let transferred = authenticated.authorize(&trust, &request, [7; 32])?;
     assert_eq!(identity, transferred.block_ids().as_ptr());
     // The former second verification creates a distinct authenticated chain,
@@ -57,9 +65,10 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
         ..request
     };
     // Saving a successful authorization would admit these changed requests.
-    // Each newly authenticated proof must instead consume a fresh decision.
+    // Retained and newly authenticated proofs must both recheck each decision.
     let saved_allow = proof.verify_history(&trust, &request, [7; 32]).is_ok();
     assert!(saved_allow);
+    let retained = proof.authenticate_history(&trust, signed::NOW)?;
     for (current, changed, payload) in [
         (&trust, &request, [6; 32]),
         (&trust, &wrong_path, [7; 32]),
@@ -67,6 +76,7 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
         (&revoked, &request, [7; 32]),
     ] {
         let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
+        assert!(retained.check_request(current, changed, payload).is_err());
         assert!(authenticated.authorize(current, changed, payload).is_err());
         assert!(proof.verify_history(current, changed, payload).is_err());
         assert!(

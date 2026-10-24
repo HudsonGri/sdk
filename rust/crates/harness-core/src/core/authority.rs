@@ -490,7 +490,7 @@ impl AuthorityIssuer {
         effect_id: EffectId,
         effect: &EffectState,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         self.verifier(work)?
             .verify_effect_plan(effect_id, effect, work)
     }
@@ -587,7 +587,7 @@ impl AuthorityVerifier {
         effect_id: EffectId,
         effect: &EffectState,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         let event = effect
             .planning
             .as_ref()
@@ -652,6 +652,7 @@ impl AuthorityVerifier {
                 trust: std::sync::RwLock::new(trust),
                 metadata_key: checkpoint_key,
                 workload: Default::default(),
+                historical: Default::default(),
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })
@@ -821,7 +822,7 @@ impl AuthorityVerifier {
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         if event.scope.issuer != self.id {
             return Err(Error::Unauthorized(
                 "event admission attestation is invalid".into(),
@@ -847,7 +848,7 @@ impl AuthorityVerifier {
         &self,
         event: &Event,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
         let digest = self.event_digest(event, work)?;
         workload::verify_record(
             self,

@@ -63,6 +63,14 @@ fn exchange(mut command: Command, requests: &[FileValue], expected: i32) {
     );
 }
 
+fn model_calls(fixture: &Fixture) -> (usize, usize, usize) {
+    (
+        fixture.root_calls.load(Ordering::SeqCst),
+        fixture.child_calls.load(Ordering::SeqCst),
+        fixture.reviews.load(Ordering::SeqCst),
+    )
+}
+
 async fn recovery(case: Case, cancel: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -115,20 +123,12 @@ async fn recovery(case: Case, cancel: bool) {
                 &[decision.clone(), decision.clone()],
                 0,
             );
-            let settled_calls = (
-                fixture.root_calls.load(Ordering::SeqCst),
-                fixture.child_calls.load(Ordering::SeqCst),
-                fixture.reviews.load(Ordering::SeqCst),
-            );
+            let settled_calls = model_calls(&fixture);
             eprintln!("approval recovery {case:?}: retrying decision");
             exchange(files.command(case, operation), &[decision], 0);
             eprintln!("approval recovery {case:?}: settled");
             assert_eq!(
-                (
-                    fixture.root_calls.load(Ordering::SeqCst),
-                    fixture.child_calls.load(Ordering::SeqCst),
-                    fixture.reviews.load(Ordering::SeqCst),
-                ),
+                model_calls(&fixture),
                 settled_calls,
                 "exact decision retry dispatched another model request"
             );
