@@ -22,8 +22,8 @@ proptest! {
         }
     }
 
-    // Every settled result, including bounded output omission, preserves its
-    // explicit completion class instead of trying to classify error strings.
+    // Terminal results preserve their explicit completion class even when
+    // bounded. An indeterminate delivery remains open for owner recovery.
     #[test]
     fn completion_class_survives_bounded_outcome_files(count in 0usize..4096) {
         for kind in 0u8..5 { futures::executor::block_on(async {
@@ -46,6 +46,11 @@ proptest! {
                 }
             }).await;
             assert_eq!(result.is_ok(), kind == 0);
+            if kind == 4 {
+                assert!(matches!(result, Err(ref error) if super::super::HeadlessOutcome::from_error(error) == expected));
+                assert!(commands.output_page(0).unwrap().is_none(), "passive command acquired a terminal outcome");
+                return;
+            }
             let saved = commands.output_page(0).unwrap().unwrap();
             let bytes = serde_json::to_vec(&saved).unwrap();
             assert!(bytes.len() <= 1024);
