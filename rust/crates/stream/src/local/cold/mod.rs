@@ -9,7 +9,10 @@ use crate::MAX_COMMAND_BYTES;
 
 mod index;
 mod page;
+mod physical;
+mod record;
 mod root;
+mod segment;
 mod slots;
 
 use page::{Buffer, Page, PageKind, PageRef};

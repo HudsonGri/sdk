@@ -108,6 +108,10 @@ fn checksum(segment: u64, ordinal: u8, body: &[u8]) -> [u8; 32] {
 }
 
 impl Slot {
+    pub(super) const fn hash_bytes() -> u64 {
+        (SLOT_DOMAIN.len() + 8 + 1 + SLOT_BYTES - 32) as u64
+    }
+
     pub(super) fn encoded(self, segment: u64, ordinal: u8) -> [u8; SLOT_BYTES] {
         let mut bytes = [0; SLOT_BYTES];
         let (body, digest) = bytes.split_at_mut(SLOT_BYTES - 32);
