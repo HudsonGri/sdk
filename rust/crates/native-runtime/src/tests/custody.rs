@@ -20,6 +20,54 @@ fn ownership_release_barrier_waits_for_the_final_clone() {
     barrier.wait();
 }
 
+#[test]
+fn ownership_release_barrier_requires_physical_owner_and_fence_cleanup() {
+    struct Cleanup {
+        entered: std::sync::mpsc::Sender<()>,
+        finish: Mutex<std::sync::mpsc::Receiver<()>>,
+        completed: Arc<AtomicBool>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.entered.send(()).unwrap();
+            self.finish.get_mut().unwrap().recv().unwrap();
+            self.completed.store(true, Ordering::Release);
+        }
+    }
+    for retain_as_fence in [false, true] {
+        let (entered, cleanup_started) = std::sync::mpsc::channel();
+        let (finish, cleanup_allowed) = std::sync::mpsc::channel();
+        let completed = Arc::new(AtomicBool::new(false));
+        let cleanup = Cleanup {
+            entered,
+            finish: Mutex::new(cleanup_allowed),
+            completed: completed.clone(),
+        };
+        let owner = if retain_as_fence {
+            OwnershipAnchor::fenced(OwnershipAnchor::new(()), cleanup)
+        } else {
+            OwnershipAnchor::new(cleanup)
+        };
+        let barrier = owner.release_barrier();
+        let dropping = std::thread::spawn(move || drop(owner));
+        cleanup_started.recv().unwrap();
+        // The last Arc is already gone here, but physical cleanup is held.
+        // Release the fixture before asserting so the old implementation also
+        // terminates cleanly instead of leaving a blocked destructor behind.
+        let early_release = barrier.is_released();
+        let early_completion = completed.load(Ordering::Acquire);
+        finish.send(()).unwrap();
+        dropping.join().unwrap();
+        assert!(
+            !early_release,
+            "release preceded physical cleanup (fence={retain_as_fence})"
+        );
+        assert!(!early_completion);
+        barrier.wait();
+        assert!(completed.load(Ordering::Acquire));
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {

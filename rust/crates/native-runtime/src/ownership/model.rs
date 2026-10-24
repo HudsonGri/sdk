@@ -13,6 +13,48 @@ impl Drop for Cleanup {
     }
 }
 
+struct CleanupCompletion(Arc<AtomicBool>);
+impl Drop for CleanupCompletion {
+    fn drop(&mut self) {
+        loom::thread::yield_now();
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn release_notification_never_precedes_physical_cleanup() {
+    loom::model(|| {
+        let completed = Arc::new(AtomicBool::new(false));
+        let owner = OwnershipAnchor::new(CleanupCompletion(completed.clone()));
+        let barrier = owner.release_barrier();
+        let reader = loom::thread::spawn(move || {
+            if barrier.is_released() {
+                assert!(
+                    completed.load(Ordering::SeqCst),
+                    "release preceded physical cleanup"
+                );
+            }
+        });
+        drop(owner);
+        reader.join().unwrap();
+    });
+}
+
+#[test]
+fn release_notification_wakes_waiters_without_losing_the_cleanup_boundary() {
+    loom::model(|| {
+        let completed = Arc::new(AtomicBool::new(false));
+        let owner = OwnershipAnchor::new(CleanupCompletion(completed.clone()));
+        let barrier = owner.release_barrier();
+        let reader = loom::thread::spawn(move || {
+            barrier.wait();
+            assert!(completed.load(Ordering::SeqCst));
+        });
+        drop(owner);
+        reader.join().unwrap();
+    });
+}
+
 fn check(reversed: bool) {
     loom::model(move || {
         // One lock: reopening must wait until the former owner's cleanup ends.

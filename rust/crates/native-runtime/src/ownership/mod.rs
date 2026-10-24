@@ -15,15 +15,24 @@ impl Clone for OwnershipAnchor {
     }
 }
 
-impl Drop for OwnershipReleaseBarrier {
+struct ReleaseState {
+    complete: crate::sync::Mutex<bool>,
+    changed: crate::sync::Condvar,
+}
+
+// This field must be dropped after both the resource and every retained fence.
+// Arc's strong count reaches zero *before* running the resource destructor.
+struct ReleaseNotification(Arc<ReleaseState>);
+
+impl Drop for ReleaseNotification {
     fn drop(&mut self) {
-        if self.owner.strong_count() == 0 {
-            let (lock, released) = &*self.released;
-            let _guard = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            released.notify_all();
-        }
+        let mut complete = self
+            .0
+            .complete
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *complete = true;
+        self.0.changed.notify_all();
     }
 }
 
@@ -33,6 +42,7 @@ impl Drop for OwnershipReleaseBarrier {
 struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
+    released: ReleaseNotification,
 }
 
 impl<Owner, Fence> SharedOwner<Owner, Fence> {
@@ -40,6 +50,10 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
+            released: ReleaseNotification(Arc::new(ReleaseState {
+                complete: crate::sync::Mutex::new(false),
+                changed: crate::sync::Condvar::new(),
+            })),
         }
     }
 
@@ -88,13 +102,10 @@ impl OwnershipAnchor {
 
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
-        let owner: Arc<dyn RetainFence> =
-            Arc::new(SharedOwner::<_, Box<dyn Send + Sync>>::new(owner));
+        let owner = Arc::new(SharedOwner::<_, Box<dyn Send + Sync>>::new(owner));
+        let released = Arc::clone(&owner.released.0);
         Self {
-            release: OwnershipReleaseBarrier {
-                owner: Arc::downgrade(&owner),
-                released: Arc::new((Mutex::new(()), Condvar::new())),
-            },
+            release: OwnershipReleaseBarrier { released },
             _owner: owner,
         }
     }
@@ -103,7 +114,6 @@ impl OwnershipAnchor {
     #[must_use]
     pub fn release_barrier(&self) -> OwnershipReleaseBarrier {
         OwnershipReleaseBarrier {
-            owner: self.release.owner.clone(),
             released: Arc::clone(&self.release.released),
         }
     }
@@ -111,26 +121,32 @@ impl OwnershipAnchor {
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
 pub struct OwnershipReleaseBarrier {
-    owner: Weak<dyn RetainFence>,
-    released: Arc<(Mutex<()>, Condvar)>,
+    released: Arc<ReleaseState>,
 }
 
 impl OwnershipReleaseBarrier {
-    /// Returns whether every ownership-anchor clone has released the owner.
+    /// Returns whether the final owner's cleanup and all retained fences finished.
     #[must_use]
     pub fn is_released(&self) -> bool {
-        self.owner.strong_count() == 0
+        *self
+            .released
+            .complete
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Blocks until every ownership-anchor clone has released the owner.
+    /// Blocks until the final owner's cleanup and all retained fences finished.
     pub fn wait(self) {
-        let (lock, released) = &*self.released;
-        let mut guard = lock
+        let mut complete = self
+            .released
+            .complete
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while self.owner.strong_count() != 0 {
-            guard = released
-                .wait(guard)
+        while !*complete {
+            complete = self
+                .released
+                .changed
+                .wait(complete)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
