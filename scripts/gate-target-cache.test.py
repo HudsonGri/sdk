@@ -21,12 +21,12 @@ class MatrixArtifacts(unittest.TestCase):
             root=Path(temporary);command,env=self.fixture(root)
             job=root/'job';target=root/'matrix'
             execute=gate.execute;flock=fcntl.flock
-            def contender(command,env):
+            def contender(command,env,pass_fds=()):
                 # A blocking parent lease at execution would deadlock every
                 # Cargo worker. Use the production lease with nonblocking flock.
                 with patch.object(fcntl,'flock',side_effect=lambda fd,mode:flock(fd,mode|fcntl.LOCK_NB)):
                     with gate.cache.local_target_leases(job,target/'worker-0'):pass
-                return execute(command,env)
+                return execute(command,env,pass_fds)
             with patch.object(gate,'private_inputs',return_value={'repo':'sdk'}), \
                  patch.object(gate.cache.store,'ROOT',root/'store'), \
                  patch.object(gate.cache.store,'request_key',return_value='lease-fixture'), \
@@ -67,6 +67,7 @@ if [ "$1" = metadata ]; then echo '{"workspace_members":["fixture"],"packages":[
                 target=root/str(negative)
                 script=function+f'''
 set -eu
+gate_output="{root}"
 gate_private_targets=0
 if python3 "{helper}" private "{target}"; then gate_private_targets=1; fi
 gate_cache_prepare "{target}" fixture-boot
@@ -93,6 +94,54 @@ gate_cache_prepare "{target}" fixture-boot
             self.assertIsNone(gate.private_inputs(flagged, ['/work/target/feature-proof']))
             # Former flag-only qualification falsely accepts this ordinary dir.
             self.assertEqual(flagged['BB_JOB_ACTIVE'], '1')
+            for malformed in [None, [], 'metadata', {'source': []}, {'job_prefix': []}]:
+                fake.write_text(json.dumps(malformed))
+                self.assertIsNone(gate.private_inputs(flagged, ['/work/target']))
+
+    def test_outputs_have_job_custody_and_do_not_mutate_uploaded_namespace(self):
+        output=gate.output_directory()
+        self.assertTrue(output.is_relative_to(Path(os.environ['BB_JOB_HOME']).parent))
+        self.assertFalse(output.is_relative_to(Path('/work/src')))
+        self.assertEqual(output.stat().st_mode & 0o777,0o700)
+        with patch.object(gate,'private_inputs',return_value=None):
+            self.assertEqual(gate.output_directory(),Path.cwd())
+        with self.assertRaisesRegex(ValueError,'outside job custody'):
+            gate.output_directory({**os.environ,'TMPDIR':'/tmp'})
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'tmp').mkdir();(root/'outside').mkdir()
+            (root/'tmp/gate-output').symlink_to(root/'outside',target_is_directory=True)
+            with patch.object(gate,'private_inputs',return_value={}),self.assertRaisesRegex(ValueError,'alias'):
+                gate.output_directory({'TMPDIR':str(root/'tmp'),'BB_JOB_HOME':str(root/'home')})
+
+    def test_killed_launcher_cannot_release_a_live_scheduler_lease(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); job=root/'job'; target=root/'target'
+            child='import sys;print("ready",flush=True);sys.stdin.read(1)'
+            launcher=root/'launcher.py'
+            launcher.write_text('''import importlib.util,os,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('gate',sys.argv[1]);gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
+with gate.matrix_lifetime(Path(sys.argv[2]),Path(sys.argv[3])) as lease:
+ gate.execute([sys.executable,'-c',sys.argv[4]],os.environ,pass_fds=(lease.fileno(),) if sys.argv[5]=='inherit' else ())
+''')
+            for inherited in [True,False]:
+                with self.subTest(inherited=inherited):
+                    process=subprocess.Popen([sys.executable,str(launcher),str(Path(gate.__file__)),str(job),str(target),child,
+                                              'inherit' if inherited else 'old-shape'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+                    try:
+                        self.assertEqual(process.stdout.readline(),b'ready\n')
+                        process.kill();process.wait()
+                        path=job/'gate-matrix-leases'/gate.cache.store.digest(str(target.resolve()))
+                        with path.open('a') as competitor:
+                            if inherited:
+                                with self.assertRaises(BlockingIOError):fcntl.flock(competitor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                            else:fcntl.flock(competitor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                        process.stdin.write(b'x');process.stdin.flush()
+                        self.assertEqual(process.stdout.read(),b'')
+                        with gate.matrix_lifetime(job,target):pass
+                    finally:
+                        process.stdin.close();process.stdout.close()
+                        if process.poll() is None:process.kill();process.wait()
 
     def fixture(self, root):
         script = root / 'matrix.py'
@@ -155,6 +204,31 @@ sys.exit(int(os.environ.get('MATRIX_RC','0')))
                     self.assertFalse((root/'store/entries'/name/'complete.json').exists())
             # Exact execution status includes signal termination, not just101.
             self.assertEqual(gate.execute([sys.executable,'-c','import os,signal;os.kill(os.getpid(),signal.SIGTERM)'],os.environ),143)
+
+    def test_added_source_during_matrix_uses_the_shared_publication_guard(self):
+        base=Path(__file__).parent/'buildbox'
+        modules=[]
+        for name,file in [('candidate_store','bb_target_store.py'),('cargo_controls','cargo_cache.test.py')]:
+            spec=importlib.util.spec_from_file_location(name,base/file)
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);modules.append(module)
+        store,controls=modules;guard=store.source_unchanged
+        for blind in [False,True]:
+            with self.subTest(blind=blind),tempfile.TemporaryDirectory(dir='/work/target') as temporary:
+                root=Path(temporary);source,env,meta=controls.LocalTargetLease.source_fixture(root)
+                command,driver=self.fixture(root)
+                # Preserve the source clock prepared by the shared fixture.
+                env.update(driver,SOURCE_ROOT=str(source))
+                # Replace the fixture's final exit with a source addition.
+                program=Path(command[1]);program.write_text(program.read_text().replace("sys.exit(int(os.environ.get('MATRIX_RC','0')))",
+                    "(pathlib.Path(os.environ['SOURCE_ROOT'])/'new.rs').write_text('new input')"))
+                with patch.object(gate.cache,'store',store),patch.object(gate,'private_inputs',return_value=meta), \
+                     patch.object(store,'ROOT',root/'store'),patch.object(store,'request_key',return_value='matrix-namespace'), \
+                     patch.object(store,'source_unchanged',side_effect=lambda m,e:guard(m,e,source)), \
+                     patch.object(store,'namespace_unchanged',wraps=store.namespace_unchanged) as inventory, \
+                     patch.object(gate.cache,'record'):
+                    if blind:inventory.side_effect=lambda *args:True
+                    self.assertEqual(gate.matrix(root/'matrix',command,env),0)
+                self.assertEqual((root/'store/entries/matrix-namespace/complete.json').is_file(),blind)
 
     def test_matrix_identity_is_full_source_command_environment_toolchain_and_target(self):
         meta={'repo':'sdk','source':{'content_sha256':'fixture'},'argv':['gate-feature-matrix-v1','node','matrix.mjs','6']}

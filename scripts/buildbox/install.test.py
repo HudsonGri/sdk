@@ -55,6 +55,63 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(tool.read_bytes(),b'original')
             self.assertEqual(list(Path(temporary).iterdir()),[tool])
 
+    def test_namespace_controls_are_mandatory_before_publication(self):
+        calls=[]
+        def run(command,**kwargs):
+            calls.append(command)
+            if command[-1]=='cargo_cache.test.py':raise subprocess.CalledProcessError(1,command)
+        with patch.object(installer.subprocess,'run',side_effect=run):
+            with self.assertRaises(subprocess.CalledProcessError):installer.qualify(Path('/fixture'),'var')
+        self.assertEqual(calls[-1][-1],'cargo_cache.test.py')
+        # Former qualification omitted this suite and would accept the same
+        # failing source-namespace control.
+        old=Path(installer.__file__).read_text().replace(
+            ",\n                ['python3', 'cargo_cache.test.py']",'')
+        namespace={};exec(compile(old,'old-qualification','exec'),namespace)
+        with patch.object(installer.subprocess,'run',side_effect=run):namespace['qualify'](Path('/fixture'),'var')
+
+    def test_selected_publication_preserves_peers_and_fences_stale_predecessors(self):
+        driver='''import importlib.util,sys,tempfile,shutil,json,os
+from pathlib import Path
+source=Path(sys.argv[1]);s=importlib.util.spec_from_file_location('installer',source);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+stage=Path(tempfile.mkdtemp(prefix='bb-install-control-',dir='/mnt/bb/tmp'))
+live=stage/'live';live.mkdir()
+try:
+ for name in m.TOOLS:
+  m.publish(stage/name,(source.parent/name).read_bytes(),0o444)
+  m.publish(live/name,('old-'+name).encode())
+ hashes={name:m.file_hash(stage/name) for name in m.TOOLS}
+ previous={name:m.file_hash(live/name) for name in m.TOOLS}
+ m.publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
+ m.publish(stage/'.predecessors.json',json.dumps(previous).encode(),0o400)
+ m.BIN=live;m.secure_bin=lambda:live
+ peer=live/'bb-job.py';m.publish(peer,b'newer peer runtime')
+ for selection in [[],['unknown'],['bb-install.py','bb-install.py']]:
+  try:m.publish_candidate(stage,selection)
+  except ValueError:pass
+  else:raise AssertionError('invalid selection admitted')
+ m.publish_candidate(stage,['bb_target_store.py','bb-install.py'])
+ assert peer.read_bytes()==b'newer peer runtime'
+ manifest=json.loads((live/'installed-tools.json').read_text())
+ assert manifest['sha256']['bb-job.py']==m.file_hash(peer)
+ assert m.file_hash(live/'bb_target_store.py')==hashes['bb_target_store.py']
+ m.publish(live/'bb_target_store.py',b'newer selected tool')
+ before={name:m.file_hash(live/name) for name in m.TOOLS}
+ try:m.publish_candidate(stage,['bb_target_store.py'])
+ except ValueError as error:assert 'predecessor changed' in str(error)
+ else:raise AssertionError('stale candidate published')
+ assert before=={name:m.file_hash(live/name) for name in m.TOOLS}
+ # Actual unfenced former shape overwrites the newer selected tool.
+ old={'__file__':str(source),'__name__':'old_installer'}
+ code=source.read_text().replace('if any(file_hash(BIN/name) != previous.get(name) for name in selected):','if False:')
+ exec(compile(code,'unfenced-installer','exec'),old)
+ old['BIN']=live;old['secure_bin']=lambda:live
+ old['publish_candidate'](stage,['bb_target_store.py'])
+ assert before['bb_target_store.py']!=m.file_hash(live/'bb_target_store.py')
+finally:shutil.rmtree(stage)
+'''
+        subprocess.run(['sudo','-n','python3','-c',driver,str(HERE/'bb-install.py')],check=True)
+
     def test_privileged_publication_refuses_direct_lane_edits(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool'

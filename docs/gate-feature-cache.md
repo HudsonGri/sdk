@@ -18,6 +18,9 @@ cloning or publishing. It releases that parent lease before any Cargo worker
 starts, so descendant workers can acquire their own leases and siblings can
 compile independently. The existing matrix flock covers the complete run;
 the job's runtime lease keeps its target and temporary directories alive.
+A separate job-local matrix lifetime lease is inherited by the Node scheduler.
+It survives a killed Python launcher until no scheduler can start more writers;
+already running Cargo children retain the production hierarchy leases.
 Only successful matrices with unchanged uploaded inputs publish. Failed,
 interrupted or source-mutating runs retain their actual nonzero status and
 cannot publish a new completed snapshot. Snapshot failures log diagnostics
@@ -36,6 +39,15 @@ atomically to job temporary storage and made executable there. An unconditional
 `chmod +x` changes source ctime even if its mode already includes execute bits,
 which correctly makes the source-clock oracle reject subsequent reuse. The
 fix preserves the oracle instead of ignoring ctime changes.
+
+The shared source-clock guard also compares the current Git tracked/untracked
+inventory with uploaded names, using the exact upload pathspec and filter
+carried by the clock producer. Added or renamed source inputs cannot publish
+under the original key. Existing metadata, ctime and content checks remain.
+The namespace-aware store generation rejects earlier snapshots. Gate metadata,
+artifacts, diagnostics and statuses live in private job temporary storage, so
+generated outputs do not pollute the source inventory. Legacy runners retain
+their existing output location when private custody is absent.
 
 Controls run on bb2:
 

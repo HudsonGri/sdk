@@ -577,7 +577,8 @@ for(const name of names){
   files.push([name,...[s.mode,s.size,s.mtimeNs,s.ctimeNs].map(String),crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')]);
  }catch{cacheable=false;}
 }
-fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files}));fs.renameSync(clock+'.tmp',clock);
+fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files,
+ namespace:{version:1,pathspec:${JSON.stringify(IDENT_ADD)},skip:${JSON.stringify(IDENT_SKIP)}}}));fs.renameSync(clock+'.tmp',clock);
 console.error('[buildbox] source clock: exact-content private targets');`;
 // node_modules for every job that is not cargo (2026-10-18 crit-bslot): remote trees often had none and JS gates died
 // rc 127 ("./node_modules/.bin/tsc: No such file or directory", #5338, #5341) when the lane forgot `npm ci`. Every tracked

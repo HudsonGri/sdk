@@ -27,9 +27,9 @@ test('exact private inputs preserve source times across fresh checkouts',async()
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-clock-'));
  try{
   const generator=path.join(cwd,'generator.mjs');
-  fs.writeFileSync(generator,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { SOURCE_TIMES };\n');
+  fs.writeFileSync(generator,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { SOURCE_TIMES, IDENT_ADD, IDENT_SKIP };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
-  const {SOURCE_TIMES}=await import(generator);
+  const {SOURCE_TIMES,IDENT_ADD,IDENT_SKIP}=await import(generator);
   const input=path.join(cwd,'lib.rs'),records=path.join(cwd,'records');
   fs.writeFileSync(input,'exact content');fs.writeFileSync(records,'a'.repeat(40)+' 0\tlib.rs\0');
   function normalize(program=SOURCE_TIMES){
@@ -44,6 +44,7 @@ test('exact private inputs preserve source times across fresh checkouts',async()
   const clock=JSON.parse(fs.readFileSync(path.join(cwd,'clock.json')));
   assert.equal(clock.content_sha256,'c'.repeat(64));assert.equal(clock.cacheable,true);
   assert.equal(clock.files.length,1);assert.equal(clock.files[0][0],'lib.rs');
+  assert.deepEqual(clock.namespace,{version:1,pathspec:IDENT_ADD,skip:IDENT_SKIP},'publication must use the actual upload inventory rules');
   fs.writeFileSync(input,'changed content');fs.writeFileSync(records,'b'.repeat(40)+' 0\tlib.rs\0');
   assert.notEqual(normalize(),first);
   fs.symlinkSync('lib.rs',path.join(cwd,'alias'));
