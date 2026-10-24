@@ -15,7 +15,7 @@ case "${1:-full}" in
     [ ${#args[@]} -gt 2 ] || { echo 'error: empty affected Windows scope'; exit 2; };;
   *) echo 'error: invalid Windows feature scope'; exit 2;;
 esac
-export GATE_FEATURE_TARGET_DIR=${GATE_WINDOWS_FEATURE_TARGET_DIR:-/mnt/bb/targets/sdk/gate-windows-features}
+export GATE_FEATURE_TARGET_DIR=${GATE_WINDOWS_FEATURE_TARGET_DIR:-${GATE_FEATURE_TARGET_DIR:-/mnt/bb/targets/sdk/gate-windows-features}}
 echo "GATE_WINDOWS_FEATURES_START scope=${1:-full} target=x86_64-pc-windows-msvc libraries+all-targets each-feature"
 rc=0
 python3 scripts/with-xwin-cache.py --workers "${GATE_FEATURE_WORKERS:-6}" -- \

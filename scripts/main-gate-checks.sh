@@ -101,9 +101,9 @@ bash scripts/gate-windows-features.sh full; windows_features_rc=$?
 rc=$targets_rc; [ "$rc" != 0 ] || rc=$docs_rc
 [ "$rc" != 0 ] || rc=$browser_rc
 [ "$rc" != 0 ] || rc=$loom_rc
-[ "$rc" != 0 ] || rc=$windows_features_rc
 # A partial auxiliary step must not leave the main baseline falsely green.
 if [ "$rc" = 0 ] && { [ "$(cat .gate-clippy.rc)" != 0 ] || [ "$(cat .gate-features.rc)" != 0 ]; }; then rc=1; fi
+[ "$rc" != 0 ] || rc=$windows_features_rc
 if [ "$targets_rc" = 0 ] && [ "$docs_rc" = 0 ]; then
   echo "GATE_TEST_COVERAGE all-targets+doc packages=$members"
 fi

@@ -155,6 +155,9 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Native owner fixtures exercise checkout and mount lifetimes in every test
+# build. The feature matrix checks the isolated consumer library separately.
+acyclic-harness = { version = "=0.2.0", path = ".", default-features = false, features = ["filesystem-local", "native-execution"] }
 tokio-util = { workspace = true, features = ["rt"] }
 rcgen = "0.14.10"
 tonic.workspace = true
