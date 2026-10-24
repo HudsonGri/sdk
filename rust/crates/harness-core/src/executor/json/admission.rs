@@ -134,23 +134,10 @@ impl<'de> DeserializeSeed<'de> for Walk<'_, '_> {
 macro_rules! walk_scalar {
     ($($method:ident($ty:ty)),*) => {$(fn $method<E: de::Error>(self, _: $ty) -> std::result::Result<Branches, E> { Ok(self.base()) })*};
 }
-impl<'de> Visitor<'de> for Walk<'_, '_> {
-    type Value = Branches;
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("JSON value")
-    }
-    walk_scalar!(
-        visit_bool(bool),
-        visit_i64(i64),
-        visit_u64(u64),
-        visit_f64(f64)
-    );
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<Branches, E> {
-        Ok(self.base())
-    }
-    fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Branches, E> {
+impl Walk<'_, '_> {
+    fn string<E: de::Error>(self, text: &str, escaped: bool) -> std::result::Result<Branches, E> {
         if let Some(layout) = self.layout {
-            layout.string(text.len());
+            layout.string(text.as_bytes(), escaped);
         }
         // A `Value` expands a raw member into the document its text holds.
         let expands =
@@ -192,6 +179,30 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         }
         Ok(counts)
     }
+}
+impl<'de> Visitor<'de> for Walk<'_, '_> {
+    type Value = Branches;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("JSON value")
+    }
+    walk_scalar!(
+        visit_bool(bool),
+        visit_i64(i64),
+        visit_u64(u64),
+        visit_f64(f64)
+    );
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Branches, E> {
+        Ok(self.base())
+    }
+    // `from_slice` lends an unescaped string from the document and decodes
+    // an escaped one into a scratch buffer: only that one is owned by the
+    // `Content` buffers holding it.
+    fn visit_borrowed_str<E: de::Error>(self, text: &'de str) -> std::result::Result<Branches, E> {
+        self.string(text, false)
+    }
+    fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Branches, E> {
+        self.string(text, true)
+    }
     fn visit_seq<A: SeqAccess<'de>>(
         self,
         mut values: A,
@@ -220,9 +231,9 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         let mut counts = self.base();
         let mut entries = Entries::new(self.layout, true);
         let (mut index, mut tag) = (0, None);
-        while let Some(key) = fields.next_key::<String>()? {
+        while let Some((key, escaped)) = fields.next_key_seed(Key)? {
             entries.count += 1;
-            entries.key(key.len());
+            entries.key(key.as_bytes(), escaped);
             let key = key.as_bytes();
             let layout = entries.child(Some(key), index);
             if self.virtual_value {
@@ -238,9 +249,10 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
             let (schema, gate) = self.schema.child(key, None);
             let mut child = if !self.schema.tag.is_empty() && key == self.schema.tag.as_bytes() {
                 let label: &serde_json::value::RawValue = fields.next_value()?;
+                let escaped = label.get().contains('\\');
                 let label = serde_json::from_str::<String>(label.get()).unwrap_or_default();
                 if let Some(layout) = layout {
-                    layout.string(label.len());
+                    layout.string(label.as_bytes(), escaped);
                 }
                 tag = Some(if tag.is_some() {
                     0
@@ -622,3 +634,30 @@ pub(crate) fn admit_value_layout(
 mod owned;
 mod serialized;
 pub(crate) use serialized::serialized_layout_bytes;
+
+/// An object key, and whether the document escapes it.
+struct Key;
+impl<'de> de::DeserializeSeed<'de> for Key {
+    type Value = (String, bool);
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        decoder: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        decoder.deserialize_str(self)
+    }
+}
+impl<'de> Visitor<'de> for Key {
+    type Value = (String, bool);
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("object key")
+    }
+    fn visit_borrowed_str<E: de::Error>(
+        self,
+        key: &'de str,
+    ) -> std::result::Result<Self::Value, E> {
+        Ok((key.to_owned(), false))
+    }
+    fn visit_str<E: de::Error>(self, key: &str) -> std::result::Result<Self::Value, E> {
+        Ok((key.to_owned(), true))
+    }
+}

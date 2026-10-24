@@ -36,16 +36,16 @@ pub(crate) fn serialized_layout_bytes<T: Serialize + ?Sized>(
 struct Site<'a>(Option<Placement<'a>>);
 
 impl<'a> Site<'a> {
-    fn string(self, bytes: usize) {
+    fn string(self, text: &str) {
         if let Some(placement) = self.0 {
-            placement.string(bytes);
+            placement.string(text.as_bytes(), escapes(text));
         }
     }
     /// A one-member object `{"variant": …}` holding the variant's value.
     fn variant(self, variant: &'static str) -> (Entries<'a>, Site<'a>) {
         let mut entries = Entries::new(self.0, true);
         entries.count = 1;
-        entries.key(variant.len());
+        entries.key(variant.as_bytes(), escapes(variant));
         let inner = Site(entries.child(Some(variant.as_bytes()), 0));
         (entries, inner)
     }
@@ -74,7 +74,7 @@ impl<'a> Container<'a> {
         value.serialize(site)
     }
     fn member(&mut self, key: &[u8]) -> Site<'a> {
-        self.entries.key(key.len());
+        self.entries.key(key, escapes_bytes(key));
         let site = Site(self.entries.child(Some(key), self.index));
         self.entries.count += 1;
         self.index += 1;
@@ -156,11 +156,11 @@ impl<'a> Serializer for Site<'a> {
         Ok(())
     }
     fn serialize_char(self, value: char) -> std::result::Result<(), Failure> {
-        self.string(value.len_utf8());
+        self.string(value.encode_utf8(&mut [0; 4]));
         Ok(())
     }
     fn serialize_str(self, value: &str) -> std::result::Result<(), Failure> {
-        self.string(value.len());
+        self.string(value);
         Ok(())
     }
     /// `serde_json` writes bytes as an array of numbers.
@@ -189,7 +189,7 @@ impl<'a> Serializer for Site<'a> {
         _: u32,
         variant: &'static str,
     ) -> std::result::Result<(), Failure> {
-        self.string(variant.len());
+        self.string(variant);
         Ok(())
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
@@ -586,4 +586,14 @@ impl Serializer for RawText<'_> {
     ) -> std::result::Result<(), Failure> {
         Err(failure("RawValue holds text"))
     }
+}
+
+/// Whether `serde_json` writes `text` with an escape, which its decode then
+/// owns in every buffer holding it.
+fn escapes(text: &str) -> bool {
+    escapes_bytes(text.as_bytes())
+}
+fn escapes_bytes(text: &[u8]) -> bool {
+    text.iter()
+        .any(|byte| matches!(byte, b'"' | b'\\' | 0..=0x1f))
 }
