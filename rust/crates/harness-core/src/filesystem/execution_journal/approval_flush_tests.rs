@@ -39,7 +39,7 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
         .ok_or_else(|| Error::Storage("flush proof has no libtest identity".into()))?
         .to_owned();
     const CHILD: &str = "ACYCLIC_APPROVAL_FLUSH_PROOF";
-    if std::env::var(CHILD).as_deref() != Ok(test.as_str()) {
+    if crate::native_environment::variable(CHILD).as_deref() != Some(std::ffi::OsStr::new(&test)) {
         let mut command = std::process::Command::new(
             std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,
         );
@@ -177,7 +177,7 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
                                 },
                                 &human,
                             )
-                            .await?
+                            .await?;
                     }
                     _ => {
                         // Execute the former eager filesystem staging and

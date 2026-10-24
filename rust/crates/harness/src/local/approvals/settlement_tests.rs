@@ -29,7 +29,7 @@ fn decisive_reviews_share_settlement_durability_without_authorizing_early() -> R
         .ok_or_else(|| Error::Storage("review proof has no libtest identity".into()))?
         .to_owned();
     const CHILD: &str = "ACYCLIC_REVIEW_FLUSH_PROOF";
-    if std::env::var(CHILD).as_deref() != Ok(test.as_str()) {
+    if crate::native_environment::variable(CHILD).as_deref() != Some(std::ffi::OsStr::new(&test)) {
         let mut command = std::process::Command::new(std::env::current_exe().map_err(storage)?);
         #[cfg(windows)]
         {
