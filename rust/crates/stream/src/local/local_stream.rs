@@ -397,32 +397,27 @@ impl LocalStream {
                     None
                 } else {
                     journal.syncing = true;
-                    Some((
-                        journal.appended,
-                        journal.synced,
-                        journal.bytes,
-                        Arc::clone(&journal.file),
-                        durability,
-                    ))
+                    Some(durability)
                 }
             };
             match lead {
-                Some((target, synced_before, journal_bytes, file, durability)) => {
+                Some(durability) => {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
-                    spawn_blocking(move || {
-                        inner.flush_through(target, &file, durability, work.as_deref());
-                    })
-                    .await
-                    .map_err(|_| self.inner.poison())?;
+                    let flushed =
+                        spawn_blocking(move || inner.flush_through(durability, work.as_deref()))
+                            .await
+                            .map_err(|_| self.inner.poison())?;
                     // Group commit: one fsync covers every frame written since the last one.
-                    tracing::debug!(
-                        fsyncs = 1_u64,
-                        batch_len = target.saturating_sub(synced_before),
-                        journal_bytes,
-                        waiters = self.inner.synced.receiver_count(),
-                        "acyclic.stream.fsync"
-                    );
+                    if let Some((target, synced_before, journal_bytes)) = flushed {
+                        tracing::debug!(
+                            fsyncs = 1_u64,
+                            batch_len = target.saturating_sub(synced_before),
+                            journal_bytes,
+                            waiters = self.inner.synced.receiver_count(),
+                            "acyclic.stream.fsync"
+                        );
+                    }
                 }
                 None => {
                     if synced.changed().await.is_err() {
