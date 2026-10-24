@@ -185,9 +185,11 @@ impl PreparationIo {
                     })
                     .transpose()?
                     .unwrap_or(0);
-                let bytes = maximum_owned_bytes.checked_add(diagnostics).ok_or_else(|| {
-                    decode_allowance_error("typed diagnostic reservation overflow", code)
-                })?;
+                let bytes = maximum_owned_bytes
+                    .checked_add(diagnostics)
+                    .ok_or_else(|| {
+                        decode_allowance_error("typed diagnostic reservation overflow", code)
+                    })?;
                 admission = Some((self.reserve_decode(bytes)?, diagnostics));
                 Ok(())
             } else {
@@ -359,15 +361,19 @@ impl PreparationIo {
             return Err(self.invalid("native Value decoding requires original work"));
         }
         let bounds = self.bounds(u64::MAX, 128)?;
-        self.decode_guarded((schema != Schema::Root).then_some(labels), Some(code), |observe| {
-            crate::executor::json::json_from_value_bounded(
-                std::borrow::Cow::Borrowed(value),
-                bounds,
-                Some(code),
-                schema,
-                &mut |charge| observe(charge),
-            )
-        })
+        self.decode_guarded(
+            (schema != Schema::Root).then_some(labels),
+            Some(code),
+            |observe| {
+                crate::executor::json::json_from_value_bounded(
+                    std::borrow::Cow::Borrowed(value),
+                    bounds,
+                    Some(code),
+                    schema,
+                    &mut |charge| observe(charge),
+                )
+            },
+        )
     }
 
     #[doc(hidden)]

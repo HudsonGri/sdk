@@ -12,7 +12,9 @@ pub enum IndeterminateCause {
 }
 
 /// A task command that left its task's completion uncertain.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[error("task command {command} {reason}")]
 pub struct CommandIndeterminacy {
@@ -23,7 +25,9 @@ pub struct CommandIndeterminacy {
 }
 
 /// What a task command did that left its task's completion uncertain.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, crate::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum CommandIndeterminacyReason {
     /// The command failed after it may have taken effect.

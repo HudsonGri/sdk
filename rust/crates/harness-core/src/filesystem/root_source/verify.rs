@@ -119,8 +119,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootProjec
     }
 }
 
-impl crate::filesystem::PreparationRecord for LazySnapshotRef {
-}
+impl crate::filesystem::PreparationRecord for LazySnapshotRef {}
 
 pub(super) fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
     if [maximum_work, maximum_bytes]

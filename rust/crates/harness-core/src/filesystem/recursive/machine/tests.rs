@@ -95,6 +95,9 @@ async fn measured_settlement_uses_the_admitted_finite_allowance() -> Result<()> 
     let Err(refused) = settle(u64::MAX) else {
         panic!("an unbounded settlement allowance was accepted under measured work");
     };
-    assert!(refused.to_string().contains("finite and positive"), "{refused}");
+    assert!(
+        refused.to_string().contains("finite and positive"),
+        "{refused}"
+    );
     Ok(())
 }

@@ -84,7 +84,9 @@ pub(crate) fn validate_extension_name(name: &str) -> Result<()> {
 }
 
 /// Exact installed version required by another extension at activation.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionDependency {
     /// Namespaced extension identity.

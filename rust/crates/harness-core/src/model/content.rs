@@ -115,7 +115,8 @@ pub enum ToolResultContent {
     Json {
         /// Schema-defined JSON value.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-        #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
+        #[heap_layout(as = serde_json::Value)]
         value: Value,
     },
     /// Ordered nonrecursive data.

@@ -243,7 +243,10 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             guard.as_mut(),
         )
         .await;
-    let created = operation_io.sdk((CreationFailure::created(result, CreationFailure::into_error), recorded))?;
+    let created = operation_io.sdk((
+        CreationFailure::created(result, CreationFailure::into_error),
+        recorded,
+    ))?;
     if let Some(task) =
         preparation.filter(|_| io.is_none_or(|io| io.original_native_work().is_none()))
     {
