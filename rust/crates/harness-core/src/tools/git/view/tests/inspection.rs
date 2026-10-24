@@ -104,11 +104,7 @@ async fn native_diff_keeps_the_committed_side_when_references_match() -> TestRes
 
 #[tokio::test]
 async fn native_agent_diff_uses_the_current_physical_view() -> TestResult {
-    native_diff_comparison(&[
-        (&["diff", "agents/self"], 0),
-        (&["diff", "agents/peer"], 0),
-    ])
-    .await
+    native_diff_comparison(&[(&["diff", "agents/self"], 0), (&["diff", "agents/peer"], 0)]).await
 }
 
 async fn native_diff_comparison(commands: &[(&[&str], u64)]) -> TestResult {
@@ -128,7 +124,9 @@ async fn native_diff_comparison(commands: &[(&[&str], u64)]) -> TestResult {
         .await?
         .value;
     peer.write_text("/file", "physical edit\n").await?;
-    WorkspaceGraph::new(store.clone()).register_root(&peer).await?;
+    WorkspaceGraph::new(store.clone())
+        .register_root(&peer)
+        .await?;
     let repository = GitCompatRepository::new(workspace.id(), store.clone());
     repository
         .register_branch_workspace("agents/self", workspace.id(), None, false)
