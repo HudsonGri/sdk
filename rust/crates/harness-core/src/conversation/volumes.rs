@@ -428,6 +428,7 @@ impl ContentGrant {
                     version,
                     descriptor,
                     display_name,
+                    ..
                 } = file.clone();
                 return Ok(Boundary {
                     volume,
@@ -642,6 +643,7 @@ impl ContentGrant {
                 version,
                 descriptor,
                 display_name,
+                ..
             } = file.clone();
             Ok(Boundary {
                 volume,
