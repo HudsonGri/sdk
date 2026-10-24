@@ -613,6 +613,25 @@ pub async fn capture_recorded_metadata<A: AsyncAuthorityStore, O: AsyncObjectSto
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_recorded_with_intent(
+        checkout,
+        options,
+        policy,
+        budget,
+        cancellation,
+        CaptureIntent::MetadataOnly,
+    )
+    .await
+}
+
+pub(super) async fn capture_recorded_with_intent<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    options: &CaptureOptions,
+    policy: &CapturePolicy,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    intent: CaptureIntent,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
     if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::new(
@@ -668,7 +687,7 @@ pub async fn capture_recorded_metadata<A: AsyncAuthorityStore, O: AsyncObjectSto
             usize::MAX,
             options.maximum_extent_spans,
             &source_root,
-            (None, CaptureIntent::MetadataOnly),
+            (None, intent),
             meter,
         )
         .await
