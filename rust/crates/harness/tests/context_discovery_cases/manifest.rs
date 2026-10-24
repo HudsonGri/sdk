@@ -115,10 +115,7 @@ async fn assert_request(
             .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(manifest.conventions, conventions);
     assert!(conventions[1].contains("plans/<id>.md"));
-    for (message, expected) in request.messages.iter().rev().zip(conventions.iter().rev()) {
-        assert_eq!(message.role, ModelRole::User);
-        assert_eq!(message.content, ModelContent::Text(expected.clone()));
-    }
+    assert_conventions_before_input(&request.messages, &conventions);
     let text = serde_json::to_string(request).map_err(|e| Error::Invalid(e.to_string()))?;
     assert!(text.contains("SELECTED BODY"));
     assert!(!text.contains("UNSELECTED BODY"));
@@ -258,7 +255,8 @@ async fn assert_cached_binding(
         .run(&input, limits, None)
         .await?;
     assert_eq!(rendered.metadata.get("context.manifest"), Some(reference));
-    assert_eq!(rendered.current_input_index, Some(6));
+    let current = assert_conventions_before_input(&rendered.messages, &manifest.conventions);
+    assert_eq!(rendered.current_input_index, Some(u32::try_from(current).unwrap()));
     assert_eq!(
         rendered.messages.last().map(|message| message.role),
         Some(ModelRole::User)
@@ -309,13 +307,18 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
                 None,
             )
             .await?;
-        for (message, name) in context.messages[5..7].iter().zip(["hidden", "inspect"]) {
+        let current = assert_conventions_before_input(&context.messages, &manifest.conventions);
+        let skills_end = current - manifest.conventions.len();
+        for (message, name) in context.messages[skills_end - 2..skills_end]
+            .iter()
+            .zip(["hidden", "inspect"])
+        {
             let ModelContent::Text(text) = &message.content else {
                 return Err(Error::Invalid("expected cached skill text".into()));
             };
             assert!(text.contains(&format!("name: {name}\n")));
         }
-        assert_eq!(context.current_input_index, Some(7));
+        assert_eq!(context.current_input_index, Some(u32::try_from(current).unwrap()));
         assert_eq!(counted.reads.load(Ordering::Relaxed), 2);
     }
     assert!(
@@ -343,6 +346,53 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
         None,
     )?;
     Ok(())
+}
+
+fn assert_conventions_before_input(
+    messages: &[acyclic_harness::model::ModelMessage],
+    conventions: &[String],
+) -> usize {
+    let current = messages
+        .iter()
+        .position(|message| {
+            message.role == ModelRole::User
+                && message.content == ModelContent::Text("inspect".into())
+        })
+        .expect("the admitted input must remain present");
+    assert!(
+        current >= conventions.len(),
+        "conventions must precede the active input"
+    );
+    for (message, expected) in messages[current - conventions.len()..current]
+        .iter()
+        .zip(conventions)
+    {
+        assert_eq!(message.role, ModelRole::User);
+        assert_eq!(
+            message.content,
+            ModelContent::Text(expected.clone()),
+            "conventions must immediately precede the active input"
+        );
+    }
+    current
+}
+
+#[test]
+#[should_panic(expected = "conventions must precede the active input")]
+fn conventions_after_input_negative_control() {
+    use acyclic_harness::model::ModelMessage;
+    let conventions = vec!["recorded convention".into()];
+    let messages = vec![
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("inspect".into()),
+        },
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("recorded convention".into()),
+        },
+    ];
+    assert_conventions_before_input(&messages, &conventions);
 }
 
 #[tokio::test]
