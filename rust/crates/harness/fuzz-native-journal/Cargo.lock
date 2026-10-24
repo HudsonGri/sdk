@@ -54,6 +54,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
+ "acyclic-differential",
  "acyclic-proto-build",
  "ed25519-dalek",
  "prost",
@@ -238,6 +239,7 @@ dependencies = [
  "jsonschema",
  "loom",
  "once_cell",
+ "pin-project-lite",
  "prost",
  "prost-build",
  "prost-reflect",

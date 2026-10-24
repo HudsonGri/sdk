@@ -331,11 +331,24 @@ def main():
     print('WIN_TEST_FETCH_VERIFIED', len(manifest['artifacts']), 'executables,', len(manifest['source']), 'source/fixture files', flush=True)
     return run_tests(records, manifest, runtime)
 
+def fixture_binary(records, manifest):
+    fixtures = [row for row in manifest['artifacts'] if not row['test']]
+    if len(fixtures) > 1:
+        fail('Ambiguous normal executable fixture: ' + repr(fixtures))
+    if not fixtures:
+        return None
+    binary = (records / 'bin' / fixtures[0]['name']).resolve()
+    if not binary.is_file():
+        fail('Missing admitted normal executable fixture: ' + str(binary))
+    return binary
+
+
 def run_tests(records, manifest, runtime):
     # The runner is also used by fixture drivers launched outside this shell.
     # Own the output encoding before forwarding arbitrary UTF-8 TUI frames.
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
+    binary = fixture_binary(records, manifest)
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
     kernel.CreateMutexW.restype = ctypes.c_void_p
@@ -377,9 +390,8 @@ def run_tests(records, manifest, runtime):
                     env.pop(key)
             env.pop('RUST_MIN_STACK', None)
             env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(codex), TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(home / 'AppData/Local'), APPDATA=str(home / 'AppData/Roaming'), HOMEDRIVE=home.drive, HOMEPATH=str(home)[len(home.drive):], RUST_TEST_THREADS='4', ACYCLIC_TEST_SOURCE_ROOT=str((records / 'source').resolve()), GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=str(home / '.gitconfig'))
-            cli = next((r for r in manifest['artifacts'] if not r['test'] and r['target'] == 'acyclic'), None)
-            if cli:
-                env['ACYCLIC_TEST_BINARY'] = str((records / 'bin' / cli['name']).resolve())
+            if binary is not None:
+                env['ACYCLIC_TEST_BINARY'] = str(binary)
             else:
                 env.pop('ACYCLIC_TEST_BINARY', None)
             args = [str(path)] + runtime + ['--test-threads=4']
