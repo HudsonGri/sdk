@@ -293,11 +293,20 @@ enum WasmModelContentPart {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[derive(Clone, Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 struct WasmModelImage {
     media_type: String,
     data_base64: String,
+}
+
+impl std::fmt::Debug for WasmModelImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmModelImage")
+            .field("media_type", &self.media_type)
+            .field("encoded_bytes", &self.data_base64.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
