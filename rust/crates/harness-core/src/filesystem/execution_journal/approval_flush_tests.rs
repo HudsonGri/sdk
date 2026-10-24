@@ -1,18 +1,18 @@
 //! Count actual device operations on both journal settlement entry points.
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Clone, Default)]
-struct Flushes(Arc<AtomicUsize>);
+struct Flushes(Arc<AtomicU64>);
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Flushes {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        struct Count<'a>(&'a AtomicUsize);
+        struct Count<'a>(&'a AtomicU64);
         impl tracing::field::Visit for Count<'_> {
             fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
                 if field.name() == "fsyncs" {
-                    self.0.fetch_add(value as usize, Ordering::Relaxed);
+                    self.0.fetch_add(value, Ordering::Relaxed);
                 }
             }
             fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}

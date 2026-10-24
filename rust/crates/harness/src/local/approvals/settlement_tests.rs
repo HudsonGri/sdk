@@ -1,19 +1,19 @@
 //! Exercise decisive-review publication through the real local filesystem host.
 use super::*;
 use crate::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Clone, Default)]
-struct Flushes(Arc<AtomicUsize>);
+struct Flushes(Arc<AtomicU64>);
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Flushes {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        struct Count<'a>(&'a AtomicUsize);
+        struct Count<'a>(&'a AtomicU64);
         impl tracing::field::Visit for Count<'_> {
             fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
                 if field.name() == "fsyncs" {
-                    self.0.fetch_add(value as usize, Ordering::Relaxed);
+                    self.0.fetch_add(value, Ordering::Relaxed);
                 }
             }
             fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
@@ -24,7 +24,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Flushes {
 
 #[test]
 fn decisive_reviews_share_settlement_durability_without_authorizing_early() -> Result<()> {
-    let test = std::thread::current().name().unwrap().to_owned();
+    let test = std::thread::current()
+        .name()
+        .ok_or_else(|| Error::Storage("review proof has no libtest identity".into()))?
+        .to_owned();
     const CHILD: &str = "ACYCLIC_REVIEW_FLUSH_PROOF";
     if std::env::var(CHILD).as_deref() != Ok(test.as_str()) {
         let mut command = std::process::Command::new(std::env::current_exe().map_err(storage)?);
@@ -69,7 +72,7 @@ fn decisive_reviews_share_settlement_durability_without_authorizing_early() -> R
         })
 }
 
-async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<usize> {
+async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<u64> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let provider = Arc::new(
@@ -121,7 +124,7 @@ async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<usize> 
         .submit(OperationId::new(), "write the effect")
         .await?
     else {
-        panic!("durable admission");
+        return Err(Error::Conflict("expected durable admission".into()));
     };
     let commands = harness.commands()?;
     crate::package::harness::worker::advance_while(&harness, task, &commands, None, || async {
@@ -145,7 +148,7 @@ async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<usize> 
         .approval_stage(task, request, &files, &observed, true)
         .await?
     else {
-        panic!("decisive rule review");
+        return Err(Error::Conflict("expected decisive rule review".into()));
     };
     assert!(
         files
