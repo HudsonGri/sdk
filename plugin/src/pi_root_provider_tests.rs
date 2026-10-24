@@ -451,6 +451,12 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
         fixture.execute().await.unwrap().0,
         EffectStatus::Succeeded { .. }
     ));
+    // Root allocation and the later writeback are separate service commands.
+    // Keep custody on its original ledger and use the production per-command
+    // window rather than charging this entire recovered session as one call.
+    let publication_work = fixture.startup.invocation_window().unwrap();
+    assert!(publication_work.shares_ledger(&fixture.startup));
+    let work = &publication_work;
     let handles = fixture.provider.take_created_handles().await;
     let (key, handle) = handles.iter().next().unwrap();
     let original = handle
@@ -517,7 +523,12 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
         work,
     )
     .await
-    .unwrap();
+    .unwrap_or_else(|error| {
+        panic!(
+            "selected preparation refused: {error:?}; remaining work: {:?}",
+            work.remaining()
+        )
+    });
     let digest = digest_pi_value(
         &writeback_digest_value(&root, &generations, &prepared).unwrap(),
         1_048_576,
@@ -528,10 +539,18 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     .to_string();
     // Recover after candidate publication, before host publication. The fork
     // owner's original generation must remain the exact approval baseline.
+    let recovery_work = fixture.startup.invocation_window().unwrap();
+    assert!(recovery_work.shares_ledger(work));
+    let work = &recovery_work;
     let recovered =
         build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
             .await
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "recovery refused: {error:?}; remaining work: {:?}",
+                    work.remaining()
+                )
+            });
     assert_eq!(
         digest_pi_value(
             &writeback_digest_value(&root, &recovered, &prepared).unwrap(),
@@ -546,7 +565,7 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     assert!(
         publish_writeback(
             &root,
-            &generations,
+            &recovered,
             &prepared,
             &options,
             &fixture.resources.store,
@@ -562,7 +581,7 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     );
     let applied = publish_writeback(
         &root,
-        &generations,
+        &recovered,
         &prepared,
         &options,
         &fixture.resources.store,
@@ -588,6 +607,9 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
         "edit after acknowledgement",
     )
     .unwrap();
+    let acknowledged_work = fixture.startup.invocation_window().unwrap();
+    assert!(acknowledged_work.shares_ledger(work));
+    let work = &acknowledged_work;
     let recovered_after_ack =
         build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
             .await
