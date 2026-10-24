@@ -28,6 +28,23 @@ struct ModelExecutionInput {
     selected_output_volume: Option<crate::conversation::VolumeRef>,
     max_output_tokens: Option<u32>,
 }
+impl ModelExecutionInput {
+    fn new(command: ModelTaskCommand, task: TaskId) -> Self {
+        Self {
+            conversation_id: command
+                .conversation_id
+                .unwrap_or_else(|| crate::ConversationId::from_bytes(task.into_bytes())),
+            role: command.role,
+            input: command.input,
+            selected_context: command.selected_context,
+            max_steps: command.max_steps,
+            summary_source: command.summary_source,
+            selected_output_volume: command.selected_output_volume,
+            max_output_tokens: command.max_output_tokens,
+        }
+    }
+}
+
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
     P: StreamProvider + 'static,
@@ -175,18 +192,7 @@ where
             invocation,
             ModelExecution {
                 context,
-                command: ModelExecutionInput {
-                    conversation_id: command.conversation_id.unwrap_or_else(|| {
-                        crate::ConversationId::from_bytes(admission.task_id().into_bytes())
-                    }),
-                    role: command.role,
-                    input: command.input,
-                    selected_context: command.selected_context,
-                    max_steps: command.max_steps,
-                    summary_source: command.summary_source,
-                    selected_output_volume: command.selected_output_volume,
-                    max_output_tokens: command.max_output_tokens,
-                },
+                command: ModelExecutionInput::new(command, admission.task_id()),
                 pipeline,
                 tools,
                 journal,
