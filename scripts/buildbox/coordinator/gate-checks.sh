@@ -28,23 +28,31 @@ gate_required_phases_verdict() (
   [ "$preflight_rc" = 0 ] || exit "$preflight_rc"
   # Strict phase: never subtract historical main findings. Exit4 is incomplete.
   if ! grep -aq '^GATE_WINDOWS_RUNTIME_REQUIRED ' "$log"; then exit 0; fi
-  if ! grep -aq '^GATE_WINDOWS_RUNTIME_CLIPPY rc=' "$log"; then
-    echo 'Windows runtime clippy did not complete'
+  mapfile -t completions < <(grep -a '^GATE_WINDOWS_RUNTIME_CLIPPY ' "$log")
+  if [ "${#completions[@]}" != 1 ]; then
+    echo 'Windows runtime clippy did not record exactly one completion'
     exit 4
   fi
-  if grep -aqE 'No space left on device|signal: (9|15), SIG(KILL|TERM)|^GATE_WINDOWS_RUNTIME_CLIPPY rc=(12[89]|1[3-9][0-9]|2[0-9][0-9]) ' "$log"; then
+  identity='^GATE_WINDOWS_RUNTIME_CLIPPY rc=(-?[0-9]+) seconds=[0-9]+ target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all$'
+  if ! [[ "${completions[0]}" =~ $identity ]]; then
+    echo 'Windows runtime clippy completion has missing or inconsistent dispatch identity'
+    exit 4
+  fi
+  runtime_rc=${BASH_REMATCH[1]}
+  if [ "$runtime_rc" != 0 ] && [ "$runtime_rc" != 101 ]; then
+    echo "Windows runtime executor or output retention failed (rc=$runtime_rc)"
+    grep -aE '^error: could not retain Windows runtime clippy output|cargo: command not found|^GATE_WINDOWS_RUNTIME_CLIPPY ' "$log" | head -12
+    exit 4
+  fi
+  if grep -aqE 'No space left on device|signal: (9|15), SIG(KILL|TERM)' "$log"; then
     echo 'Windows runtime check was interrupted or its build infrastructure failed'
     exit 4
   fi
-  if grep -aqE '^GATE_WINDOWS_RUNTIME_CLIPPY rc=[1-9][0-9]* ' "$log"; then
+  if [ "$runtime_rc" = 101 ]; then
     echo 'strict Windows runtime clippy failed'
     awk '/^GATE_WINDOWS_RUNTIME_START / { inside=1 } inside { print } /^GATE_WINDOWS_RUNTIME_CLIPPY / { inside=0 }' "$log" \
       | grep -aE '^GATE_WINDOWS_RUNTIME_CLIPPY |\.rs:[0-9]+:[0-9]+: error|^error(\[E[0-9]+\])?:' | head -12
     exit 1
-  fi
-  if [ "$(grep -ac '^GATE_WINDOWS_RUNTIME_CLIPPY rc=0 .* target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all$' "$log")" != 1 ]; then
-    echo 'Windows runtime clippy completion has missing or inconsistent dispatch identity'
-    exit 4
   fi
   exit 0
 )

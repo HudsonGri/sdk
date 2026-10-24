@@ -199,6 +199,8 @@ test('required-phase policy distinguishes formatting, missing execution and exac
   for (const [text, expected] of [[required + format, 1], [required, 4], [required + success, 0],
     [required + success.replace('windows-gnu', 'windows-msvc'), 4],
     [required + success + success, 4], [required + success.replace('rc=0', 'rc=101'), 1],
+    ...[1, 2, 23, 126, 127, 137, 224, -9].map(rc => [required + success.replace('rc=0', 'rc=' + rc), 4]),
+    [required + success.replace('rc=0', 'rc=101') + success, 4],
     [format + format, 4], [format.replace('rc=1', 'rc=bad'), 4],
     [format.replace('rc=1', 'rc=127'), 4], [format + 'spawn rustfmt ENOENT\n', 4],
     [format + 'No space left on device\n', 4], [format + 'signal: 9, SIGKILL\n', 4]]) {
@@ -258,4 +260,46 @@ test('public lint verdict uses the same required-phase policy and retains typed 
   }
   put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace('gate_preflight_verdict "$log"; preflight_rc=$?', 'preflight_rc=0'));
   assert.equal(run(required + format).status, 4, 'the old ordering also breaks the public lint verdict');
+}));
+
+
+test('real log-writer and tool failures stay INFRA through every public host adapter', () => fixture(({ cwd, put, invoke }) => {
+  put('bin/tee', '#!/bin/bash\nif [[ "$1" == *gate-windows-runtime.out ]]; then cat; exit 23; fi\nexec /usr/bin/tee "$@"\n');
+  const source = readFileSync(join(coordinator, 'pr-gate.sh'), 'utf8');
+  const chunk = source.slice(source.indexOf('# An ended client stream'), source.indexOf('# One selector owns'))
+    .replaceAll('Q:/lanes', join(cwd, 'scripts/buildbox/coordinator'));
+  put('coordinator.sh', '#!/bin/bash\n' + chunk + '\nexit 0\n');
+  mkdirSync(join(cwd, '.codex-fleet'));
+  put('scripts/buildbox/coordinator/gate-checks-verdict.sh', readFileSync(join(coordinator, 'gate-checks-results.sh')));
+  const log = join(cwd, 'infra.log');
+  const base = join(cwd, 'baseline.log');
+  writeFileSync(base, 'GATE_CLIPPY rc=0\n');
+  const interpret = () => spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks.sh', '--required-phases', log], { cwd, encoding: 'utf8' });
+  for (const adapter of ['direct', 'pr', 'main']) {
+    const output = invoke(adapter);
+    assert.equal(output.status, 2, output.stdout + output.stderr);
+    assert.equal(output.calls.length, 1, 'real strict writer must be reached');
+    assert.match(output.stdout, /could not retain Windows runtime clippy output \(tee rc=23\)/);
+    writeFileSync(log, output.stdout);
+    assert.equal(interpret().status, 4);
+    const verdict = spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks-verdict.sh', log, base], { cwd, encoding: 'utf8' });
+    assert.equal(verdict.status, 4, verdict.stdout + verdict.stderr);
+    if (adapter !== 'direct') {
+      const gate = spawnSync('bash', ['coordinator.sh'], { cwd, encoding: 'utf8', env: { ...process.env, HOME: cwd, log, n: 'fixture', rc: '2' } });
+      assert.equal(gate.status, 4, gate.stdout + gate.stderr);
+      assert.match(gate.stdout, /GATE INFRA #fixture: Windows runtime executor or output retention failed/);
+    }
+    const guard = 'if [ "$runtime_rc" != 0 ] && [ "$runtime_rc" != 101 ]; then';
+    put('scripts/buildbox/coordinator/gate-checks.sh', checker.replace(guard, 'if false; then'));
+    assert.notEqual(interpret().status, 4, 'old nonzero-as-source reader misclassifies the retained writer failure');
+    put('scripts/buildbox/coordinator/gate-checks.sh', checker);
+  }
+  rmSync(join(cwd, 'bin/tee'));
+  for (const adapter of ['direct', 'pr', 'main']) {
+    const output = invoke(adapter, { STRICT_RC: '127' });
+    assert.equal(output.status, 127, output.stdout + output.stderr);
+    assert.equal(output.calls.length, 1);
+    writeFileSync(log, output.stdout);
+    assert.equal(interpret().status, 4, 'missing tool is infrastructure');
+  }
 }));
