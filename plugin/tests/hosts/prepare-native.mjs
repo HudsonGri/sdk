@@ -27,6 +27,8 @@ run("bun", ["install", "--frozen-lockfile", "--ignore-scripts"]);
 // The filesystem package's generation closure: protobuf and Rust-owned
 // contracts for it and the actors package it builds on.
 run("node", ["scripts/generate.mjs", "filesystem"]);
+// The actors package builds on the capability holders in the auth WASM.
+run("node", ["scripts/build-wasm.mjs", "auth"]);
 run("node", ["node_modules/typescript/bin/tsc", "-b", "typescript/packages/actors", "--pretty", "false"]);
 run("cargo", ["build", "-p", "acyclic-fs-napi", "--locked"]);
 
