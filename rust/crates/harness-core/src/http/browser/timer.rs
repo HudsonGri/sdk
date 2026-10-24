@@ -22,9 +22,12 @@ impl Drop for Timeout {
 pub async fn delay(duration: std::time::Duration) {
     // setTimeout takes signed 32-bit milliseconds. Split longer waits, and round fractional
     // milliseconds up so Retry-After is never shortened by the conversion.
-    let mut remaining = duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0);
+    let mut remaining =
+        duration.as_millis() + u128::from(!duration.subsec_nanos().is_multiple_of(1_000_000));
     while remaining != 0 {
-        let interval = remaining.min(i32::MAX as u128) as u32;
+        let interval = u32::try_from(remaining)
+            .unwrap_or(u32::MAX)
+            .min(i32::MAX as u32);
         let mut timeout = None;
         let promise = Promise::new(&mut |resolve, reject| {
             timeout = schedule(resolve.as_ref(), interval);
@@ -55,8 +58,13 @@ pub fn now() -> std::time::Duration {
             now.call0(&performance).ok()?.as_f64()
         })
         .unwrap_or_else(js_sys::Date::now);
-    // `max` maps NaN to zero and `min` keeps the conversion finite.
-    std::time::Duration::from_secs_f64(millis.max(0.0).min(1e15) / 1000.0)
+    // A host NaN maps to zero; clamp infinities before converting to a duration.
+    let millis = if millis.is_nan() {
+        0.0
+    } else {
+        millis.clamp(0.0, 1e15)
+    };
+    std::time::Duration::from_secs_f64(millis / 1000.0)
 }
 
 /// Schedules one platform-supported interval; callers split longer deadlines.

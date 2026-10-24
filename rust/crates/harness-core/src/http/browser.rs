@@ -30,12 +30,15 @@ pub struct Request {
     pub timeout_ms: Option<u32>,
 }
 
+type Timer = (timer::Timeout, Closure<dyn FnMut()>);
+type Signal = (AbortSignal, Closure<dyn FnMut()>);
+
 struct State {
     abort: AbortController,
     reader: RefCell<Option<ReadableStreamDefaultReader>>,
     pending: Cell<bool>,
-    timer: RefCell<Option<(timer::Timeout, Closure<dyn FnMut()>)>>,
-    signal: RefCell<Option<(AbortSignal, Closure<dyn FnMut()>)>>,
+    timer: RefCell<Option<Timer>>,
+    signal: RefCell<Option<Signal>>,
 }
 
 impl State {
@@ -63,10 +66,10 @@ impl State {
             let _ = signal
                 .remove_event_listener_with_callback("abort", callback.as_ref().unchecked_ref());
         }
-        if !self.pending.get() {
-            if let Some(reader) = self.reader.borrow_mut().take() {
-                reader.release_lock();
-            }
+        if !self.pending.get()
+            && let Some(reader) = self.reader.borrow_mut().take()
+        {
+            reader.release_lock();
         }
     }
     fn cancel(&self) {
@@ -142,58 +145,7 @@ pub fn start(fetch: Function, request: Request, signal: Option<AbortSignal>) -> 
             state.cancel();
         }
     }
-    let head_state = state.clone();
-    let response = future_to_promise(async move {
-        if head_state.abort.signal().aborted() {
-            return Err(failure());
-        }
-        let result = async {
-            let value = fetch
-                .call2(
-                    &js_sys::global(),
-                    &JsValue::from_str(&request.url),
-                    init.as_ref(),
-                )
-                .map_err(|_| failure())?;
-            let response = JsFuture::from(Promise::resolve(&value))
-                .await
-                .map_err(|_| failure())?
-                .dyn_into::<Response>()
-                .map_err(|_| failure())?;
-            if head_state.abort.signal().aborted() {
-                return Err(failure());
-            }
-            if let Some(body) = response.body() {
-                let reader = body
-                    .get_reader()
-                    .dyn_into::<ReadableStreamDefaultReader>()
-                    .map_err(|_| failure())?;
-                *head_state.reader.borrow_mut() = Some(reader);
-            }
-            let headers = Object::new();
-            let entries = js_sys::try_iter(response.headers().as_ref())
-                .map_err(|_| failure())?
-                .ok_or_else(failure)?;
-            for entry in entries {
-                let entry = js_sys::Array::from(&entry.map_err(|_| failure())?);
-                Reflect::set(&headers, &entry.get(0), &entry.get(1)).map_err(|_| failure())?;
-            }
-            let head = Object::new();
-            Reflect::set(
-                &head,
-                &JsValue::from_str("status"),
-                &JsValue::from_f64(response.status().into()),
-            )
-            .map_err(|_| failure())?;
-            Reflect::set(&head, &JsValue::from_str("headers"), &headers).map_err(|_| failure())?;
-            Ok(head.into())
-        }
-        .await;
-        if result.is_err() {
-            head_state.cancel();
-        }
-        result
-    });
+    let response = response(state.clone(), fetch, request.url, init);
     let read_state = state.clone();
     let head = response.clone();
     let read: Closure<dyn FnMut() -> Promise> = Closure::new(move || -> Promise {
@@ -243,4 +195,54 @@ pub fn start(fetch: Function, request: Request, signal: Option<AbortSignal>) -> 
     set(&exchange, "read", &read.into_js_value())?;
     set(&exchange, "cancel", &cancel.into_js_value())?;
     Ok(exchange)
+}
+
+fn response(head_state: Rc<State>, fetch: Function, url: String, init: RequestInit) -> Promise {
+    future_to_promise(async move {
+        if head_state.abort.signal().aborted() {
+            return Err(failure());
+        }
+        let result = async {
+            let value = fetch
+                .call2(&js_sys::global(), &JsValue::from_str(&url), init.as_ref())
+                .map_err(|_| failure())?;
+            let response = JsFuture::from(Promise::resolve(&value))
+                .await
+                .map_err(|_| failure())?
+                .dyn_into::<Response>()
+                .map_err(|_| failure())?;
+            if head_state.abort.signal().aborted() {
+                return Err(failure());
+            }
+            if let Some(body) = response.body() {
+                let reader = body
+                    .get_reader()
+                    .dyn_into::<ReadableStreamDefaultReader>()
+                    .map_err(|_| failure())?;
+                *head_state.reader.borrow_mut() = Some(reader);
+            }
+            let headers = Object::new();
+            let entries = js_sys::try_iter(response.headers().as_ref())
+                .map_err(|_| failure())?
+                .ok_or_else(failure)?;
+            for entry in entries {
+                let entry = js_sys::Array::from(&entry.map_err(|_| failure())?);
+                Reflect::set(&headers, &entry.get(0), &entry.get(1)).map_err(|_| failure())?;
+            }
+            let head = Object::new();
+            Reflect::set(
+                &head,
+                &JsValue::from_str("status"),
+                &JsValue::from_f64(response.status().into()),
+            )
+            .map_err(|_| failure())?;
+            Reflect::set(&head, &JsValue::from_str("headers"), &headers).map_err(|_| failure())?;
+            Ok(head.into())
+        }
+        .await;
+        if result.is_err() {
+            head_state.cancel();
+        }
+        result
+    })
 }

@@ -82,10 +82,10 @@ impl HttpTransport for BrowserTransport {
             let head = JsFuture::from(Promise::resolve(&head))
                 .await
                 .map_err(|_| interrupted())?;
-            let status = Reflect::get(&head, &JsValue::from_str("status"))
-                .map_err(|_| interrupted())?
-                .as_f64()
-                .ok_or_else(interrupted)? as u16;
+            let status: u16 = serde_wasm_bindgen::from_value(
+                Reflect::get(&head, &JsValue::from_str("status")).map_err(|_| interrupted())?,
+            )
+            .map_err(|_| interrupted())?;
             let headers =
                 Reflect::get(&head, &JsValue::from_str("headers")).map_err(|_| interrupted())?;
             let retry_after = Reflect::get(&headers, &JsValue::from_str("retry-after"))
