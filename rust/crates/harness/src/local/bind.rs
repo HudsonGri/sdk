@@ -311,7 +311,6 @@ async fn checkout_runtime(
 }
 
 fn validate_binding(config: &LocalHarnessConfig, runtime: &LocalTaskRuntime) -> Result<()> {
-    config.limits.validate(&mut None)?;
     use crate::runtime::ToolPolicy as _;
     config.limits.validate(&mut None)?;
     if runtime.approval_policy_identity() != Some(config.approval_policy.bind()?.identity()) {
