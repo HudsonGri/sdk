@@ -163,7 +163,7 @@ elif [ $rc = 224 ] && grep -aq '^\[build-slot\] remote failed:' $log; then v="IN
 elif [ $rc != 0 ] && [ "$results" -eq 0 ]; then v="FAIL #$n: no test results (rc=$rc): ${cargo_errors:-no Cargo error diagnostics captured} log=$log"
 elif grep -aq '^GATE_EMPTY no changed Cargo inputs$' "$log"; then v="PASS #$n: no changed Cargo inputs log=$log"
 # Clippy and feature-set ratchet: no (file, lint) count above main's, no new compiler error, no newly failing feature set.
-elif ! checks=$(bash Q:/lanes/gate-checks-results.sh "$log" "$base_log" "$clippy_base" "$features_base"); then v="FAIL #$n: new clippy/feature findings vs qualified main checks: $(printf '%s' "$checks" | tr '\n' ';' | cut -c1-500) log=$log"
+elif ! checks=$(bash Q:/lanes/gate-checks-verdict.sh "$log" "$base_log" "$clippy_base" "$features_base"); then v="FAIL #$n: new clippy/feature findings vs qualified main checks: $(printf '%s' "$checks" | tr '\n' ';' | cut -c1-500) log=$log"
 else v="PASS #$n: no new failures ($(printf '%s\n' "$pr_fails" | grep -c .) pre-existing on main; $(printf '%s' "$checks" | tr '\n' ' ')) log=$log"; fi
 printf '%s\n' "$checks" > "$log.checks"
 echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log

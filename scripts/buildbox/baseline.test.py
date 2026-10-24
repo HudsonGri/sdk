@@ -145,7 +145,7 @@ raise SystemExit(101)
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()
   checks=root/'checks.sh';checks.write_text('#!/bin/bash\nexit 0\n')
   coordinator=(HERE/'coordinator/pr-gate.sh').read_text();block=coordinator[coordinator.index('pr_fails=$('):]
-  block=block.replace('Q:/lanes/failed-tests.sh',str(helper)).replace('Q:/lanes/flakes.txt',str(root/'flakes')).replace('Q:/lanes/gate-checks-results.sh',str(checks))
+  block=block.replace('Q:/lanes/failed-tests.sh',str(helper)).replace('Q:/lanes/flakes.txt',str(root/'flakes')).replace('Q:/lanes/gate-checks-verdict.sh',str(checks))
   known='error: test failed, to rerun pass `-p acyclic-conformance --bench harness`\n'
   for negative,new,compiler,expected in [(False,False,False,0),(True,False,False,1),(False,True,False,1),(False,False,True,1)]:
    helper.write_text(source[:source.index('# Non-libtest')]+ '} | sort -u\n' if negative else source)
