@@ -3,6 +3,12 @@ use crate::core::OwnedBytes;
 use crate::executor::with_history_io;
 use crate::wire_codec::CodecQuota;
 
+/// A canonical read keeps its original decoded allocation alive until publication ends.
+pub(in crate::filesystem) struct PublicationRead<'io> {
+    pub value: Option<(InteractionTicket, Option<InteractionResolution>)>,
+    pub reservation: Option<DecodeReservation<'io>>,
+}
+
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
     P: StreamProvider,
@@ -99,16 +105,13 @@ where
     /// Validates the exact installation binding and copies its authoritative
     /// ticket and resolution. The publication owner obtains the canonical
     /// durable receipt after publishing the mandatory task files.
-    pub(crate) fn read_for_publication<'io>(
+    pub(in crate::filesystem) fn read_for_publication<'io>(
         &self,
         aggregate: &StreamAggregate<P>,
         id: InteractionId,
         binding: Option<(OperationId, [u8; 32])>,
         io: Option<&'io PreparationIo>,
-    ) -> Result<(
-        Option<(InteractionTicket, Option<InteractionResolution>)>,
-        Option<DecodeReservation<'io>>,
-    )> {
+    ) -> Result<PublicationRead<'io>> {
         if let Some((operation, digest)) = binding {
             let Some((ticket, Some(resolution))) = aggregate
                 .reducer()
@@ -139,7 +142,10 @@ where
         let hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
-        Ok((read, hold))
+        Ok(PublicationRead {
+            value: read,
+            reservation: hold,
+        })
     }
 
     fn admitted(

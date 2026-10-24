@@ -216,7 +216,9 @@ where
         io: Option<&'io PreparationIo>,
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
-        let (read, _read) = host.read_for_publication(&aggregate.0, id, binding, io)?;
+        let read = host.read_for_publication(&aggregate.0, id, binding, io)?;
+        let _read = read.reservation;
+        let read = read.value;
         let (ticket, resolution) = admitted(read, io)?;
         let (Some(resolution), InteractionKind::Approval) = (&resolution, ticket.kind) else {
             return Err(canonical_boundary(
