@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -20,6 +21,18 @@ spec.loader.exec_module(job)
 
 
 class CustodyTests(unittest.TestCase):
+    def test_stop_job_refuses_foreign_or_missing_pid_namespace_before_signalling(self):
+        with tempfile.TemporaryDirectory(dir=job.JOBS) as directory:
+            record = Path(directory) / 'job.json'
+            for namespace in [None, os.readlink('/proc/self/ns/pid') + '-foreign']:
+                record.write_text(json.dumps({'pid': os.getpid(),
+                                             'identity': job.identity(os.getpid()),
+                                             'pid_namespace': namespace}))
+                with patch.object(job.os, 'killpg') as signalled:
+                    with self.assertRaises(ValueError):
+                        job.stop_job(record)
+                    signalled.assert_not_called()
+
     def test_real_cache_daemon_and_detached_writer_are_joined_before_both_deletions(self):
         for broken in [False, True]:
             record = custody.prepare()

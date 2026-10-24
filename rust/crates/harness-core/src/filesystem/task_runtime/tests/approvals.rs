@@ -230,6 +230,13 @@ async fn approval_submission_consumes_one_authenticated_binding_for_both_entry_p
         let files = &initialized.files;
         let responder = &initialized.responder;
         let decision = request(&initialized).await?;
+        // The interaction owner stages a typed decision in its own encoding;
+        // the submitted JSON's key order is not the published file's encoding.
+        let owner_bytes = serde_json::to_vec(&ApprovalDecisionFile::decode(
+            &decision.bytes,
+            runtime.maximum_payload_bytes,
+        )?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
         APPROVAL_BINDINGS.with(|count| count.set(0));
         if reviewed {
             runtime.submit_reviewed_approval(task, &decision).await?;
@@ -240,7 +247,7 @@ async fn approval_submission_consumes_one_authenticated_binding_for_both_entry_p
         }
         APPROVAL_BINDINGS.with(|count| assert_eq!(count.get(), 1));
         assert!(
-            matches!(files.snapshot(&Query::File(decision.key.clone()), 1).await?.files.as_slice(), [file] if file.bytes == decision.bytes)
+            matches!(files.snapshot(&Query::File(decision.key.clone()), 1).await?.files.as_slice(), [file] if file.bytes.as_ref() == owner_bytes)
         );
         // Old shape: selecting the review opens a view, then re-entering the
         // public writer opens another. The same one-binding oracle detects it.
@@ -268,7 +275,7 @@ async fn approval_submission_consumes_one_authenticated_binding_for_both_entry_p
                 .is_err()
         );
         assert!(
-            matches!(files.snapshot(&Query::File(decision.key.clone()), 1).await?.files.as_slice(), [file] if file.bytes == decision.bytes)
+            matches!(files.snapshot(&Query::File(decision.key.clone()), 1).await?.files.as_slice(), [file] if file.bytes.as_ref() == owner_bytes)
         );
     }
     Ok(())
