@@ -260,10 +260,15 @@ fn recovery_removes_a_crashed_binding_link_to_a_shared_view() -> TestResult {
             .is_symlink(),
         "a live view's link was removed"
     );
+    // The old root's parent is gone. Both a missing target and a different
+    // live target must fail closed, preserving the live alias in either case.
+    assert!(bind_alias(&destination, &reaped, None).is_err());
+    assert_eq!(std::fs::read_link(&destination)?, live);
     assert!(matches!(
-        bind_alias(&destination, &reaped, None),
+        bind_alias(&destination, &roots.join("another"), None),
         Err(Error::Conflict(_))
     ));
+    assert_eq!(std::fs::read_link(&destination)?, live);
     std::fs::remove_file(&destination)?;
     std::fs::remove_dir(&live)?;
     std::fs::remove_dir(&live_root)?;

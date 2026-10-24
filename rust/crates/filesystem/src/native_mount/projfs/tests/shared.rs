@@ -129,3 +129,38 @@ fn a_shared_view_name_is_listed_once() -> Result<(), Box<dyn std::error::Error>>
     }
     Ok(())
 }
+
+#[test]
+fn dead_shared_root_cleanup_never_reopens_a_replaced_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let path = fixture.path().join("admitted");
+    let moved = fixture.path().join("held");
+    std::fs::create_dir(&path)?;
+    let admitted = crate::hold_root(&path)?;
+    let name = Path::new("dead");
+    let staging = super::super::staging_path(name);
+    for leaf in [name, staging.as_path()] {
+        std::fs::create_dir(path.join(leaf))?;
+        std::fs::write(path.join(leaf).join("retained"), b"old owner")?;
+    }
+    std::fs::rename(&path, &moved)?;
+    std::fs::create_dir(&path)?;
+    for leaf in [name, staging.as_path()] {
+        std::fs::create_dir(path.join(leaf))?;
+        std::fs::write(path.join(leaf).join("retained"), b"replacement")?;
+    }
+    super::super::cleanup::detach_dead_shared_root(&admitted, name)?;
+    for leaf in [name, staging.as_path()] {
+        assert!(!moved.join(leaf).exists());
+        assert_eq!(
+            std::fs::read(path.join(leaf).join("retained"))?,
+            b"replacement"
+        );
+    }
+    // The previous path-based cleanup follows the replacement admission.
+    // Its deletion is observable under exactly the same directory rename.
+    std::fs::remove_dir_all(path.join(name))?;
+    assert!(!path.join(name).exists());
+    Ok(())
+}

@@ -334,18 +334,24 @@ mod issuance_tests {
     }
 
     #[test]
-    fn inode_backends_retain_no_pending_name_and_serials_cannot_wrap()
-    -> Result<(), NativeMountError> {
+    fn inode_backends_retain_no_pending_name() -> Result<(), NativeMountError> {
         let mut names = IssuedNames::default();
         let first = names.issue(Path::new("inode-backend"), false)?.1;
         let second = names.issue(Path::new("inode-backend"), false)?.1;
         assert_ne!(first, second);
         assert!(names.pending.is_empty());
-        names.next = u64::MAX;
+        Ok(())
+    }
+
+    #[test]
+    fn issued_serials_cannot_wrap() {
+        let mut names = IssuedNames {
+            next: u64::MAX,
+            ..IssuedNames::default()
+        };
         assert!(names.issue(Path::new("inode-backend"), false).is_err());
         assert_eq!(names.next, u64::MAX);
         assert!(names.pending.is_empty());
-        Ok(())
     }
 }
 
