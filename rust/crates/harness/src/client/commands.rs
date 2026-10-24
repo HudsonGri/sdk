@@ -40,6 +40,8 @@ pub use sources::CommandSources;
 mod syntax;
 pub use files::*;
 pub use session::CommandSession;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub(crate) use session::ApprovalResponder;
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",
