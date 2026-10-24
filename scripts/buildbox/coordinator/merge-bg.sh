@@ -17,7 +17,7 @@ else
   fi
   # The reason is every line that isn't a clean check, gh/network errors included (2026-10-22: a TLS handshake timeout
   # left the alert with no reason at all).
-  echo "$(date -u +%FT%T.000Z) pr-gate MERGE1 #$n BLOCKED $(grep -avE "^#$n (fails: \[\]|threads=0|closing: \[\])$" $out | tr '\n' ' ')" >> ~/.codex-fleet/alerts.log; 
+  echo "$(date -u +%FT%T.000Z) pr-gate MERGE1 #$n BLOCKED $(grep -avE "^#$n (fails: \[\]|threads=0|closing: \[\])$" $out | tr '\n' ' ')" >> ~/.codex-fleet/alerts.log;
   blocked_reason=$(mktemp "Q:/lanes/pr-gate/route-blocked-$n.XXXXXXXX.out")
   if [ -n "$blocked_reason" ] && cp "$out" "$blocked_reason"; then
     nohup bash Q:/lanes/route.sh BLOCKED "$n" "$blocked_reason" >> Q:/lanes/pr-gate/route.out 2>&1 < /dev/null &
