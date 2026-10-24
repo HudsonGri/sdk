@@ -8,6 +8,7 @@ must enable test-support for the shared resource sampler/oracle request.
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
@@ -25,15 +26,21 @@ def main():
     }
     flags = policies[host]
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix='.plugins-shared-scale-', dir=pathlib.Path.home()) as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix='.plugins-shared-scale-', dir=pathlib.Path.home()) as temporary,
+        socket.socket() as barrier,
+    ):
         root = pathlib.Path(temporary)
         workspace = root / 'workspace'
         workspace.mkdir()
         bins = root / 'bin'
         bins.mkdir()
+        barrier.bind(('127.0.0.1', 0))
+        barrier.listen(4)
         env = {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
                'FIXTURE_FLAGS': json.dumps(flags), 'FIXTURE_HOST': host,
                'FIXTURE_WORKSPACE': str(workspace),
+               'FIXTURE_BARRIER': str(barrier.getsockname()[1]),
                'ACYCLIC_CACHED_DESCRIPTORS': '1', 'ACYCLIC_ADMITTED_DESCRIPTORS': '1'}
         for key in ('HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_STATE_HOME',
                     'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
@@ -42,8 +49,8 @@ def main():
             env[key] = str(directory)
         (workspace / 'AGENTS.md').write_text('shared scale discovery fixture')
         executable = bins / {'codex': 'codex', 'claude-code': 'claude', 'pi': 'pi'}[host]
-        executable.write_text('''#!/usr/bin/env python3
-import json,os,pathlib,sys
+        executable.write_text(r'''#!/usr/bin/env python3
+import json,os,pathlib,socket,sys
 args=sys.argv[1:];host=os.environ['FIXTURE_HOST'];cwd=pathlib.Path.cwd()
 child={'codex':'exec','claude-code':'-p','pi':'--mode'}[host] in args
 flags=json.loads(os.environ['FIXTURE_FLAGS'])
@@ -58,9 +65,15 @@ assert (cwd/'AGENTS.md').read_text()=='shared scale discovery fixture'
 prompt=sys.stdin.read()
 (cwd/(prompt+'.txt')).write_text(prompt)
 (cwd/'.volumes/scratch/private.txt').write_text(prompt)
-if host=='codex': print(json.dumps({'type':'thread.started','thread_id':'scale-fixture'}))
-if host=='claude-code': print(json.dumps({'type':'system','subtype':'init','session_id':'scale-fixture'}))
-if host=='pi': print(json.dumps({'type':'session','id':'scale-fixture'}))
+if host=='codex': print(json.dumps({'type':'thread.started','thread_id':'scale-fixture'}),flush=True)
+if host=='claude-code': print(json.dumps({'type':'system','subtype':'init','session_id':'scale-fixture'}),flush=True)
+if host=='pi': print(json.dumps({'type':'session','id':'scale-fixture'}),flush=True)
+with socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_BARRIER']))) as gate:
+ gate.sendall((prompt+'\n').encode())
+ while True:
+  message=gate.recv(1)
+  if message!=b'?': break
+  gate.sendall(b'!')
 ''')
         executable.chmod(0o755)
         with (root / 'owner.log').open('w+') as owner_log, (root / 'bridge.log').open('w+') as bridge_log:
@@ -68,6 +81,7 @@ if host=='pi': print(json.dumps({'type':'session','id':'scale-fixture'}))
                                       str(root / 'state'), '--workspace', str(workspace)],
                                      cwd=workspace, env=env, stdout=owner_log, stderr=owner_log)
             bridge = None
+            gates = []
             try:
                 deadline = time.monotonic() + 2
                 while not (workspace / '.acyclic-sdk/host-files/owner.json').is_file():
@@ -112,25 +126,44 @@ if host=='pi': print(json.dumps({'type':'session','id':'scale-fixture'}))
 
                 paths = []
                 samples = []
+
+                def assert_live():
+                    for gate in gates:
+                        gate.sendall(b'?')
+                        assert gate.recv(1) == b'!', 'sample requires every native session alive'
+
                 for population in (2, 4):
                     for child in range(len(paths), population):
                         reference = 'child' + str(child)
                         location = tool('spawn', reference, reference)
-                        observed = tool('wait', reference)
-                        assert observed['status']['settled'], observed
+                        gate, _ = barrier.accept()
+                        gates.append(gate)
+                        identity = gate.makefile('rb')
+                        assert identity.readline() == (reference + '\n').encode(), reference
+                        identity.close()
                         path = pathlib.Path(location['cwd'])
                         assert (path / (reference + '.txt')).read_text() == reference
                         assert (path / '.volumes/scratch/private.txt').read_text() == reference
                         paths.append(path)
+                    assert_live()
                     sample = client({'kind': 'resource_probe', 'task': task, 'agents': population,
                                      'previous': samples[0]['counts'] if samples else None})
+                    assert_live()
+                    sample['live_sessions'] = population
                     samples.append(sample)
-                # Project and private views stay retained at both samples;
-                # neither archive nor an early view drop can hide mount costs.
+                    print(json.dumps({'host': host, 'sample': sample,
+                                      'sampled_process': 'shared_mount_owner'}), flush=True)
+                # The same N sessions remain alive through the 2N sample.
+                # Sample the mount owner with the shared oracle; descendant
+                # host-runtime resources are outside that oracle's contract.
                 assert len({path.parent for path in paths}) == 1, paths
                 assert samples[1]['exceeded'] == [], samples
+                for gate in gates:
+                    gate.sendall(b'.')
                 for child, path in enumerate(paths):
                     reference = 'child' + str(child)
+                    observed = tool('wait', reference)
+                    assert observed['status']['settled'], observed
                     client({'kind': 'fs', 'task': task, 'command': 'merge agents/' + reference})
                     assert (workspace / (reference + '.txt')).read_text() == reference
                     assert (path / (reference + '.txt')).read_text() == reference
@@ -142,8 +175,12 @@ if host=='pi': print(json.dumps({'type':'session','id':'scale-fixture'}))
                 assert elapsed < 10, elapsed
                 print(json.dumps({'host': host, 'samples': samples, 'seconds': elapsed,
                                   'model_calls': 0, 'native_session_standins': True,
+                                  'sessions_alive_at_both_samples': True,
+                                  'sampled_process': 'shared_mount_owner',
                                   'shared_project_and_private_views': True}))
             finally:
+                for gate in gates:
+                    gate.close()
                 for process in (bridge, owner):
                     if process is not None and process.poll() is None:
                         process.terminate()
