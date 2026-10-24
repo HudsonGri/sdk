@@ -76,50 +76,15 @@ def arguments(args):
 
 REMOTE = r'''
 from pathlib import Path, PurePosixPath
-import fcntl,hashlib,json,os,subprocess,tarfile,tempfile,time
+import hashlib,json,os,subprocess,tarfile,time
 c=CONFIG
 os.environ.update(CARGO_INCREMENTAL='0', XWIN_ACCEPT_LICENSE='1')
 
-def xwin_cache_snapshot(seed):
-    # Only preparation and snapshotting share a mutable namespace. Compiles
-    # own separate CoW files; cargo-xwin's destructive setup retry can never
-    # delete another live compile's SDK, or hold the seed lease for its build.
-    seed.mkdir(parents=True,exist_ok=True)
-    owner=tempfile.TemporaryDirectory(prefix='win-test-xwin-')
-    snapshot=Path(owner.name)/'xwin'
-    snapshot.mkdir()
-    try:
-        with (seed/'.win-test.lock').open('a') as lease:
-            fcntl.flock(lease,fcntl.LOCK_EX)
-            env=dict(os.environ,XWIN_CACHE_DIR=str(seed))
-            subprocess.run(['cargo','xwin','cache','xwin'],env=env,check=True)
-            subprocess.run(['cp','-a','--reflink=auto','--',
-                            str(seed/'xwin'/'crt'),str(seed/'xwin'/'sdk'),
-                            str(seed/'xwin'/'DONE'),str(snapshot)],check=True)
-            for entry in snapshot.rglob('*'):
-                if entry.is_symlink() and not entry.resolve(strict=True).is_relative_to(snapshot):
-                    raise RuntimeError('SDK alias escapes its private snapshot: '+str(entry))
-        return owner
-    except BaseException:
-        owner.cleanup()
-        raise
-
-cache_snapshot=xwin_cache_snapshot(Path('/mnt/bb/toolchains/win-test-xwin-v1'))
-os.environ['XWIN_CACHE_DIR']=cache_snapshot.name
-print('WIN_TEST_XWIN_PRIVATE_CACHE',cache_snapshot.name,flush=True)
+assert os.environ.get('GATE_XWIN_CACHE_ROOT'), 'shared SDK workspace was not admitted'
+print('WIN_TEST_XWIN_PRIVATE_CACHE',os.environ['XWIN_CACHE_DIR'],flush=True)
 root=Path.cwd().resolve()
-if c.get('target_dir'):
-    selected=Path(c['target_dir']).resolve()
-    assert selected.is_relative_to(Path('/mnt/bb/targets')) and selected != Path('/mnt/bb/targets'), 'Windows targets must stay under /mnt/bb/targets'
-    selected.mkdir(parents=True,exist_ok=True)
-    (selected/'.build-slot-lease').touch()
-    os.environ['CARGO_TARGET_DIR']=str(selected)
 target=Path(os.environ['CARGO_TARGET_DIR']).resolve()
-if c.get('target_clock'):
-    clock_scope={'__name__':'cargo_target_clock'}
-    exec(compile(c['target_clock'],'cargo-target-clock.py','exec'),clock_scope)
-    target_owner=clock_scope['prepare'](root,target)
-    print('WIN_TEST_SOURCE_CLOCK_SHA256',hashlib.sha256(c['target_clock'].encode()).hexdigest(),flush=True)
+# CARGO_TARGET_DIR is the job-private mount supplied by bs.ps1.
 print('WIN_TEST_TARGET_DIR',str(target),flush=True)
 metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--no-deps','--format-version=1'],text=True))
 packages=[p for p in metadata['packages'] if p['name'] in (c['crate'],'acyclic-'+c['crate'])]
@@ -130,9 +95,6 @@ base=['cargo','xwin','test','--no-run','--locked','--target','x86_64-pc-windows-
 all_artifacts=[]
 logs=[]
 def build(cmd,label):
-    if c.get('target_clock'):
-        refreshed_owner=clock_scope['prepare'](root,target,inherited=target_owner.fileno())
-        refreshed_owner.close()
     log=root/(c['stem']+'-'+label+'.jsonl')
     logs.append(log)
     print('WIN_TEST_BUILD',json.dumps(cmd),flush=True)
@@ -143,39 +105,60 @@ def build(cmd,label):
             try: v=json.loads(line)
             except ValueError: continue
             if v.get('reason')=='compiler-artifact' and v.get('package_id')==p['id']:
-                all_artifacts.append(v)
+                all_artifacts.append((v,log))
         rc=proc.wait()
     assert rc==0, 'Cross-build failed with exit '+str(rc)+'; no Windows tests were run'
+# A test build unifies dev-dependency features into normal bin artifacts.
+# Own the production graph's immutable export before a test build can replace
+# the same Cargo output pathname. Both graphs use the one artifact stager.
+admission={'artifacts':{}}
+rows=[]
+
+def stage(label, artifacts, is_test):
+    specifications=[];identities=set()
+    for v,log in artifacts:
+        if not v.get('executable') or bool(v['profile']['test']) != is_test:continue
+        identity=(v['target']['name'],is_test)
+        assert identity not in identities, 'Ambiguous package executable identity: '+str(identity)
+        identities.add(identity)
+        name=identity[0]+('-test' if is_test else '-cli')+'.exe'
+        specifications.append(dict(name=name,target=identity[0],test=is_test,cargo_json=str(log)))
+    assert specifications, 'Cargo emitted ZERO '+label+' executables for '+p['name']
+    specification=root/(c['stem']+'-'+label+'-specification.json')
+    specification.write_text(json.dumps(specifications))
+    bundle=root/(c['stem']+'-'+label+'-artifacts')
+    subprocess.run(['node','scripts/graphcoder-e2e/artifacts.mjs',str(specification),str(bundle)],check=True,stdout=subprocess.DEVNULL)
+    selected=json.loads((bundle/'artifacts.json').read_text())['artifacts']
+    assert not admission['artifacts'].keys() & selected.keys(), 'Duplicate staged artifact identity'
+    admission['artifacts'].update(selected)
+    for spec in specifications:
+        value=selected[spec['name']]
+        assert Path(value['source']).suffix.lower()=='.exe', 'Cargo artifact is not a Windows executable'
+        row=dict(remote=value['path'],cargo_path=value['source'],name=spec['name'],target=spec['target'],test=is_test,sha256=value['sha256'])
+        rows.append(row)
+        print('WIN_TEST_REMOTE_EXE',json.dumps(row),flush=True)
+
+keys={arg.split('=',1)[0] for arg in c['cargo']}
+unit_selection=bool(keys & {'--lib','--bin','--bins','--example','--examples','--bench','--benches'})
+integration_selection=bool(keys & {'--test','--tests','--all-targets'}) or not unit_selection
+bins=[t for t in p['targets'] if 'bin' in t['kind']]
+if integration_selection and bins:
+    assert len(bins)==1, 'Ambiguous normal executable fixture: '+repr([t['name'] for t in bins])
+    shared=[];i=0
+    value_flags={'--features','-F','--profile','--config','-j','--jobs','--color'}
+    switches={'--all-features','--no-default-features','--release','--offline','--frozen'}
+    while i<len(c['cargo']):
+        arg=c['cargo'][i];key=arg.split('=',1)[0]
+        if key in value_flags:
+            shared.append(arg)
+            if '=' not in arg:i+=1;shared.append(c['cargo'][i])
+        elif arg in switches:shared.append(arg)
+        i+=1
+    build(['cargo','xwin','build','--locked','--target','x86_64-pc-windows-msvc','-p',p['name'],'--bin',bins[0]['name'],'--message-format=json-render-diagnostics']+shared,'cli')
+    stage('cli',all_artifacts,False)
+    all_artifacts.clear()
 build(base+c['cargo'],'tests')
-tests=[v for v in all_artifacts if v.get('profile',{}).get('test') and v.get('executable')]
-if not tests:
-    print('WIN_TEST_ARTIFACT_DIAGNOSTIC',json.dumps([dict(target=v['target']['name'],profile=v.get('profile'),executable=v.get('executable'),filenames=v.get('filenames')) for v in all_artifacts]),flush=True)
-    raise AssertionError('Cargo emitted ZERO test executables for '+p['name']+'; check --lib/--bin/--test, required-features and cfg gates. No local run attempted.')
-# Only integration selections need Cargo's normal CLI fixture. Unit-only
-# selections must not trigger a second feature graph and unnecessary rebuild.
-if any('test' in v['target']['kind'] for v in tests) and any(t['name']=='acyclic' and 'bin' in t['kind'] for t in p['targets']):
-    if not any(v.get('executable') and not v.get('profile',{}).get('test') and v['target']['name']=='acyclic' for v in all_artifacts):
-        shared=[];i=0
-        value_flags={'--features','-F','--profile','--config','-j','--jobs','--color'}
-        switches={'--all-features','--no-default-features','--release','--offline','--frozen'}
-        while i<len(c['cargo']):
-            arg=c['cargo'][i];key=arg.split('=',1)[0]
-            if key in value_flags:
-                shared.append(arg)
-                if '=' not in arg:i+=1;shared.append(c['cargo'][i])
-            elif arg in switches:shared.append(arg)
-            i+=1
-        build(['cargo','xwin','build','--locked','--target','x86_64-pc-windows-msvc','-p',p['name'],'--bin','acyclic','--message-format=json-render-diagnostics']+shared,'cli')
-rows=[];seen=set()
-for v in all_artifacts:
-    if not v.get('executable'):continue
-    f=Path(v['executable'])
-    if str(f) in seen:continue
-    seen.add(str(f))
-    assert f.is_file() and f.suffix.lower()=='.exe', 'Cargo JSON executable does not exist ON BB2: '+str(f)
-    row=dict(remote=str(f),name=f.name,target=v['target']['name'],test=bool(v.get('profile',{}).get('test')),sha256=hashlib.file_digest(f.open('rb'),'sha256').hexdigest())
-    rows.append(row)
-    print('WIN_TEST_REMOTE_EXE',json.dumps(row),flush=True)
+stage('tests',all_artifacts,True)
 assert any(r['test'] for r in rows), 'No test executables survived artifact selection'
 files={}
 # All tracked runtime fixtures, including corpora, source-policy inputs and scripts.
@@ -193,13 +176,13 @@ for name in tracked+c['fixtures']:
         files[f.as_posix()]=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
 dlls={}
 for row in rows:
-    folder=Path(row['remote']).parent
+    folder=Path(row['cargo_path']).parent
     for directory in (folder,folder.parent,folder/'deps'):
         for f in directory.glob('*.dll'):
             h=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
             assert f.name not in dlls or dlls[f.name]['sha256']==h, 'Ambiguous runtime DLL '+f.name
             dlls[f.name]=dict(remote=str(f),sha256=h)
-manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
+manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,artifact_admission=admission,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
 manifest_path=root/(c['stem']+'-manifest.json');manifest_path.write_text(json.dumps(manifest))
 archive=root/(c['stem']+'.tar.gz')
 with tarfile.open(archive,'w:gz',compresslevel=1) as tar:
@@ -236,7 +219,7 @@ def remote_invocation(config):
     program = ('import json\nCONFIG=json.loads(' + repr(json.dumps(config)) + ')\n' + REMOTE).encode('utf-8')
     checksum = hashlib.sha256(program).hexdigest()
     filename = INPUT_ROOT + '/win-input-' + checksum + '.py'
-    return ['python3', '-c', CONSUME_INPUT, filename, checksum], program
+    return ['python3', 'scripts/with-xwin-cache.py', '--workers', '1', '--', 'python3', '-c', CONSUME_INPUT, filename, checksum], program
 
 
 def stage_invocation(command):
@@ -252,7 +235,6 @@ def main():
         print('          acyclic-plugin --all-features --bin acyclic pi_native')
         print('Optional WIN_TEST_FIXTURES: JSON array of additional worktree-relative fixture files/directories.')
         print('Optional WIN_TEST_SCRATCH_ROOT: Windows records directory (default D:/lane-scratch/<worktree>).')
-        print('Optional WIN_TEST_TARGET_DIR: reuse the lane target below /mnt/bb/targets on bb2.')
         return 0 if len(sys.argv) > 1 else 2
     root = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
     os.chdir(root)
@@ -272,12 +254,13 @@ def main():
     records = scratch / 'win-test' / stem[-12:]
     records.mkdir(parents=True)
     archive = records / (stem + '.tar.gz')
-    config = dict(crate=sys.argv[1], cargo=cargo, stem=stem, fixtures=fixtures,
-                  target_dir=os.environ.get('WIN_TEST_TARGET_DIR'))
-    if os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK') == '1':
-        if not config['target_dir']:
-            fail('A persistent source clock requires an explicit lane target')
-        config['target_clock'] = Path('Q:/lanes/cargo-target-clock.py').read_text(encoding='utf-8')
+    if os.environ.get('WIN_TEST_TARGET_DIR') or os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK'):
+        fail('Windows builds require build-slot job-owned targets; custom targets/source clocks are prohibited')
+    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py'):
+        path = root / shared
+        if not path.is_file() or path.is_symlink():
+            fail('The source snapshot must contain the shared SDK factory: ' + shared)
+    config = dict(crate=sys.argv[1], cargo=cargo, stem=stem, fixtures=fixtures)
     payload, program = remote_invocation(config)
     import shlex
     # This transfers bytes only. Compilation remains inside bs.ps1 below.
@@ -379,11 +362,14 @@ def run_tests(records, manifest, runtime):
             print('WIN_TEST_LOCAL_EXE', path, 'test=' + str(row['test']), flush=True)
             if not row['test']:
                 continue
-            home = records / 'profiles' / row['sha256'][:8] / 'home'
+            fixture_id = uuid.uuid4().hex
+            fixture = records / 'profiles' / fixture_id
+            fixture.mkdir(parents=True)
+            home = fixture / 'home'
             codex = home / '.codex-fixture'
-            temp = records / 'tmp' / row['sha256'][:8]
+            temp = records / 'tmp' / fixture_id
             for folder in (codex, temp, home / 'AppData/Local', home / 'AppData/Roaming'):
-                folder.mkdir(parents=True, exist_ok=True)
+                folder.mkdir(parents=True)
             env = os.environ.copy()
             for key in list(env):
                 if key.endswith('API_KEY') or 'AUTH_TOKEN' in key or key in ('OPENAI_ACCESS_TOKEN', 'CODEX_ACCESS_TOKEN'):
