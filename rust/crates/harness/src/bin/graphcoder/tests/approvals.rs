@@ -194,9 +194,6 @@ fn decision(request: &FileValue, principal: &str, approved: bool) -> FileValue {
 
 fn executable() -> std::path::PathBuf {
     let compiled = Path::new(build_metadata::EXECUTABLE);
-    if compiled.is_file() {
-        return compiled.to_owned();
-    }
     // Cross-built integration fixtures are exported beside the executable
     // identified by Cargo JSON, preserving Cargo's binary filename.
     let exported = std::env::current_exe()
@@ -204,12 +201,60 @@ fn executable() -> std::path::PathBuf {
         .parent()
         .unwrap()
         .join(compiled.file_name().unwrap());
+    select_executable(
+        std::env::var_os("ACYCLIC_TEST_BINARY").map(std::path::PathBuf::from),
+        compiled,
+        &exported,
+    )
+}
+
+fn select_executable(
+    explicit: Option<std::path::PathBuf>,
+    compiled: &Path,
+    exported: &Path,
+) -> std::path::PathBuf {
+    let selected = explicit.unwrap_or_else(|| {
+        if compiled.is_file() {
+            compiled.to_owned()
+        } else {
+            exported.to_owned()
+        }
+    });
     assert!(
-        exported.is_file(),
+        selected.is_absolute() && selected.is_file(),
         "missing shipping binary: {}",
-        exported.display()
+        selected.display()
     );
-    exported
+    selected
+}
+
+#[test]
+fn approvals_use_the_declared_binary_and_refuse_a_missing_override() -> std::io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let compiled = root.path().join("compiled");
+    let shipping = root.path().join("shipping");
+    let exported = root.path().join("exported");
+    for path in [&compiled, &shipping, &exported] {
+        std::fs::write(path, b"fixture")?;
+    }
+    assert_eq!(
+        select_executable(Some(shipping.clone()), &compiled, &exported),
+        shipping
+    );
+    assert_ne!(
+        compiled, shipping,
+        "the old compile-time-first selector ignores the declared binary"
+    );
+    assert_eq!(select_executable(None, &compiled, &exported), compiled);
+    std::fs::remove_file(&compiled)?;
+    assert_eq!(select_executable(None, &compiled, &exported), exported);
+    std::fs::write(&compiled, b"fixture")?;
+    let missing = root.path().join("missing");
+    assert!(
+        std::panic::catch_unwind(|| select_executable(Some(missing), &compiled, &exported))
+            .is_err()
+    );
+    Ok(())
 }
 
 #[derive(Clone)]
