@@ -11,6 +11,89 @@ use ed25519_dalek::SigningKey;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[test]
+fn authenticated_admission_transfers_the_single_verified_workload() -> TestResult {
+    let (signer, workload) = fixture()?;
+    let trust = signed::Snapshot::default();
+    let attributes = RecordAttributes::try_new(vec![])?;
+    let usage = signed::limits(None);
+    let request = signed::request("fs:/volume/public/file", &attributes, &usage);
+    let proof = RuntimeAdmission::new(&signer, &trust, signed::NOW)
+        .record(&workload, &request, [7; 32], &[8; 32])?;
+    let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
+    let identity = authenticated.workload().block_ids().as_ptr();
+    authenticated.authorize(&trust, &request, [7; 32])?;
+    let transferred = authenticated.into_workload();
+    assert_eq!(identity, transferred.block_ids().as_ptr());
+    // The former second verification creates a distinct authenticated chain,
+    // and fails the same ownership oracle while the first remains alive.
+    let duplicate = proof.verify_history(&trust, &request, [7; 32])?;
+    assert_ne!(identity, duplicate.block_ids().as_ptr());
+    assert_eq!(transferred.block_ids(), duplicate.block_ids());
+    Ok(())
+}
+
+#[test]
+fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestResult {
+    let (signer, workload) = fixture()?;
+    let trust = signed::Snapshot::default();
+    let attributes = RecordAttributes::try_new(vec![])?;
+    let usage = signed::limits(None);
+    let request = signed::request("fs:/volume/public/file", &attributes, &usage);
+    let proof = RuntimeAdmission::new(&signer, &trust, signed::NOW)
+        .record(&workload, &request, [7; 32], &[8; 32])?;
+    let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
+    let revoked = signed::Snapshot {
+        revoked_blocks: vec![*workload.block_ids().first().ok_or(VerifyError::Malformed)?],
+        ..Default::default()
+    };
+    let wrong_path = authority::Request {
+        target: authority::Target::Resource {
+            action: "fs/read",
+            resource: "fs:/volume/private/file",
+        },
+        ..request
+    };
+    let future = authority::Request {
+        now_unix_seconds: signed::NOW - 1,
+        ..request
+    };
+    // The old shape's saved successful authorization is the negative control:
+    // every changed request must fail despite the unchanged immutable proof.
+    let saved_allow = authenticated.authorize(&trust, &request, [7; 32]).is_ok();
+    assert!(saved_allow);
+    for (current, changed, payload) in [
+        (&trust, &request, [6; 32]),
+        (&trust, &wrong_path, [7; 32]),
+        (&trust, &future, [7; 32]),
+        (&revoked, &request, [7; 32]),
+    ] {
+        assert!(authenticated.authorize(current, changed, payload).is_err());
+        assert!(proof.verify_history(current, changed, payload).is_err());
+        assert!(
+            saved_allow,
+            "saved-decision negative control was not admitted"
+        );
+    }
+    // Authentication itself cannot stand in for a live, unexpired admission.
+    let expired = authority::Request {
+        now_unix_seconds: 1100,
+        ..request
+    };
+    authenticated.authorize(&trust, &expired, [7; 32])?;
+    assert!(
+        authenticated
+            .workload()
+            .authorize(&trust, &expired, PolicyDecision::Allow)
+            .is_err()
+    );
+    let mut forged = proof.clone();
+    *forged.workload.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
+    assert!(forged.authenticate_history(&trust, signed::NOW).is_err());
+    assert!(forged.verify_history(&trust, &request, [7; 32]).is_err());
+    Ok(())
+}
+
 fn fixture() -> TestResult<(CertifiedSigner, verify::VerifiedCapability)> {
     let encoded = signed::root(|block| {
         if let Some(certificate) = block
