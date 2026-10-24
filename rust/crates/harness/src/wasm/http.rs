@@ -63,8 +63,7 @@ impl SseDecoder {
         self.decoder
             .finish()
             .map_err(sse_error)?
-            .map(sse_frame)
-            .unwrap_or(Ok(JsValue::UNDEFINED))
+            .map_or(Ok(JsValue::UNDEFINED), sse_frame)
     }
 }
 
