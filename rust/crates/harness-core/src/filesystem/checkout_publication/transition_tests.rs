@@ -61,8 +61,14 @@ impl Fixture {
         let directory = tempfile::tempdir()?;
         let filesystem = LocalFs::local(LocalOptions::new(directory.path().join("fs"))).await?;
         let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
+        let work = NativeMaterializationWork::new(
+            WorkBudget {
+                bytes_encoded: 1_048_576,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
         let workspace = filesystem
             .create_workspace("checkout", WorkBudget::UNBOUNDED, &cancellation)
             .await?
@@ -269,13 +275,50 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
     assert!(encode(&journal, &paths, "original creator").is_err());
     journal.phase = acyclic_fs::MaterializationPhase::Prepared;
     assert_eq!(original, encode(&journal, &paths, "original creator")?);
+    let approval = publication.approval_value(
+        &fixture.from,
+        &fixture.to,
+        &paths,
+        &journal,
+        "original creator",
+    )?;
+    let confirmation = approval.digest(&fixture.work)?;
+    // Independent canonical encoding proves every host retains the existing
+    // BLAKE3 identity while the shared owner funds encoding and hashing.
+    let mut canonical = serde_json::to_value(&approval)?;
+    canonical.sort_all_objects();
+    assert_eq!(
+        confirmation,
+        *blake3::hash(&serde_json::to_vec(&canonical)?).as_bytes()
+    );
+    let guarded = std::sync::atomic::AtomicUsize::new(0);
+    assert!(
+        approval
+            .publish(&fixture.state, &options, &fixture.work, &[0; 32], || {
+                guarded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(Ok(()))
+            },)
+            .await
+            .is_err()
+    );
+    assert_eq!(guarded.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(
+        !fixture.root.join("note").exists(),
+        "denied confirmation reached host effect"
+    );
     let applied = publication
-        .publish(
+        .approval_value(
             &fixture.from,
             &fixture.to,
+            &paths,
+            &journal,
+            "original creator",
+        )?
+        .publish(
             &fixture.state,
             &options,
             &fixture.work,
+            &confirmation,
             || std::future::ready(Ok(())),
         )
         .await?;

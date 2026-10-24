@@ -42,22 +42,14 @@ pub(crate) fn publish_writeback<'a>(
 ) -> impl std::future::Future<Output = Result<acyclic_fs::MaterializationJournal>> + Send + 'a {
     async move {
         root.verify(native_work).await?;
-        let from = &generations.from;
-        let candidate = &generations.candidate;
-        let digest = crate::pi_root_provider::digest_pi_value(
-            &writeback_digest_value(root, generations, journal)?,
-            native_work.budget().bytes_encoded,
-            native_work,
-        )?;
-        if generations.original_snapshot.workspace_id != root.workspace
-            || digest.to_hex().as_str() != confirmed_digest
-        {
+        if generations.original_snapshot.workspace_id != root.workspace {
             return Err(selected_unauthorized(
                 "writeback lacks exact original-root user approval",
             ));
         }
-        root.publication
-            .publish(from, candidate, state, options, native_work, || {
+        let confirmation = crate::pi_operator::parse_digest(confirmed_digest)?;
+        writeback_digest_value(root, generations, journal)?
+            .publish(state, options, native_work, &confirmation, || {
                 root.verify(native_work)
             })
             .await
@@ -79,24 +71,17 @@ pub(crate) fn validate_applied_writeback(
             "completed writeback differs from its original root and generations",
         ));
     }
-    let digest = crate::pi_root_provider::digest_pi_value(
-        &writeback_digest_value(root, generations, journal)?,
-        native_work.budget().bytes_encoded,
+    writeback_digest_value(root, generations, journal)?.require_confirmation(
+        &crate::pi_operator::parse_digest(confirmed_digest)?,
         native_work,
-    )?;
-    if digest.to_hex().as_str() != confirmed_digest {
-        return Err(selected_unauthorized(
-            "completed writeback changed its exact user approval",
-        ));
-    }
-    Ok(())
+    )
 }
 
 pub(crate) fn writeback_digest_value<'a>(
     root: &'a PiWritebackRoot,
     generations: &'a PiWritebackGenerations<'_>,
     journal: &'a acyclic_fs::MaterializationJournal,
-) -> Result<impl Serialize + 'a> {
+) -> Result<acyclic_harness::filesystem::CheckoutApproval<'a, impl Serialize + 'a>> {
     root.publication.approval_value(
         &generations.from,
         &generations.candidate,

@@ -2,6 +2,89 @@
 use super::*;
 use serde::Serialize;
 
+/// Validated original-root selection. Its binding and publication gate share
+/// one owner; adapters supply creator facts and authenticated approval only.
+pub struct CheckoutApproval<'a, C> {
+    publication: &'a CheckoutPublication,
+    from: &'a LocalGeneration,
+    to: &'a LocalGeneration,
+    paths: &'a [String],
+    journal: &'a MaterializationJournal,
+    context: C,
+}
+
+impl<C: Serialize> Serialize for CheckoutApproval<'_, C> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        (
+            "acyclic.checkout-approval/v1",
+            &self.context,
+            self.publication.identity.to_bytes(),
+            &self.publication.root,
+            &self.publication.directory,
+            self.publication.operation,
+            self.from.id(),
+            self.to.id(),
+            self.paths,
+            &self.journal.plan,
+            self.journal.root_identity,
+            self.journal.preparation_identity,
+            &self.journal.preimages,
+        )
+            .serialize(serializer)
+    }
+}
+
+impl<C: Serialize> CheckoutApproval<'_, C> {
+    /// Canonical identity on the original ledger, shared by every host.
+    pub fn digest(&self, work: &NativeMaterializationWork) -> Result<[u8; 32]> {
+        let mut io =
+            crate::store::HistoryWork::new(super::super::PreparationIo::from_native_work(work)?);
+        crate::executor::json::canonical_json_digest(
+            self,
+            work.budget().bytes_encoded,
+            &mut Some(&mut io),
+        )
+    }
+
+    /// A confirmation must name the validated preparation, never only its
+    /// operation or a host-supplied raw tuple.
+    pub fn require_confirmation(
+        &self,
+        confirmed: &[u8; 32],
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        if &self.digest(work)? != confirmed {
+            return Err(Error::Unauthorized(
+                "checkout lacks exact original-root approval".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Publishes the approved selection through the common root and owner
+    /// guard. A denial cannot reach native materialization.
+    pub async fn publish<F, Fut>(
+        self,
+        state: &LocalCoreStateStore,
+        options: &MaterializeOptions,
+        work: &NativeMaterializationWork,
+        confirmed: &[u8; 32],
+        guard: F,
+    ) -> Result<MaterializationJournal>
+    where
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<()>> + Send,
+    {
+        self.require_confirmation(confirmed, work)?;
+        self.publication
+            .publish(self.from, self.to, state, options, work, guard)
+            .await
+    }
+}
+
 impl CheckoutPublication {
     /// Prepares and validates a selected plan before presenting it to an approver.
     pub async fn prepare_selected<C: Serialize>(
@@ -29,12 +112,12 @@ impl CheckoutPublication {
     /// original root, operation, generations and journal facts are owned here.
     pub fn approval_value<'a, C: Serialize + 'a>(
         &'a self,
-        from: &LocalGeneration,
-        to: &LocalGeneration,
+        from: &'a LocalGeneration,
+        to: &'a LocalGeneration,
         paths: &'a [String],
         journal: &'a MaterializationJournal,
         context: C,
-    ) -> Result<impl Serialize + 'a> {
+    ) -> Result<CheckoutApproval<'a, C>> {
         validate_paths(paths)?;
         if from.workspace_id() != to.workspace_id()
             || !journal.is_valid_for(self.operation)
@@ -51,21 +134,14 @@ impl CheckoutPublication {
         completed(journal, self.identity, from.id(), to.id())?;
         validate_plan(&journal.plan)?;
         require_selected_edits(&journal.plan.edits, paths)?;
-        Ok((
-            "acyclic.checkout-approval/v1",
-            context,
-            self.identity.to_bytes(),
-            &self.root,
-            &self.directory,
-            self.operation,
-            from.id(),
-            to.id(),
+        Ok(CheckoutApproval {
+            publication: self,
+            from,
+            to,
             paths,
-            &journal.plan,
-            journal.root_identity,
-            journal.preparation_identity,
-            &journal.preimages,
-        ))
+            journal,
+            context,
+        })
     }
 }
 
@@ -131,7 +207,8 @@ mod tests {
             // each authorize an effect the canonical selector refuses.
             prop_assert!(from.starts_with("selected") && to.starts_with("selected"));
             if from_selected && !to_selected { prop_assert!(require_selected_edits(&edits, &paths).is_err()); }
-            prop_assert!(require_selected_edits(&[MaterializationEdit::Remove { path: "selected".into() }], &paths).is_ok());
+            let exact = [MaterializationEdit::Remove { path: "selected".into() }];
+            prop_assert!(require_selected_edits(&exact, &paths).is_ok());
         }
     }
 }
