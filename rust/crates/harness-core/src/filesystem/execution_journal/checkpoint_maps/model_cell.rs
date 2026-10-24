@@ -75,7 +75,9 @@ pub(super) fn decode(
         _ => return Err(corrupt(io)),
     };
     let text_bytes = u64::from_le_bytes(
-        take(&mut bytes, 8, io)?.try_into().map_err(|_| corrupt(io))?,
+        take(&mut bytes, 8, io)?
+            .try_into()
+            .map_err(|_| corrupt(io))?,
     );
     let length = number(&mut bytes, io)?;
     if length > bytes.len() / 8 {
@@ -123,7 +125,12 @@ mod tests {
         let encoded = encode(Some(&value), None)?;
         let decoded = decode(&encoded, None)?.expect("model cell");
         assert_eq!(
-            (decoded.count, decoded.calls, decoded.completed, decoded.text_bytes),
+            (
+                decoded.count,
+                decoded.calls,
+                decoded.completed,
+                decoded.text_bytes
+            ),
             (7, value.calls, true, 37)
         );
         for length in 0..encoded.len() {
@@ -152,13 +159,23 @@ mod tests {
             ..Default::default()
         };
         let mut recovered = decode(&encode(Some(&state), None)?, None)?.expect("model cell");
-        let limits = Limits { file_bytes: 4, ..Limits::default() };
+        let limits = Limits {
+            file_bytes: 4,
+            ..Limits::default()
+        };
         let event = ModelEvent::Content { delta: "ab".into() };
-        assert!(recovered.observe(&event, limits, None).is_err(),
-            "checkpoint reset cumulative model text admission");
-        let mut omitted = ModelEventAdmission { text_bytes: 0, ..state };
-        assert!(omitted.observe(&event, limits, None).is_ok(),
-            "omitted-counter negative control did not admit excess text");
+        assert!(
+            recovered.observe(&event, limits, None).is_err(),
+            "checkpoint reset cumulative model text admission"
+        );
+        let mut omitted = ModelEventAdmission {
+            text_bytes: 0,
+            ..state
+        };
+        assert!(
+            omitted.observe(&event, limits, None).is_ok(),
+            "omitted-counter negative control did not admit excess text"
+        );
         Ok(())
     }
 }

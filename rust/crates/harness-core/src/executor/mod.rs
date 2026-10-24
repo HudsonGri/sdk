@@ -55,6 +55,7 @@ mod model_observation;
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
+#[cfg(feature = "filesystem")]
 pub(crate) use model_observation::load as load_model_event;
 mod prefix;
 mod record_index;
@@ -112,6 +113,7 @@ pub(crate) use phase::DispatchPhase;
 pub use phase::PreDispatchFailure;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
 mod checkpoint_selection;
+#[cfg(feature = "filesystem")]
 pub(crate) use checkpoint_selection::selected_step_records;
 use checkpoint_selection::*;
 pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonical_checkpoint_at};

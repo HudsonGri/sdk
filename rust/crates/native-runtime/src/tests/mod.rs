@@ -179,6 +179,8 @@ pub(super) struct ReadBudgetMeter {
     pub(super) item_limit: Option<u64>,
     read: AtomicU64,
     pub(super) memory: AtomicU64,
+    /// Terminal handoff for tests that need the last physical owner's release.
+    pub(super) memory_retired: Mutex<Option<mpsc::Sender<()>>>,
     operation_limit: u64,
     byte_limit: u64,
     allocation_limit: u64,
@@ -348,7 +350,13 @@ impl NativeReadMeter for ReadBudgetMeter {
         }
     }
     fn release(&self, bytes: u64) {
-        assert!(self.memory.fetch_sub(bytes, Ordering::AcqRel) >= bytes);
+        let previous = self.memory.fetch_sub(bytes, Ordering::AcqRel);
+        assert!(previous >= bytes);
+        if previous == bytes
+            && let Some(retired) = self.memory_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+        {
+            let _ = retired.send(());
+        }
     }
     fn examine(&self, items: u64, _: u64) -> io::Result<()> {
         self.check()?;

@@ -121,28 +121,15 @@ impl StockExecution<'_> {
             let generated = if let Some(work) = self.native_work() {
                 Either::Right(
                     attempt
-                        .generate_native(
-                            self.stock.provider.as_ref(),
-                            &request,
-                            dispatch,
-                            work,
-                        )?
+                        .generate_native(self.stock.provider.as_ref(), &request, dispatch, work)?
                         .await?
                         .map(|result| self.admit_model_event(result)),
                 )
             } else {
-                Either::Left(attempt.generate(
-                    self.stock.provider.as_ref(),
-                    &request,
-                    dispatch,
-                ))
+                Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let generated = attempt.generate(
-                self.stock.provider.as_ref(),
-                &request,
-                dispatch,
-            );
+            let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
             Either::Right(generated)
         };
         let observed = super::phase::run(

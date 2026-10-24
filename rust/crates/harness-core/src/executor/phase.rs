@@ -139,7 +139,6 @@ impl DispatchPhase {
     }
 }
 
-
 /// Dispatch claims use the provider's pre-admitted durable publication. A
 /// barrier constructed after a committed start could strand an unissued effect.
 pub(crate) async fn claim<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
