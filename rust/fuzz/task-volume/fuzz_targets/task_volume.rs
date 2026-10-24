@@ -1,6 +1,6 @@
 #![no_main]
 use acyclic_harness::task_volume::{
-    Cursor, FileApproval, FileApprovalDecision, FileKey, FileValue, Generation, Query,
+    Cursor, FileKey, FileValue, Generation, Query,
 };
 use acyclic_stream::{CommitId, Record, wire, wire_codec};
 use libfuzzer_sys::fuzz_target;
@@ -15,23 +15,11 @@ fuzz_target!(|bytes: &[u8]| {
     {
         assert_eq!(key.path(), path);
     }
-    if let Ok(request) = serde_json::from_slice::<FileApproval>(bytes) {
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness::interaction::Interaction>(bytes) {
         let encoded = serde_json::to_vec(&request).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<FileApproval>(&encoded).unwrap(),
-            request
-        );
-        let _ = request.binding();
-        let _ = request.key();
+        assert_eq!(serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded).unwrap(), request);
     }
-    if let Ok(decision) = serde_json::from_slice::<FileApprovalDecision>(bytes) {
-        let encoded = serde_json::to_vec(&decision).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<FileApprovalDecision>(&encoded).unwrap(),
-            decision
-        );
-        let _ = decision.binding.validate();
-    }
+    let _ = acyclic_harness::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64);
     let _ = serde_json::from_slice::<FileKey>(bytes);
     if let Ok(query) = serde_json::from_slice::<Query>(bytes) {
         assert_eq!(
