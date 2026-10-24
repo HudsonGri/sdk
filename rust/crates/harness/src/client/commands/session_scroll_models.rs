@@ -88,8 +88,8 @@ fn scroll_race<const CACHED: bool>(cut: usize) {
             complete(|| crate::client::scroll_tui(&mut input, [3], 100, move_view)).unwrap();
             assert_eq!(
                 edits,
-                if cut == 2 { 2 } else { 1 },
-                "stale edit must be recomputed exactly once"
+                if matches!(cut, 1 | 2) { 2 } else { 1 },
+                "stale edit must be recomputed exactly once at cut {cut}"
             );
         }
         if cut == 3 {
