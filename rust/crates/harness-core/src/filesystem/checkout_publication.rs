@@ -147,13 +147,17 @@ impl CheckoutPublication {
                 return Err(cause.into());
             }
         };
-        if let Some(journal) = &journal {
-            validate_plan(&journal.plan)?;
-        }
+        // Fresh transitions need the same validated plan as retained ones.
+        // In particular, native case-insensitive lookup must not turn an
+        // otherwise distinct generation spelling into a protected host name.
+        let journal = match journal {
+            Some(journal) => journal,
+            None => self.prepare(from, to, state, options, work).await?,
+        };
+        validate_plan(&journal.plan)?;
         // A logical commit can precede its native acknowledgement. Every host
         // resumes the original transition, even when its current head is `to`.
-        let original = if let Some(journal) = &journal
-            && from.id() == to.id()
+        let original = if from.id() == to.id()
             && let acyclic_fs::MaterializationIntent::GenerationTransition {
                 from: original,
                 to: target,
@@ -169,9 +173,7 @@ impl CheckoutPublication {
             None
         };
         let from = original.as_ref().unwrap_or(from);
-        if let Some(journal) = journal
-            && completed(&journal, self.identity, from.id(), to.id())?
-        {
+        if completed(&journal, self.identity, from.id(), to.id())? {
             // Completion belongs to the journal, so post-ack host edits cannot
             // be overwritten by reconstructing and replaying another plan.
             cleanup_directory(&self.directory)?;
@@ -230,7 +232,12 @@ impl CheckoutPublication {
 
 fn validate_plan(plan: &acyclic_fs::MaterializationPlan) -> Result<()> {
     use acyclic_fs::MaterializationEdit;
-    let allowed = |path: &str| !EXCLUDED_NAMES.contains(&path.split('/').next().unwrap_or(""));
+    let allowed = |path: &str| {
+        let name = path.split('/').next().unwrap_or("");
+        !EXCLUDED_NAMES
+            .iter()
+            .any(|excluded| name.eq_ignore_ascii_case(excluded))
+    };
     for edit in &plan.edits {
         let valid = match edit {
             MaterializationEdit::Install { path, .. }
