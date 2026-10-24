@@ -101,36 +101,17 @@ impl MemoryStream {
         commit_id: CommitId,
         time: u64,
     ) -> Result<(Vec<CommittedMutation>, Allocation), StreamError> {
-        let (mut facts, mut allocation) = self.vector(source.len())?;
-        for mutation in source {
-            let (start, bodies) = match mutation {
-                CommitMutation::Append { path, records } => {
-                    (state.paths.get(path).map_or(0, |path| path.tail), records)
-                }
-                CommitMutation::Fork {
-                    at_tail, records, ..
-                } => (*at_tail, records),
-            };
-            let (records, claim) = self.records(bodies, start, commit_id, time)?;
-            self.absorb(&mut allocation, claim)?;
-            facts.push(match mutation {
-                CommitMutation::Append { path, .. } => CommittedMutation::Append(
-                    crate::preparation::append_fact(path.clone(), start, records)?,
-                ),
-                CommitMutation::Fork {
-                    source,
-                    destination,
-                    at_tail,
-                    ..
-                } => CommittedMutation::Fork(CommittedFork {
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    forked_at: *at_tail,
-                    tail: start + records.len() as u64,
-                    records,
-                }),
-            });
-        }
+        let (output, mut allocation) = self.vector(source.len())?;
+        let facts = crate::preparation::facts(
+            source,
+            |path| Ok(state.paths.get(path).map(|path| path.tail)),
+            |start, bodies| {
+                let (records, claim) = self.records(bodies, start, commit_id, time)?;
+                self.absorb(&mut allocation, claim)?;
+                Ok(records)
+            },
+            output,
+        )?;
         Ok((facts, allocation))
     }
     fn histories(
@@ -370,7 +351,7 @@ impl MemoryStream {
         }
         drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {
-            state.paths.get(path).map(|path| path.tail)
+            Ok(state.paths.get(path).map(|path| path.tail))
         })?;
         reserve_coordinated(state, &request, self.limits)?;
         self.reserve_commit_index(&mut probes)?;

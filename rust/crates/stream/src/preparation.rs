@@ -2,7 +2,7 @@
 use crate::AppendRecord;
 use crate::{
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitRequest, CommittedAppend,
-    ForkRequest, Record, StreamError, StreamPath,
+    CommittedFork, CommittedMutation, ForkRequest, Record, StreamError, StreamPath,
 };
 use sha2::{Digest, Sha256};
 
@@ -92,20 +92,68 @@ pub(crate) fn append_fact(
 
 pub(crate) fn authority(
     request: &CommitRequest,
-    tail: impl Fn(&StreamPath) -> Option<u64>,
+    mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
 ) -> Result<(), StreamError> {
     for mutation in &request.mutations {
         if let CommitMutation::Fork {
             source, at_tail, ..
         } = mutation
         {
-            let source_tail = tail(source).ok_or(StreamError::NotFound)?;
+            let source_tail = tail(source)?.ok_or(StreamError::NotFound)?;
             if *at_tail > source_tail {
                 return Err(StreamError::PrefixNotRetained);
             }
         }
     }
     Ok(())
+}
+
+/// Preserve pre-commit source cuts and mutation order independently of the
+/// backend's record storage. Both output containers are admitted by the caller;
+/// the semantic planner never allocates a second unaccounted vector.
+pub(crate) fn facts(
+    source: &[CommitMutation],
+    mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
+    mut build: impl FnMut(u64, &[AppendRecord]) -> Result<Vec<Record>, StreamError>,
+    mut output: Vec<CommittedMutation>,
+) -> Result<Vec<CommittedMutation>, StreamError> {
+    if !output.is_empty() || output.capacity() < source.len() {
+        return Err(StreamError::InvalidArgument);
+    }
+    for mutation in source {
+        let (start, bodies) = match mutation {
+            CommitMutation::Append { path, records } => (tail(path)?.unwrap_or(0), records),
+            CommitMutation::Fork {
+                at_tail, records, ..
+            } => (*at_tail, records),
+        };
+        let records = build(start, bodies)?;
+        output.push(match mutation {
+            CommitMutation::Append { path, .. } => {
+                CommittedMutation::Append(append_fact(path.clone(), start, records)?)
+            }
+            CommitMutation::Fork {
+                source,
+                destination,
+                at_tail,
+                ..
+            } => {
+                let tail = start
+                    .checked_add(
+                        u64::try_from(records.len()).map_err(|_| StreamError::LimitExceeded)?,
+                    )
+                    .ok_or(StreamError::LimitExceeded)?;
+                CommittedMutation::Fork(CommittedFork {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    forked_at: *at_tail,
+                    tail,
+                    records,
+                })
+            }
+        });
+    }
+    Ok(output)
 }
 
 pub(crate) fn records(
@@ -115,6 +163,9 @@ pub(crate) fn records(
     committed_at_micros: u64,
     mut records: Vec<Record>,
 ) -> Result<Vec<Record>, StreamError> {
+    if !records.is_empty() || records.capacity() < bodies.len() {
+        return Err(StreamError::InvalidArgument);
+    }
     // Reserve the exclusive tail too: a record at u64::MAX cannot be represented.
     start
         .checked_add(u64::try_from(bodies.len()).map_err(|_| StreamError::LimitExceeded)?)
