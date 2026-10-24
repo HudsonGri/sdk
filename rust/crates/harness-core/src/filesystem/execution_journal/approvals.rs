@@ -205,15 +205,12 @@ where
             .await
     }
 
-    pub(super) async fn published_decision_from<'io>(
+    pub(super) async fn published_decision_from(
         &self,
         id: InteractionId,
         binding: Option<(OperationId, [u8; 32])>,
-        aggregate: (
-            StreamAggregate<P>,
-            Option<super::super::DecodeReservation<'io>>,
-        ),
-        io: Option<&'io PreparationIo>,
+        aggregate: crate::filesystem::interaction_host::InteractionProjection<P>,
+        io: Option<&PreparationIo>,
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
         let read = host.read_for_publication(&aggregate.0, id, binding, io)?;

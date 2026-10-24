@@ -1,5 +1,7 @@
+import ast
 import concurrent.futures
 import importlib.util
+import inspect
 import os
 from pathlib import Path
 import shutil
@@ -17,6 +19,24 @@ installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installe
 
 def isolated_python(*args):
     return [sys.executable,'-I','-B',*args]
+
+
+def without_qualification(suite):
+    """Remove one actual qualification command, independent of source formatting."""
+    tree=ast.parse(inspect.getsource(installer.qualify))
+    commands=[node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+              and any(isinstance(target,ast.Name) and target.id=='commands' for target in node.targets)]
+    if len(commands)!=1 or not isinstance(commands[0].value,ast.List):
+        raise AssertionError('qualification command list must have one owner')
+    entries=commands[0].value.elts
+    removed=[entry for entry in entries if isinstance(entry,ast.List)
+             and any(isinstance(value,ast.Constant) and value.value==suite for value in entry.elts)]
+    if len(removed)!=1:
+        raise AssertionError('negative control must remove exactly one qualification')
+    commands[0].value.elts=[entry for entry in entries if entry is not removed[0]]
+    namespace=dict(installer.__dict__)
+    exec(compile(ast.fix_missing_locations(tree),'<missing-qualification-control>','exec'),namespace)
+    return namespace['qualify']
 
 
 class InstallTests(unittest.TestCase):
@@ -86,7 +106,6 @@ class InstallTests(unittest.TestCase):
                 with self.assertRaises(OSError):subprocess.run([str(tool)],check=True)
 
     def test_command_custody_failure_is_a_publication_barrier(self):
-        import inspect
         def run(command, **kwargs):
             if 'command_custody.test.py' in command:
                 raise subprocess.CalledProcessError(1, command)
@@ -96,11 +115,7 @@ class InstallTests(unittest.TestCase):
                 installer.qualify(Path('/unused-frozen-candidate'), 'var')
             # Negative control executes the former qualification policy: the
             # same failed command-custody suite cannot block publication.
-            former=inspect.getsource(installer.qualify).replace("['python3', 'command_custody.test.py'], ", '')
-            self.assertNotEqual(former, inspect.getsource(installer.qualify))
-            namespace=dict(installer.__dict__)
-            exec(compile(former, '<former-installer-policy>', 'exec'), namespace)
-            namespace['qualify'](Path('/unused-frozen-candidate'), 'var')
+            without_qualification('command_custody.test.py')(Path('/unused-frozen-candidate'), 'var')
 
     def test_failed_qualification_never_publishes(self):
         self.assertIn('sccache-rustc',installer.TOOLS)
@@ -119,13 +134,8 @@ class InstallTests(unittest.TestCase):
         with patch.object(installer.subprocess, 'run', side_effect=rejected):
             with self.assertRaises(subprocess.CalledProcessError):
                 installer.qualify(HERE, 'var')
-            source = Path(installer.__file__).read_text().replace(
-                "                ['python3', 'cargo_cache.test.py']]",
-                '                ]')
-            old = {'__file__': installer.__file__}
-            exec(compile(source, 'missing-proxy-admission-qualification-control', 'exec'), old)
             # The old publication boundary accepts this failing proxy suite.
-            old['qualify'](HERE, 'var')
+            without_qualification('cargo_cache.test.py')(HERE, 'var')
 
     def test_privileged_publication_refuses_direct_lane_edits(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:

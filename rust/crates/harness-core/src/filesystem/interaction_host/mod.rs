@@ -37,9 +37,13 @@ pub struct FilesystemInteractionHost<P, A, O> {
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
+/// A replayed projection retains its scoped assembly accounting until it is dropped.
+pub(in crate::filesystem) type InteractionProjection<P> =
+    (StreamAggregate<P>, Option<PreparationIo>);
+
 /// A verified projection and its sole live writer have the same lifetime.
 pub(in crate::filesystem) struct InteractionTransaction<'a, P> {
-    pub aggregate: (StreamAggregate<P>, Option<PreparationIo>),
+    pub aggregate: InteractionProjection<P>,
     _writer: acyclic_stream::OperationClaim<'a, Option<DecodeReservation<'a>>>,
 }
 

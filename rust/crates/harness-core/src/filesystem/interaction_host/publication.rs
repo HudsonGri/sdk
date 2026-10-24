@@ -181,7 +181,7 @@ where
     pub(in crate::filesystem) async fn aggregate(
         &self,
         io: Option<&PreparationIo>,
-    ) -> Result<(StreamAggregate<P>, Option<PreparationIo>)> {
+    ) -> Result<InteractionProjection<P>> {
         #[cfg(test)]
         acyclic_test_support::differential::record(("interaction-reconstruction", 1_u64));
         let custody = io.map(PreparationIo::scoped).transpose()?;
