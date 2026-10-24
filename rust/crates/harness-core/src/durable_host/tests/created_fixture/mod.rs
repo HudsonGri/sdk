@@ -37,6 +37,8 @@ pub(crate) struct ForkSetup {
     pub(crate) private: VolumeRef,
     pub(crate) parent_scope: Scope,
     pub(crate) verifier: AuthorityVerifier,
+    /// Keeps the issuing authority alive as long as its scopes.
+    pub(crate) issuer: AuthorityIssuer,
 }
 
 pub(crate) struct PreparedFilesystemChild {

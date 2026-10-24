@@ -110,6 +110,7 @@ pub struct Scope {
     /// Ed25519 workload chain, including only its restricted append tip.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     #[serde(with = "super::capability_bytes")]
+    #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub(in crate::core) workload: Vec<u8>,
 }
 

@@ -52,31 +52,17 @@ records!(
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
-impl PreparationRecord for acyclic_fs::access::Policy {
-    fn maximum_slot_bytes() -> u64 {
-        preparation_slot_bytes::<acyclic_fs::access::Rule>()
-    }
-    fn container_collection_slots() -> bool {
-        // Rule headers belong to parsed objects, not each action enum or string.
-        // Every lexical item still funds serde Content buffering and strings.
-        true
-    }
-}
-impl PreparationRecord for acyclic_fs::access::Capability {
-    fn maximum_slot_bytes() -> u64 {
-        preparation_slot_bytes::<acyclic_fs::access::Grant>()
-    }
-    fn container_collection_slots() -> bool {
-        // Grant vectors grow at their object/array openings. Scalar actions
-        // retain their separate Content allowance without another Grant header.
-        true
-    }
-}
+// Access policies and capabilities decode under their filesystem layouts.
+impl PreparationRecord for acyclic_fs::access::Policy {}
+impl PreparationRecord for acyclic_fs::access::Capability {}
 impl PreparationRecord for crate::workflow::WorkflowRecord {
     /// The record keeps what its layout reserves for its decode, walked over
     /// the resident record, so the audit and the reservation share one model.
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        crate::core::owned_bytes(self).map(Some)
+        crate::executor::json::serialized_layout_bytes(self, <Self as crate::HeapLayout>::LAYOUT)?
+            .checked_add(size_of_val(self) as u64)
+            .map(Some)
+            .ok_or_else(|| decode_allowance_error("workflow ownership overflows", None))
     }
     fn json_value_schema() -> &'static Schema {
         Schema::WorkflowRecord
