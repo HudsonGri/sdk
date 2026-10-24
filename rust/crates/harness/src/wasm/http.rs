@@ -101,7 +101,7 @@ pub fn browser_http_exchange(
     method: String,
     url: String,
     headers: JsValue,
-    body: js_sys::Uint8Array,
+    #[wasm_bindgen(unchecked_param_type = "Uint8Array | Blob")] body: JsValue,
     timeout_ms: JsValue,
     signal: Option<web_sys::AbortSignal>,
 ) -> Result<JsValue, JsValue> {
@@ -111,7 +111,17 @@ pub fn browser_http_exchange(
     } else {
         Some(from_js(timeout_ms)?)
     };
-    let body = super::bytes::snapshot(&body, |_| Ok(()))?.0.into();
+    use acyclic_harness_core::http::browser::Body;
+    use wasm_bindgen::JsCast as _;
+    let body = if let Some(bytes) = body.dyn_ref::<js_sys::Uint8Array>() {
+        Body::Bytes(super::bytes::snapshot(bytes, |_| Ok(()))?.0.into())
+    } else {
+        Body::Blob(body.dyn_into::<web_sys::Blob>().map_err(|_| {
+            JsValue::from(js_sys::TypeError::new(
+                "HTTP body must be Uint8Array or Blob",
+            ))
+        })?)
+    };
     acyclic_harness_core::http::browser::start(
         fetch,
         acyclic_harness_core::http::browser::Request {

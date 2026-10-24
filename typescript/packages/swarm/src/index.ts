@@ -95,8 +95,7 @@ export class SwarmClient {
     if (body !== undefined && contentType !== undefined) headers.set("content-type", contentType);
     if (accept !== undefined) headers.set("accept", accept);
     if (lastEventId !== undefined) headers.set("last-event-id", lastEventId);
-    const bytes = body instanceof Blob ? new Uint8Array(await body.arrayBuffer())
-      : body instanceof Uint8Array ? body : new TextEncoder().encode(body ?? "");
+    const bytes = typeof body === "string" || body === undefined ? new TextEncoder().encode(body ?? "") : body;
     const exchange = await createBrowserHttpExchange(this.send, {
       method, url: new URL(path, this.endpoint).href, headers: Object.fromEntries(headers), body: bytes,
     }, options?.signal);

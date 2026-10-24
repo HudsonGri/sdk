@@ -60,7 +60,7 @@ impl HttpTransport for BrowserTransport {
                     method: "POST".into(),
                     url: request.url,
                     headers,
-                    body: request.body,
+                    body: request.body.into(),
                     timeout_ms: None,
                 },
                 None,

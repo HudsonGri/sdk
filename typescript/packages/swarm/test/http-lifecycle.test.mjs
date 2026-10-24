@@ -103,3 +103,18 @@ test("shared HTTP retires a subscription with an invalid content type", async ()
   await assert.rejects(client.watch("fixture").next(), TypeError);
   assert.equal(cancelled, 1);
 });
+
+test("shared HTTP uploads immutable Blobs without reading or copying them", async () => {
+  const blob = new Blob([new Uint8Array(1024 * 1024)]);
+  Object.defineProperty(blob, "arrayBuffer", { value() { throw new Error("Blob materialization"); } });
+  let calls = 0;
+  const client = new SwarmClient({ endpoint: "https://fixture", token: "fixture", fetch: async (_url, init) => {
+    calls++;
+    assert.equal(init.body, blob);
+    assert.equal(init.headers.get("idempotency-key"), "fixture");
+    assert.equal(init.credentials, "omit");
+    return new Response('{}');
+  } });
+  await client.upload(blob, { idempotencyKey: "fixture" });
+  assert.equal(calls, 1);
+});

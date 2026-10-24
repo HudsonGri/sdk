@@ -15,7 +15,7 @@ export interface BrowserHttpRequest {
   readonly method: string;
   readonly url: string;
   readonly headers: ReadonlyMap<string, string> | Record<string, string>;
-  readonly body: Uint8Array;
+  readonly body: Uint8Array | Blob;
   readonly timeoutMs?: number;
 }
 

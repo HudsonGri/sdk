@@ -171,7 +171,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { workspace = true, features = ["AbortSignal"] }
+web-sys = { workspace = true, features = ["AbortSignal", "Blob"] }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true
