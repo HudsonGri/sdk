@@ -50,7 +50,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "○"
+              "\u25cb"
             ]
           },
           "prompt": "/compact preserve the fact"
@@ -59,12 +59,12 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "○"
+              "\u25cb"
             ]
           },
           "prompt": "after compact",
           "after_request": {
-            "path": "responses",
+            "path": "messages",
             "step": 1
           }
         },
@@ -72,7 +72,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_DONE",
-              "○"
+              "\u25cb"
             ]
           },
           "send": "\u0004"
@@ -90,8 +90,16 @@
     ],
     "generation_paths": [
       "responses",
-      "responses",
+      "messages",
       "responses"
+    ],
+    "http": [
+      {
+        "path": "messages",
+        "body": {
+          "max_tokens": 1024
+        }
+      }
     ]
   },
   "selection": null,
@@ -146,6 +154,6 @@
     }
   },
   "settings": {
-    ".codex/config.toml": "model = \"mixed\"\n[roles]\nroot = \"planner\"\nchild = \"worker\"\n[alloys.mixed]\nmodels = [\"a/tiny\", \"b/tiny\"]\n[alloys.mixed.select.per_role]\nroles = { planner = 1 }\nfallback = 0\n"
+    ".codex/config.toml": "model = \"mixed\"\n[roles]\nroot = \"planner\"\nchild = \"worker\"\n[alloys.mixed]\nmodels = [\"a/tiny\", \"b/tiny\"]\n[alloys.mixed.select.per_role]\nroles = { planner = 1, summary = 0 }\nfallback = 0\n"
   }
 }
