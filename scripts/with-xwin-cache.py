@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -37,8 +38,14 @@ def main():
         root = Path(temporary)
         for index in range(args.workers):
             snapshot(Path("/mnt/bb/toolchains/win-test-xwin-v1"), root / f"worker-{index}")
+        compilers = root / "bin"
+        compilers.mkdir()
+        driver = compilers / "clang-cl"
+        shutil.copyfile(Path(__file__).parent / "buildbox" / "msvc-compiler.py", driver)
+        driver.chmod(0o755)
         env = dict(os.environ, GATE_XWIN_CACHE_ROOT=str(root),
-                   XWIN_CACHE_DIR=str(root / "worker-0"), XWIN_ACCEPT_LICENSE="1")
+                   XWIN_CACHE_DIR=str(root / "worker-0"), XWIN_ACCEPT_LICENSE="1",
+                   PATH=str(compilers) + os.pathsep + os.environ["PATH"])
         return subprocess.run(command, env=env).returncode
 
 

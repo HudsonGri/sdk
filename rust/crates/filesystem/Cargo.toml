@@ -172,6 +172,8 @@ typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Native mount fixtures also retain real local stores across owner teardown.
+acyclic-fs = { version = "=0.2.0", path = ".", default-features = false, features = ["local"] }
 acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects" }
 loom = "0.7.2"
