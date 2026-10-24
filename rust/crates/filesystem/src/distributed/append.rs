@@ -252,7 +252,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ],
         )?;
         let result = self
-            .commit(
+            .publish_with_policy(
                 CommitRequest {
                     conditions,
                     mutations,
