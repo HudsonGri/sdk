@@ -1,7 +1,13 @@
 //! Sealed workload descendants plus independently authenticated runtime time.
 use super::*;
-use acyclic_auth::admission::{AuthenticatedAdmission, RuntimeAdmission};
+use acyclic_auth::admission::{AuthenticatedAdmission, HistoryVerifier, RuntimeAdmission};
 use std::sync::Arc;
+
+#[derive(Default)]
+pub(in crate::core::authority) struct HistoricalOwner {
+    record: Option<Arc<AuthenticatedRecord>>,
+    verifier: HistoryVerifier,
+}
 
 /// One exact historical proof, retained by the public authority, never a decision.
 pub(crate) struct AuthenticatedRecord {
@@ -31,7 +37,7 @@ fn authenticate_record(
     }
     let digest = *blake3::hash(encoded).as_bytes();
     let mut retained = public.historical.lock().map_err(unauthorized)?;
-    if let Some(record) = retained.as_ref()
+    if let Some(record) = retained.record.as_ref()
         && record.digest == digest
     {
         return Ok(record.clone());
@@ -41,8 +47,9 @@ fn authenticate_record(
         return Err(unauthorized("noncanonical admission"));
     }
     let admitted: AdmittedCapability = envelope.try_into().map_err(unauthorized)?;
-    let authenticated = admitted
-        .authenticate_history(trust, timestamp)
+    let authenticated = retained
+        .verifier
+        .authenticate(&admitted, trust, timestamp)
         .map_err(unauthorized)?;
     let (attributes, last) = scope_facts(authenticated.workload(), true)?;
     let record = Arc::new(AuthenticatedRecord {
@@ -51,7 +58,7 @@ fn authenticate_record(
         attributes,
         last,
     });
-    *retained = Some(record.clone());
+    retained.record = Some(record.clone());
     Ok(record)
 }
 

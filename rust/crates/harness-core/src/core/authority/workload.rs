@@ -10,6 +10,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 mod admission;
 pub(crate) use admission::AuthenticatedRecord;
+pub(super) use admission::HistoricalOwner;
 pub(super) use admission::{live_record, record, verify_record};
 
 pub(super) struct AuthenticatedWorkload {

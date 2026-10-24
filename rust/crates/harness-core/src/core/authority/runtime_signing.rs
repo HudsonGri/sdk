@@ -47,7 +47,7 @@ pub(super) struct PublicAuthority {
     // One retained immutable authentication, owned by this authority. Replacing
     // it drops the previous chain; admission decisions are never retained.
     pub(super) workload: std::sync::Mutex<Option<Arc<workload::AuthenticatedWorkload>>>,
-    pub(super) historical: std::sync::Mutex<Option<Arc<workload::AuthenticatedRecord>>>,
+    pub(super) historical: std::sync::Mutex<workload::HistoricalOwner>,
 }
 
 /// The port neither owns a root nor exports one. Runtime teardown disables all

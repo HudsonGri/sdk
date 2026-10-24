@@ -182,6 +182,47 @@ impl AuthenticatedAdmission {
     }
 }
 
+/// Runtime-owned authentication of historical proofs. Only the latest workload
+/// and receipt certifications are retained; every block and request is rechecked.
+#[derive(Default)]
+pub struct HistoryVerifier {
+    workload: verify::CertificateVerifier,
+    receipt: verify::CertificateVerifier,
+}
+
+impl HistoryVerifier {
+    /// Authenticate exact admission bytes using this owner's certified roots.
+    ///
+    /// # Errors
+    /// Rejects malformed, forged, revoked, wrong-trust or future evidence.
+    pub fn authenticate(
+        &mut self,
+        admitted: &AdmittedCapability,
+        trust: &dyn Trust,
+        now_unix_seconds: u64,
+    ) -> Result<AuthenticatedAdmission, VerifyError> {
+        let timestamp = admitted.admitted_at_unix_seconds;
+        if timestamp > now_unix_seconds {
+            return Err(VerifyError::Time);
+        }
+        let receipt = self.receipt.verify(&admitted.receipt, trust, timestamp)?;
+        // Only a newly runtime-signed block zero can attest the clock.
+        if !receipt.is_sealed() || receipt.block_ids().len() != 1 {
+            return Err(VerifyError::Signature);
+        }
+        let workload = self.workload.verify(&admitted.workload, trust, timestamp)?;
+        if !workload.is_sealed() || receipt.account_id()? != workload.account_id()? {
+            return Err(VerifyError::Signature);
+        }
+        Ok(AuthenticatedAdmission {
+            workload,
+            receipt,
+            admitted: timestamp,
+            resource: receipt_resource(&admitted.workload),
+        })
+    }
+}
+
 impl AdmittedCapability {
     /// Authenticate the immutable workload and receipt once. The result carries
     /// no saved policy decision; callers must authorize each derived request.
@@ -193,25 +234,7 @@ impl AdmittedCapability {
         trust: &dyn Trust,
         now_unix_seconds: u64,
     ) -> Result<AuthenticatedAdmission, VerifyError> {
-        let admitted = self.admitted_at_unix_seconds;
-        if admitted > now_unix_seconds {
-            return Err(VerifyError::Time);
-        }
-        let receipt = verify::verify(&self.receipt, trust, admitted)?;
-        // Only a newly runtime-signed block zero can attest the clock.
-        if !receipt.is_sealed() || receipt.block_ids().len() != 1 {
-            return Err(VerifyError::Signature);
-        }
-        let workload = verify::verify(&self.workload, trust, admitted)?;
-        if !workload.is_sealed() || receipt.account_id()? != workload.account_id()? {
-            return Err(VerifyError::Signature);
-        }
-        Ok(AuthenticatedAdmission {
-            workload,
-            receipt,
-            admitted,
-            resource: receipt_resource(&self.workload),
-        })
+        HistoryVerifier::default().authenticate(self, trust, now_unix_seconds)
     }
 
     /// Verifies one historical payload under current public trust and revocations.
