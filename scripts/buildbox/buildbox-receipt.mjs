@@ -78,20 +78,15 @@ export function finish(metaFile, rc, category, extra = {}) {
       spawnSync('python3', ['/home/var/bin/bb-job.py', 'stop-job', metaFile + '.job'], { encoding: 'utf8', timeout: 15000 });
     }
     runtime = read(runtimeFile);
-    if (runtime && m.side === 'bb2') {
-      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile], { encoding: 'utf8', timeout: 30000 });
+    if (m.side === 'bb2' && (runtime || m.job_prefix)) {
+      // This call joins the kernel-owned descendant set before either home or
+      // outer scratch deletion. A deadline cannot authorize partial cleanup.
+      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile,
+        ...(m.job_prefix ? [m.job_prefix] : [])], { encoding: 'utf8' });
       runtime = read(runtimeFile);
       if (clean.status !== 0) {
+        runtime ||= {};
         runtime.cleanup_error = String(clean.stderr || clean.error);
-        if (Number(rc) === 0) { rc = 224; category = 'infra'; }
-      }
-    }
-    if (m.side === 'bb2' && m.job_prefix) {
-      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup-outer', m.job_prefix], { encoding: 'utf8', timeout: 30000 });
-      runtime ||= {};
-      if (clean.status === 0) Object.assign(runtime, JSON.parse(clean.stdout));
-      else {
-        runtime.outer_cleanup_error = String(clean.stderr || clean.error);
         if (Number(rc) === 0) { rc = 224; category = 'infra'; }
       }
     }

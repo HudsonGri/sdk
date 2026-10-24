@@ -1,5 +1,6 @@
 //! Ordinary approver services consume owner-published files outside effect execution.
 use super::*;
+use crate::package::harness::worker::DriveState;
 use crate::{
     approvals::{ApprovalReviewFile, Approver, RuleVerdict},
     interaction::{ApprovalDecisionFile, Interaction},
@@ -18,6 +19,7 @@ pub(crate) struct Inbox {
     pub files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     pub reference: Component,
     pub parent_done: acyclic_fs::CancellationToken,
+    pub parent_passive: acyclic_fs::CancellationToken,
 }
 
 #[derive(Clone, Debug)]
@@ -485,7 +487,13 @@ impl LocalHarness {
                     .await?;
                     settled = true;
                 }
-                Some(Stage::Human(_)) => {}
+                Some(Stage::Human(principal)) => {
+                    if let Some(inbox) = inbox {
+                        // Every external approval wakes a parent wait. Human
+                        // attention conveys no parent settlement authority.
+                        parent::attention(task, request, inbox, &principal).await?;
+                    }
+                }
                 Some(Stage::Parent(parent)) => {
                     // Parent messages are routed by the child controller's
                     // authenticated file inbox, never by the human client.
@@ -510,7 +518,7 @@ impl LocalHarness {
         task: TaskId,
         commands: &'a dyn crate::filesystem::TaskCommandHost,
         inbox: Option<&'a Inbox>,
-    ) -> BoxProviderFuture<'a, Result<bool>> {
+    ) -> BoxProviderFuture<'a, Result<DriveState>> {
         Box::pin(async move {
             let task_files = self.runtime.approval_files(task).await?;
             let query = Query::Approvals(Component::new(task.to_string())?);
@@ -518,7 +526,7 @@ impl LocalHarness {
                 let (cancelled, mut coordinator_changes) =
                     self.runtime.task_host().cancellation_follow(task).await?;
                 if cancelled {
-                    return Ok(false);
+                    return Ok(DriveState::Quiescent);
                 }
                 let mut inbox_changes = if let Some(Inbox {
                     files, reference, ..
@@ -533,7 +541,7 @@ impl LocalHarness {
                     .await?
                         != crate::task_volume::ChildState::Running
                     {
-                        return Ok(false);
+                        return Ok(DriveState::Quiescent);
                     }
                     let child_query = Query::Child(reference.clone());
                     let cursor = files.inner.cut(&child_query).await?;
@@ -556,17 +564,20 @@ impl LocalHarness {
                     .collect();
                 let pending = pending(&files);
                 if pending.is_empty() {
-                    return Ok(false);
+                    if let Some(inbox) = inbox {
+                        parent::clear_attention(inbox).await?;
+                    }
+                    return Ok(DriveState::Quiescent);
                 }
                 let (settled, parent_waiting) = tokio::select! {
                     result = self.service_pending_approvals(task, &task_files, &files, inbox) => result?,
                     result = self.approval_service_stopped(task, commands, &mut coordinator_changes) => {
                         result?;
-                        return Ok(false);
+                        return Ok(DriveState::Quiescent);
                     }
                 };
                 if settled {
-                    return Ok(true);
+                    return Ok(DriveState::Quiescent);
                 }
                 let cancelled = async {
                     match commands.invocation_cancellation() {
@@ -579,7 +590,7 @@ impl LocalHarness {
                         // No effect is running in this task: its command has
                         // suspended and the immutable human review is published.
                         // Leave that request resumable instead of cancelling it.
-                        return Err(Error::Indeterminate(OperationId::from_bytes(task.into_bytes())));
+                        return Ok(DriveState::AwaitingApproval);
                     }
                     () = async {
                         match inbox {
@@ -587,13 +598,19 @@ impl LocalHarness {
                             None => std::future::pending().await,
                         }
                     }, if parent_waiting => {}
+                    () = async {
+                        match inbox {
+                            Some(inbox) => inbox.parent_passive.cancelled().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if parent_waiting => return Ok(DriveState::AwaitingApproval),
                     result = coordinator_changes.next() => { result.ok_or_else(|| Error::Storage("coordinator follow ended".into()))??; }
                     result = changes.next() => { result.ok_or_else(|| Error::Storage("approval follow ended".into()))??; }
                     result = async {
                         match &mut inbox_changes { Some(changes) => changes.next().await,
                             None => std::future::pending().await }
                     } => { result.ok_or_else(|| Error::Storage("parent inbox follow ended".into()))??; }
-                    () = cancelled => return Ok(false),
+                    () = cancelled => return Ok(DriveState::Quiescent),
                 }
             }
         })

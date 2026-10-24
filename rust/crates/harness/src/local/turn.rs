@@ -629,7 +629,8 @@ impl LocalHarness {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
             self.advance_with_children(task, &commands, self.task_files.clone(), None)
-                .await?;
+                .await?
+                .into_result(task)?;
             #[cfg(not(feature = "native-execution"))]
             Box::pin(crate::package::harness::worker::advance(
                 self, task, &commands,
@@ -642,7 +643,8 @@ impl LocalHarness {
         } else {
             #[cfg(feature = "native-execution")]
             self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
-                .await?;
+                .await?
+                .into_result(task)?;
             // Advance already refreshes projections; terminal recovery must repair them.
             self.refresh_command_task(task).await?;
         }

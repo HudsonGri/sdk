@@ -9,22 +9,26 @@ fn defer(mut command: Command, operation: OperationId) -> FileValue {
         jsonl::request(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
     )
     .unwrap();
+    let mut requests = std::collections::BTreeMap::new();
     let mut request = None;
     for line in BufReader::new(process.stdout.take().unwrap()).lines() {
         let line = line.unwrap();
         if let Ok(change) = jsonl::parse_change(&line) {
             for file in change.file.into_iter().chain(change.files) {
-                match file.key {
+                match &file.key {
                     FileKey::Task {
-                        file: TaskFile::ApprovalRequest(_),
-                        ..
-                    } => request = Some(file),
+                        task,
+                        file: TaskFile::ApprovalRequest(id),
+                    } => {
+                        requests.insert((task.clone(), id.clone()), file);
+                    }
                     FileKey::Task {
-                        file: TaskFile::ApprovalReview { .. },
-                        ..
+                        task,
+                        file: TaskFile::ApprovalReview { request: id, .. },
                     } if String::from_utf8_lossy(&file.bytes)
                         .contains("awaiting authenticated decision") =>
                     {
+                        request = Some(requests.get(&(task.clone(), id.clone())).unwrap().clone());
                         input.take();
                     }
                     _ => {}
@@ -114,10 +118,16 @@ async fn recovery(case: Case, cancel: bool) {
             );
             assert_eq!(
                 fixture.root_calls.load(Ordering::SeqCst),
-                if case.child_human() { 3 } else { 2 },
+                if matches!(case, Case::ParentHumanWait) {
+                    4
+                } else if case.child_human() {
+                    3
+                } else {
+                    2
+                },
                 "reopen regenerated the model"
             );
-            if case.child_human() {
+            if case.child_human() || matches!(case, Case::ParentHumanWait) {
                 assert_eq!(
                     fixture.child_calls.load(Ordering::SeqCst),
                     2,
@@ -145,6 +155,11 @@ async fn approvals_cancelled_request_cannot_dispatch_after_reopen() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approvals_child_reopen_and_exact_decision_retry_dispatch_once() {
     recovery(Case::ChildHumanAllow, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approvals_passive_parent_and_parent_approved_child_reopen_together() {
+    recovery(Case::ParentHumanWait, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

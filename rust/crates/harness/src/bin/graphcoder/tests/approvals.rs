@@ -24,6 +24,7 @@ enum Case {
     ParentForged,
     ParentCompletes,
     ParentError,
+    ParentHumanWait,
     ChildHumanAllow,
     ChildHumanDeny,
     ChildHumanForged,
@@ -47,6 +48,7 @@ impl Case {
                 | Self::ParentForged
                 | Self::ParentCompletes
                 | Self::ParentError
+                | Self::ParentHumanWait
         )
     }
     fn human(self) -> bool {
@@ -58,6 +60,7 @@ impl Case {
                     | Self::ForgedPrincipal
                     | Self::ForgedSubject
                     | Self::Chain
+                    | Self::ParentHumanWait
             )
     }
     fn allowed(self) -> bool {
@@ -69,6 +72,7 @@ impl Case {
                 | Self::HumanAllow
                 | Self::Chain
                 | Self::ParentAllow
+                | Self::ParentHumanWait
                 | Self::ChildHumanAllow
         )
     }
@@ -110,14 +114,22 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
         | Case::ParentDeny
         | Case::ParentForged
         | Case::ParentCompletes
-        | Case::ParentError => vec![
+        | Case::ParentError
+        | Case::ParentHumanWait => vec![
             json!({"kind":"rules","principal":"rules","rules":[{"tool":"url_fetch","arguments":null,"verdict":"ask"}],"fallback":"allow"}),
             json!({"kind":"parent"}),
             human,
         ],
         _ => vec![human],
     };
-    json!({"approvers":stages})
+    let mut policy = json!({"approvers":stages});
+    if matches!(case, Case::ParentHumanWait) {
+        policy["approvers"][0]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"tool":"wait","arguments":null,"verdict":"ask"}));
+    }
+    policy
 }
 fn response_text(text: &str) -> String {
     let event = json!({"type":"response.output_text.delta","delta":text});
@@ -295,6 +307,7 @@ impl Fixture {
                     step,
                 )
             }
+            3 if matches!(self.case, Case::ParentHumanWait) => ANSWER.to_owned(),
             3 => call("wait", &json!({"agents":["worker"],"mode":"all"}), step),
             _ => ANSWER.to_owned(),
         }
@@ -697,6 +710,7 @@ cases! {
     approvals_forged_subject_is_refused => ForgedSubject,
     approvals_rules_llm_human_chain => Chain,
     approvals_parent_allows => ParentAllow,
+    approvals_human_wait_and_parent_approver_compose => ParentHumanWait,
     approvals_parent_denies_before_effect => ParentDeny,
     approvals_parent_forgery_is_refused => ParentForged,
     approvals_parent_completion_denies_unanswered_request => ParentCompletes,
