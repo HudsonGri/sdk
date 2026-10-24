@@ -112,6 +112,34 @@ raise SystemExit(101)
   self.assertEqual(result.returncode,101)
   self.assertNotEqual(legacy.read_bytes(),expected)
   self.assertNotIn(b'wrapper-header',legacy.read_bytes())
+ def test_partial_stream_is_visible_before_eof_and_interruption_stays_incomplete(self):
+  source=HERE/'coordinator/gate-test-baseline.py'
+  prefix=b'error: compiler diagnostic before stream interruption\n'
+  for negative in [False,True]:
+   module=types.ModuleType('transport')
+   code=source.read_text()
+   if negative:code=code.replace("log.open('wb', buffering=0)","log.open('wb')")
+   exec(compile(code,str(source),'exec'),module.__dict__)
+   log=self.d/('buffered.log' if negative else 'live.log')
+   class Stream:
+    first=True
+    def read(stream,length):
+     if stream.first:stream.first=False;return prefix
+     if log.read_bytes()!=prefix:raise AssertionError('diagnostic not visible before EOF')
+     raise OSError('fixture stream interrupted')
+    def close(stream):pass
+   class Child:
+    stdout=Stream();terminated=False
+    def poll(child):return None
+    def terminate(child):child.terminated=True
+    def wait(child):return -15
+   child=Child()
+   module.subprocess=types.SimpleNamespace(PIPE=subprocess.PIPE,STDOUT=subprocess.STDOUT,Popen=lambda *a,**kw:child)
+   with self.assertRaisesRegex(AssertionError if negative else OSError,'not visible before EOF' if negative else 'stream interrupted'):
+    module.run_logged(['fixture'],log,cwd=self.d,env=os.environ)
+   self.assertTrue(child.terminated)
+   self.assertEqual(log.read_bytes(),prefix)
+   self.assertFalse(module.baseline_complete(log.read_text()))
  def test_actual_verdict_qualifies_non_libtest_targets_without_hiding_new_failures(self):
   root=self.d;(root/'.codex-fleet').mkdir();(root/'flakes').write_text('')
   helper=root/'failed-tests.sh';source=(HERE/'coordinator/failed-tests.sh').read_text()

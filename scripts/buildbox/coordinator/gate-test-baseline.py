@@ -22,9 +22,11 @@ def run_logged(command, log, cwd, env):
     independent positions. Even stderr=STDOUT cannot make that file safe.
     Reopening a pipe preserves its byte stream instead of overwriting a log.
     """
-    with log.open('wb') as output:
+    # Do not retain short diagnostics until EOF: an interrupted coordinator
+    # must leave the bytes already received in its partial, unqualified log.
+    with log.open('wb', buffering=0) as output:
         process = subprocess.Popen(command, cwd=cwd, env=env,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         try:
             shutil.copyfileobj(process.stdout, output)
             output.flush()
