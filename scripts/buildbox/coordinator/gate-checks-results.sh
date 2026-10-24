@@ -1,5 +1,5 @@
 #!/bin/bash
-# gate-checks-verdict.sh <log> <baseline main-gate log>: what gate-checks.sh found in <log> that main's run did not.
+# gate-checks-results.sh <log> <baseline main-gate log>: what gate-checks.sh found in <log> that main's run did not.
 # Prints "clippy: +<n> <file>: <lint>" for every (file, lint) whose count rose, "clippy-error: ..." for new compiler errors,
 # and "features: <cargo set>" for each newly failing feature set. Exit 1 if any; 0 if none. A baseline without gate-checks
 # lines (older main-gate run) or a run whose clippy/feature step did not report is "no baseline" (exit 0, line printed),

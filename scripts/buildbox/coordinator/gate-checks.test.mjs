@@ -240,7 +240,7 @@ test('actual coordinator validates executor before formatting and never retries 
 
 
 test('public lint verdict uses the same required-phase policy and retains typed INFRA', () => fixture(({ cwd, put }) => {
-  put('scripts/buildbox/coordinator/gate-checks-verdict.sh', readFileSync(join(coordinator, 'gate-checks-verdict.sh')));
+  put('scripts/buildbox/coordinator/gate-checks-results.sh', readFileSync(join(coordinator, 'gate-checks-results.sh')));
   const log = join(cwd, 'verdict.log');
   const base = join(cwd, 'baseline.log');
   writeFileSync(base, 'GATE_CLIPPY rc=0\n');
@@ -249,7 +249,7 @@ test('public lint verdict uses the same required-phase policy and retains typed 
   const success = 'GATE_WINDOWS_RUNTIME_CLIPPY rc=0 seconds=1 target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
   const run = (text) => {
     writeFileSync(log, text + 'GATE_CLIPPY rc=0\n');
-    return spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks-verdict.sh', log, base], { cwd, encoding: 'utf8' });
+    return spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks-results.sh', log, base], { cwd, encoding: 'utf8' });
   };
   for (const [text, rc] of [[required + format, 1], [required, 4], [required + success, 0],
     [required + success.replace('rc=0', 'rc=101'), 1]]) {
