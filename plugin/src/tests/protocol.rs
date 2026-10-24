@@ -240,3 +240,67 @@ async fn a_budget_refusal_is_answered_over_the_mailbox_before_any_deadline() {
         "{result:?}"
     );
 }
+
+/// Succeeds, then leaves a starved ledger as the request's original native
+/// work, so the successful reply cannot be funded.
+struct SucceedsUnfunded(std::sync::atomic::AtomicUsize);
+
+impl ConcurrentControlRequestDispatcher for SucceedsUnfunded {
+    async fn dispatch_request(
+        &self,
+        _request: ControlRequest,
+        work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatchResponse> {
+        let starved = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes:
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 64,
+                ..pi_root_provider::allocation_budget()
+            },
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+        *work = Some(starved);
+        let execution = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok((json!({ "execution": execution }), None))
+    }
+}
+
+#[tokio::test]
+async fn an_unfunded_successful_reply_is_never_replayed_as_a_failure() {
+    let fixture = Fixture::new();
+    let dispatcher = Arc::new(SucceedsUnfunded(std::sync::atomic::AtomicUsize::new(0)));
+    let envelope = starved_envelope(&fixture);
+    let request_id = envelope.request_id.clone();
+    let ledger = Arc::new(ControlLedger::open(&fixture.data).unwrap());
+    let mut work = None;
+    let (first, allocation, _) =
+        dispatch_control_envelope(&dispatcher, &ledger, envelope.clone(), &mut work)
+            .await
+            .unwrap();
+    assert!(
+        service_process::encode_native_control_value(&json!({}), work.as_ref().unwrap()).is_err()
+    );
+    assert!(allocation.is_none());
+    assert!(first.is_refusal() && first.reply_failed());
+    // A retry, live or after a restart, reports the indeterminate outcome:
+    // it neither re-executes nor replays the reply refusal as the result.
+    // Recording the refusal as the completed response replays `first`.
+    for ledger in [
+        ledger,
+        Arc::new(ControlLedger::open(&fixture.data).unwrap()),
+    ] {
+        let (retry, _, _) =
+            dispatch_control_envelope(&dispatcher, &ledger, envelope.clone(), &mut None)
+                .await
+                .unwrap();
+        assert_ne!(retry, first);
+        let Err(ControlRequestError::Refused { message, .. }) =
+            decode_control_response(&retry, &request_id)
+        else {
+            panic!("not a refusal: {retry:?}");
+        };
+        assert!(message.contains("indeterminate"), "{message}");
+    }
+    assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

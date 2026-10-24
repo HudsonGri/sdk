@@ -17,6 +17,9 @@ pub(crate) const REFUSAL_FRAME_BYTES: usize = 1024;
 pub(crate) struct ControlFrame {
     encoded: Vec<u8>,
     refusal: Option<RefusalFrame>,
+    /// The operation ran, but its reply could not be funded: this refusal
+    /// reports the reply, not the operation's outcome.
+    reply_failed: bool,
 }
 
 impl ControlFrame {
@@ -24,6 +27,7 @@ impl ControlFrame {
         Self {
             encoded,
             refusal: None,
+            reply_failed: false,
         }
     }
 
@@ -31,7 +35,25 @@ impl ControlFrame {
         Self {
             encoded: Vec::new(),
             refusal: Some(frame),
+            reply_failed: false,
         }
+    }
+
+    /// A refusal sent because a successful operation's reply could not be
+    /// funded. The operation's outcome stays indeterminate: it is never
+    /// recorded as this refusal, and a retry is refused rather than replayed
+    /// as a failure.
+    pub(crate) const fn reply_refusal(frame: RefusalFrame) -> Self {
+        Self {
+            encoded: Vec::new(),
+            refusal: Some(frame),
+            reply_failed: true,
+        }
+    }
+
+    /// Whether this frame reports a reply failure rather than an outcome.
+    pub(crate) const fn reply_failed(&self) -> bool {
+        self.reply_failed
     }
 
     #[cfg(test)]
