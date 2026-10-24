@@ -588,9 +588,13 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
         "edit after acknowledgement",
     )
     .unwrap();
+    let recovered_after_ack =
+        build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
+            .await
+            .unwrap();
     publish_writeback(
         &root,
-        &generations,
+        &recovered_after_ack,
         &prepared,
         &options,
         &fixture.resources.store,

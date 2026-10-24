@@ -106,7 +106,7 @@ impl CheckoutPublication {
         }
     }
     /// Publishes with the caller's guard and original native work ledger.
-    pub async fn publish<F, Fut>(
+    pub(crate) async fn publish<F, Fut>(
         &self,
         from: &LocalGeneration,
         to: &LocalGeneration,

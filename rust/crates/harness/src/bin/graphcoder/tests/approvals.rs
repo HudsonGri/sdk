@@ -14,6 +14,7 @@ enum Case {
     RuleDeny,
     LlmAllow,
     LlmDeny,
+    LlmForged,
     HumanAllow,
     HumanDeny,
     ForgedPrincipal,
@@ -59,6 +60,7 @@ impl Case {
                     | Self::HumanDeny
                     | Self::ForgedPrincipal
                     | Self::ForgedSubject
+                    | Self::LlmForged
                     | Self::Chain
                     | Self::ParentHumanWait
             )
@@ -83,6 +85,7 @@ impl Case {
                 | Self::ForgedSubject
                 | Self::ParentForged
                 | Self::ChildHumanForged
+                | Self::LlmForged
         )
     }
 }
@@ -102,6 +105,7 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
                 "verdict":"allow"}],"fallback":"deny"})],
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
+        Case::LlmForged => vec![llm, human],
         Case::Chain => vec![rule("ask"), llm, human],
         Case::ForgedPrincipal => vec![rule("ask"), human],
         Case::ChildHumanAllow
@@ -282,7 +286,7 @@ impl Fixture {
         assert!(body.to_string().contains("REVIEW_FIXTURE"));
         let verdict = match self.case {
             Case::LlmDeny => "deny",
-            Case::Chain => "ask",
+            Case::Chain | Case::LlmForged => "ask",
             _ => "allow",
         };
         let final_text = json!({"verdict":verdict,"reason":"independent review"}).to_string();
@@ -433,7 +437,7 @@ impl Fixture {
             self.reviews.load(Ordering::SeqCst),
             usize::from(matches!(
                 self.case,
-                Case::LlmAllow | Case::LlmDeny | Case::Chain
+                Case::LlmAllow | Case::LlmDeny | Case::LlmForged | Case::Chain
             ))
         );
         if self.case.parent() {
@@ -584,6 +588,8 @@ impl Followed {
                     }
                     let principal = if matches!(case, Case::ForgedPrincipal) {
                         "rules"
+                    } else if matches!(case, Case::LlmForged) {
+                        "reviewer"
                     } else {
                         "human"
                     };
@@ -777,6 +783,7 @@ cases! {
     approvals_rule_denies_before_effect => RuleDeny,
     approvals_llm_allows => LlmAllow,
     approvals_llm_denies_before_effect => LlmDeny,
+    approvals_llm_forged_decision_is_refused => LlmForged,
     approvals_human_allows_live => HumanAllow,
     approvals_human_denies_before_effect => HumanDeny,
     approvals_forged_principal_is_refused => ForgedPrincipal,
