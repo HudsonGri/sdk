@@ -80,35 +80,35 @@ async fn git_status_from(
     command: impl FnOnce() -> Option<tokio::process::Command>,
 ) -> Option<String> {
     use tokio::io::AsyncReadExt as _;
-    let cwd = cwd.to_owned();
-    let directory =
-        acyclic_native_runtime::spawn_blocking(move || WorktreeDirectory::discover(&cwd))
-            .await
-            .ok()?
-            .ok()??;
-    let mut command = command()?;
-    for name in REPOSITORY_ENVIRONMENT {
-        command.env_remove(name);
-    }
-    let mut child = command
-        .current_dir(directory.0)
-        .args([
-            "status",
-            "--porcelain=v1",
-            "--branch",
-            "-z",
-            "--untracked-files=normal",
-        ])
-        // Read-only: never take the index lock another git process may need.
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let collected = tokio::time::timeout(GIT_STATUS_TIMEOUT, async {
+    tokio::time::timeout(GIT_STATUS_TIMEOUT, async {
+        let cwd = cwd.to_owned();
+        let directory =
+            acyclic_native_runtime::spawn_blocking(move || WorktreeDirectory::discover(&cwd))
+                .await
+                .ok()?
+                .ok()??;
+        let mut command = command()?;
+        for name in REPOSITORY_ENVIRONMENT {
+            command.env_remove(name);
+        }
+        let mut child = command
+            .current_dir(directory.0)
+            .args([
+                "status",
+                "--porcelain=v1",
+                "--branch",
+                "-z",
+                "--untracked-files=normal",
+            ])
+            // Read-only: never take the index lock another git process may need.
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        let stdout = child.stdout.take()?;
         let mut bytes = Vec::new();
         stdout
             .take(GIT_STATUS_BYTES + 1)
@@ -122,16 +122,53 @@ async fn git_status_from(
         } else if !child.wait().await.ok()?.success() {
             return None;
         }
-        Some((bytes, truncated))
+        Some(summarize(&bytes, truncated))
     })
     .await
-    .ok()??;
-    Some(summarize(&collected.0, collected.1))
+    .ok()?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_environment_discovery_shares_the_summary_deadline() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .max_blocking_threads(1)
+            .build()?;
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let occupied = runtime.spawn_blocking(move || {
+            entered.send(()).unwrap();
+            wait.recv().unwrap();
+        });
+        started.recv().unwrap();
+        runtime.block_on(async {
+            let command_started = std::cell::Cell::new(false);
+            let status = git_status_from(root.path(), || {
+                command_started.set(true);
+                None
+            });
+            tokio::pin!(status);
+            let first = futures::poll!(status.as_mut());
+            tokio::time::advance(GIT_STATUS_TIMEOUT).await;
+            let settled = futures::poll!(status.as_mut());
+            // Release the worker before assertions, including in the old-shape control.
+            release.send(()).unwrap();
+            occupied.await.unwrap();
+            assert!(first.is_pending());
+            assert!(
+                matches!(settled, std::task::Poll::Ready(None)),
+                "Git discovery escaped the summary deadline"
+            );
+            assert!(!command_started.get());
+        });
+        Ok(())
+    }
 
     #[tokio::test]
     async fn git_environment_outside_worktree_never_starts_a_command() -> std::io::Result<()> {
