@@ -19,3 +19,19 @@ test("a missing frozen lock is rejected before starting the installer", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("a different package manager is rejected before installation", () => {
+  const directory = mkdtempSync(join(process.env.E2E_SCRATCH_ROOT ?? tmpdir(), "terminal-version-"));
+  const previous = process.env.BUN_BINARY;
+  try {
+    for (const name of ["package.json", "bun.lock"]) {
+      writeFileSync(join(directory, name), readFileSync(new URL(`./${name}`, import.meta.url)));
+    }
+    process.env.BUN_BINARY = process.execPath;
+    assert.throws(() => prepare(directory), /terminal package manager version mismatch/);
+  } finally {
+    if (previous === undefined) delete process.env.BUN_BINARY;
+    else process.env.BUN_BINARY = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

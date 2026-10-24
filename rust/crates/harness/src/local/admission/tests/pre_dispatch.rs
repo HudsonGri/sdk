@@ -83,10 +83,15 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                 | Case::Accounting
                 | Case::Policy
         ) {
+            let mut retention = crate::context::CompactionRetention::default();
+            if matches!(case, Case::MandatorySource) {
+                // Conventions are late User messages; this case explicitly retains them.
+                retention.roles.push(ModelRole::User);
+            }
             harness.compaction = CompactionPolicy::Threshold(ThresholdCompaction {
                 response_reserve_tokens: 16_384,
                 recent_tokens: if matches!(case, Case::Policy) { 0 } else { 100 },
-                ..Default::default()
+                retention,
             });
         }
         let operation = OperationId::new();
