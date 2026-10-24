@@ -160,10 +160,8 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     ));
     let child = fixture.task(Some(workspace.task())).await?;
     let fork = workspace.fork(&parent, &child).await?;
-    assert!(
-        fork.path()
-            .starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?)
-    );
+    let fork_path = std::fs::canonicalize(fork.path()).map_err(storage)?;
+    assert!(fork_path.starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?));
     assert!(
         !fork
             .path()
@@ -200,15 +198,16 @@ async fn native_writes_fork_and_reopen_without_execution() -> Result<()> {
     for view in [&fork, &nested] {
         let private =
             std::fs::canonicalize(view.path().join(".volumes/scratch")).map_err(storage)?;
+        let project = std::fs::canonicalize(view.path()).map_err(storage)?;
         assert_eq!(
             private.parent(),
-            view.path().parent(),
+            project.parent(),
             "private volumes must share the project view's native instance"
         );
     }
     assert!(
-        nested
-            .path()
+        std::fs::canonicalize(nested.path())
+            .map_err(storage)?
             .starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?)
     );
     assert_eq!(
@@ -557,7 +556,8 @@ async fn native_children_use_shared_allocations_and_never_dispatch_an_agent() ->
     let child = fixture.harness.bind_host_task(child_task).await?;
     let fork = workspace.fork(&parent, &child).await?;
     assert!(
-        fork.path()
+        std::fs::canonicalize(fork.path())
+            .map_err(storage)?
             .starts_with(std::fs::canonicalize(mounts.path()).map_err(storage)?)
     );
     assert_eq!(
