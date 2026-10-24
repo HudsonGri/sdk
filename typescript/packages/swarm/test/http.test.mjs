@@ -159,6 +159,27 @@ test("ending SSE consumption cancels the subscription without reconnecting", asy
   assert.equal(calls, 1);
 });
 
+test("trailing SSE comments preserve completed events and never publish unfinished data", async () => {
+  for (const suffix of [": heartbeat", ": heartbeat\n", ": first\r\n: second"]) {
+    for (const complete of [false, true]) {
+      const client = new SwarmClient({
+        endpoint: "https://fixture", token: "fixture",
+        fetch: async () => new Response(`data: {}\n${complete ? "\n" : ""}${suffix}`,
+          { headers: { "content-type": "text/event-stream" } }),
+      });
+      const frames = [];
+      const consume = async () => { for await (const frame of client.watch("swarm")) frames.push(frame); };
+      if (complete) {
+        await consume();
+        assert.deepEqual(frames, [{ id: "", event: "message", data: {} }]);
+      } else {
+        await assert.rejects(consume());
+        assert.deepEqual(frames, []);
+      }
+    }
+  }
+});
+
 test("aborting between buffered SSE events prevents later delivery", async () => {
   const controller = new AbortController();
   const events = [1, 2].map(seq => ({ seq, type: "log", agent_id: "agent", line: "buffered" }));
