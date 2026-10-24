@@ -42,13 +42,13 @@ pub(super) fn next_stage<'a>(
             files.get(&review_key(request, &expected.principal)?),
             &expected,
         )?;
-        if !matches!(approver, Approver::Human { .. } | Approver::Parent) {
-            if let Some(review) = &retained {
-                if review.verdict == RuleVerdict::Ask {
-                    continue;
-                }
-                return Ok(NextStage::Decided(review.clone()));
+        if !matches!(approver, Approver::Human { .. } | Approver::Parent)
+            && let Some(review) = &retained
+        {
+            if review.verdict == RuleVerdict::Ask {
+                continue;
             }
+            return Ok(NextStage::Decided(review.clone()));
         }
         return Ok(NextStage::Review {
             approver,

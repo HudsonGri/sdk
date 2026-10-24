@@ -816,9 +816,22 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         maximum_extent_spans: 32,
         transfer_bytes: 4096,
     };
+    let paths = ["guard-probe".to_owned()];
+    let prepared = publication
+        .prepare_selected(
+            &generation,
+            &generation,
+            &store,
+            &options,
+            &work,
+            (&paths, ()),
+        )
+        .await?;
+    let approved = publication.approval_value(&generation, &generation, &paths, &prepared, ())?;
+    let confirmation = approved.digest(&work)?;
     let mut guards = 0;
-    let error = publication
-        .publish(&generation, &generation, &store, &options, &work, || {
+    let error = approved
+        .publish(&store, &options, &work, &confirmation, || {
             guards += 1;
             let changed = std::fs::rename(&root, root.with_extension("original"))
                 .and_then(|()| std::fs::create_dir(&root));

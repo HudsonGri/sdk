@@ -9,6 +9,13 @@ pub(crate) struct PiWritebackGenerations<'a> {
     pub(super) paths: &'a [String],
 }
 
+impl PiWritebackGenerations<'_> {
+    /// Inspect the selected candidate without allowing its owner-bound facts to change.
+    pub(crate) fn candidate(&self) -> &crate::LocalGeneration {
+        &self.candidate
+    }
+}
+
 pub(crate) async fn build_writeback_generations<'a>(
     root: &std::sync::Arc<PiWritebackRoot>,
     actual_root: &crate::pi_root_provider::PiRootHandle,
