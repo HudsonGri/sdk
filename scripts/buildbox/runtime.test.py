@@ -43,6 +43,7 @@ class RuntimeTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
     def worker(self,negative=False,cleanup_failure=False):
+        shutil.copyfile(HERE/'buildbox-receipt.mjs',self.d/'buildbox-receipt.mjs')
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
