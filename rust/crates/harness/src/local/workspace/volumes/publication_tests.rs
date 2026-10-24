@@ -262,7 +262,10 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         rebound.view.source.as_ref().unwrap(),
         original
     ));
-    assert_eq!(rebound.native_root, None);
+    assert_ne!(
+        rebound.native_root.as_deref(),
+        Some(original.destination.as_path())
+    );
     let alias = task.path().join(SCRATCH_PATH);
     std::fs::rename(&alias, task.path().join("original-alias")).map_err(storage)?;
     link_directory(blocked.path(), &alias).map_err(storage)?;

@@ -309,8 +309,8 @@ pub use native_mount::{
     native_mount_control_paths, prepare_native_mount_start, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     reclaim_native_mount_destination_fence, recover_native_mount_destination,
-    restore_checkout_host_path, seal_checkout, seal_checkout_with_permit, shared_view_root,
-    shared_view_root_in,
+    restore_checkout_host_path, seal_checkout, seal_checkout_with_permit,
+    shared_view_namespace_contains, shared_view_root, shared_view_root_in,
 };
 #[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub use native_mount::{

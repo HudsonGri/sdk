@@ -258,7 +258,7 @@ fn start_in_job(
 ) -> io::Result<()> {
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-        tree.child = Some(command.spawn()?);
+        tree.child = Some(super::spawner::spawn(command)?);
         Ok(())
     })?;
     let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
@@ -629,4 +629,47 @@ fn denied_admission_still_observes_unassigned_child_exit() {
     );
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(!temporary.path().join("tree-ready").exists());
+}
+
+/// Trees started from several threads are all created on the one spawner
+/// thread, none on a caller's: process creation's per-thread state (RPC's,
+/// for an app execution alias) is then held once, not once per caller thread.
+#[test]
+fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
+    let callers = (0..4)
+        .map(|_| {
+            std::thread::spawn(|| -> io::Result<std::thread::ThreadId> {
+                let mut command = Command::new("cmd.exe");
+                command
+                    .args(["/d", "/c", "exit 0"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let mut tree = super::ProcessTree::spawn(&mut command)?;
+                while tree.try_wait(None)?.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok(std::thread::current().id())
+            })
+        })
+        .collect::<Vec<_>>();
+    let callers = callers
+        .into_iter()
+        .map(|caller| {
+            caller
+                .join()
+                .map_err(|_| io::Error::other("caller panicked"))?
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let created = super::spawner::CREATED_ON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(created.len() >= callers.len(), "{created:?}");
+    assert!(
+        created.iter().all(|thread| *thread == created[0]),
+        "every process is created on one thread: {created:?}"
+    );
+    assert!(!callers.contains(&created[0]), "and on none of its callers");
+    Ok(())
 }

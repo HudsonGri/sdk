@@ -22,10 +22,11 @@ pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
     let (Some(parent), Some(leaf)) = (relative.parent(), relative.file_name()) else {
         return Err(Error::Invalid("scratch mount has no parent".into()));
     };
-    acyclic_fs::recover_disconnected_native_mount_destination_in(
-        &held_directories(root, parent)?,
-        leaf,
-    )?;
+    let parent = held_directories(root, parent)?;
+    if recover_binding_alias(root, &root.path().join(relative))? {
+        return Ok(());
+    }
+    acyclic_fs::recover_disconnected_native_mount_destination_in(&parent, leaf)?;
     Ok(())
 }
 
@@ -416,17 +417,26 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>)
 pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            let linked = std::fs::read_link(path).map_err(mount_io)?;
-            let linked = path
-                .parent()
-                .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?
-                .join(linked);
-            if canonical_destination(&linked)? != canonical_destination(target)? {
+            let linked = alias_target(path)?
+                .ok_or_else(|| Error::Conflict("volume alias changed during binding".into()))?;
+            // A retired shared root may already have been reaped, including
+            // its parent directory. An exact authenticated alias needs no
+            // filesystem lookup to establish that identity.
+            let replace = if linked == target {
+                false
+            } else if previous.is_some_and(|expected| linked == expected) {
+                true
+            } else if canonical_destination(&linked)? == canonical_destination(target)? {
+                false
+            } else {
                 let expected = previous
                     .ok_or_else(|| Error::Conflict("volume alias names another binding".into()))?;
                 if canonical_destination(&linked)? != canonical_destination(expected)? {
                     return Err(Error::Conflict("volume alias names another binding".into()));
                 }
+                true
+            };
+            if replace {
                 // A fork inherits the parent's SDK alias in its authored
                 // cut. Before exposing this new view, replace only that
                 // exact authenticated binding with the child's volume.
@@ -451,6 +461,57 @@ pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) ->
         Err(error) => return Err(mount_io(error)),
     }
     Ok(())
+}
+
+pub(super) fn alias_target(path: &Path) -> Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let parent = path
+                .parent()
+                .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?;
+            Ok(Some(
+                parent.join(std::fs::read_link(path).map_err(mount_io)?),
+            ))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(mount_io(error)),
+    }
+}
+
+/// The projection owns this exact alias target. Retirement removes the link
+/// only after the view has gone; a live or replaced binding remains intact.
+pub(super) fn unlink_binding(destination: &Path, view: &Path) -> Result<()> {
+    if let Some(target) = alias_target(destination)?
+        && (target == view || canonical_destination(&target)? == canonical_destination(view)?)
+        && !view.try_exists().map_err(mount_io)?
+    {
+        unlink_directory_alias(destination).map_err(mount_io)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn recover_binding_alias(root: &acyclic_fs::HeldRoot, destination: &Path) -> Result<bool> {
+    let Some(target) = alias_target(destination)? else {
+        return Ok(false);
+    };
+    let belongs = if acyclic_fs::shared_view_namespace_contains(&target, None)? {
+        true
+    } else if target.starts_with(root.path().join(".volumes/agents")) {
+        let admission = held_directories(root, Path::new(".volumes/agents"))?;
+        acyclic_fs::shared_view_namespace_contains(&target, Some(&admission))?
+    } else {
+        false
+    };
+    if !belongs {
+        return Ok(false);
+    }
+    if target.try_exists().map_err(mount_io)? {
+        return Ok(true);
+    }
+    unlink_directory_alias(destination).map_err(mount_io)?;
+    Ok(false)
 }
 
 #[cfg(unix)]
@@ -531,8 +592,8 @@ pub(super) fn recover_volume_after_crash(
 }
 
 pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
-    let root = acyclic_fs::hold_root(root)
-        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+    let root =
+        acyclic_fs::hold_root(root).map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
     root.create_directories(relative)
         .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
     Ok(())

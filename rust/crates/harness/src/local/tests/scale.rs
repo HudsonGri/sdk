@@ -722,9 +722,8 @@ impl Costs {
     /// Disk is the exception: each run has its own directory.
     fn marginal(small: &Report, large: &Report) -> Self {
         let agents = large.agents.saturating_sub(small.agents);
-        let slope = |value: &dyn Fn(&Report) -> u64| {
-            PerAgent::marginal(value(small), value(large), agents)
-        };
+        let slope =
+            |value: &dyn Fn(&Report) -> u64| PerAgent::marginal(value(small), value(large), agents);
         Self {
             idle_rss: slope(&|r| r.idle.rss),
             idle_fds: slope(&|r| r.idle.fds),
@@ -987,7 +986,7 @@ fn retained_child_views_fail_the_bound() -> Result<()> {
 /// within the bounds; `retained_child_views_fail_the_bound` is the same run
 /// with an instance per view.
 #[test]
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(any(target_os = "linux", windows), feature = "native-execution"))]
 fn retained_shared_child_views_stay_within_the_bound() -> Result<()> {
     expect_run(
         &Run {

@@ -6,6 +6,7 @@ use crate::sync::owned::{OwnedMutexGuard, lock_owned};
 pub(in crate::local) struct Native {
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
     discard: bool,
+    binding: Option<(PathBuf, PathBuf)>,
 }
 
 impl std::ops::Deref for Native {
@@ -20,6 +21,11 @@ impl Drop for Native {
         // Keep callbacks and the destination fence inside the last owner.
         if let Err(error) = self.mount.abandon() {
             tracing::error!(?error, "workspace mount retirement failed");
+        }
+        if let Some((destination, view)) = &self.binding
+            && let Err(error) = volumes::unlink_binding(destination, view)
+        {
+            tracing::error!(?error, "volume binding retirement failed");
         }
     }
 }
@@ -116,33 +122,38 @@ impl MountedVolume {
                     "projection differs from its volume binding".into(),
                 ));
             }
-            let path = super::task_views::shared_destination(&self.task_view_admission)?;
             let mount = self
                 .workspace
                 .workspace()
-                .mount(&path, options.shared())
+                .mount_view(super::task_views::view_options(
+                    &self.task_view_admission,
+                    options,
+                ))
                 .await
                 .map_err(Error::from)?;
-            let native = Native {
+            let path = mount.path().to_path_buf();
+            let mut native = Native {
                 mount,
                 discard: false,
+                binding: None,
             };
             // This is the binding's reserved alias, not authored project
             // content. On restart it can still name the preceding process's
             // retired root. Replace only the link itself; never follow it or
             // write its old target. A regular file/nonempty directory fails.
-            let previous = match std::fs::symlink_metadata(&self.destination) {
-                Ok(metadata) if metadata.file_type().is_symlink() => Some(
-                    self.destination
-                        .parent()
-                        .ok_or_else(|| Error::Invalid("projection alias has no parent".into()))?
-                        .join(std::fs::read_link(&self.destination).map_err(storage)?),
-                ),
-                Ok(_) => None,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(storage(error)),
-            };
+            let previous = volumes::alias_target(&self.destination)?;
+            if let Some(previous) = &previous {
+                let admission = self.task_view_admission.get().map(Arc::as_ref);
+                if !acyclic_fs::shared_view_namespace_contains(previous, admission)?
+                    || previous.try_exists().map_err(storage)?
+                {
+                    return Err(Error::Conflict(
+                        "projection alias does not name a retired shared view".into(),
+                    ));
+                }
+            }
             volumes::bind_alias(&self.destination, &path, previous.as_deref())?;
+            native.binding = Some((self.destination.clone(), path));
             Ok(native)
         })
         .await

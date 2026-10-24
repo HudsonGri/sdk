@@ -4,22 +4,21 @@ use super::*;
 use acyclic_fs::PublicationPermit;
 use acyclic_fs::{CancellationToken, IdempotencyKey, MountOptions, WorkBudget};
 
-pub(super) fn shared_destination(
+pub(super) fn view_options(
     admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
-) -> Result<PathBuf> {
-    let root = match admission.get() {
-        Some(admitted) => acyclic_fs::shared_view_root_in(admitted),
-        None => acyclic_fs::shared_view_root(),
+    options: MountOptions,
+) -> MountOptions {
+    match admission.get() {
+        Some(root) => options.view_root(Arc::clone(root)),
+        None => options,
     }
-    .map_err(storage)?;
-    Ok(root.join(crate::identity::fresh_uuid().to_string()))
 }
 
 impl LocalWorkspace {
     /// All task views enter the filesystem's shared instance. The host may
     /// select its already admitted workspace namespace; ordinary harnesses
     /// share the process root. No host adapter mounts a task view itself.
-    fn task_view_destination(&self) -> Result<(PathBuf, MountOptions)> {
+    async fn mount_task_source(&self, view: &workspace::View) -> Result<Arc<TaskMount>> {
         let options = MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual);
         #[cfg(all(target_os = "linux", test))]
         if crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS)
@@ -29,12 +28,16 @@ impl LocalWorkspace {
             let path = root
                 .create_directories(Path::new(&crate::identity::fresh_uuid().to_string()))
                 .map_err(storage)?;
-            return Ok((path.path().to_path_buf(), options));
+            return view
+                .mount(path.path(), options)
+                .await
+                .map(Arc::new)
+                .map_err(storage);
         }
-        Ok((
-            shared_destination(&self.task_view_admission)?,
-            options.shared(),
-        ))
+        view.mount_view(view_options(&self.task_view_admission, options))
+            .await
+            .map(Arc::new)
+            .map_err(storage)
     }
     pub(in crate::local) async fn fork_task(
         &self,
@@ -110,7 +113,6 @@ impl LocalWorkspace {
         // live mount needs its own namespace so retiring it cannot
         // detach a replacement owner's mount at the same path.
         owner.verify_owner(None)?.await?;
-        let (path, options) = self.task_view_destination()?;
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -124,7 +126,7 @@ impl LocalWorkspace {
             mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
             context_line: self.context_line().into(),
             processes: self.processes.clone(),
-            path: path.clone(),
+            path: self.path.clone(),
             fresh: false,
             mount_directory: self.mount_directory.clone(),
             task_view_admission: Arc::clone(&self.task_view_admission),
@@ -137,8 +139,8 @@ impl LocalWorkspace {
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
         let initial_view = selected.workspace().id();
-        let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
-        workspace.path = path;
+        let mounted = self.mount_task_source(selected).await?;
+        workspace.path = mounted.path().to_path_buf();
         workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
         workspace.mounted = Some(mounted);
         workspace.mounts = workspace
@@ -188,8 +190,8 @@ impl LocalWorkspace {
             return Ok(workspace.clone());
         }
         owner.verify_owner(None)?.await?;
-        let (path, options) = self.task_view_destination()?;
-        let mounted = Arc::new(view.mount(&path, options).await.map_err(storage)?);
+        let mounted = self.mount_task_source(view).await?;
+        let path = mounted.path().to_path_buf();
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

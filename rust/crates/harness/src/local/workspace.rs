@@ -40,6 +40,13 @@ pub(super) type View = LazyWorkspace<
     LocalCoreStateStore,
 >;
 
+pub(super) type TaskMount = acyclic_fs::native_mount::LazyMount<
+    LocalAuthorityBackend,
+    LocalObjectBackend,
+    NativeDemandSource,
+    LocalCoreStateStore,
+>;
+
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
@@ -48,16 +55,7 @@ pub struct LocalWorkspace {
     pub(super) mount_directory: PathBuf,
     /// Optional sandbox admission shared by the root and all descendants.
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
-    pub(super) mounted: Option<
-        Arc<
-            acyclic_fs::native_mount::LazyMount<
-                LocalAuthorityBackend,
-                LocalObjectBackend,
-                NativeDemandSource,
-                LocalCoreStateStore,
-            >,
-        >,
-    >,
+    pub(super) mounted: Option<Arc<TaskMount>>,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,

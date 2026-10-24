@@ -10,7 +10,7 @@
 //! next start. One directory lock orders creation against reaping, so a
 //! root is never reaped between its creation and its owner's lock.
 
-use super::{NativeMountError, registry};
+use super::super::{NativeMountError, registry};
 use acyclic_native_runtime::{FileLock, FileLockMode};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -29,8 +29,43 @@ type Admission = (PathBuf, [u8; 16]);
 type Roots = std::collections::BTreeMap<Admission, Root>;
 static ROOTS_BY_ADMISSION: OnceLock<Mutex<Roots>> = OnceLock::new();
 
+fn view_serial(name: &std::ffi::OsStr) -> Option<u64> {
+    name.to_str()
+        .and_then(|name| name.strip_prefix('v'))
+        .filter(|digits| digits.len() == 16)
+        .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+}
+
+/// Recognizes the allocator's namespace after reaping dead owners. This is
+/// used only to recover an SDK alias; it does not claim or authorize a view.
+pub fn shared_view_namespace_contains(
+    destination: &Path,
+    admission: Option<&crate::HeldRoot>,
+) -> Result<bool, NativeMountError> {
+    let root = match admission {
+        Some(admitted) => shared_view_root_in(admitted)?,
+        None => shared_view_root()?,
+    };
+    let Some(namespace) = root.parent() else {
+        return Ok(false);
+    };
+    let Ok(relative) = destination.strip_prefix(namespace) else {
+        return Ok(false);
+    };
+    let mut components = relative.components();
+    let (Some(std::path::Component::Normal(root)), Some(std::path::Component::Normal(view)), None) =
+        (components.next(), components.next(), components.next())
+    else {
+        return Ok(false);
+    };
+    Ok(root
+        .to_str()
+        .is_some_and(|root| root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        && view_serial(view).is_some())
+}
+
 /// This process's root for shared views: a view at `root.join(name)`,
-/// mounted with [`MountOptions::shared`](crate::MountOptions::shared), is a
+/// mounted with [`Workspace::mount_view`](crate::Workspace::mount_view), is a
 /// namespace of the one instance mounted at the root.
 ///
 /// The first call reaps the roots of dead processes.
@@ -40,8 +75,7 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
         .ok_or_else(|| std::io::Error::other("native-mount directory has no parent"))?
         .join(ROOTS);
     std::fs::create_dir_all(&roots)?;
-    let roots = crate::hold_root(&roots)
-        .map_err(crate::NativeTreeMaterializationError::from)?;
+    let roots = crate::hold_root(&roots).map_err(crate::NativeTreeMaterializationError::from)?;
     root_in(&roots)
 }
 
@@ -51,6 +85,106 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
 /// identical to [`shared_view_root`]; placement grants no additional access.
 pub fn shared_view_root_in(admitted: &crate::HeldRoot) -> Result<PathBuf, NativeMountError> {
     root_in(admitted)
+}
+
+#[derive(Default)]
+struct IssuedNames {
+    next: u64,
+    pending: std::collections::BTreeMap<u64, PathBuf>,
+}
+
+impl IssuedNames {
+    fn issue(&mut self, root: &Path, claim: bool) -> Result<(u64, PathBuf), NativeMountError> {
+        let serial = self
+            .next
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("shared view name space exhausted"))?;
+        let path = root.join(format!("v{serial:016x}"));
+        if claim {
+            self.pending.insert(serial, path.clone());
+        }
+        self.next = serial;
+        Ok((serial, path))
+    }
+
+    #[cfg(any(windows, test))]
+    fn claim(&mut self, destination: &Path) -> bool {
+        let Some(serial) = destination.file_name().and_then(view_serial) else {
+            return false;
+        };
+        if self
+            .pending
+            .get(&serial)
+            .is_some_and(|issued| issued == destination)
+        {
+            self.pending.remove(&serial);
+            return true;
+        }
+        false
+    }
+}
+
+static ISSUED: Mutex<IssuedNames> = Mutex::new(IssuedNames {
+    next: 0,
+    pending: std::collections::BTreeMap::new(),
+});
+
+/// Custody of a never-reused name until the platform claims it or startup ends.
+pub(crate) struct IssuedDestination {
+    path: PathBuf,
+    claim: Option<u64>,
+}
+
+impl IssuedDestination {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for IssuedDestination {
+    fn drop(&mut self) {
+        if let Some(serial) = self.claim {
+            ISSUED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pending
+                .remove(&serial);
+        }
+    }
+}
+
+fn issue_destination(root: &Path, claim: bool) -> Result<IssuedDestination, NativeMountError> {
+    let (serial, path) = ISSUED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .issue(root, claim)?;
+    Ok(IssuedDestination {
+        path,
+        claim: claim.then_some(serial),
+    })
+}
+
+/// One allocator for default and sandbox-admitted task views. Only ProjFS
+/// needs an in-flight path claim: its callbacks identify views by pathname.
+pub(crate) fn shared_view_destination(
+    admission: Option<&crate::HeldRoot>,
+) -> Result<IssuedDestination, NativeMountError> {
+    if !cfg!(any(target_os = "linux", windows)) {
+        return Err(NativeMountError::UnsupportedTarget);
+    }
+    let root = match admission {
+        Some(admitted) => shared_view_root_in(admitted)?,
+        None => shared_view_root()?,
+    };
+    issue_destination(&root, cfg!(windows))
+}
+
+#[cfg(any(windows, test))]
+pub(in crate::native_mount) fn claim_issued_destination(destination: &Path) -> bool {
+    ISSUED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .claim(destination)
 }
 
 fn verify_placement(admitted: &crate::HeldRoot) -> Result<(), NativeMountError> {
@@ -93,13 +227,15 @@ fn root_in(roots: &crate::HeldRoot) -> Result<PathBuf, NativeMountError> {
 fn create_root(roots: &crate::HeldRoot, name: &str) -> Result<Root, NativeMountError> {
     crate::native_host::require_leaf(Path::new(name))?;
     let reaping = FileLock::acquire(
-        roots.open_file(Path::new(REAP_LOCK), true)
+        roots
+            .open_file(Path::new(REAP_LOCK), true)
             .map_err(crate::NativeTreeMaterializationError::from)?,
         FileLockMode::Exclusive,
     )?;
     reap_dead_roots(roots)?;
     let owner = FileLock::try_acquire(
-        roots.open_file(Path::new(&format!("{name}.{OWNER}")), true)
+        roots
+            .open_file(Path::new(&format!("{name}.{OWNER}")), true)
             .map_err(crate::NativeTreeMaterializationError::from)?,
         FileLockMode::Exclusive,
     )?;
@@ -126,7 +262,8 @@ fn reap_dead_roots(roots: &crate::HeldRoot) -> Result<usize, NativeMountError> {
         else {
             continue;
         };
-        let owner = roots.open_file(Path::new(&file), false)
+        let owner = roots
+            .open_file(Path::new(&file), false)
             .map_err(crate::NativeTreeMaterializationError::from)?;
         let _owner = match FileLock::try_acquire(owner, FileLockMode::Exclusive) {
             Ok(owner) => owner,
@@ -134,7 +271,8 @@ fn reap_dead_roots(roots: &crate::HeldRoot) -> Result<usize, NativeMountError> {
             Err(error) => return Err(error.into()),
         };
         reap_root(roots, Path::new(name))?;
-        roots.remove_file(Path::new(&file))
+        roots
+            .remove_file(Path::new(&file))
             .map_err(crate::NativeTreeMaterializationError::from)?;
         reaped += 1;
     }
@@ -142,17 +280,72 @@ fn reap_dead_roots(roots: &crate::HeldRoot) -> Result<usize, NativeMountError> {
 }
 
 fn reap_root(roots: &crate::HeldRoot, name: &Path) -> Result<(), NativeMountError> {
-    // The shared backend currently exists on Linux. Its common pinned
-    // recovery operation cannot detach an alias or a replacement mount.
-    #[cfg(target_os = "linux")]
-    super::recover_disconnected_native_mount_destination_in(
-        roots,
-        name.as_os_str(),
-    )?;
-    match roots.root.directory.remove_dir(name) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+    crate::native_host::require_leaf(name)?;
+    #[cfg(windows)]
+    return super::super::projfs::detach_dead_shared_root(roots, name);
+    #[cfg(not(windows))]
+    {
+        // Pinned recovery cannot detach an alias or a replacement mount.
+        #[cfg(target_os = "linux")]
+        super::super::recover_disconnected_native_mount_destination_in(roots, name.as_os_str())?;
+        match roots.root.directory.remove_dir(name) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod issuance_tests {
+    use super::*;
+
+    #[test]
+    fn wrong_root_does_not_consume_the_one_use_destination() -> Result<(), NativeMountError> {
+        let root = Path::new("admitted");
+        let issued = issue_destination(root, true)?;
+        let foreign = Path::new("foreign").join(issued.path().file_name().unwrap_or_default());
+        assert!(!claim_issued_destination(&foreign));
+        assert!(claim_issued_destination(issued.path()));
+        assert!(!claim_issued_destination(issued.path()));
+        // The previous name-only claim would accept the foreign root.
+        assert_eq!(foreign.file_name(), issued.path().file_name());
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_destination_custody_releases_every_unclaimed_name() -> Result<(), NativeMountError>
+    {
+        for _ in 0..1024 {
+            let issued = issue_destination(Path::new("cancelled"), true)?;
+            let serial = issued.claim.expect("path admission");
+            let destination = issued.path().to_path_buf();
+            drop(issued);
+            assert!(
+                !ISSUED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pending
+                    .contains_key(&serial)
+            );
+            assert!(!claim_issued_destination(&destination));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inode_backends_retain_no_pending_name_and_serials_cannot_wrap()
+    -> Result<(), NativeMountError> {
+        let mut names = IssuedNames::default();
+        let first = names.issue(Path::new("inode-backend"), false)?.1;
+        let second = names.issue(Path::new("inode-backend"), false)?.1;
+        assert_ne!(first, second);
+        assert!(names.pending.is_empty());
+        names.next = u64::MAX;
+        assert!(names.issue(Path::new("inode-backend"), false).is_err());
+        assert_eq!(names.next, u64::MAX);
+        assert!(names.pending.is_empty());
+        Ok(())
     }
 }
 
@@ -258,7 +451,10 @@ pub(super) mod tests {
         assert!(create_root(&admission, "next").is_err());
         assert!(!fixture.path().join("next").exists());
         assert!(fixture.path().join("dead.owner").exists());
-        assert_eq!(std::fs::read(fixture.path().join("dead/authored"))?, b"retained");
+        assert_eq!(
+            std::fs::read(fixture.path().join("dead/authored"))?,
+            b"retained"
+        );
         Ok(())
     }
 }

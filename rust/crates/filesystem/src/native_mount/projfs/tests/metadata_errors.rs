@@ -12,6 +12,8 @@ pub(super) fn callback_runtime(
         original_work: Mutex::new(None),
         callback_guard: None,
         root: root.to_path_buf(),
+        prefix: Vec::new(),
+        staging_anchor: root.to_path_buf(),
         metadata_root: HostRoot::open(root, &mut &*work)?,
         staging: Mutex::new(None),
         creating_name: RwLock::new((MountPath::root(), None)),
@@ -62,9 +64,10 @@ async fn read_close_after_rename_does_not_block_publication()
         directory.path().join("read.txt"),
         directory.path().join("moved.txt"),
     )?;
+    // The failed probe answers the host's own code, as on every OS.
     assert_eq!(
         notify(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION),
-        HR_IO_DEVICE
+        HR_FILE_NOT_FOUND
     );
     for _ in 0..2 {
         flush_callback_gate(
