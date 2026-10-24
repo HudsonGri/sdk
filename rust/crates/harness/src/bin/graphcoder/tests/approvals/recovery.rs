@@ -86,7 +86,9 @@ async fn recovery(case: Case, cancel: bool) {
         eprintln!("approval recovery {case:?}: detaching");
         let request = defer(files.command(case, operation), operation);
         eprintln!("approval recovery {case:?}: detached");
-        let decision = decision(&request, "human", true);
+        let mut decision = decision(&request, "human", true);
+        let body = ApprovalDecisionFile::decode(&decision.bytes, 65_536).unwrap();
+        decision.bytes = serde_json::to_vec_pretty(&body).unwrap().into();
         assert_eq!(fixture.effects.load(Ordering::SeqCst), 0);
         if cancel {
             let cancellation = OperationId::new();

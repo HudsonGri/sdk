@@ -16,6 +16,7 @@ pub use kind::InteractionKind;
 mod approval;
 pub use approval::ApprovalBinding;
 mod decision_file;
+#[cfg(feature = "filesystem")]
 pub(crate) use decision_file::principal_hex;
 pub use decision_file::{ApprovalDecisionFile, ApprovalVerdict};
 mod ticket;
