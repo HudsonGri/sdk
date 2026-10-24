@@ -52,6 +52,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// The provider's receipt that every event this projection reduced is in
     /// its durable prefix; `None` while any of them is only accepted.
+    #[cfg(feature = "filesystem")]
     pub(crate) async fn durable_receipt(&self) -> Result<Option<acyclic_stream::DurableReceipt>> {
         let through = self.reducer.revision();
         let receipt = self
