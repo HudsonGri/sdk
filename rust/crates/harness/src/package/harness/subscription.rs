@@ -126,20 +126,22 @@ async fn run_requests(
         if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
             continue;
         }
-        let attachment = acyclic_fs::CancellationToken::new();
-        let execution = APPROVAL_ATTACHMENT.scope(
-            attachment.clone(),
-            execute_request(&mut commands, local, &request),
-        );
-        futures::pin_mut!(execution);
-        let result = match futures::future::select(&mut detached, execution).await {
-            Either::Left((_, execution)) => {
-                attachment.cancel();
-                // Admitted effects remain owned and are joined. The signal
-                // only releases a subsequently reached passive approval wait.
-                execution.await
+        let result = {
+            let attachment = acyclic_fs::CancellationToken::new();
+            let execution = APPROVAL_ATTACHMENT.scope(
+                attachment.clone(),
+                execute_request(&mut commands, local, &request),
+            );
+            futures::pin_mut!(execution);
+            match futures::future::select(&mut detached, execution).await {
+                Either::Left((_, execution)) => {
+                    attachment.cancel();
+                    // Admitted effects remain owned and are joined. The signal
+                    // only releases a subsequently reached passive approval wait.
+                    execution.await
+                }
+                Either::Right((result, _)) => result,
             }
-            Either::Right((result, _)) => result,
         };
         if let Err(error) = result {
             if commands.failure_is_saved(&request, &error).await? {
