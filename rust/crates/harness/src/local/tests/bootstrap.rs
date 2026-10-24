@@ -19,7 +19,7 @@ impl Bootstrap {
         )
         .await?;
         let agent = harness.signed.agent();
-        drop(harness);
+        harness.close().await?;
         Ok(Self {
             filesystem: Snapshot::capture(&source.path().join("filesystem"))?,
             state: Snapshot::capture(

@@ -115,7 +115,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
         "case {bits}"
     );
     // Reopen and change the retry's mode: its already staged selection is pinned.
-    drop(harness);
+    harness.close().await?;
     let harness = LocalHarness::open(config()?).await?;
     assert_eq!(
         admitted(
@@ -147,6 +147,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
         expected,
         "old route escaped case {bits}"
     );
+    harness.close().await?;
     Ok(())
 }
 
