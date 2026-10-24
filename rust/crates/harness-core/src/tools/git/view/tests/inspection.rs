@@ -99,6 +99,19 @@ async fn committed_status_diff_log_and_show_do_not_publish() -> TestResult {
 
 #[tokio::test]
 async fn native_diff_keeps_the_committed_side_when_references_match() -> TestResult {
+    native_diff_comparison(&[(&["diff"], 1), (&["diff", "--cached"], 1)]).await
+}
+
+#[tokio::test]
+async fn native_agent_diff_uses_the_current_physical_view() -> TestResult {
+    native_diff_comparison(&[
+        (&["diff", "agents/self"], 0),
+        (&["diff", "agents/peer"], 0),
+    ])
+    .await
+}
+
+async fn native_diff_comparison(commands: &[(&[&str], u64)]) -> TestResult {
     let (directory, fs, store, workspace) = fixture().await?;
     workspace.write_text("/file", "committed\n").await?;
     execute(
@@ -109,53 +122,76 @@ async fn native_diff_keeps_the_committed_side_when_references_match() -> TestRes
         &["commit", "-m", "base"],
     )
     .await?;
+    let cancellation = CancellationToken::new();
+    let peer = fs
+        .create_workspace("peer", WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    peer.write_text("/file", "physical edit\n").await?;
+    WorkspaceGraph::new(store.clone()).register_root(&peer).await?;
+    let repository = GitCompatRepository::new(workspace.id(), store.clone());
+    repository
+        .register_branch_workspace("agents/self", workspace.id(), None, false)
+        .await?;
+    repository
+        .register_branch_workspace("agents/peer", peer.id(), None, false)
+        .await?;
     let physical = directory.path().join("checkout");
     std::fs::create_dir(&physical)?;
     std::fs::write(physical.join("file"), "physical edit\n")?;
-    let cancellation = CancellationToken::new();
     let work = super::super::super::readonly::work(&cancellation)?;
     let options = acyclic_fs::CaptureOptions {
         expected_root_identity: work.root_identity(&physical)?,
-        source_root: physical.clone(),
+        source_root: physical,
         maximum_paths: 16,
         maximum_extent_spans: 16,
     };
     let policy = acyclic_fs::CapturePolicy::default();
+    let view = acyclic_fs::NativeGitView {
+        options: &options,
+        policy: &policy,
+        materialized: false,
+    };
     let before = files(store.root())?;
     let generation = workspace.head(&work, &cancellation).await?.id();
-    for args in [vec!["diff".into()], vec!["diff".into(), "--cached".into()]] {
-        let result = super::super::super::inspect_with_guard(
-            Workspace {
-                filesystem: &fs,
-                store: &store,
-                view: (&workspace).into(),
-                root: &physical,
-                repository: workspace.id(),
-                lease: None,
-                checkout: None,
-                reserved: &[],
-                author: "test",
-                authored_at_seconds: 1,
-            },
-            &args,
-            acyclic_fs::NativeGitView {
-                options: &options,
-                policy: &policy,
-                materialized: false,
-            },
-            || async { Ok(()) },
-        )
-        .await?;
+    for (args, expected) in commands {
+        let result = native_inspection(&fs, &store, &workspace, view, args).await?;
         let Some(GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value })) =
             result.command
         else {
             return Err("missing native diff result".into());
         };
         assert_eq!(kind, "diff");
-        assert_eq!(value["fileChanges"], 1, "{args:?}: {value}");
-        assert_ne!(value["from"], value["to"]);
+        assert_eq!(value["fileChanges"], *expected, "{args:?}: {value}");
     }
     assert_eq!(workspace.head(&work, &cancellation).await?.id(), generation);
     assert_eq!(files(store.root())?, before);
     Ok(())
+}
+
+async fn native_inspection(
+    fs: &LocalFs,
+    store: &LocalCoreStateStore,
+    workspace: &LocalWorkspace,
+    view: acyclic_fs::NativeGitView<'_>,
+    args: &[&str],
+) -> crate::Result<Output> {
+    super::super::super::inspect_with_guard(
+        Workspace {
+            filesystem: fs,
+            store,
+            view: workspace.into(),
+            root: &view.options.source_root,
+            repository: workspace.id(),
+            lease: None,
+            checkout: None,
+            reserved: &[],
+            author: "test",
+            authored_at_seconds: 1,
+        },
+        &args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>(),
+        view,
+        || async { Ok(()) },
+    )
+    .await
 }
