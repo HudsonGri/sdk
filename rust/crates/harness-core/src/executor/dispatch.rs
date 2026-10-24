@@ -3,6 +3,13 @@ use super::*;
 use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 
+struct ModelPreparation {
+    request: crate::model::PreparedModelRequest,
+    admission: ModelEventAdmission,
+    replayed: Vec<ModelEvent>,
+    started: bool,
+}
+
 impl StockExecution<'_> {
     /// Cancellation covers preparation and response headers as well as chunks.
     pub(super) async fn cancellable_model_step(
@@ -13,17 +20,20 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
         purpose: ModelPurpose,
     ) -> Result<Vec<ModelEvent>> {
-        let cancellation = journal.model_cancellation();
+        let cancellation =
+            super::stream_tools::ModelCancellation::new(journal.model_cancellation());
+        let cancelled = std::pin::pin!(cancellation.wait());
         let active = std::sync::atomic::AtomicBool::new(false);
         let stopped = std::sync::atomic::AtomicBool::new(false);
         let control = super::stream_tools::StreamControl {
             active: &active,
             stop: &stopped,
+            cancellation: &cancellation,
         };
         let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> = Box::pin(
             self.dispatch_model_step(journal, input, step, prior_messages, (purpose, control)),
         );
-        match futures::future::select(cancellation, execution).await {
+        let outcome = match futures::future::select(cancelled, execution).await {
             Either::Left((result, execution)) => {
                 if active.load(std::sync::atomic::Ordering::Acquire) {
                     stopped.store(true, std::sync::atomic::Ordering::Release);
@@ -37,7 +47,9 @@ impl StockExecution<'_> {
                 ))
             }
             Either::Right((result, _)) => result,
-        }
+        };
+        cancellation.finish()?;
+        outcome
     }
 
     /// Replays or resolves one model step.
@@ -47,32 +59,17 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        phase: (ModelPurpose, super::stream_tools::StreamControl<'_>),
+        phase: (ModelPurpose, super::stream_tools::StreamControl<'_, '_>),
     ) -> Result<Vec<ModelEvent>> {
         let (purpose, control) = phase;
         let io = self.io;
-        self.require_model_producer().await?;
-        let (_, records) = self
-            .model_records(journal, input.operation_id, step, purpose)
-            .await?;
-        let RetainedModelStep {
-            request: retained_request,
+        let ModelPreparation {
+            request,
             mut admission,
-            events: replayed,
-        } = retain_preparation(
-            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
-        )?;
-        let started = retained_request.is_some();
-        if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
-            return Err(Error::Indeterminate(input.operation_id));
-        }
-        let request = self
-            .resolve_model_request(
-                journal,
-                input,
-                (step, prior_messages, purpose),
-                retained_request,
-            )
+            replayed,
+            started,
+        } = self
+            .prepare_model_dispatch(journal, input, step, prior_messages, purpose)
             .await?;
         let request_digest = request.request_digest();
         let purpose_key = match purpose {
@@ -90,65 +87,33 @@ impl StockExecution<'_> {
             step,
             request_digest,
         };
-        #[cfg(feature = "filesystem")]
-        let _continuation_hold;
         let continuation = if started {
             self.reconcile_model_events(dispatch, &replayed).await?
         } else {
             None
         };
+        #[cfg(feature = "filesystem")]
+        let _continuation_hold = io
+            .filter(|_| stock_is_native(io))
+            .zip(continuation.as_ref())
+            .map(|(io, continuation)| {
+                io.guard_owned(
+                    continuation.capacity() as u64 * std::mem::size_of::<ModelEvent>() as u64,
+                )
+            })
+            .transpose()?;
         let stream = if let Some(continuation) = continuation {
-            #[cfg(feature = "filesystem")]
-            {
-                _continuation_hold = io
-                    .filter(|_| stock_is_native(io))
-                    .map(|io| {
-                        io.guard_owned(
-                            continuation.capacity() as u64
-                                * std::mem::size_of::<ModelEvent>() as u64,
-                        )
-                    })
-                    .transpose()?;
-            }
             Either::Left(futures::stream::iter(continuation.into_iter().map(Ok)))
         } else {
-            #[cfg(feature = "filesystem")]
-            {
-                _continuation_hold = None;
-            }
-            if !started {
-                self.claim_model_dispatch(
-                    journal,
-                    input,
-                    (step, purpose, purpose_key),
-                    &request,
-                    dispatch,
-                )
-                .await?;
-            } else if replayed.is_empty()
-                && !self.stock.reconciliation_only
-                && !super::unsettled_resume::enabled()
-            {
-                // Only an owned task can authorize reissuing the retained
-                // request under its existing dispatch and current fence.
-                // An unowned callback has no such recovery authority.
-                if self.stock.task.is_none() {
-                    return Err(Error::Indeterminate(input.operation_id));
-                }
-                self.claim_task_model(dispatch).await?;
-            } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
-                // A streamed call may already have settled under its original
-                // identity. Keep that settlement and the recorded prefix.
-                // When the provider cannot recover its prefix, fail definitively
-                // instead of retaining a reservation that can never make progress.
-                // Keep the recorded prefix and never generate a different suffix.
-                return Err(Error::ModelUnavailable {
-                    failure: crate::ModelTransportFailure::Interrupted,
-                    excerpt: String::new(),
-                });
-            } else {
-                return Err(Error::Indeterminate(input.operation_id));
-            }
+            self.admit_model_dispatch(
+                journal,
+                input,
+                (step, purpose, purpose_key),
+                &request,
+                dispatch,
+                (started, replayed.is_empty()),
+            )
+            .await?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
                 Either::Right(
@@ -180,6 +145,46 @@ impl StockExecution<'_> {
             .await?;
         crate::obs::obs_record!("items" = observed.len());
         Ok(observed)
+    }
+
+    async fn prepare_model_dispatch(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
+    ) -> Result<ModelPreparation> {
+        let io = self.io;
+        self.require_model_producer().await?;
+        let (_, records) = self
+            .model_records(journal, input.operation_id, step, purpose)
+            .await?;
+        let RetainedModelStep {
+            request: retained_request,
+            admission,
+            events: replayed,
+        } = retain_preparation(
+            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
+        )?;
+        let started = retained_request.is_some();
+        if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        let request = self
+            .resolve_model_request(
+                journal,
+                input,
+                (step, prior_messages, purpose),
+                retained_request,
+            )
+            .await?;
+        Ok(ModelPreparation {
+            request,
+            admission,
+            replayed,
+            started,
+        })
     }
 
     async fn resolve_model_request(
@@ -251,6 +256,50 @@ impl StockExecution<'_> {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let continuation = self.stock.provider.reconcile(dispatch, &replayed).await?;
         Ok(continuation)
+    }
+
+    async fn admit_model_dispatch(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        turn: (u32, ModelPurpose, &str),
+        request: &crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+        retained: (bool, bool),
+    ) -> Result<()> {
+        let (step, purpose, purpose_key) = turn;
+        let (started, empty) = retained;
+        if !started {
+            self.claim_model_dispatch(
+                journal,
+                input,
+                (step, purpose, purpose_key),
+                request,
+                dispatch,
+            )
+            .await?;
+        } else if empty && !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
+            // Only an owned task can authorize reissuing the retained
+            // request under its existing dispatch and current fence.
+            // An unowned callback has no such recovery authority.
+            if self.stock.task.is_none() {
+                return Err(Error::Indeterminate(input.operation_id));
+            }
+            self.claim_task_model(dispatch).await?;
+        } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
+            // A streamed call may already have settled under its original
+            // identity. Keep that settlement and the recorded prefix.
+            // When the provider cannot recover its prefix, fail definitively
+            // instead of retaining a reservation that can never make progress.
+            // Keep the recorded prefix and never generate a different suffix.
+            return Err(Error::ModelUnavailable {
+                failure: crate::ModelTransportFailure::Interrupted,
+                excerpt: String::new(),
+            });
+        } else {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        Ok(())
     }
 
     async fn claim_model_dispatch(
@@ -388,41 +437,29 @@ impl StockExecution<'_> {
             u32,
             ModelPurpose,
             &str,
-            super::stream_tools::StreamControl<'_>,
+            super::stream_tools::StreamControl<'_, '_>,
         ),
         mut observed: Vec<ModelEvent>,
         admission: &mut ModelEventAdmission,
         stream: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
     ) -> Result<Vec<ModelEvent>> {
-        use std::{future::Future as _, pin::Pin, task::Poll};
+        use std::{pin::Pin, task::Poll};
         enum Next {
             Event(Option<Result<ModelEvent>>),
             Cancelled,
         }
         let (step, purpose, purpose_key, control) = turn;
         let io = self.io;
-        let mut tools = super::stream_tools::StreamTools::new();
         let mut stream = stream;
-        #[cfg(feature = "filesystem")]
-        let cancellation = self
-            .original_context()
-            .and_then(crate::runtime::TaskContext::invocation_cancellation);
-        #[cfg(feature = "filesystem")]
-        let mut cancelled = std::pin::pin!(async {
-            match cancellation {
-                Some(cancellation) => cancellation.cancelled().await,
-                None => futures::future::pending::<()>().await,
-            }
-        });
+        let mut cancelled = std::pin::pin!(self.stream_cancellation(control.cancellation));
+        // Every first poll of a tool passes the same cancellation boundary,
+        // including polls while a model record is being appended.
+        let mut tools = super::stream_tools::StreamTools::new(control.stop, cancelled.as_mut());
         let outcome = async {
             loop {
                 let next = futures::future::poll_fn(|cx| {
                     tools.poll(cx);
                     if control.stop.load(std::sync::atomic::Ordering::Acquire) {
-                        return Poll::Ready(Next::Cancelled);
-                    }
-                    #[cfg(feature = "filesystem")]
-                    if cancelled.as_mut().poll(cx).is_ready() {
                         return Poll::Ready(Next::Cancelled);
                     }
                     Pin::new(&mut stream).poll_next(cx).map(Next::Event)
@@ -432,24 +469,12 @@ impl StockExecution<'_> {
                     Next::Cancelled => {
                         tools.stop();
                         if !admission.completed {
-                            let key = with_history_io(io, |work| {
-                                preparation_format(
-                                    format_args!("{purpose_key}:{step}:stopped"),
-                                    work,
-                                )
-                            })?;
                             tools
-                                .during(async {
-                                    let _order = self.journal_order.mutex().lock().await;
-                                    journal
-                                        .append(
-                                            operation_id,
-                                            &key,
-                                            &ExecutionEvent::ModelStopped { step, purpose },
-                                            io,
-                                        )?
-                                        .await
-                                })
+                                .during(self.persist_model_stopped(
+                                    journal,
+                                    operation_id,
+                                    (step, purpose, purpose_key),
+                                ))
                                 .await?;
                         }
                         return Err(Error::InteractionRejected(
@@ -460,9 +485,6 @@ impl StockExecution<'_> {
                     Next::Event(Some(event)) => event?,
                 };
                 let index = observed.len();
-                let key = with_history_io(io, |work| {
-                    preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
-                })?;
                 stock_vec_push(&mut observed, event, io)?;
                 let event = observed.last().ok_or_else(|| {
                     stock_boundary(
@@ -473,22 +495,13 @@ impl StockExecution<'_> {
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
                 tools
-                    .during(async {
-                        let reference = stage_json(journal, operation_id, &key, event, io).await?;
-                        let _order = self.journal_order.mutex().lock().await;
-                        journal
-                            .append(
-                                operation_id,
-                                &key,
-                                &ExecutionEvent::Model {
-                                    step,
-                                    purpose,
-                                    event: reference,
-                                },
-                                io,
-                            )?
-                            .await
-                    })
+                    .during(self.persist_model_event(
+                        journal,
+                        operation_id,
+                        (step, purpose, purpose_key),
+                        index,
+                        event,
+                    ))
                     .await?;
                 if self.stream_tools
                     && purpose == ModelPurpose::Response
@@ -506,23 +519,7 @@ impl StockExecution<'_> {
         if outcome.is_err() {
             tools.stop();
         }
-        let mut stopped = false;
-        futures::future::poll_fn(|cx| {
-            let cancelled_now = control.stop.load(std::sync::atomic::Ordering::Acquire);
-            #[cfg(feature = "filesystem")]
-            let cancelled_now = cancelled_now || cancelled.as_mut().poll(cx).is_ready();
-            if cancelled_now {
-                tools.stop();
-                stopped = true;
-            }
-            if tools.poll(cx) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-        tools.finish()?;
+        let stopped = tools.drain().await?;
         outcome?;
         if stopped {
             return Err(Error::InteractionRejected(
@@ -531,6 +528,78 @@ impl StockExecution<'_> {
         }
         Ok(observed)
     }
+    async fn stream_cancellation(
+        &self,
+        cancellation: &super::stream_tools::ModelCancellation<'_>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        let native_cancellation = self
+            .original_context()
+            .and_then(crate::runtime::TaskContext::invocation_cancellation);
+        let native = std::pin::pin!(async {
+            #[cfg(feature = "filesystem")]
+            match native_cancellation {
+                Some(cancellation) => cancellation.cancelled().await,
+                None => futures::future::pending::<()>().await,
+            }
+            #[cfg(not(feature = "filesystem"))]
+            futures::future::pending::<()>().await;
+            Ok::<(), Error>(())
+        });
+        match futures::future::select(std::pin::pin!(cancellation.wait()), native).await {
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
+        }
+    }
+
+    async fn persist_model_stopped(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        turn: (u32, ModelPurpose, &str),
+    ) -> Result<()> {
+        let (step, purpose, purpose_key) = turn;
+        let key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("{purpose_key}:{step}:stopped"), work)
+        })?;
+        let _order = self.journal_order.mutex().lock().await;
+        journal
+            .append(
+                operation,
+                &key,
+                &ExecutionEvent::ModelStopped { step, purpose },
+                self.io,
+            )?
+            .await
+    }
+
+    async fn persist_model_event(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        turn: (u32, ModelPurpose, &str),
+        index: usize,
+        event: &ModelEvent,
+    ) -> Result<()> {
+        let (step, purpose, purpose_key) = turn;
+        let key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
+        })?;
+        let reference = stage_json(journal, operation, &key, event, self.io).await?;
+        let _order = self.journal_order.mutex().lock().await;
+        journal
+            .append(
+                operation,
+                &key,
+                &ExecutionEvent::Model {
+                    step,
+                    purpose,
+                    event: reference,
+                },
+                self.io,
+            )?
+            .await
+    }
+
     async fn require_model_producer(&self) -> Result<()> {
         let io = self.io;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

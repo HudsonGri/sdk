@@ -622,58 +622,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 * 3
                 >= sent[0].body.len() as u64
         );
-        match adapter {
-            Adapter::Chat => {
-                assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call");
-                assert_eq!(
-                    body["messages"][1]["tool_calls"][0]["function"]["arguments"],
-                    "{\"value\":1}"
-                );
-                assert_eq!(body["messages"][2]["tool_call_id"], "call");
-                assert_eq!(body["messages"][2]["content"], expected);
-                assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
-            }
-            Adapter::Anthropic => {
-                assert_eq!(body["messages"][1]["content"][0]["id"], "call");
-                assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call");
-                assert_eq!(body["messages"][2]["role"], "user");
-                assert_eq!(body["messages"][2]["content"][0]["content"], expected);
-                assert_eq!(
-                    body["messages"][2]["content"][0]["is_error"],
-                    if is_error { json!(true) } else { Value::Null }
-                );
-                assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
-            }
-            Adapter::Responses => {
-                assert_eq!(body["input"][1]["call_id"], "call");
-                assert_eq!(body["input"][2]["type"], "function_call_output");
-                assert_eq!(body["input"][2]["call_id"], "call");
-                assert_eq!(body["input"][2]["output"], expected);
-                assert_eq!(body["tools"][0]["parameters"]["type"], "object");
-            }
-            Adapter::Gemini => {
-                assert_eq!(
-                    body["contents"][1]["parts"][0]["functionCall"]["id"],
-                    "call"
-                );
-                assert_eq!(
-                    body["contents"][2]["parts"][0]["functionResponse"]["id"],
-                    "call"
-                );
-                assert_eq!(
-                    body["contents"][2]["parts"][0]["functionResponse"]["response"],
-                    if is_error {
-                        json!({"error": expected})
-                    } else {
-                        json!({"output": expected})
-                    }
-                );
-                assert_eq!(
-                    body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],
-                    "object"
-                );
-            }
-        }
+        assert_tool_history(adapter, &body, expected, is_error);
     }
     Ok(())
 }
@@ -750,3 +699,58 @@ mod files;
 
 #[path = "catalog_capacity_tests.rs"]
 mod catalog_capacity_tests;
+
+fn assert_tool_history(adapter: Adapter, body: &Value, expected: &str, is_error: bool) {
+    match adapter {
+        Adapter::Chat => {
+            assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call");
+            assert_eq!(
+                body["messages"][1]["tool_calls"][0]["function"]["arguments"],
+                "{\"value\":1}"
+            );
+            assert_eq!(body["messages"][2]["tool_call_id"], "call");
+            assert_eq!(body["messages"][2]["content"], expected);
+            assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+        }
+        Adapter::Anthropic => {
+            assert_eq!(body["messages"][1]["content"][0]["id"], "call");
+            assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call");
+            assert_eq!(body["messages"][2]["role"], "user");
+            assert_eq!(body["messages"][2]["content"][0]["content"], expected);
+            assert_eq!(
+                body["messages"][2]["content"][0]["is_error"],
+                if is_error { json!(true) } else { Value::Null }
+            );
+            assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+        }
+        Adapter::Responses => {
+            assert_eq!(body["input"][1]["call_id"], "call");
+            assert_eq!(body["input"][2]["type"], "function_call_output");
+            assert_eq!(body["input"][2]["call_id"], "call");
+            assert_eq!(body["input"][2]["output"], expected);
+            assert_eq!(body["tools"][0]["parameters"]["type"], "object");
+        }
+        Adapter::Gemini => {
+            assert_eq!(
+                body["contents"][1]["parts"][0]["functionCall"]["id"],
+                "call"
+            );
+            assert_eq!(
+                body["contents"][2]["parts"][0]["functionResponse"]["id"],
+                "call"
+            );
+            assert_eq!(
+                body["contents"][2]["parts"][0]["functionResponse"]["response"],
+                if is_error {
+                    json!({"error": expected})
+                } else {
+                    json!({"output": expected})
+                }
+            );
+            assert_eq!(
+                body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],
+                "object"
+            );
+        }
+    }
+}

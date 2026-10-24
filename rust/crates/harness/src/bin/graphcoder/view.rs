@@ -15,24 +15,10 @@ pub async fn run(
     inline: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let authority = local.client_owner();
-    let mut client = client::TaskFileClient::observe_task(
-        local.task_files().as_ref(),
-        &authority,
-        acyclic_harness::TaskId::parse(&authority.id)?,
-        1024,
-        4 * 1024 * 1024,
-    )
-    .await?;
+    let mut client = observe_client(&local, &authority).await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
-    let mut tty = Tty::open()?;
-    // Synchronized output follows the probed modes in the session journal.
-    tty.negotiate(&Environment::capture())?;
-    tty.setup(if inline {
-        ScreenMode::Inline
-    } else {
-        ScreenMode::Alternate
-    })?;
+    let tty = open_tty(inline)?;
     let (tty, output) = tty.split();
     let terminal_size =
         || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
@@ -146,4 +132,31 @@ pub(super) fn present<P: tui::term::Present>(
     terminal.draw_scrolled(size, moved, render)?;
     *shown = Some((band, top));
     Ok(())
+}
+
+async fn observe_client(
+    local: &LocalHarness,
+    authority: &acyclic_harness::wire::Authority,
+) -> Result<client::TaskFileClient, Box<dyn std::error::Error>> {
+    let client = client::TaskFileClient::observe_task(
+        local.task_files().as_ref(),
+        authority,
+        acyclic_harness::TaskId::parse(&authority.id)?,
+        1024,
+        4 * 1024 * 1024,
+    )
+    .await?;
+    Ok(client)
+}
+
+fn open_tty(inline: bool) -> std::io::Result<Tty> {
+    let mut tty = Tty::open()?;
+    // Synchronized output follows the probed modes in the session journal.
+    tty.negotiate(&Environment::capture())?;
+    tty.setup(if inline {
+        ScreenMode::Inline
+    } else {
+        ScreenMode::Alternate
+    })?;
+    Ok(tty)
 }

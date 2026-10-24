@@ -107,18 +107,21 @@ fn encoded_count_envelope_is_identical_to_the_typed_protocol() -> Result<()> {
             &origin,
             &mut crate::files::FileText::default(),
         )?;
-        let generation = serde_json::to_vec(&body).unwrap();
+        let generation =
+            serde_json::to_vec(&body).map_err(|error| crate::invalid(error.to_string()))?;
         let expected = serde_json::to_vec(&crate::counting::wire::body(
             &body,
             &provider.model.name,
             adapter,
         ))
-        .unwrap();
+        .map_err(|error| crate::invalid(error.to_string()))?;
         let actual =
             crate::counting::wire::encoded_body(&generation, &provider.model.name, adapter)?;
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&actual).unwrap(),
-            serde_json::from_slice::<serde_json::Value>(&expected).unwrap()
+            serde_json::from_slice::<serde_json::Value>(&actual)
+                .map_err(|error| crate::invalid(error.to_string()))?,
+            serde_json::from_slice::<serde_json::Value>(&expected)
+                .map_err(|error| crate::invalid(error.to_string()))?
         );
         assert_eq!(actual.len(), expected.len());
     }
@@ -251,7 +254,7 @@ async fn encoded_static_prefix_is_reused_across_advancing_steps() -> Result<()> 
             1
         );
         println!("ENCODED_PREFIX adapter={adapter:?} advancing_steps=32 prefix_encodings=1");
-        input.messages[0].content =
+        input.messages.get_mut(0).unwrap().content =
             acyclic_harness_core::model::ModelContent::Text("changed static system".into());
         let request = PreparedModelRequest::prepare(
             input.clone(),
@@ -267,9 +270,10 @@ async fn encoded_static_prefix_is_reused_across_advancing_steps() -> Result<()> 
             crate::encoded_prefix::PREFIX_ENCODINGS.with(std::cell::Cell::get),
             2
         );
-        input.messages[1].content = acyclic_harness_core::model::ModelContent::Text(
-            "changed second static instruction".into(),
-        );
+        input.messages.get_mut(1).unwrap().content =
+            acyclic_harness_core::model::ModelContent::Text(
+                "changed second static instruction".into(),
+            );
         let request = PreparedModelRequest::prepare(
             input,
             acyclic_harness_core::conversation::Limits::default(),
@@ -303,8 +307,18 @@ async fn static_prefix_eviction_releases_the_original_work_ledger() -> Result<()
     .unwrap();
     let old_baseline = old.live_allocation_bytes();
     let new_baseline = new.live_allocation_bytes();
-    for work in [&old, &new] {
-        let (request, _) = fixtures::request(&provider)?;
+    for (index, work) in [&old, &new].into_iter().enumerate() {
+        let (original, _) = fixtures::request(&provider)?;
+        let mut input = original.request().clone();
+        input.messages.get_mut(0).unwrap().content =
+            acyclic_harness_core::model::ModelContent::Text(format!(
+                "different verified static prefix {index}"
+            ));
+        let request = PreparedModelRequest::prepare(
+            input,
+            acyclic_harness_core::conversation::Limits::default(),
+            None,
+        )?;
         let names = crate::tool_names::Names::new(request.request());
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
         bodies(&provider, &request, &names, &origin, Some(work)).await?;
@@ -313,5 +327,79 @@ async fn static_prefix_eviction_releases_the_original_work_ledger() -> Result<()
     assert!(new.live_allocation_bytes() > new_baseline);
     drop(provider);
     assert_eq!(new.live_allocation_bytes(), new_baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_advancing_steps_share_only_verified_static_bytes() -> Result<()> {
+    let mut measurements = Vec::new();
+    for adapter in [
+        Adapter::Responses,
+        Adapter::Chat,
+        Adapter::Anthropic,
+        Adapter::Gemini,
+    ] {
+        let (provider, _) = fixtures::provider(adapter, 200);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut ledgers = Vec::new();
+        crate::encoded_prefix::PREFIX_ENCODINGS.with(|count| count.set(0));
+        for step in 0..32 {
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 4_000_000),
+                &cancellation,
+            )
+            .unwrap();
+            let baseline = work.live_allocation_bytes();
+            let (original, _) = fixtures::request(&provider)?;
+            let mut input = original.request().clone();
+            input
+                .messages
+                .push(acyclic_harness_core::model::ModelMessage {
+                    role: acyclic_harness_core::model::ModelRole::User,
+                    content: acyclic_harness_core::model::ModelContent::Text(format!(
+                        "native step {step}"
+                    )),
+                });
+            let request = PreparedModelRequest::prepare(
+                input,
+                acyclic_harness_core::conversation::Limits::default(),
+                None,
+            )?;
+            let names = crate::tool_names::Names::new(request.request());
+            let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+            let encoded = bodies(&provider, &request, &names, &origin, Some(&work)).await?;
+            let uncached =
+                crate::dispatch::encode(&provider, &request, &names, None, &origin).await?;
+            assert_eq!(encoded.generation.as_ref(), uncached.as_slice());
+            drop(encoded);
+            drop(names);
+            drop(request);
+            ledgers.push((work, baseline));
+        }
+        let encodings = crate::encoded_prefix::PREFIX_ENCODINGS.with(std::cell::Cell::get);
+        println!("NATIVE_PREFIX adapter={adapter:?} steps=32 prefix_encodings={encodings}");
+        assert_eq!(
+            ledgers
+                .iter()
+                .filter(|(work, baseline)| work.live_allocation_bytes() > *baseline)
+                .count(),
+            1
+        );
+        measurements.push((
+            encodings,
+            ledgers.first().unwrap().0.live_allocation_bytes() > ledgers.first().unwrap().1,
+        ));
+        drop(provider);
+        for (work, baseline) in ledgers {
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    for (encodings, original_custody) in measurements {
+        assert_eq!(
+            encodings, 1,
+            "new native accounting must fund copies without re-encoding verified static bytes"
+        );
+        assert!(original_custody);
+    }
     Ok(())
 }

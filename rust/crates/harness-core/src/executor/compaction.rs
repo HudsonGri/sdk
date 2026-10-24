@@ -25,17 +25,9 @@ impl StockExecution<'_> {
                 "automatic compaction is disabled",
             ));
         };
-        let canonical_request = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(&context)?,
-            self.stock.limits,
-            self.io,
-        )?;
-        let count = if projection.canonical.is_some() {
-            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
-        } else {
-            accounting.count
-        };
-        with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
+        let count = self
+            .canonical_compaction_count(&projection, &context, accounting.count)
+            .await?;
         let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
             &context,
@@ -121,6 +113,26 @@ impl StockExecution<'_> {
             request,
         )
         .await
+    }
+
+    async fn canonical_compaction_count(
+        &self,
+        projection: &ResponseProjection,
+        context: &crate::context::Context,
+        fallback: crate::context::ModelTokenCount,
+    ) -> Result<crate::context::ModelTokenCount> {
+        let canonical_request = crate::model::PreparedModelRequest::prepare(
+            self.request_from_context(context)?,
+            self.stock.limits,
+            self.io,
+        )?;
+        let count = if projection.canonical.is_some() {
+            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
+        } else {
+            fallback
+        };
+        with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
+        Ok(count)
     }
 
     async fn prepare_compacted_request(

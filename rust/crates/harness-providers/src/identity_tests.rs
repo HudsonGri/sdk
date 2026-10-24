@@ -11,7 +11,7 @@ proptest! {
         let conversation = ConversationId::from_bytes(id);
         for adapter in [Adapter::Responses, Adapter::Chat, Adapter::Anthropic, Adapter::Gemini] {
             let (mut provider, _) = tests::provider(adapter, 200);
-            provider.model.options["prompt_cache_key"] = json!("untrusted-option");
+            provider.model.options.as_object_mut().unwrap().insert("prompt_cache_key".into(), json!("untrusted-option"));
             let (prepared, _) = tests::request(&provider).unwrap();
             let mut request = prepared.request().clone();
             request.conversation_id = Some(conversation);
@@ -19,11 +19,11 @@ proptest! {
             request.messages.push(ModelMessage { role: ModelRole::User, content: ModelContent::Text("next turn".into()) });
             let second = crate::projection::body(&provider, &request).unwrap();
             if matches!(adapter, Adapter::Responses | Adapter::Chat) {
-                prop_assert_eq!(&first["prompt_cache_key"], &json!(conversation.to_string()));
-                prop_assert_eq!(&first["prompt_cache_key"], &second["prompt_cache_key"]);
+                prop_assert_eq!(first.get("prompt_cache_key").unwrap(), &json!(conversation.to_string()));
+                prop_assert_eq!(first.get("prompt_cache_key").unwrap(), second.get("prompt_cache_key").unwrap());
                 request.conversation_id = Some(ConversationId::from_bytes(id.map(|byte| byte ^ 0xff)));
                 let independent = crate::projection::body(&provider, &request).unwrap();
-                prop_assert_ne!(&first["prompt_cache_key"], &independent["prompt_cache_key"]);
+                prop_assert_ne!(first.get("prompt_cache_key").unwrap(), independent.get("prompt_cache_key").unwrap());
             } else {
                 prop_assert!(first.get("prompt_cache_key").is_none());
             }

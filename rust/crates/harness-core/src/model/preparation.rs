@@ -278,7 +278,7 @@ impl ToolResultContent {
         history_step(quota.work(), 1)?;
         Ok(match self {
             Self::Stored { file, preview } => Self::Stored {
-                file: file.clone_in_quota(quota)?,
+                file: copy_boxed(file.as_ref(), quota, FileRef::clone_in_quota)?,
                 preview: copy_text(preview, quota)?,
             },
             Self::Json { value } => Self::Json {

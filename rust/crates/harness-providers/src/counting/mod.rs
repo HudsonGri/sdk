@@ -31,6 +31,79 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
     crate::invalid(reason)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn count_codex(
+    provider: &ResolvedModel,
+    request: &acyclic_harness_core::model::PreparedModelRequest,
+    work: NativeWork<'_>,
+) -> Result<(ModelTokenCount, NativeCustody)> {
+    let custody = work
+        .map(|work| {
+            work.claim(
+                (std::mem::size_of::<ModelTokenCount>() + request.request().messages.len() * 4)
+                    as u64,
+                1,
+                acyclic_fs::WorkCounters {
+                    bytes_encoded: request.bytes().len() as u64,
+                    items_examined: request.request().messages.len() as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                },
+            )
+        })
+        .transpose()?;
+    let result = provider
+        .codex_count
+        .count(request)
+        .and_then(|tokens| projection::plan(provider, request, tokens));
+    let mut custody = custody;
+    let result = match custody.as_mut() {
+        Some(hold) => crate::native::diagnostic(result, hold),
+        None => result,
+    };
+    Ok((result?, custody))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn reserve_count(
+    provider: &ResolvedModel,
+    request: &acyclic_harness_core::model::PreparedModelRequest,
+    auth_bytes: u64,
+    work: NativeWork<'_>,
+) -> Result<NativeCustody> {
+    work.map(|work| {
+        let (mut bytes, nodes) = crate::native::shape(request.bytes());
+        for message in &request.request().messages {
+            bytes = bytes
+                .checked_add(crate::files::extra_bytes(
+                    &message.content,
+                    provider.files.maximum_bytes,
+                )? as u64)
+                .ok_or_else(|| boundary(Some(work), "model file size overflow"))?;
+        }
+        crate::native::reserve(work, bytes, nodes, auth_bytes)
+    })
+    .transpose()
+}
+
+fn token_counter<'a>(
+    provider: &'a ResolvedModel,
+    work: NativeWork<'_>,
+) -> Result<&'a crate::TokenCounterSpec> {
+    #[cfg(target_arch = "wasm32")]
+    let _ = work;
+    provider.config.token_counter.as_ref().ok_or_else(|| {
+        let reason = "configure a verified input token counter for this endpoint";
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.is_some() {
+            return Error::NativeBoundary {
+                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
+                reason,
+            };
+        }
+        Error::Unsupported(reason.into())
+    })
+}
+
 pub(crate) async fn count(
     provider: &ResolvedModel,
     request: &acyclic_harness_core::model::PreparedModelRequest,
@@ -44,42 +117,9 @@ pub(crate) async fn count(
     }
     #[cfg(not(target_arch = "wasm32"))]
     if provider.codex_login.is_some() {
-        let custody = work
-            .map(|work| {
-                work.claim(
-                    (std::mem::size_of::<ModelTokenCount>() + request.request().messages.len() * 4)
-                        as u64,
-                    1,
-                    acyclic_fs::WorkCounters {
-                        bytes_encoded: request.bytes().len() as u64,
-                        items_examined: request.request().messages.len() as u64,
-                        ..acyclic_fs::WorkCounters::UNCHARGED
-                    },
-                )
-            })
-            .transpose()?;
-        let result = provider
-            .codex_count
-            .count(request)
-            .and_then(|tokens| projection::plan(provider, request, tokens));
-        let mut custody = custody;
-        let result = match custody.as_mut() {
-            Some(hold) => crate::native::diagnostic(result, hold),
-            None => result,
-        };
-        return Ok((result?, custody));
+        return count_codex(provider, request, work);
     }
-    let spec = provider.config.token_counter.as_ref().ok_or_else(|| {
-        let reason = "configure a verified input token counter for this endpoint";
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.is_some() {
-            return Error::NativeBoundary {
-                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-                reason,
-            };
-        }
-        Error::Unsupported(reason.into())
-    })?;
+    let spec = token_counter(provider, work)?;
     #[cfg(not(target_arch = "wasm32"))]
     let mut auth_custody = work
         .map(|work| work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED))
@@ -91,26 +131,13 @@ pub(crate) async fn count(
     )
     .await?;
     #[cfg(not(target_arch = "wasm32"))]
-    let mut admission = work
-        .map(|work| {
-            let (mut bytes, nodes) = crate::native::shape(request.bytes());
-            for message in &request.request().messages {
-                bytes = bytes
-                    .checked_add(crate::files::extra_bytes(
-                        &message.content,
-                        provider.files.maximum_bytes,
-                    )? as u64)
-                    .ok_or_else(|| boundary(Some(work), "model file size overflow"))?;
-            }
-            crate::native::reserve(
-                work,
-                bytes,
-                nodes,
-                auth.0.as_ref().map_or(0, |key| key.len() as u64)
-                    + auth.1.as_ref().map_or(0, |account| account.len() as u64),
-            )
-        })
-        .transpose()?;
+    let mut admission = reserve_count(
+        provider,
+        request,
+        auth.0.as_ref().map_or(0, |key| key.len() as u64)
+            + auth.1.as_ref().map_or(0, |account| account.len() as u64),
+        work,
+    )?;
     let prepared = async {
         // Retain table custody until after its projected generation is encoded.
         let _name_custody;
@@ -155,15 +182,7 @@ pub(crate) async fn count(
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(hold) = admission.as_mut() {
-        let retained = std::mem::size_of::<HttpRequest>()
-            + std::mem::size_of::<Body>()
-            + url.capacity()
-            + headers.len() * std::mem::size_of::<(String, String)>()
-            + headers
-                .iter()
-                .map(|(key, value)| key.capacity() + value.capacity())
-                .sum::<usize>();
-        crate::native::retain(hold, retained as u64)?;
+        retain_envelope(hold, &url, &headers)?;
     }
     #[cfg(target_arch = "wasm32")]
     let admission = None;
@@ -194,13 +213,12 @@ pub(crate) async fn send_count(
     // Only the exact immutable input and original binding share this verified total.
     // Usage ratios still influence planning, never admission.
     let mut verified = verification.tokens.lock().await;
-    count.input_tokens = match *verified {
-        Some(tokens) => tokens,
-        None => {
-            let tokens = exchange_count(provider, exchange, work).await?;
-            *verified = Some(tokens);
-            tokens
-        }
+    count.input_tokens = if let Some(tokens) = *verified {
+        tokens
+    } else {
+        let tokens = exchange_count(provider, exchange, work).await?;
+        *verified = Some(tokens);
+        tokens
     };
     Ok((count, count_custody))
 }
@@ -369,4 +387,22 @@ async fn exchange_count(
         }
         delay.await?;
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn retain_envelope(
+    hold: &mut acyclic_fs::NativeAllocation,
+    url: &String,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let retained = std::mem::size_of::<HttpRequest>()
+        + std::mem::size_of::<Body>()
+        + url.capacity()
+        + headers.len() * std::mem::size_of::<(String, String)>()
+        + headers
+            .iter()
+            .map(|(key, value)| key.capacity() + value.capacity())
+            .sum::<usize>();
+    crate::native::retain(hold, retained as u64)?;
+    Ok(())
 }

@@ -33,7 +33,7 @@ async fn large_tool_outputs_keep_head_tail_and_full_files_while_old_previews_dem
         ScriptedModelProvider::new(turns).with_token_counter(|request| {
             Ok(crate::context::ModelTokenCount::from_upper_bounds(
                 request.request_digest(),
-                request.bytes().len() as u32,
+                u32::try_from(request.bytes().len()).expect("bounded fixture request"),
                 vec![0; request.request().messages.len()],
             ))
         }),

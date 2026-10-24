@@ -258,47 +258,13 @@ async fn scenario(mode: Mode) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
-    let counter = requests.clone();
-    let request_workspace = workspace.clone();
-    let app = Router::new()
-        .route(
-            "/count",
-            post(move |Json(body): Json<Value>| {
-                let requests = counter.clone();
-                async move {
-                    assert_eq!(body["model"], model, "count uses the selected opaque model");
-                    requests.send("count").unwrap();
-                    Json(json!({"input_tokens":64}))
-                }
-            }),
-        )
-        .route(
-            "/responses",
-            post(move |Json(body): Json<Value>| {
-                let requests = requests.clone();
-                let request_workspace = request_workspace.clone();
-                async move {
-                    assert_eq!(
-                        body["model"], model,
-                        "generation uses the selected opaque model"
-                    );
-                    assert!(body.to_string().contains("hello"));
-                    if instructions {
-                        assert_eq!(
-                            instruction_environment(&body, &request_workspace, model),
-                            Ok(())
-                        );
-                    }
-                    requests.send("model").unwrap();
-                    let answer = if fs_refusals {
-                        fs_answer(&body)
-                    } else {
-                        ANSWER.to_owned()
-                    };
-                    ([("content-type", "text/event-stream")], answer)
-                }
-            }),
-        );
+    let app = scenario_router(
+        requests,
+        workspace.clone(),
+        model,
+        instructions,
+        fs_refusals,
+    );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -319,31 +285,7 @@ async fn scenario(mode: Mode) {
     .unwrap();
     let operation = OperationId::new();
     let output = execute(&workspace, &catalog, &settings, operation, mode).await;
-    let mut lines = std::str::from_utf8(&output).unwrap().lines();
-    let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
-    assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
-    let mut answers = Vec::new();
-    for line in lines {
-        let change: Change = jsonl::parse_change(line).unwrap();
-        for file in change.file.into_iter().chain(change.files) {
-            if fs_refusals {
-                assert!(
-                    !matches!(file.key, FileKey::Child { .. }),
-                    "refusal created a child file"
-                );
-            }
-            if matches!(
-                file.key,
-                FileKey::Session {
-                    file: TaskFile::ExecutionResult(_),
-                    ..
-                }
-            ) {
-                answers.push(serde_json::from_slice::<Value>(&file.bytes).unwrap());
-            }
-        }
-    }
+    let answers = scenario_answers(&output, operation, fs_refusals);
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0]["ok"]["text"], "fixture answer");
     assert_eq!(answers[0]["completion"], "completed");
@@ -1004,4 +946,83 @@ async fn killed_unobserved_model_call_resumes_the_retained_http_request() {
         "replay generated again"
     );
     server.abort();
+}
+
+fn scenario_router(
+    requests: tokio::sync::mpsc::UnboundedSender<&'static str>,
+    workspace: std::path::PathBuf,
+    model: &'static str,
+    instructions: bool,
+    fs_refusals: bool,
+) -> Router {
+    let counter = requests.clone();
+    let request_workspace = workspace;
+    Router::new()
+        .route(
+            "/count",
+            post(move |Json(body): Json<Value>| {
+                let requests = counter.clone();
+                async move {
+                    assert_eq!(body["model"], model, "count uses the selected opaque model");
+                    requests.send("count").unwrap();
+                    Json(json!({"input_tokens":64}))
+                }
+            }),
+        )
+        .route(
+            "/responses",
+            post(move |Json(body): Json<Value>| {
+                let requests = requests.clone();
+                let request_workspace = request_workspace.clone();
+                async move {
+                    assert_eq!(
+                        body["model"], model,
+                        "generation uses the selected opaque model"
+                    );
+                    assert!(body.to_string().contains("hello"));
+                    if instructions {
+                        assert_eq!(
+                            instruction_environment(&body, &request_workspace, model),
+                            Ok(())
+                        );
+                    }
+                    requests.send("model").unwrap();
+                    let answer = if fs_refusals {
+                        fs_answer(&body)
+                    } else {
+                        ANSWER.to_owned()
+                    };
+                    ([("content-type", "text/event-stream")], answer)
+                }
+            }),
+        )
+}
+
+fn scenario_answers(output: &[u8], operation: OperationId, fs_refusals: bool) -> Vec<Value> {
+    let mut lines = std::str::from_utf8(output).unwrap().lines();
+    let header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(header[0]["TaskSession"]["session"], operation.to_string());
+    assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
+    let mut answers = Vec::new();
+    for line in lines {
+        let change: Change = jsonl::parse_change(line).unwrap();
+        for file in change.file.into_iter().chain(change.files) {
+            if fs_refusals {
+                assert!(
+                    !matches!(file.key, FileKey::Child { .. }),
+                    "refusal created a child file"
+                );
+            }
+            if matches!(
+                file.key,
+                FileKey::Session {
+                    file: TaskFile::ExecutionResult(_),
+                    ..
+                }
+            ) {
+                answers.push(serde_json::from_slice::<Value>(&file.bytes).unwrap());
+            }
+        }
+    }
+    answers
 }

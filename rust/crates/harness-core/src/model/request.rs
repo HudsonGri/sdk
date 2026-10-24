@@ -212,10 +212,9 @@ impl ModelRequest {
                     None => Err(Error::Invalid("model tool call is unbound".into())),
                 };
                 match (tool, content) {
-                    (_, ToolResultContent::Error { .. }) => {}
-                    // A stored result is supplied history, just like an error. Its bounded
-                    // shape and immutable readable reference are independently validated.
-                    (Ok(_), ToolResultContent::Stored { .. }) => {}
+                    // Stored history validates its immutable reference and bounded shape.
+                    (_, ToolResultContent::Error { .. })
+                    | (Ok(_), ToolResultContent::Stored { .. }) => {}
                     (Ok(tool), content) => Self::validate_tool_result(tool, content, io)?,
                     (Err(refused), _) => return Err(refused),
                 }

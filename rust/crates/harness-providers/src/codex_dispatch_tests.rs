@@ -52,15 +52,18 @@ async fn conversation_identity_reaches_codex_headers_and_body_across_operations(
         );
     }
     assert_ne!(
-        requests[0].headers["x-client-request-id"],
-        requests[1].headers["x-client-request-id"]
+        requests.first().unwrap().headers["x-client-request-id"],
+        requests.get(1).unwrap().headers["x-client-request-id"]
     );
     // The former per-operation header identity fails this same-conversation oracle.
     assert_ne!(
         OperationId::from_bytes([1; 16]).to_string(),
         conversation.to_string()
     );
-    assert_eq!(requests[0].body, requests[1].body);
+    assert_eq!(
+        requests.first().unwrap().body,
+        requests.get(1).unwrap().body
+    );
     Ok(())
 }
 
@@ -174,18 +177,30 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         .map_err(|_| invalid("fixture poisoned"))?;
     assert_eq!(requests.len(), 3);
     assert_eq!(
-        requests[0].url,
+        requests.first().unwrap().url,
         "https://chatgpt.com/backend-api/codex/responses"
     );
     assert_eq!(
-        requests[0].headers["authorization"],
+        requests.first().unwrap().headers["authorization"],
         format!("Bearer {initial}")
     );
-    assert_eq!(requests[0].headers["chatgpt-account-id"], "account");
-    assert_eq!(requests[1].url, "https://auth.openai.com/oauth/token");
-    assert_eq!(requests[2].headers["authorization"], "Bearer new-access");
-    assert_eq!(requests[0].body, requests[2].body);
-    let body = crate::json(&requests[2].body)?;
+    assert_eq!(
+        requests.first().unwrap().headers["chatgpt-account-id"],
+        "account"
+    );
+    assert_eq!(
+        requests.get(1).unwrap().url,
+        "https://auth.openai.com/oauth/token"
+    );
+    assert_eq!(
+        requests.get(2).unwrap().headers["authorization"],
+        "Bearer new-access"
+    );
+    assert_eq!(
+        requests.first().unwrap().body,
+        requests.get(2).unwrap().body
+    );
+    let body = crate::json(&requests.get(2).unwrap().body)?;
     assert_eq!(
         body,
         json!({
@@ -195,15 +210,18 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
             "parallel_tool_calls":true, "include":["reasoning.encrypted_content"],
         })
     );
-    assert_eq!(requests[2].headers["originator"], "acyclic_harness");
-    assert!(!requests[2].headers.contains_key("session-id"));
-    assert!(!requests[2].headers.contains_key("thread-id"));
     assert_eq!(
-        requests[2].headers["x-client-request-id"],
+        requests.get(2).unwrap().headers["originator"],
+        "acyclic_harness"
+    );
+    assert!(!requests.get(2).unwrap().headers.contains_key("session-id"));
+    assert!(!requests.get(2).unwrap().headers.contains_key("thread-id"));
+    assert_eq!(
+        requests.get(2).unwrap().headers["x-client-request-id"],
         format!("{}-0", dispatch.operation_id)
     );
     assert_eq!(
-        requests[2].headers["user-agent"],
+        requests.get(2).unwrap().headers["user-agent"],
         concat!("acyclic-harness/", env!("CARGO_PKG_VERSION"))
     );
     Ok(())
@@ -230,10 +248,25 @@ async fn api_key_precedence_uses_public_responses_without_reading_cli_login()
         .lock()
         .map_err(|_| invalid("fixture poisoned"))?;
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url, "https://api.openai.com/v1/responses");
-    assert_eq!(requests[0].headers["authorization"], "Bearer api-key");
-    assert!(!requests[0].headers.contains_key("chatgpt-account-id"));
-    assert_eq!(crate::json(&requests[0].body)?["max_output_tokens"], 64);
+    assert_eq!(
+        requests.first().unwrap().url,
+        "https://api.openai.com/v1/responses"
+    );
+    assert_eq!(
+        requests.first().unwrap().headers["authorization"],
+        "Bearer api-key"
+    );
+    assert!(
+        !requests
+            .first()
+            .unwrap()
+            .headers
+            .contains_key("chatgpt-account-id")
+    );
+    assert_eq!(
+        crate::json(&requests.first().unwrap().body)?["max_output_tokens"],
+        64
+    );
     Ok(())
 }
 
@@ -341,8 +374,14 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
         .lock()
         .map_err(|_| invalid("fixture poisoned"))?;
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].headers["chatgpt-account-id"], "account");
-    assert_eq!(requests[1].headers["chatgpt-account-id"], "new-account");
+    assert_eq!(
+        requests.first().unwrap().headers["chatgpt-account-id"],
+        "account"
+    );
+    assert_eq!(
+        requests.get(1).unwrap().headers["chatgpt-account-id"],
+        "new-account"
+    );
     Ok(())
 }
 

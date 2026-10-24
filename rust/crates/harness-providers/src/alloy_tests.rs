@@ -486,62 +486,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             assert_eq!(captured.body.as_ref(), body.as_slice());
             assert_foreign_wire(&captured.body, provider.config.adapter, ordinal);
         }
-        let replay: Vec<ModelEvent> =
-            serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
-        assert_eq!(events, replay);
-        let mut results = Vec::new();
-        let mut calls = 0;
-        let mut reasoning = 0;
-        for event in replay {
-            let part = match event {
-                ModelEvent::ReasoningBlock { block } => {
-                    reasoning += 1;
-                    ModelContentPart::Reasoning { block }
-                }
-                ModelEvent::ToolCall(call) => {
-                    calls += 1;
-                    assert!(
-                        ids.insert(call.call_id.clone()),
-                        "provider ID reused across alloy turns"
-                    );
-                    results.push(ModelMessage {
-                        role: ModelRole::Tool,
-                        content: ModelContent::Part(ModelContentPart::ToolResult {
-                            call_id: call.call_id.clone(),
-                            name: call.name.clone(),
-                            content: ToolResultContent::Json {
-                                value: json!({"ok":true}),
-                            },
-                        }),
-                    });
-                    ModelContentPart::ToolCall(call)
-                }
-                ModelEvent::Completed { metadata } => {
-                    let member = format!("{}/{}", selected.provider, selected.name);
-                    assert_eq!(metadata.get("member"), Some(&json!(member)));
-                    assert!(
-                        metadata
-                            .get("members")
-                            .and_then(|members| members.get(&member))
-                            .is_some()
-                    );
-                    acyclic_harness_core::model::accumulate_usage(&mut usage, metadata)?;
-                    continue;
-                }
-                _ => continue,
-            };
-            history.push(ModelMessage {
-                role: ModelRole::Assistant,
-                content: ModelContent::Part(part),
-            });
-        }
-        assert_eq!(calls, 1);
-        assert!(reasoning > 0);
-        history.extend(results);
-        history.push(ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text("continue".into()),
-        });
+        retain_alloy_events(&events, selected, &mut history, &mut ids, &mut usage)?;
     }
     assert_eq!(transport.sent.lock().unwrap().len(), 5);
     assert_eq!(
@@ -642,4 +587,72 @@ fn negative_control_dropped_foreign_readable_reasoning_is_detected_on_the_wire()
 fn negative_control_forwarded_foreign_opaque_reasoning_is_detected_on_the_wire() {
     let body = serde_json::to_vec(&json!({"input":[{"role":"assistant","content":"<prior-reasoning provider=\"anthropic\">\nreadable-anthropic-marker\n</prior-reasoning>"}], "forged_native":{"signature":"opaque-anthropic-signature"}})).unwrap();
     assert_foreign_wire(&body, Adapter::Responses, 1);
+}
+
+fn retain_alloy_events(
+    events: &[ModelEvent],
+    selected: &Model,
+    history: &mut Vec<ModelMessage>,
+    ids: &mut std::collections::BTreeSet<String>,
+    usage: &mut Value,
+) -> Result<()> {
+    let replay: Vec<ModelEvent> = serde_json::from_slice(
+        &serde_json::to_vec(events).map_err(|_| invalid("saved alloy events"))?,
+    )
+    .map_err(|_| invalid("replayed alloy events"))?;
+    assert_eq!(events, replay);
+    let mut results = Vec::new();
+    let mut calls = 0;
+    let mut reasoning = 0;
+    for event in replay {
+        let part = match event {
+            ModelEvent::ReasoningBlock { block } => {
+                reasoning += 1;
+                ModelContentPart::Reasoning { block }
+            }
+            ModelEvent::ToolCall(call) => {
+                calls += 1;
+                assert!(
+                    ids.insert(call.call_id.clone()),
+                    "provider ID reused across alloy turns"
+                );
+                results.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: call.call_id.clone(),
+                        name: call.name.clone(),
+                        content: ToolResultContent::Json {
+                            value: json!({"ok":true}),
+                        },
+                    }),
+                });
+                ModelContentPart::ToolCall(call)
+            }
+            ModelEvent::Completed { metadata } => {
+                let member = format!("{}/{}", selected.provider, selected.name);
+                assert_eq!(metadata.get("member"), Some(&json!(member)));
+                assert!(
+                    metadata
+                        .get("members")
+                        .and_then(|members| members.get(&member))
+                        .is_some()
+                );
+                acyclic_harness_core::model::accumulate_usage(usage, metadata)?;
+                continue;
+            }
+            _ => continue,
+        };
+        history.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(part),
+        });
+    }
+    assert_eq!(calls, 1);
+    assert!(reasoning > 0);
+    history.extend(results);
+    history.push(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text("continue".into()),
+    });
+    Ok(())
 }

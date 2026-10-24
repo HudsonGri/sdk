@@ -588,3 +588,12 @@ fn pinned_request_fuzz_seed_is_a_valid_exact_exchange() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn retained_tool_files_do_not_expand_every_result_slot() {
+    let compact = std::mem::size_of::<ToolResultContent>();
+    let inline = std::mem::size_of::<(crate::conversation::FileRef, String)>();
+    assert!(compact < std::mem::size_of::<crate::conversation::FileRef>());
+    // The former inline representation fails the same slot bound.
+    assert!(inline >= std::mem::size_of::<crate::conversation::FileRef>());
+}

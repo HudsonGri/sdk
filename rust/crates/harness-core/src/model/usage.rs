@@ -46,7 +46,6 @@ pub(crate) fn accumulate_usage_before_insert(
 
 // A replay traverses each persisted step once, reconstructing the same
 // per-member totals without a process-local usage counter.
-#[cfg(feature = "filesystem")]
 pub(crate) fn accumulate_members(
     completed: &mut Value,
     metadata: &mut Value,

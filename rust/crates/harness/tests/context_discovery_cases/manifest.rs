@@ -182,30 +182,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         .put("skills/a/SKILL.md", b"replacement body", "replace-skill")
         .await?;
 
-    let counted = CountingReader {
-        inner: reader.as_ref(),
-        reads: AtomicUsize::new(0),
-    };
-    let (selected, stage) =
-        ContextManifest::bind(reference.clone(), &counted, tools()?, limits).await?;
-    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
-    assert_eq!(selected.definitions(None)?, manifest.tools);
-    let input = ContextInput {
-        input: ModelContent::Text("inspect".into()),
-        selected_context: None,
-        step: 0,
-        prior_messages: Vec::new(),
-    };
-    let rendered = ContextPipeline::new([stage])
-        .run(&input, limits, None)
-        .await?;
-    assert_eq!(rendered.metadata.get("context.manifest"), Some(&reference));
-    assert_eq!(rendered.current_input_index, Some(6));
-    assert_eq!(
-        rendered.messages.last().map(|message| message.role),
-        Some(ModelRole::User)
-    );
-    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
+    assert_cached_binding(&reference, &manifest, reader.as_ref(), limits).await?;
 
     let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
         "Done".into(),
@@ -254,6 +231,40 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     );
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(provider.remaining(), 0);
+    Ok(())
+}
+
+async fn assert_cached_binding(
+    reference: &acyclic_harness::conversation::FileRef,
+    manifest: &ContextManifest,
+    reader: &dyn ContentResidencyVerifier,
+    limits: Limits,
+) -> Result<()> {
+    let counted = CountingReader {
+        inner: reader,
+        reads: AtomicUsize::new(0),
+    };
+    let (selected, stage) =
+        ContextManifest::bind((*reference).clone(), &counted, tools()?, limits).await?;
+    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(selected.definitions(None)?, manifest.tools);
+    let input = ContextInput {
+        input: ModelContent::Text("inspect".into()),
+        selected_context: None,
+        step: 0,
+        prior_messages: Vec::new(),
+    };
+    let rendered = ContextPipeline::new([stage])
+        .run(&input, limits, None)
+        .await?;
+    assert_eq!(rendered.metadata.get("context.manifest"), Some(reference));
+    assert_eq!(rendered.current_input_index, Some(6));
+    assert_eq!(
+        rendered.messages.last().map(|message| message.role),
+        Some(ModelRole::User)
+    );
+    assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
+
     Ok(())
 }
 

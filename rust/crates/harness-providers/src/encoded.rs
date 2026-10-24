@@ -188,6 +188,36 @@ async fn project(
         None => projected,
     };
     let (generation, count) = projected?;
+    let bodies = own_bodies(generation, count, work, &mut custody)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(hold) = custody.as_mut() {
+        crate::native::retain(
+            hold,
+            (std::mem::size_of::<Encoding>() + origin.provider.capacity() + origin.model.capacity())
+                as u64,
+        )?;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let custody = None;
+    Ok(Encoding {
+        config: provider.config.clone(),
+        files: provider.files.clone(),
+        origin: origin.clone(),
+        key: provider.key.clone(),
+        transport: provider.transport.clone(),
+        #[cfg(not(target_arch = "wasm32"))]
+        work: work.cloned(),
+        bodies,
+        _custody: custody,
+    })
+}
+
+fn own_bodies(
+    generation: Vec<u8>,
+    count: Vec<u8>,
+    work: NativeWork<'_>,
+    custody: &mut NativeCustody,
+) -> Result<Bodies> {
     #[cfg(not(target_arch = "wasm32"))]
     let verification_custody = work
         .map(|work| {
@@ -227,25 +257,7 @@ async fn project(
         count: count.into(),
         verified,
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(hold) = custody.as_mut() {
-        crate::native::retain(
-            hold,
-            (std::mem::size_of::<Encoding>() + origin.provider.capacity() + origin.model.capacity())
-                as u64,
-        )?;
-    }
     #[cfg(target_arch = "wasm32")]
-    let custody = None;
-    Ok(Encoding {
-        config: provider.config.clone(),
-        files: provider.files.clone(),
-        origin: origin.clone(),
-        key: provider.key.clone(),
-        transport: provider.transport.clone(),
-        #[cfg(not(target_arch = "wasm32"))]
-        work: work.cloned(),
-        bodies,
-        _custody: custody,
-    })
+    let _ = (work, custody);
+    Ok(bodies)
 }

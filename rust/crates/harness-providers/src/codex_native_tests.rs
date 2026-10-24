@@ -57,10 +57,13 @@ async fn native_conversation_identity_reaches_codex_across_operations() -> Resul
             conversation.to_string()
         );
     }
-    assert_eq!(requests[0].body, requests[1].body);
+    assert_eq!(
+        requests.first().unwrap().body,
+        requests.get(1).unwrap().body
+    );
     assert_ne!(
-        requests[0].headers["x-client-request-id"],
-        requests[1].headers["x-client-request-id"]
+        requests.first().unwrap().headers["x-client-request-id"],
+        requests.get(1).unwrap().headers["x-client-request-id"]
     );
     Ok(())
 }
@@ -119,7 +122,9 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
     ])?;
     let path = root.path().join("auth.json");
     let mut auth = crate::json(&std::fs::read(&path).expect("fixture credentials"))?;
-    auth["tokens"]["access_token"] = json!(format!(
+    *auth
+        .pointer_mut("/tokens/access_token")
+        .expect("fixture access token") = json!(format!(
         "header.{}.signature",
         URL_SAFE_NO_PAD.encode(json!({"exp":0}).to_string())
     ));
@@ -157,13 +162,23 @@ async fn native_login_funds_credentials_proactive_refresh_and_unauthorized_recov
     }
     assert_eq!(server.sent.load(Ordering::SeqCst), 4);
     let mut sent = inner.requests.lock().expect("fixture requests");
-    assert_eq!(sent[0].url, "https://auth.openai.com/oauth/token");
-    assert_eq!(sent[2].url, "https://auth.openai.com/oauth/token");
     assert_eq!(
-        sent[1].body, sent[3].body,
+        sent.first().unwrap().url,
+        "https://auth.openai.com/oauth/token"
+    );
+    assert_eq!(
+        sent.get(2).unwrap().url,
+        "https://auth.openai.com/oauth/token"
+    );
+    assert_eq!(
+        sent.get(1).unwrap().body,
+        sent.get(3).unwrap().body,
         "401 retries the same prepared body"
     );
-    assert_eq!(sent[3].headers["authorization"], "Bearer recovered-access");
+    assert_eq!(
+        sent.get(3).unwrap().headers["authorization"],
+        "Bearer recovered-access"
+    );
     sent.clear();
     assert_eq!(work.receipt().durability_operations, 2);
     assert!(work.receipt().backend_read_operations > 0);

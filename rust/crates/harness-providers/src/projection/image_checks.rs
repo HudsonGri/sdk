@@ -100,21 +100,8 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
             let provider = registry.resolve("image-test/tiny").unwrap();
             for bytes in &images {
                 reader.reads.store(0, Ordering::SeqCst);
-                let media = image_media_type(bytes).unwrap();
                 let encoded_work = bytes.len() as u64;
-                let file = FileRef::new(
-                    serde_json::from_value(json!({
-                        "provider":{"namespace":"test","family":"filesystem","version":"2"},
-                        "id":"project","class":"project","owner":{"kind":"project","id":"project"}
-                    }))
-                    .unwrap(),
-                    format!("image-{}", bytes.len()),
-                    "1".into(),
-                    FileDescriptor::from_bytes(&bytes, media, &mut None).unwrap(),
-                    "image".into(),
-                    &mut None,
-                )
-                .unwrap();
+                let file = image_file(bytes);
                 for work in [1, encoded_work - 1, encoded_work] {
                     let request = PreparedModelRequest::prepare(
                         ModelRequest {
@@ -170,53 +157,74 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                         continue;
                     }
                     let body: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
-                    assert!(crate::validate_input(adapter, &body).is_empty(), "{body}");
-                    let parts: Vec<_> = match adapter {
-                        Adapter::Responses => body["input"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .flat_map(|item| item["content"].as_array().unwrap())
-                            .collect(),
-                        Adapter::Chat | Adapter::Anthropic => body["messages"][0]["content"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .collect(),
-                        Adapter::Gemini => body["contents"][0]["parts"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .collect(),
-                    };
-                    assert_eq!(parts.len(), 3);
-                    assert_eq!(parts[0]["text"], "before");
-                    assert_eq!(parts[2]["text"], "after");
-                    let data = match adapter {
-                        Adapter::Responses => {
-                            parts[1]["image_url"]
-                                .as_str()
-                                .unwrap()
-                                .split_once(',')
-                                .unwrap()
-                                .1
-                        }
-                        Adapter::Chat => {
-                            parts[1]["image_url"]["url"]
-                                .as_str()
-                                .unwrap()
-                                .split_once(',')
-                                .unwrap()
-                                .1
-                        }
-                        Adapter::Anthropic => parts[1]["source"]["data"].as_str().unwrap(),
-                        Adapter::Gemini => parts[1]["inlineData"]["data"].as_str().unwrap(),
-                    };
-                    assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes.as_slice());
+                    assert_image_body(adapter, &body, bytes);
                     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
                 }
             }
         }
     });
     let _ = image_media_type(input);
+}
+
+fn assert_image_body(adapter: Adapter, body: &Value, bytes: &[u8]) {
+    assert!(crate::validate_input(adapter, body).is_empty(), "{body}");
+    let parts: Vec<_> = match adapter {
+        Adapter::Responses => body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|item| item["content"].as_array().unwrap())
+            .collect(),
+        Adapter::Chat | Adapter::Anthropic => body["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect(),
+        Adapter::Gemini => body["contents"][0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .collect(),
+    };
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[0]["text"], "before");
+    assert_eq!(parts[2]["text"], "after");
+    let data = match adapter {
+        Adapter::Responses => {
+            parts[1]["image_url"]
+                .as_str()
+                .unwrap()
+                .split_once(',')
+                .unwrap()
+                .1
+        }
+        Adapter::Chat => {
+            parts[1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .split_once(',')
+                .unwrap()
+                .1
+        }
+        Adapter::Anthropic => parts[1]["source"]["data"].as_str().unwrap(),
+        Adapter::Gemini => parts[1]["inlineData"]["data"].as_str().unwrap(),
+    };
+    assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes);
+}
+
+fn image_file(bytes: &[u8]) -> FileRef {
+    let media = image_media_type(bytes).unwrap();
+    FileRef::new(
+        serde_json::from_value(json!({
+            "provider":{"namespace":"test","family":"filesystem","version":"2"},
+            "id":"project","class":"project","owner":{"kind":"project","id":"project"}
+        }))
+        .unwrap(),
+        format!("image-{}", bytes.len()),
+        "1".into(),
+        FileDescriptor::from_bytes(bytes, media, &mut None).unwrap(),
+        "image".into(),
+        &mut None,
+    )
+    .unwrap()
 }

@@ -13,8 +13,6 @@ struct Prefix {
     encoded: Vec<u8>,
     system_keys: Vec<crate::projection::wire::SystemKey>,
     encoded_system: Vec<Box<serde_json::value::RawValue>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    work: Option<acyclic_fs::NativeMaterializationWork>,
     _custody: NativeCustody,
 }
 
@@ -49,11 +47,17 @@ fn append(prefix: &[u8], tail: &[u8]) -> Result<Vec<u8>> {
         .and_then(|n| n.checked_add(comma))
         .ok_or_else(|| crate::invalid("encoded request length overflow"))?;
     let mut bytes = Vec::with_capacity(length);
-    bytes.extend_from_slice(&prefix[..prefix.len() - 1]);
+    let head = prefix
+        .get(..prefix.len().saturating_sub(1))
+        .ok_or_else(|| crate::invalid("invalid encoded prefix"))?;
+    bytes.extend_from_slice(head);
     if comma != 0 {
         bytes.push(b',');
     }
-    bytes.extend_from_slice(&tail[1..]);
+    bytes.extend_from_slice(
+        tail.get(1..)
+            .ok_or_else(|| crate::invalid("invalid encoded suffix"))?,
+    );
     Ok(bytes)
 }
 
@@ -62,17 +66,11 @@ impl Prefix {
         &self,
         fields: &[Option<Value>; 4],
         body: &crate::projection::wire::Body<'_>,
-        work: NativeWork<'_>,
     ) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        let scope = match (&self.work, work) {
-            (Some(a), Some(b)) => a.shares_materialization_scope(b),
-            (None, None) => true,
-            _ => false,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let scope = work.is_none();
-        scope && &self.fields == fields && body.matches_system_prefix(&self.system_keys)
+        // File projection and authority checks have already completed on the
+        // current ledger. Only exact verified wire bytes are shared here;
+        // retained allocation custody stays on its original ledger.
+        &self.fields == fields && body.matches_system_prefix(&self.system_keys)
     }
 }
 
@@ -83,16 +81,18 @@ impl PrefixCache {
         work: NativeWork<'_>,
         custody: &mut NativeCustody,
     ) -> Result<Vec<u8>> {
-        let fields = std::array::from_fn(|index| body.fields.remove(NAMES[index]));
-        let lock_error = || acyclic_harness_core::Error::NativeBoundary {
-            code: acyclic_harness_core::wire::ErrorCode::Storage,
-            reason: "model prefix cache poisoned",
-        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            work.remaining()?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = work;
+        let fields = NAMES.map(|name| body.fields.remove(name));
         {
-            let current = self.0.lock().map_err(|_| lock_error())?;
+            let current = self.0.lock().map_err(|_| prefix_lock_error())?;
             if let Some(prefix) = current
                 .as_ref()
-                .filter(|prefix| prefix.matches(&fields, &body, work))
+                .filter(|prefix| prefix.matches(&fields, &body))
             {
                 let tail = serde_json::to_vec(&crate::projection::wire::WithChatPrefix(
                     &body,
@@ -165,14 +165,30 @@ impl PrefixCache {
             encoded,
             system_keys,
             encoded_system,
-            #[cfg(not(target_arch = "wasm32"))]
-            work: work.cloned(),
             _custody: prefix_custody,
         };
         let bytes = append(&prefix.encoded, &tail)?;
-        let retired = self.0.lock().map_err(|_| lock_error())?.replace(prefix);
+        let retired = self
+            .0
+            .lock()
+            .map_err(|_| prefix_lock_error())?
+            .replace(prefix);
         // Releasing original custody may run callbacks. Never do it under the cache lock.
         drop(retired);
         Ok(bytes)
+    }
+}
+
+fn prefix_lock_error() -> acyclic_harness_core::Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        acyclic_harness_core::Error::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Storage,
+            reason: "model prefix cache poisoned",
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        acyclic_harness_core::Error::Storage("model prefix cache poisoned".into())
     }
 }

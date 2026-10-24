@@ -16,39 +16,11 @@ impl ContextManifest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
-        crate::executor::with_history_io(io, |work| limits.validate_file(&reference, work))?;
-        if reference.descriptor().media_type() != "application/json"
-            || reference.descriptor().byte_length() > limits.render_bytes
-        {
-            return Err(stock_boundary(
-                io,
-                ErrorCode::Invalid,
-                "manifest exceeds JSON/render bounds",
-            ));
-        }
+        let manifest = Self::read_bound_manifest(&reference, reader, limits, io).await?;
         #[cfg(feature = "filesystem")]
         let content_io = io;
         #[cfg(not(feature = "filesystem"))]
         let content_io = None;
-        let bytes = reader
-            .read(&reference, limits.render_bytes, None, content_io)?
-            .await?;
-        crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
-        #[cfg(feature = "filesystem")]
-        let manifest: Self = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode(
-                std::marker::PhantomData,
-                &bytes,
-                ErrorCode::Invalid,
-            )?)?,
-            None => Self::decode(&bytes, limits)?,
-        };
-        #[cfg(not(feature = "filesystem"))]
-        let manifest = Self::decode(&bytes, limits)?;
-        if io.is_some() {
-            manifest.validate_observed(limits, io)?;
-        }
-        drop(bytes);
         tools.pin_model_definitions(&manifest.tools, io)?;
         let mut messages = Vec::new();
         crate::executor::with_history_io(io, |work| {
@@ -93,34 +65,16 @@ impl ContextManifest {
                 )
             })?;
         crate::model::reserve_instruction_bodies(&messages, &mut remaining, io)?;
-        for name in manifest.selected_skills {
-            let skill = manifest
-                .discovery
-                .skills
-                .iter()
-                .find(|skill| skill.name == name)
-                .ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        ErrorCode::NotFound,
-                        "manifest selected skill disappeared",
-                    )
-                })?;
-            let message = skill
-                .invoke_observed(reader, limits.file_bytes.min(remaining), io)
-                .await?;
-            let size = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&message, remaining, work)
-            })?;
-            remaining = remaining.checked_sub(size).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    ErrorCode::Invalid,
-                    "manifest exceeds context byte bound",
-                )
-            })?;
-            messages.push(message);
-        }
+        Self::append_selected_skills(
+            &mut messages,
+            &manifest.discovery,
+            manifest.selected_skills,
+            reader,
+            limits,
+            remaining,
+            io,
+        )
+        .await?;
         let key = crate::executor::stock_string_copy("context.manifest", io)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
@@ -156,5 +110,85 @@ impl ContextManifest {
                 sources: manifest.sources,
             }),
         ))
+    }
+    async fn append_selected_skills(
+        messages: &mut Vec<ModelMessage>,
+        discovery: &DiscoveredContext,
+        selected_skills: Vec<String>,
+        reader: &dyn ContentResidencyVerifier,
+        limits: Limits,
+        mut remaining: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        for name in selected_skills {
+            let skill = discovery
+                .skills
+                .iter()
+                .find(|skill| skill.name == name)
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        ErrorCode::NotFound,
+                        "manifest selected skill disappeared",
+                    )
+                })?;
+            let message = skill
+                .invoke_observed(reader, limits.file_bytes.min(remaining), io)
+                .await?;
+            let size = crate::executor::with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(&message, remaining, work)
+            })?;
+            remaining = remaining.checked_sub(size).ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    ErrorCode::Invalid,
+                    "manifest exceeds context byte bound",
+                )
+            })?;
+            messages.push(message);
+        }
+        Ok(())
+    }
+
+    async fn read_bound_manifest(
+        reference: &FileRef,
+        reader: &dyn ContentResidencyVerifier,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
+        if reference.descriptor().media_type() != "application/json"
+            || reference.descriptor().byte_length() > limits.render_bytes
+        {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Invalid,
+                "manifest exceeds JSON/render bounds",
+            ));
+        }
+        #[cfg(feature = "filesystem")]
+        let content_io = io;
+        #[cfg(not(feature = "filesystem"))]
+        let content_io = None;
+        let bytes = reader
+            .read(reference, limits.render_bytes, None, content_io)?
+            .await?;
+        crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
+        #[cfg(feature = "filesystem")]
+        let manifest: Self = match io {
+            Some(io) => crate::filesystem::retain_decoded(io.decode(
+                std::marker::PhantomData,
+                &bytes,
+                ErrorCode::Invalid,
+            )?)?,
+            None => Self::decode(&bytes, limits)?,
+        };
+        #[cfg(not(feature = "filesystem"))]
+        let manifest = Self::decode(&bytes, limits)?;
+        if io.is_some() {
+            manifest.validate_observed(limits, io)?;
+        }
+        drop(bytes);
+        Ok(manifest)
     }
 }

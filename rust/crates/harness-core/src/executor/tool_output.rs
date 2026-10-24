@@ -4,6 +4,7 @@ use super::*;
 pub(crate) const TOOL_OUTPUT_PREVIEW_BYTES: usize = 16 * 1024;
 const OMITTED: &str = "\n[full output retained in file]\n";
 
+#[cfg(test)]
 fn preview_bounds(text: &str) -> (usize, usize) {
     preview_bounds_with_limit(text, TOOL_OUTPUT_PREVIEW_BYTES)
 }
@@ -19,6 +20,13 @@ fn preview_bounds_with_limit(text: &str, maximum: usize) -> (usize, usize) {
         tail += 1;
     }
     (head, tail)
+}
+
+fn preview_parts(text: &str, maximum: usize) -> Result<(&str, &str)> {
+    let (head, tail) = preview_bounds_with_limit(text, maximum);
+    text.get(..head)
+        .zip(text.get(tail..))
+        .ok_or_else(|| Error::Invalid("invalid UTF-8 preview boundary".into()))
 }
 
 impl StockExecution<'_> {
@@ -51,12 +59,9 @@ impl StockExecution<'_> {
                     let replacement = if limit == 0 {
                         String::new()
                     } else {
-                        let (head, tail) = preview_bounds_with_limit(preview, limit);
+                        let (head, tail) = preview_parts(preview, limit)?;
                         with_history_io(self.io, |work| {
-                            preparation_format(
-                                format_args!("{}{}{}", &preview[..head], OMITTED, &preview[tail..]),
-                                work,
-                            )
+                            preparation_format(format_args!("{head}{OMITTED}{tail}"), work)
                         })?
                     };
                     let retired = std::mem::replace(preview, replacement);
@@ -117,12 +122,9 @@ impl StockExecution<'_> {
                     "tool projection encoding is not UTF-8",
                 )
             })?;
-            let (head, tail) = preview_bounds(text);
+            let (head, tail) = preview_parts(text, TOOL_OUTPUT_PREVIEW_BYTES)?;
             let preview = with_history_io(self.io, |work| {
-                preparation_format(
-                    format_args!("{}{}{}", &text[..head], OMITTED, &text[tail..]),
-                    work,
-                )
+                preparation_format(format_args!("{head}{OMITTED}{tail}"), work)
             })?;
             const DOMAIN: &[u8] = b"harness/v2/tool-output\0";
             #[cfg(feature = "filesystem")]
@@ -162,6 +164,14 @@ impl StockExecution<'_> {
                 )
                 .await?;
             self.verify_execution_owner().await?;
+            let file = with_history_io(self.io, |work| {
+                if let Some(work) = work.as_deref_mut() {
+                    let bytes = std::mem::size_of::<FileRef>() as u64;
+                    work.retain_owned(bytes)?;
+                    work.allocation_attempt(bytes)?;
+                }
+                Ok::<_, Error>(Box::new(file))
+            })?;
             Ok(crate::model::ToolResultContent::Stored { file, preview })
         }
     }
@@ -198,7 +208,7 @@ mod tests {
                         call_id: format!("call-{index}"),
                         name: "read".into(),
                         content: ToolResultContent::Stored {
-                            file: file.clone(),
+                            file: Box::new(file.clone()),
                             preview: "猫".repeat(5000),
                         },
                     }),
@@ -225,7 +235,7 @@ mod tests {
             else {
                 panic!("stored history changed shape")
             };
-            assert_eq!(retained, &file);
+            assert_eq!(retained.as_ref(), &file);
             assert!(preview.len() <= [0, 2048, TOOL_OUTPUT_PREVIEW_BYTES][index]);
         }
         Ok(())

@@ -115,7 +115,7 @@ pub enum ToolResultContent {
     Stored {
         /// Immutable full projection; this reference never expands into the model request.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-        file: FileRef,
+        file: Box<FileRef>,
         /// UTF-8 head and tail, or empty once history has demoted this to a reference.
         preview: String,
     },
@@ -250,7 +250,7 @@ impl ModelContent {
                 ModelContentPart::ToolResult {
                     content: ToolResultContent::Stored { file, .. },
                     ..
-                } => Some((file, &FileProjectionPolicy::Reference)),
+                } => Some((file.as_ref(), &FileProjectionPolicy::Reference)),
                 _ => None,
             };
             let data = match part {

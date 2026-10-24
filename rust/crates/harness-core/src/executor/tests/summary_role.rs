@@ -12,7 +12,10 @@ impl ModelProvider for SummaryRoleProbe {
         turn: crate::model::ModelTurn<'_>,
         _: crate::NativeWork<'_>,
     ) -> Result<&'a Model> {
-        self.roles.lock().unwrap().push(turn.role.to_owned());
+        self.roles
+            .lock()
+            .map_err(|_| Error::Storage("fixture role lock".into()))?
+            .push(turn.role.to_owned());
         Ok(if turn.role == "summary" {
             &self.cheap
         } else {

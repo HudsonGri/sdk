@@ -194,109 +194,115 @@ pub(crate) fn generate<'a>(
     }
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
-        let exchange = async move {
-            let (names, name_custody) =
-                crate::tool_names::Names::funded(request.request(), Some(work))?;
-            let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
-            let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
-            let body = encode(
-                provider,
-                request,
-                &names,
-                (auth.0.as_deref(), auth.1.as_deref()),
-                work,
-            )
-            .await?;
-            let input_bytes = body.len();
-            work.remaining()?;
-            let response = send(
-                provider,
-                body.clone(),
-                dispatch_id,
-                request.request().conversation_id,
-                (auth.0.as_deref(), auth.1.as_deref()),
-                work,
-            )
-            .await;
-            NativeModelStream::new(work, || {
-                async_stream::try_stream! {
-                    let _name_custody = name_custody;
-                    let mut response = response;
-                    let mut recovery = dispatch::Recovery::default();
-                    let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch_id);
-                    loop {
-                        let (failure, retry_after) = match response {
-                            Err(error) => (Some(error), None),
-                            Ok(response) if !(200..300).contains(&response.status) => {
-                                let retry_after = response.retry_after;
-                                // The bounded prefix, its lossy decoding and the excerpt.
-                                let mut hold = work.claim(4 * crate::EXCERPT_BYTES as u64 + 64, 4, WorkCounters::UNCHARGED)?;
-                                (diagnostic::<()>(Err(crate::http_failure(response).await), &mut hold).err(), retry_after)
-                            }
-                            Ok(response) => {
-                            let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
-                            let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
-                            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                            let mut events = parse_response(provider, request, &names, dispatch_id, work, response,
-                                input_bytes, origin, origin_custody)?;
-                            let mut failure = None;
-                            while let Some(event) = events.next().await {
-                                match event {
-                                    Ok(event) => { recovery.output = true; yield event; }
-                                    Err(error) => { failure = Some(error); break; }
-                                }
-                            }
-                            (failure, None)
-                            }
-                        };
-                        let Some(error) = failure else { break; };
-                        if let Some(login) = &provider.codex_login {
-                            if recovery.retry(&error) {
-                                drop(error);
-                                let exchange = async {
-                                    let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
-                                    auth = (Some(std::borrow::Cow::Owned(key)), account);
-                                    work.remaining()?;
-                                    send(provider, body.clone(), dispatch_id, request.request().conversation_id,
-                                        (auth.0.as_deref(), auth.1.as_deref()), work).await
-                                };
-                                let cancelled = work.cancellation_wait()?;
-                                futures::pin_mut!(exchange, cancelled);
-                                response = match futures::future::select(cancelled, exchange).await {
-                                    futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
-                                    futures::future::Either::Right((result, _)) => result,
-                                };
-                                continue;
-                            }
-                        }
-                        if let Some(wait) = redelivery.next(&error, retry_after, recovery.output) {
-                            drop(error);
-                            let exchange = async {
-                                crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
-                                work.remaining()?;
-                                Ok::<_, Error>(send(provider, body.clone(), dispatch_id, request.request().conversation_id,
-                                    (auth.0.as_deref(), auth.1.as_deref()), work).await)
-                            };
-                            let cancelled = work.cancellation_wait()?;
-                            futures::pin_mut!(exchange, cancelled);
-                            response = match futures::future::select(cancelled, exchange).await {
-                                futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
-                                futures::future::Either::Right((result, _)) => result?,
-                            };
-                            continue;
-                        }
-                        Err(error)?;
-                        break;
-                    }
-                }
-            })
-        };
+        let exchange = generate_stream(provider, request, dispatch_id, work);
         futures::pin_mut!(exchange, cancelled);
         match futures::future::select(cancelled, exchange).await {
             futures::future::Either::Left(_) => {
                 Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into())
             }
             futures::future::Either::Right((result, _)) => result,
+        }
+    })
+}
+
+async fn generate_stream<'a>(
+    provider: &'a ResolvedModel,
+    request: &'a PreparedModelRequest,
+    dispatch_id: ModelDispatch,
+    work: &'a NativeMaterializationWork,
+) -> Result<NativeModelStream<'a>> {
+    let (names, name_custody) = crate::tool_names::Names::funded(request.request(), Some(work))?;
+    let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+    let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
+    let body = encode(
+        provider,
+        request,
+        &names,
+        (auth.0.as_deref(), auth.1.as_deref()),
+        work,
+    )
+    .await?;
+    let input_bytes = body.len();
+    work.remaining()?;
+    let response = send(
+        provider,
+        body.clone(),
+        dispatch_id,
+        request.request().conversation_id,
+        (auth.0.as_deref(), auth.1.as_deref()),
+        work,
+    )
+    .await;
+    NativeModelStream::new(work, || {
+        async_stream::try_stream! {
+            let _name_custody = name_custody;
+            let mut response = response;
+            let mut recovery = dispatch::Recovery::default();
+            let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch_id);
+            loop {
+                let (failure, retry_after) = match response {
+                    Err(error) => (Some(error), None),
+                    Ok(response) if !(200..300).contains(&response.status) => {
+                        let retry_after = response.retry_after;
+                        // The bounded prefix, its lossy decoding and the excerpt.
+                        let mut hold = work.claim(4 * crate::EXCERPT_BYTES as u64 + 64, 4, WorkCounters::UNCHARGED)?;
+                        (diagnostic::<()>(Err(crate::http_failure(response).await), &mut hold).err(), retry_after)
+                    }
+                    Ok(response) => {
+                    let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
+                    let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
+                    let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+                    let mut events = parse_response(provider, request, &names, dispatch_id, work, response,
+                        input_bytes, origin, origin_custody)?;
+                    let mut failure = None;
+                    while let Some(event) = events.next().await {
+                        match event {
+                            Ok(event) => { recovery.output = true; yield event; }
+                            Err(error) => { failure = Some(error); break; }
+                        }
+                    }
+                    (failure, None)
+                    }
+                };
+                let Some(error) = failure else { break; };
+                if let Some(login) = &provider.codex_login {
+                    if recovery.retry(&error) {
+                        drop(error);
+                        let exchange = async {
+                            let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
+                            auth = (Some(std::borrow::Cow::Owned(key)), account);
+                            work.remaining()?;
+                            send(provider, body.clone(), dispatch_id, request.request().conversation_id,
+                                (auth.0.as_deref(), auth.1.as_deref()), work).await
+                        };
+                        let cancelled = work.cancellation_wait()?;
+                        futures::pin_mut!(exchange, cancelled);
+                        response = match futures::future::select(cancelled, exchange).await {
+                            futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
+                            futures::future::Either::Right((result, _)) => result,
+                        };
+                        continue;
+                    }
+                }
+                if let Some(wait) = redelivery.next(&error, retry_after, recovery.output) {
+                    drop(error);
+                    let exchange = async {
+                        crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
+                        work.remaining()?;
+                        Ok::<_, Error>(send(provider, body.clone(), dispatch_id, request.request().conversation_id,
+                            (auth.0.as_deref(), auth.1.as_deref()), work).await)
+                    };
+                    let cancelled = work.cancellation_wait()?;
+                    futures::pin_mut!(exchange, cancelled);
+                    response = match futures::future::select(cancelled, exchange).await {
+                        futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
+                        futures::future::Either::Right((result, _)) => result?,
+                    };
+                    continue;
+                }
+                Err(error)?;
+                break;
+            }
         }
     })
 }

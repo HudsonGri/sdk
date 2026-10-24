@@ -164,7 +164,14 @@ impl Body<'_> {
         } else if let Some(prefix) = chat_system {
             map.serialize_entry(
                 self.messages_field,
-                &PrefixMessages(prefix, &self.messages[prefix.len()..]),
+                &PrefixMessages(
+                    prefix,
+                    self.messages.get(prefix.len()..).ok_or_else(|| {
+                        <S::Error as serde::ser::Error>::custom(
+                            "encoded system prefix exceeds messages",
+                        )
+                    })?,
+                ),
             )?;
         } else {
             map.serialize_entry(self.messages_field, &self.messages)?;

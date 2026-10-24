@@ -131,6 +131,27 @@ pub(crate) fn body_with_files(
     .map_err(|_| invalid("cannot encode projected request"))
 }
 
+fn project_tools(
+    adapter: Adapter,
+    request: &ModelRequest,
+    names: &crate::tool_names::Names<'_>,
+) -> Result<Vec<Value>> {
+    let mut tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
+        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
+        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
+            "parameters":tool.input_schema,"strict":false}),
+        Adapter::Chat => json!({"type":"function","function":{"name":name,
+            "description":tool.description,"parameters":tool.input_schema}}),
+        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
+    }) }).collect::<Result<_>>()?;
+    if adapter == Adapter::Anthropic
+        && let Some(tool) = tools.last_mut()
+    {
+        tool["cache_control"] = json!({"type":"ephemeral"});
+    }
+    Ok(tools)
+}
+
 pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
@@ -166,19 +187,7 @@ pub(crate) fn body_named<'a>(
         }
     }
     sequence::finish(adapter, &mut messages);
-    let mut tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
-        Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
-        Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
-            "parameters":tool.input_schema,"strict":false}),
-        Adapter::Chat => json!({"type":"function","function":{"name":name,
-            "description":tool.description,"parameters":tool.input_schema}}),
-        Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
-    }) }).collect::<Result<_>>()?;
-    if adapter == Adapter::Anthropic
-        && let Some(tool) = tools.last_mut()
-    {
-        tool["cache_control"] = json!({"type":"ephemeral"});
-    }
+    let tools = project_tools(adapter, request, names)?;
     system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens
@@ -394,24 +403,7 @@ fn project_message<'a>(
                 let call_id = call_ids.wire(call_id)?;
                 let text = result_text(content, files)?;
                 let error = matches!(content, ToolResultContent::Error { .. });
-                let result = match adapter {
-                    Adapter::Anthropic if error => json!(
-                        {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
-                    ),
-                    Adapter::Gemini if error => json!(
-                        {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
-                    ),
-                    Adapter::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":call_id,"content":text})
-                    }
-                    Adapter::Responses => {
-                        json!({"type":"function_call_output","call_id":call_id,"output":text})
-                    }
-                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => {
-                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
-                    }
-                };
+                let result = project_result(adapter, &call_id, &name, &text, error);
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
@@ -655,4 +647,25 @@ fn foreign_text(origin: &acyclic_harness_core::model::ReasoningOrigin, text: &st
         "<prior-reasoning provider={:?} model={:?}>\n{text}\n</prior-reasoning>",
         origin.provider, origin.model
     )
+}
+
+fn project_result(adapter: Adapter, call_id: &str, name: &str, text: &str, error: bool) -> Value {
+    match adapter {
+        Adapter::Anthropic if error => json!(
+            {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
+        ),
+        Adapter::Gemini if error => json!(
+            {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
+        ),
+        Adapter::Anthropic => {
+            json!({"type":"tool_result","tool_use_id":call_id,"content":text})
+        }
+        Adapter::Responses => {
+            json!({"type":"function_call_output","call_id":call_id,"output":text})
+        }
+        Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
+        Adapter::Gemini => {
+            json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
+        }
+    }
 }
