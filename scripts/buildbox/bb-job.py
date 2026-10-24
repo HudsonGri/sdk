@@ -22,6 +22,7 @@ BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 SCCACHE='/home/var/.cargo/bin/sccache'
 JOBS=Path('/mnt/bb/jobs')
+PIDFD_SIGNAL_PROCESS_GROUP=1 << 2
 
 def identity(pid):
     try:
@@ -115,6 +116,7 @@ class OwnedCommand:
         control_read, self.control = os.pipe()
         status_read, status_write = os.pipe()
         self.child = None
+        self.command = None
         self.status = None
         try:
             self.child = subprocess.Popen(
@@ -126,7 +128,8 @@ class OwnedCommand:
             # Before admission, parent death closes the pipe without allowing
             # the command to run. After admission, the recorded supervisor
             # pins the group identity until every cleanup path stops it.
-            register({'pid': self.child.pid, 'identity': identity(self.child.pid)})
+            self.command = {'pid': self.child.pid, 'identity': identity(self.child.pid)}
+            register(self.command)
             os.write(self.control, b'S')
         except BaseException:
             self.close()
@@ -146,7 +149,9 @@ class OwnedCommand:
         if self.control is not None:
             os.close(self.control)
             self.control = None
-        if self.child is not None: self.child.wait()
+        if self.child is not None:
+            stop_command(self.command)
+            self.child.wait()
         if self.status is not None: self.status.close()
 
 
@@ -181,7 +186,10 @@ def stop_command(command):
     except ProcessLookupError: return
     try:
         if identity(command['pid']) != command['identity']: return
-        try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        # Linux >= 6.9 addresses the pinned process group through its leader's
+        # pidfd. Retirement cannot depend on that leader running a handler (a
+        # stopped supervisor cannot handle TERM), or race a recycled group ID.
+        try: signal.pidfd_send_signal(descriptor, signal.SIGKILL, None, PIDFD_SIGNAL_PROCESS_GROUP)
         except ProcessLookupError: pass
         select.select([descriptor], [], [])
     finally: os.close(descriptor)

@@ -141,7 +141,7 @@ os.waitpid(child,0)
                 else:
                     closed.assert_called_once_with(71)
                 if before==after=='owned':
-                    sent.assert_called_once_with(71,signal.SIGTERM)
+                    sent.assert_called_once_with(71,signal.SIGKILL,None,1 << 2)
                     waited.assert_called_once_with([71],[],[])
                 else:
                     sent.assert_not_called();waited.assert_not_called()
@@ -150,16 +150,75 @@ os.waitpid(child,0)
                 with self.subTest(before=before,after=after):probe(job,before,after)
         source=(HERE/'bb-job.py').read_text()
         fixed='''        if identity(command['pid']) != command['identity']: return
-        try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-        except ProcessLookupError: pass'''
-        former='''        if identity(command['pid']) == command['identity']:
-            try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-            except ProcessLookupError: pass'''
+'''
+        former='''        if identity(command['pid']) != command['identity']:
+            select.select([descriptor], [], [])
+            return
+'''
         self.assertEqual(source.count(fixed),1)
+        # Restore the former mismatched-identity path which still waited.
         path=self.d/'reused-pid-negative.py';path.write_text(source.replace(fixed,former))
         spec=importlib.util.spec_from_file_location('reused_pid_negative',path)
         negative=importlib.util.module_from_spec(spec);spec.loader.exec_module(negative)
         with self.assertRaises(AssertionError):probe(negative,'owned','replacement')
+
+    def test_stopped_supervisor_retires_through_both_owners(self):
+        import select
+        source=(HERE/'bb-job.py').read_text()
+        boundary='signal.pidfd_send_signal(descriptor, signal.SIGKILL, None, PIDFD_SIGNAL_PROCESS_GROUP)'
+        self.assertEqual(source.count(boundary),1)
+        negative=self.d/'stopped-supervisor-negative.py'
+        negative.write_text(source.replace(boundary,'signal.pidfd_send_signal(descriptor, signal.SIGTERM)'))
+        fixture='''import importlib.util,json,os,signal,sys
+spec=importlib.util.spec_from_file_location('custody',sys.argv[1])
+job=importlib.util.module_from_spec(spec);spec.loader.exec_module(job)
+child="import json,os,signal;print(json.dumps({'descendant':os.getpid()}),flush=True);signal.pause()"
+command=job.OwnedCommand([sys.executable,'-c',child],dict(os.environ),lambda owner:None)
+print(json.dumps({'owner':command.command}),flush=True)
+sys.stdin.read(1)
+os.kill(command.child.pid,signal.SIGSTOP)
+_,status=os.waitpid(command.child.pid,os.WUNTRACED)
+assert os.WIFSTOPPED(status)
+print('stopped',flush=True)
+sys.stdin.read(1)
+if sys.argv[2]=='receipt':job.stop_command(command.command)
+command.close()
+print('retired',flush=True)
+'''
+        def assert_retired(ready):
+            self.assertTrue(ready,'stopped supervisor blocked owned-group retirement')
+        for mode in ['receipt','command']:
+            for broken in [False,True]:
+                with self.subTest(mode=mode,broken=broken):
+                    worker=subprocess.Popen([sys.executable,'-c',fixture,str(negative if broken else HERE/'bb-job.py'),mode],
+                        stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                    descriptors=[];owner=None
+                    try:
+                        rows=[json.loads(worker.stdout.readline()) for _ in range(2)]
+                        owner=next(row['owner'] for row in rows if 'owner' in row)
+                        descendant=next(row['descendant'] for row in rows if 'descendant' in row)
+                        for pid in [owner['pid'],descendant]:descriptors.append(os.pidfd_open(pid))
+                        worker.stdin.write('S');worker.stdin.flush()
+                        self.assertEqual(worker.stdout.readline(),'stopped\n')
+                        worker.stdin.write('R');worker.stdin.flush()
+                        ready=bool(select.select([worker.stdout],[],[],1)[0])
+                        if broken:
+                            with self.assertRaisesRegex(AssertionError,'stopped supervisor blocked'):
+                                assert_retired(ready)
+                            signal.pidfd_send_signal(descriptors[0],signal.SIGCONT)
+                        else:assert_retired(ready)
+                        output,error=worker.communicate(timeout=2)
+                        self.assertEqual(worker.returncode,0,error)
+                        self.assertIn('retired',output)
+                        for descriptor in descriptors:
+                            self.assertTrue(select.select([descriptor],[],[],1)[0],'owned descendant survived retirement')
+                    finally:
+                        if descriptors:
+                            try:signal.pidfd_send_signal(descriptors[0],signal.SIGKILL,None,1 << 2)
+                            except ProcessLookupError:pass
+                        if worker.poll() is None:worker.kill()
+                        worker.communicate(timeout=2)
+                        for descriptor in descriptors:os.close(descriptor)
 
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
