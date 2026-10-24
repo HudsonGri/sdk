@@ -107,8 +107,7 @@ pub(in crate::core::authority) fn verify_record(
             },
             payload,
         )
-        .map_err(unauthorized)?;
-    Ok(authenticated.into_workload())
+        .map_err(unauthorized)
 }
 
 pub(in crate::core::authority) fn live_record(
