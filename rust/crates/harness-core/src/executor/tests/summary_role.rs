@@ -111,8 +111,8 @@ async fn summaries_resolve_their_role_and_replay_the_recorded_member() -> Result
                             Some(&input),
                             operation,
                             0,
-                            source.clone(),
-                            instruction.clone(),
+                            (source.clone(), instruction.clone()),
+                            &mut DispatchPhase::new(),
                         )
                         .await?
                         .0
