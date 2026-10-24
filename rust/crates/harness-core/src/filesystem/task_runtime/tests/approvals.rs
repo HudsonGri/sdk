@@ -12,7 +12,8 @@ struct Initialized {
     files: Arc<TaskFiles<MemoryStream>>,
     responder: Scope,
     task: TaskId,
-    fixture: Fixture,
+    _fixture: Fixture,
+    lease: WorkLease,
     _conversation: AuthorityIssuer,
 }
 
@@ -52,6 +53,44 @@ async fn setup() -> Result<Initialized> {
             id: "approval-binding".into(),
         },
     );
+    let mut aggregate = crate::store::StreamAggregate::open(
+        &fixture.stream,
+        (
+            conversation.audience().clone(),
+            conversation.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
+        None,
+        crate::store::default_projection_read_limits(),
+        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
+    .await?;
+    aggregate
+        .execute(
+            crate::core::Command {
+                operation_id: OperationId::from_bytes([115; 16]),
+                idempotency_key: crate::IdempotencyKey::new("bind-approval-fixture")?,
+                expected_revision: 0,
+                scope: conversation.issue(
+                    "binder",
+                    &Capabilities::new(["conversation:bind"]),
+                    None,
+                    None,
+                    &mut None,
+                )?,
+                causal_parent: None,
+                action: crate::core::Action::BindConversation {
+                    agent: fixture.signed.agent().ok_or_else(|| {
+                        Error::Invalid("approval fixture requires an agent".into())
+                    })?,
+                },
+            },
+            None,
+            &mut None,
+        )
+        .await?;
     let owner = conversation.issue(
         "conversation",
         &Capabilities::new([
@@ -78,6 +117,7 @@ async fn setup() -> Result<Initialized> {
     let lease = fixture.admit(&runtime).await?;
     runtime.task_host().start_task(&lease, &mut None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    let files = runtime.approval_files(task).await?;
     let id = crate::InteractionId::from_bytes([114; 16]);
     let responder = conversation.issue(
         "human",
@@ -94,42 +134,30 @@ async fn setup() -> Result<Initialized> {
         files,
         responder,
         task,
-        fixture,
+        _fixture: fixture,
+        lease,
         _conversation: conversation,
     })
 }
 
-async fn request(
-    fixture: &Fixture,
-    runtime: &Runtime,
-    task: TaskId,
-    files: &Arc<TaskFiles<MemoryStream>>,
-) -> Result<FileValue> {
-    let owner = runtime
-        .interaction_owner
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("missing fixture owner".into()))?;
-    let journal = FilesystemExecutionJournal::new(
-        fixture.stream.clone(),
-        fixture.filesystem.clone(),
-        &SchemaRegistry::new(),
-        crate::filesystem::FilesystemJournalBinding {
-            volume: &fixture.volume,
-            verifier: &fixture.issuer.verifier(&mut None)?,
-            scope: &fixture.signed,
-            maximum_bytes: 65_536,
-            io: None,
-        },
-    )?
-    .for_approval_projection(task)
-    .with_optional_task_files(Some(files.clone()))?
-    .with_interaction_owner(
-        &owner.verifier,
-        &owner.schemas,
-        &owner.scope,
-        &owner.volume,
-        None,
-    )?;
+async fn request(initialized: &Initialized) -> Result<FileValue> {
+    let Initialized {
+        runtime,
+        task,
+        files,
+        lease,
+        ..
+    } = initialized;
+    let task = *task;
+    let admission = runtime.admission_observed(task, None).await?;
+    let journal = runtime
+        .open_execution_journal(
+            task,
+            LeaseFence::from(&lease.reservation),
+            OperationId::from_bytes(task.into_bytes()),
+            &admission,
+        )
+        .await?;
     let id = crate::InteractionId::from_bytes([114; 16]);
     let interaction = Interaction::approval(
         "One authenticated binding".into(),
@@ -201,7 +229,7 @@ async fn approval_submission_consumes_one_authenticated_binding_for_both_entry_p
         let task = initialized.task;
         let files = &initialized.files;
         let responder = &initialized.responder;
-        let decision = request(&initialized.fixture, runtime, task, files).await?;
+        let decision = request(&initialized).await?;
         APPROVAL_BINDINGS.with(|count| count.set(0));
         if reviewed {
             runtime.submit_reviewed_approval(task, &decision).await?;

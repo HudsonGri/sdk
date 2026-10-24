@@ -102,7 +102,8 @@ let rejected=false;try{captureBeforeNode(broken);}catch{rejected=true;}if(!rejec
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
-if(!bodies[2].includes('rm -rf -- /mnt/bb/jobs/fixture.targets'))throw Error('outer targets not cleaned');
+if(bodies.slice(1).some(body=>body.includes('rm -rf -- /mnt/bb/jobs/fixture.targets') || body.includes('rm -rf $J.tmp')))throw Error('unjoined outer deletion');
+if(!bodies.slice(1).some(body=>body.includes('receipt-tool.mjs finish')))throw Error('missing custody-owned cleanup');
 if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target survived');
 }
 `;
@@ -240,7 +241,7 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
    const result=spawnSync(process.execPath,[module,'finish',meta,'0','command'],{encoding:'utf8'});
    assert.equal(result.status,expected,result.stderr);
    const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);
-   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.outer_cleanup_error,/forced outer cleanup refusal/);
+   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.cleanup_error,/forced outer cleanup refusal/);
   }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });

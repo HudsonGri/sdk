@@ -691,7 +691,6 @@ receipt_done() {
   case $rc in 222|224) category=infra;; esac
   [ ! -f $J.interrupted ] || category=interrupted
   [ ! -f $J.cancelled ] || category=cancelled
-  rm -rf -- ${TD}
   node $J.receipt-tool.mjs finish $J.receipt-meta.v2.json $rc $category >> $J.out 2>> $J.err
   finished=$?; [ $finished = 0 ] || rc=$finished
   echo $rc > $J.rc.tmp && mv $J.rc.tmp $J.rc
@@ -771,8 +770,6 @@ wait $p; rc=$?; [ -e $J.ceiling ] && rc=124; [ -e $J.idle ] && rc=124
 # .host-targets/ never change, so an inner-loop target used minutes ago was evicted as the oldest (solo-hib, lane-loop).
 touch ${TD} $T 2>/dev/null || true
 rm -f $J.sh
-rm -rf -- ${TD}
-rm -rf $J.tmp 2>/dev/null || sudo -n rm -rf $J.tmp
 exit $rc`;
   const boundary = wrapper.indexOf('while [ "$(awk');
   if (boundary < 0) throw new Error('missing remote admission boundary');
