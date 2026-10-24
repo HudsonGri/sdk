@@ -5,6 +5,8 @@ use std::sync::atomic::Ordering;
 
 const MAXIMUM: u64 = 1024 * 1024;
 
+mod ordering;
+
 struct Active<'a> {
     segment: &'a mut Segment,
     work: Option<Arc<crate::memory::Work>>,

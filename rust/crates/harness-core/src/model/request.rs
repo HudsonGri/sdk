@@ -355,6 +355,12 @@ impl PreparedModelRequest {
     pub fn request(&self) -> &ModelRequest {
         &self.request
     }
+    /// Transfers admitted values when the old encoded request is no longer
+    /// needed. Reusing its buffers avoids copying the whole retained context
+    /// merely to append the current tool exchange.
+    pub(crate) fn into_request(self) -> ModelRequest {
+        self.request
+    }
     pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
         self.request.messages
     }

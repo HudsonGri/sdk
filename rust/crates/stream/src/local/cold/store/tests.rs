@@ -4,6 +4,8 @@ use crate::test_meter::Meter;
 use crate::{CommitId, OwnedBytes, Record, RecordHeaders};
 use std::sync::atomic::Ordering;
 
+mod atomic_segments;
+
 const MAXIMUM: u64 = 8 * 1024;
 
 fn sample(sequence: u64) -> Record {
@@ -167,8 +169,8 @@ fn failed_publication_keeps_its_original_cause_and_fences_subsequent_store_use()
     drop(work);
     meter.assert_refunded();
     let store = Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush)?;
-    // Publication failed, so either unacknowledged state is legal on reopen.
-    assert!(store.state()?.decision <= 1);
+    // The first data flush was denied before any recovery slot was written.
+    assert_eq!(store.state()?.decision, 0);
     Ok(())
 }
 
@@ -184,8 +186,106 @@ fn native_directory_ordering_is_a_durability_attempt_and_storage_bounds_are_expl
     drop(work);
     meter.assert_refunded();
     let mut store = Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush)?;
-    assert!(store.begin(MAXIMUM, None).is_err());
+    assert!(store.begin(root::ROOT_BYTES - 1, None).is_err());
     drop(store);
     assert!(Store::open(directory.path(), MAXIMUM + 1, LocalDurability::FullFlush).is_err());
+    Ok(())
+}
+
+fn accept(
+    store: &mut Store,
+    sequence: u64,
+    work: Option<Arc<crate::memory::Work>>,
+) -> Result<(), LocalStreamError> {
+    let mut transaction = store.begin(4_096, work)?;
+    let reference = record::append(&mut transaction, &sample(sequence))?;
+    let points = transaction.state.points;
+    transaction.state.points = Some(index::put(
+        &mut transaction,
+        points,
+        &sequence.to_be_bytes(),
+        reference,
+    )?);
+    transaction.state.decision = sequence;
+    transaction.accept()
+}
+
+#[test]
+fn one_thousand_accepted_roots_leave_recovery_slots_untouched_until_one_phase_barrier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let maximum = 32 * 1024 * 1024;
+    let mut store = Store::open(directory.path(), maximum, LocalDurability::FullFlush)?;
+    let meter = Arc::new(Meter::local());
+    let work = crate::memory::Work::new(meter.original())?;
+    let baseline = meter.held.load(Ordering::SeqCst);
+    let mut header = vec![0; usize::try_from(segment::DATA_START)?];
+    page::read_exact(&store.active.file, 0, &mut header, None)?;
+    for sequence in 1..=1_000 {
+        accept(&mut store, sequence, Some(Arc::clone(&work)))?;
+        assert_eq!(store.state()?.decision, sequence);
+        assert_eq!(store.durable_state()?.decision, 0);
+        assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+    }
+    let mut after = vec![0; header.len()];
+    page::read_exact(&store.active.file, 0, &mut after, None)?;
+    assert_eq!(
+        header, after,
+        "accepted roots cannot overwrite either durable slot"
+    );
+    store.seal(Some(Arc::clone(&work)))?;
+    let sealed = store.state()?;
+    assert_eq!(store.durable_state()?, sealed);
+    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 2);
+    let writes = meter.write_operations.load(Ordering::SeqCst);
+    store.seal(Some(Arc::clone(&work)))?;
+    assert_eq!(meter.write_operations.load(Ordering::SeqCst), writes);
+    assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 2);
+    for sequence in 1_001..=1_016 {
+        accept(&mut store, sequence, Some(Arc::clone(&work)))?;
+    }
+    assert_eq!(store.state()?.decision, 1_016);
+    assert_eq!(store.durable_state()?, sealed);
+    drop(store);
+    let mut store = Store::open(directory.path(), maximum, LocalDurability::FullFlush)?;
+    assert_eq!(
+        store.state()?,
+        sealed,
+        "unsealed accepted pages never become recoverable roots"
+    );
+    let mut reader = store.reader(Some(Arc::clone(&work)));
+    let reference = index::get(&mut reader, sealed.points, &1_000_u64.to_be_bytes())?
+        .ok_or("lost durable record")?;
+    assert_eq!(record::read(&mut reader, reference)?, sample(1_000));
+    assert!(index::get(&mut reader, sealed.points, &1_001_u64.to_be_bytes())?.is_none());
+    drop(reader);
+    drop(store);
+    drop(work);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}
+
+#[test]
+fn rollover_seals_the_accepted_predecessor_before_advancing_the_locator()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut store = Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush)?;
+    let mut rollovers = 0;
+    for sequence in 1..=32 {
+        let previous_segment = store.active.number;
+        let previous = store.state()?;
+        accept(&mut store, sequence, None)?;
+        if store.active.number != previous_segment {
+            rollovers += 1;
+            assert_eq!(store.durable_state()?, previous);
+        }
+    }
+    assert!(rollovers > 0);
+    let durable = store.durable_state()?;
+    drop(store);
+    let store = Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush)?;
+    assert_eq!(store.state()?, durable);
     Ok(())
 }

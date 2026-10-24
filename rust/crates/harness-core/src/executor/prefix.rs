@@ -28,7 +28,7 @@ impl StockExecution<'_> {
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
-        let mut request = crate::model::clone_request(prepared.request(), self.io)?;
+        let mut request = prepared.into_request();
         if !retained.admission.completed
             || retained.admission.calls.is_empty()
             || through_call
