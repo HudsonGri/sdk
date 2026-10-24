@@ -24,6 +24,8 @@ use tokio::sync::mpsc;
 use tokio::{spawn, task::spawn_blocking};
 
 mod children;
+#[cfg(test)]
+mod cold;
 #[cfg(acyclic_loom)]
 pub(crate) mod parking_model;
 #[cfg(test)]
