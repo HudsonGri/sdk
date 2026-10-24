@@ -6,6 +6,16 @@ impl StockExecution<'_> {
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
     ) -> Result<ExecutionProgress<TurnOutput>> {
+        self.streaming_turn()
+            .execute_streaming_turn(input, journal)
+            .await
+    }
+
+    async fn execute_streaming_turn(
+        &self,
+        input: &TurnInput,
+        journal: &dyn ExecutionJournal,
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;

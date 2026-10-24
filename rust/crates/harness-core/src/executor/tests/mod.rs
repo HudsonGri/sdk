@@ -736,6 +736,7 @@ mod recovery;
 mod replay;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
+mod stream_tools;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
 mod summary_file;

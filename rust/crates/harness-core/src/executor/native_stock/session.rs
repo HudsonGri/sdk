@@ -8,8 +8,25 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(&'a ContextPipeline, Option<u32>)>,
     pub(in crate::executor) selected_model: Option<&'a Model>,
+    pub(in crate::executor) journal_order: JournalOrder<'a>,
+    pub(in crate::executor) stream_tools: bool,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
+}
+
+/// One ordering point for a turn's journal transactions and streamed model events.
+pub(in crate::executor) enum JournalOrder<'a> {
+    Owned(tokio::sync::Mutex<()>),
+    Borrowed(&'a tokio::sync::Mutex<()>),
+}
+
+impl JournalOrder<'_> {
+    pub(in crate::executor) fn mutex(&self) -> &tokio::sync::Mutex<()> {
+        match self {
+            Self::Owned(mutex) => mutex,
+            Self::Borrowed(mutex) => mutex,
+        }
+    }
 }
 
 /// The turn's compaction policy, resolved once from the original IO, with the
@@ -32,6 +49,8 @@ impl<'a> StockExecution<'a> {
             io: None,
             summary: None,
             selected_model: None,
+            journal_order: JournalOrder::Owned(tokio::sync::Mutex::new(())),
+            stream_tools: false,
             compaction: once_cell::sync::OnceCell::new(),
         }
     }
@@ -48,6 +67,23 @@ impl<'a> StockExecution<'a> {
             interactions: self.interactions,
             summary: self.summary,
             selected_model: Some(model),
+            journal_order: JournalOrder::Borrowed(self.journal_order.mutex()),
+            stream_tools: self.stream_tools,
+            compaction: once_cell::sync::OnceCell::new(),
+        }
+    }
+
+    pub(in crate::executor) fn streaming_turn(&self) -> StockExecution<'_> {
+        StockExecution {
+            stock: self.stock,
+            context: self.context,
+            io: self.io,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            interactions: self.interactions,
+            summary: self.summary,
+            selected_model: self.selected_model,
+            journal_order: JournalOrder::Borrowed(self.journal_order.mutex()),
+            stream_tools: true,
             compaction: once_cell::sync::OnceCell::new(),
         }
     }

@@ -55,6 +55,8 @@ impl StockExecution<'_> {
             // A summary has its own durable selection. Reusing the parent's
             // member bypasses the alloy's summary-role policy.
             selected_model: None,
+            journal_order: JournalOrder::Borrowed(self.journal_order.mutex()),
+            stream_tools: false,
             compaction: once_cell::sync::OnceCell::new(),
         };
         let input = TurnInput {
