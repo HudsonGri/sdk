@@ -1,5 +1,8 @@
 use super::call::Call;
-use serde::{Serialize, ser::SerializeMap};
+use serde::{
+    Serialize,
+    ser::{SerializeMap, SerializeSeq},
+};
 use serde_json::{Map, Value, value::RawValue};
 
 /// Native payloads borrow transcript bytes until HTTP serialization completes.
@@ -55,7 +58,21 @@ impl Body<'_> {
         model: Option<&str>,
     ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
+        // Keep the reusable tool/instruction prefix before request controls.
+        for name in ["tools", "system", "instructions", "systemInstruction"] {
+            if let Some(value) = self.fields.get(name)
+                && include.is_none_or(|fields| fields.contains(&name))
+            {
+                map.serialize_entry(name, value)?;
+            }
+        }
         for (name, value) in &self.fields {
+            if matches!(
+                name.as_str(),
+                "tools" | "system" | "instructions" | "systemInstruction"
+            ) {
+                continue;
+            }
             if include.is_none_or(|fields| fields.contains(&name.as_str()))
                 && !(name == "model" && model.is_some())
             {
@@ -65,9 +82,86 @@ impl Body<'_> {
         if let Some(model) = model {
             map.serialize_entry("model", model)?;
         }
-        map.serialize_entry(self.messages_field, &self.messages)?;
+        if matches!(self.messages.first(), Some(Message::Anthropic { .. })) {
+            map.serialize_entry(self.messages_field, &CacheMessages(&self.messages))?;
+        } else {
+            map.serialize_entry(self.messages_field, &self.messages)?;
+        }
         map.end()
     }
+}
+
+struct CacheMessages<'a, 'b>(&'a [Message<'b>]);
+impl Serialize for CacheMessages<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let last = self.0.iter().rposition(|message| {
+            matches!(message,
+            Message::Anthropic { content, .. } if content.iter().any(cacheable))
+        });
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (index, message) in self.0.iter().enumerate() {
+            if Some(index) == last
+                && let Message::Anthropic { role, content } = message
+            {
+                #[derive(Serialize)]
+                struct Marked<'a, 'b> {
+                    role: &'a str,
+                    content: CacheContent<'a, 'b>,
+                }
+                sequence.serialize_element(&Marked {
+                    role,
+                    content: CacheContent(content),
+                })?;
+            } else {
+                sequence.serialize_element(message)?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+fn cacheable(item: &Item<'_>) -> bool {
+    match item {
+        Item::Json(value) => !matches!(
+            value["type"].as_str(),
+            Some("thinking" | "redacted_thinking")
+        ),
+        Item::Call(_) => true,
+        // Signed reasoning bytes must remain untouched, and thinking cannot
+        // itself carry a breakpoint. Cache the preceding eligible block.
+        Item::Native(_) => false,
+    }
+}
+
+struct CacheContent<'a, 'b>(&'a [Item<'b>]);
+impl Serialize for CacheContent<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let last = self.0.iter().rposition(cacheable);
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for (index, item) in self.0.iter().enumerate() {
+            if Some(index) == last {
+                #[derive(Serialize)]
+                struct Marked<'a, 'b> {
+                    #[serde(flatten)]
+                    item: &'a Item<'b>,
+                    cache_control: Control,
+                }
+                sequence.serialize_element(&Marked {
+                    item,
+                    cache_control: Control { kind: "ephemeral" },
+                })?;
+            } else {
+                sequence.serialize_element(item)?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Serialize)]
+struct Control {
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[cfg(test)]

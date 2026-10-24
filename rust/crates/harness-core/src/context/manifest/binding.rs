@@ -54,16 +54,19 @@ impl ContextManifest {
         crate::executor::with_history_io(io, |work| {
             compaction::reserve_vector(
                 &mut messages,
-                manifest.conventions.len()
-                    + manifest.discovery.instructions.len()
+                manifest.discovery.instructions.len()
                     + usize::from(!manifest.discovery.skills.is_empty())
                     + manifest.selected_skills.len(),
                 work,
             )
         })?;
+        let mut late = Vec::new();
+        crate::executor::with_history_io(io, |work| {
+            compaction::reserve_vector(&mut late, manifest.conventions.len(), work)
+        })?;
         for text in manifest.conventions {
-            messages.push(ModelMessage {
-                role: ModelRole::System,
+            late.push(ModelMessage {
+                role: ModelRole::User,
                 content: ModelContent::Text(text),
             });
         }
@@ -72,7 +75,15 @@ impl ContextManifest {
         let mut remaining = limits
             .render_bytes
             .checked_sub(crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&messages, limits.render_bytes, work)
+                crate::executor::json::json_byte_length(
+                    &ContextMessages {
+                        first: &messages,
+                        user: None,
+                        second: &late,
+                    },
+                    limits.render_bytes,
+                    work,
+                )
             })?)
             .ok_or_else(|| {
                 stock_boundary(
@@ -138,6 +149,10 @@ impl ContextManifest {
             Arc::new(ManifestStage {
                 environment: manifest.environment,
                 context,
+                late: Context {
+                    messages: late,
+                    ..Context::default()
+                },
                 sources: manifest.sources,
             }),
         ))

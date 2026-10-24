@@ -1,4 +1,5 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod alloys;
 mod catalog_compaction;
 mod goal_review;
 mod input_review;
@@ -98,7 +99,7 @@ async fn execute_with(
         Vec::new()
     };
     input.write_all(&request).unwrap();
-    let mut command = Command::new(build_metadata::EXECUTABLE);
+    let mut command = Command::new(build_metadata::executable());
     command
         .env("CODEX_HOME", settings.join("codex-home"))
         .env("HOME", settings)
@@ -198,9 +199,9 @@ fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Resul
         .get("input")
         .and_then(Value::as_array)
         .ok_or("input array missing")?;
-    let (first, rest) = input.split_first().ok_or("environment message missing")?;
+    let first = input.get(3).ok_or("environment message missing")?;
     assert_eq!(first.get("type"), Some(&json!("message")));
-    assert_eq!(first.get("role"), Some(&json!("system")));
+    assert_eq!(first.get("role"), Some(&json!("user")));
     let content = first
         .get("content")
         .and_then(Value::as_array)
@@ -220,11 +221,18 @@ fn instruction_environment(body: &Value, workspace: &Path, model: &str) -> Resul
     }
     // A one-shot prompt without GOAL.md carries no goal guidance.
     assert_eq!(
-        Value::Array(rest.to_vec()),
+        Value::Array(
+            input
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != 3)
+                .map(|(_, message)| message.clone())
+                .collect()
+        ),
         json!([
-            {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
             {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
             {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
             {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
         ])
     );
@@ -300,62 +308,15 @@ async fn scenario(mode: Mode) {
             .await
             .unwrap();
     });
-    if matches!(mode, Mode::NestedWorkspace) {
-        std::fs::create_dir_all(workspace.join("nested/deep")).unwrap();
-        std::fs::write(workspace.join("nested/deep/source.txt"), "cold workspace").unwrap();
-    }
-    if instructions {
-        std::fs::write(
-            workspace.join("AGENTS.md"),
-            "Reply using the workspace instructions. λ\n",
-        )
-        .unwrap();
-        std::fs::write(
-            workspace.join("CLAUDE.md"),
-            "Project marker: claude-context λ",
-        )
-        .unwrap();
-    }
-    std::fs::create_dir(settings.join(".codex")).unwrap();
-    let configured = match mode {
-        Mode::CatalogDefault => "",
-        Mode::ExplicitModel | Mode::EnvironmentModel => "model = \"missing/model\"\n",
-        Mode::ConfiguredOpaqueModel => {
-            "model = \"vendor/tiny\"\nmodel_provider = \"graphcoder-qual\"\n"
-        }
-        _ => "model = \"tiny\"\nmodel_provider = \"graphcoder-qual\"\n",
-    };
-    std::fs::write(settings.join(".codex/config.toml"), configured).unwrap();
-    std::fs::create_dir(settings.join("codex-home")).unwrap();
-    if matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
-        std::fs::write(settings.join("codex-home/config.toml"), configured).unwrap();
-        std::fs::write(
-            settings.join(".codex/config.toml"),
-            "model = \"missing/decoy\"\n",
-        )
-        .unwrap();
-    }
-    let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{model:{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
-        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
-    }})).unwrap()).unwrap();
-    if matches!(
+    let catalog = configure_scenario(
+        directory.path(),
+        &workspace,
+        &settings,
+        address,
         mode,
-        Mode::CatalogDefault | Mode::EnvironmentModel | Mode::ExplicitModel
-    ) {
-        let mut document: Value =
-            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
-        document["default_model"] = json!("graphcoder-qual/tiny");
-        std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
-    if matches!(mode, Mode::UnknownOutput) {
-        let mut document: Value =
-            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
-        document["graphcoder-qual"]["models"]["tiny"]["capacity"]["output_tokens"] = Value::Null;
-        std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
-    }
+        model,
+    )
+    .unwrap();
     let operation = OperationId::new();
     let output = execute(&workspace, &catalog, &settings, operation, mode).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
@@ -412,6 +373,70 @@ async fn scenario(mode: Mode) {
     assert!(counted > 0);
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+fn configure_scenario(
+    directory: &Path,
+    workspace: &Path,
+    settings: &Path,
+    address: std::net::SocketAddr,
+    mode: Mode,
+    model: &str,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    if matches!(mode, Mode::NestedWorkspace) {
+        std::fs::create_dir_all(workspace.join("nested/deep"))?;
+        std::fs::write(workspace.join("nested/deep/source.txt"), "cold workspace")?;
+    }
+    if matches!(mode, Mode::Instructions) {
+        std::fs::write(
+            workspace.join("AGENTS.md"),
+            "Reply using the workspace instructions. λ\n",
+        )?;
+        std::fs::write(
+            workspace.join("CLAUDE.md"),
+            "Project marker: claude-context λ",
+        )?;
+    }
+    std::fs::create_dir(settings.join(".codex"))?;
+    let configured = match mode {
+        Mode::CatalogDefault => "",
+        Mode::ExplicitModel | Mode::EnvironmentModel => "model = \"missing/model\"\n",
+        Mode::ConfiguredOpaqueModel => {
+            "model = \"vendor/tiny\"\nmodel_provider = \"graphcoder-qual\"\n"
+        }
+        _ => "model = \"tiny\"\nmodel_provider = \"graphcoder-qual\"\n",
+    };
+    std::fs::write(settings.join(".codex/config.toml"), configured)?;
+    std::fs::create_dir(settings.join("codex-home"))?;
+    if matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
+        std::fs::write(settings.join("codex-home/config.toml"), configured)?;
+        std::fs::write(
+            settings.join(".codex/config.toml"),
+            "model = \"missing/decoy\"\n",
+        )?;
+    }
+    let catalog = directory.join("catalog.json");
+    let output = if matches!(mode, Mode::UnknownOutput) {
+        Value::Null
+    } else {
+        json!(1024)
+    };
+    let mut document = json!({"graphcoder-qual":{
+        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+        "models":{model:{"capacity":{"context_tokens":8192,"output_tokens":output},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+    }});
+    if matches!(
+        mode,
+        Mode::CatalogDefault | Mode::EnvironmentModel | Mode::ExplicitModel
+    ) {
+        document
+            .as_object_mut()
+            .ok_or_else(|| std::io::Error::other("catalog is not an object"))?
+            .insert("default_model".into(), json!("graphcoder-qual/tiny"));
+    }
+    std::fs::write(&catalog, serde_json::to_vec(&document)?)?;
+    Ok(catalog)
 }
 
 // The provider sees the refusal through real HTTP, then finishes the same turn.
@@ -511,7 +536,7 @@ fn catalog_parse_error_reports_field_and_line_through_binary() {
         "{\n  \"broken\": {\n    \"adapter\": 42\n  }\n}\n",
     )
     .unwrap();
-    let output = Command::new(build_metadata::EXECUTABLE)
+    let output = Command::new(build_metadata::executable())
         .env("CODEX_HOME", fixture.path())
         .env("XDG_DATA_HOME", fixture.path())
         .env_remove("GRAPHCODER_MODEL")
@@ -535,7 +560,7 @@ fn catalog_missing_file_and_unknown_model_fail_through_binary() {
         if let Some(document) = document {
             std::fs::write(&catalog, document).unwrap();
         }
-        let output = Command::new(build_metadata::EXECUTABLE)
+        let output = Command::new(build_metadata::executable())
             .env("CODEX_HOME", fixture.path())
             .env("XDG_DATA_HOME", fixture.path())
             .env_remove("GRAPHCODER_MODEL")
@@ -591,6 +616,26 @@ mod build_metadata {
         reason = "Cargo-provided executable metadata for this integration crate"
     )]
     pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
+
+    pub(super) fn executable() -> std::path::PathBuf {
+        if acyclic_harness::native_environment::variable("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
+            // win-test exports the normal Cargo JSON executable beside the test.
+            // Its original Linux build path is not a Windows runtime fixture.
+            let path = std::env::current_exe()
+                .map(|path| {
+                    path.with_file_name(format!("graphcoder{}", std::env::consts::EXE_SUFFIX))
+                })
+                .unwrap_or_default();
+            assert!(
+                path.is_absolute() && path.is_file(),
+                "missing exported GraphCoder executable: {}",
+                path.display()
+            );
+            path
+        } else {
+            EXECUTABLE.into()
+        }
+    }
 }
 
 // A process killed during a tool effect leaves the workspace usable by the next prompt.
@@ -614,7 +659,7 @@ fn graphcoder(
     operation: OperationId,
     prompt: Option<&str>,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    let mut command = Command::new(build_metadata::executable());
     command
         .current_dir(workspace)
         .arg("--workspace")
@@ -641,31 +686,76 @@ async fn run(
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     tokio::task::spawn_blocking(move || {
-        let mut child = command.spawn().unwrap();
-        if let Some(effect) = kill_when {
-            while child.try_wait().unwrap().is_none() {
-                if effect.exists() {
-                    #[cfg(unix)]
-                    Command::new("kill")
-                        .args(["-KILL", "--", &format!("-{}", child.id())])
-                        .status()
-                        .unwrap();
-                    #[cfg(not(unix))]
-                    child.kill().unwrap();
-                    let output = child.wait_with_output().unwrap();
-                    return Err(format!(
-                        "killed\nstdout: {}\nstderr: {}",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    ));
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
+        std::thread::scope(|scope| {
+            use std::io::Read as _;
+            // The kill point may follow a full JSONL snapshot. Drain both pipes
+            // while waiting so pipe capacity cannot prevent reaching that point.
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "GraphCoder stdout is not piped".to_owned())?;
+            let out = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stdout
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>(bytes)
+            });
+            let mut stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| "GraphCoder stderr is not piped".to_owned())?;
+            let err = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stderr
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>(bytes)
+            });
+            let mut killed = false;
+            if let Some(effect) = kill_when {
+                while child
+                    .try_wait()
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+                {
+                    if effect.exists() {
+                        #[cfg(unix)]
+                        Command::new("kill")
+                            .args(["-KILL", "--", &format!("-{}", child.id())])
+                            .status()
+                            .map_err(|error| error.to_string())?;
+                        #[cfg(not(unix))]
+                        child.kill().map_err(|error| error.to_string())?;
+                        killed = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                std::thread::sleep(Duration::from_millis(5));
             }
-        }
-        Ok(child.wait_with_output().unwrap())
+            let output = std::process::Output {
+                status: child.wait().map_err(|error| error.to_string())?,
+                stdout: out
+                    .join()
+                    .map_err(|_| "stdout reader panicked".to_owned())??,
+                stderr: err
+                    .join()
+                    .map_err(|_| "stderr reader panicked".to_owned())??,
+            };
+            if killed {
+                Err(format!(
+                    "killed\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+            } else {
+                Ok(output)
+            }
+        })
     })
     .await
-    .unwrap()
+    .map_err(|error| error.to_string())?
 }
 
 /// The settled execution results a headless run printed, from its initial

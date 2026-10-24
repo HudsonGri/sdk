@@ -12,6 +12,7 @@ use selection::Credential;
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
+    alloys: BTreeMap<String, crate::AlloySpec>,
     credentials: Credentials,
     selection: snapshot::Snapshot<selection::Observations>,
     transport: Arc<dyn HttpTransport>,
@@ -35,6 +36,7 @@ impl Registry {
         Self {
             providers,
             default_model: None,
+            alloys: BTreeMap::new(),
             credentials,
             selection: snapshot::Snapshot::default(),
             transport,
@@ -76,9 +78,19 @@ impl Registry {
         &self.providers
     }
 
+    /// Named deterministic selections declared by the catalog or settings.
+    pub fn alloys(&self) -> &BTreeMap<String, crate::AlloySpec> {
+        &self.alloys
+    }
+
+    /// Admits settings-defined policies against the complete provider catalog.
+    pub fn register_alloys(&mut self, alloys: BTreeMap<String, crate::AlloySpec>) -> Result<()> {
+        self.update_catalog(Changes::empty(), None, alloys)
+    }
+
     /// Adds or replaces one endpoint. Local models require their configured capacities.
     pub fn register(&mut self, provider: String, config: ProviderSpec) -> Result<()> {
-        self.update_catalog(Changes::One(provider, config), None)
+        self.update_catalog(Changes::One(provider, config), None, BTreeMap::new())
     }
 
     /// Loads endpoint, credential policy and exact capacities from a JSON catalog.
@@ -86,7 +98,11 @@ impl Registry {
     pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
         let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
         let catalog = crate::catalog_document::parse(&bytes)?;
-        self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
+        self.update_catalog(
+            Changes::Many(catalog.providers),
+            catalog.default_model,
+            catalog.alloys,
+        )
     }
 
     /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
@@ -202,7 +218,11 @@ pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
 }
 
 pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
-    if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == 0 {
+    if provider.trim().is_empty()
+        || provider.contains('/')
+        || matches!(provider, "alloys" | "default_model")
+        || config.max_event_bytes == 0
+    {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;

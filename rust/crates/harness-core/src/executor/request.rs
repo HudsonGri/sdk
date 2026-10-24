@@ -251,7 +251,7 @@ impl StockExecution<'_> {
             }
         }
         Ok(ModelRequest {
-            model: crate::model::clone_model(&self.stock.model, self.io)?,
+            model: crate::model::clone_model(self.model(), self.io)?,
             messages,
             tools: if tools_required {
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?

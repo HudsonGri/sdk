@@ -303,8 +303,11 @@ impl LocalHarness {
                         .stage_turn_with_output(
                             operation,
                             "Follow the received child request.",
-                            narrowed.limits(),
-                            Some(&project),
+                            super::super::turn::TurnScope {
+                                limits: narrowed.limits(),
+                                output: Some(&project),
+                                role: request.role.as_deref().unwrap_or(&self.child_role),
+                            },
                         )
                         .await?;
                     let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];

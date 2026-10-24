@@ -33,6 +33,13 @@ where
         let stock = admission.task.name == "acyclic.stock_turn"
             || super::super::child_agent::is_child(admission);
         let mut command: ModelTaskCommand = mail::decode_command(payload, io)?;
+        if command
+            .role
+            .as_deref()
+            .is_some_and(|role| role.trim().is_empty())
+        {
+            return Err(boundary(io, ErrorCode::Invalid, "agent role is empty"));
+        }
         let binding = self.model.as_ref().ok_or_else(|| {
             boundary(
                 io,
@@ -238,7 +245,8 @@ where
                         compaction,
                         command.max_output_tokens,
                     )?
-                    .with_summary_source(command.summary_source);
+                    .with_summary_source(command.summary_source)
+                    .with_role(command.role);
                 let executor = if reconciliation_only {
                     executor.into_reconciliation()
                 } else {
@@ -274,7 +282,8 @@ where
                 )
                 .await?
                 .with_compaction_policy(compaction.clone())
-                .with_summary_source(command.summary_source);
+                .with_summary_source(command.summary_source)
+                .with_role(command.role);
             #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
             let execution = execution.with_hooks(hooks);
             let execution = match command.max_output_tokens {

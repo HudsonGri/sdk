@@ -3,7 +3,7 @@ use super::*;
 fn guidance(request: &crate::model::ModelRequest) -> (bool, bool) {
     let has = |prefix: &str| {
         request.messages.iter().any(|message| {
-            message.role == crate::model::ModelRole::System
+            message.role == crate::model::ModelRole::User
                 && matches!(&message.content, crate::model::ModelContent::Text(text)
                     if text.starts_with(prefix))
         })

@@ -598,6 +598,7 @@ impl NativeEventDelivery {
                 | libc::IN_DELETE
                 | libc::IN_MODIFY
                 | libc::IN_ATTRIB
+                | libc::IN_ACCESS
                 | libc::IN_MOVED_FROM
                 | libc::IN_MOVED_TO)
             == 0
@@ -605,6 +606,11 @@ impl NativeEventDelivery {
             return Ok(());
         }
         if relative.as_os_str().is_empty() {
+            // Directory timestamps are derived from entry changes and reads;
+            // access alone cannot change the captured root's metadata.
+            if mask & !libc::IN_ISDIR == libc::IN_ACCESS {
+                return Ok(());
+            }
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
             return Ok(());
         }
@@ -683,7 +689,9 @@ impl NativeEventDelivery {
                     WatchChange::Created(payload.0)
                 } else if mask & libc::IN_DELETE != 0 {
                     WatchChange::Removed(payload.0)
-                } else if mask & libc::IN_ATTRIB != 0 {
+                } else if mask & (libc::IN_ATTRIB | libc::IN_ACCESS) != 0
+                    && mask & libc::IN_MODIFY == 0
+                {
                     WatchChange::MetadataChanged(payload.0)
                 } else {
                     WatchChange::Modified(payload.0)

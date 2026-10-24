@@ -33,6 +33,8 @@ mod hook_lifecycle;
 mod input;
 #[cfg(any(test, feature = "native-execution"))]
 mod input_user;
+#[cfg(all(any(test, feature = "native-execution"), any(test, feature = "hooks")))]
+mod prompt_prefix;
 #[cfg(all(any(test, feature = "native-execution"), unix))]
 mod tool_hooks;
 use std::{
