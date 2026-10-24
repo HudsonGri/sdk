@@ -64,6 +64,25 @@ for (const platform of ["win32", "linux"]) {
     }
   });
 
+  test(`a refreshed login on another filesystem replaces the source (${platform} link)`, () => {
+    const { root, restore } = fixture();
+    try {
+      const login = hostLogin("codex", join(root, "fixture", "home"), { CODEX_HOME: "config" });
+      linkLogin(login, platform);
+      writeFileSync(`${login.link}.tmp`, "rotated-marker");
+      renameSync(`${login.link}.tmp`, login.link);
+      const crossDevice = () => {
+        throw Object.assign(new Error("cross-device link not permitted"), { code: "EXDEV" });
+      };
+      assert.equal(releaseLogin(login, crossDevice), "restored");
+      assert.equal(readFileSync(login.source, "utf8"), "rotated-marker");
+      assert.equal(existsSync(login.link), false);
+      assert.equal(existsSync(`${login.source}.acyclic-restore`), false);
+    } finally {
+      restore();
+    }
+  });
+
   test(`an untouched link is only removed (${platform} link)`, () => {
     const { root, restore } = fixture();
     try {

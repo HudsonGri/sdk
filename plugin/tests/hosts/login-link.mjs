@@ -1,6 +1,6 @@
 // Links a host's login file into a fixture home for one live run. The login
 // is never read or copied: only the link is made, and the caller removes it.
-import { linkSync, lstatSync, mkdirSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { copyFileSync, linkSync, lstatSync, mkdirSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -27,11 +27,12 @@ export function linkLogin({ source, link }, platform = process.platform) {
  * Ends the run's use of the login. A host that refreshes its token replaces
  * the login file instead of writing through the link, and a refresh rotates
  * the token: the one the link reached is then revoked. The replacement is the
- * only valid login, so it is moved back over the source, never read or copied.
- * A link that still reaches the source (symbolic, or a hard link to the same
- * file) is only removed.
+ * only valid login, so it is moved back over the source, never read. Across
+ * filesystems the kernel copies it beside the source, which is then replaced
+ * in one rename. A link that still reaches the source (symbolic, or a hard
+ * link to the same file) is only removed.
  */
-export function releaseLogin({ source, link }) {
+export function releaseLogin({ source, link }, rename = renameSync) {
   let entry;
   try {
     entry = lstatSync(link);
@@ -50,6 +51,14 @@ export function releaseLogin({ source, link }) {
     rmSync(link, { force: true });
     return "unlinked";
   }
-  renameSync(link, source);
+  try {
+    rename(link, source);
+  } catch (error) {
+    if (error?.code !== "EXDEV") throw error;
+    const staged = `${source}.acyclic-restore`;
+    copyFileSync(link, staged);
+    renameSync(staged, source);
+    rmSync(link, { force: true });
+  }
   return "restored";
 }
