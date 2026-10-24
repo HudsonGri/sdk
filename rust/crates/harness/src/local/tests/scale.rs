@@ -675,28 +675,9 @@ async fn measure(agents: u64, children: usize, from: Baseline) -> Result<Report>
     Ok(report)
 }
 
-/// Starts the process-wide services a run's agents share, once, before the
-/// baseline: one root agent, which spawns one child running one checkout
-/// command when the run has children, starts the native host's I/O pools and
-/// loads the native mount library and its per-process state. Their handles
-/// are a constant per process, not a cost of any measured agent, and this
-/// agent is excluded from the per-agent division.
-async fn warm_up(children: usize) -> Result<()> {
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let provider = Arc::new(ScaleProvider {
-        children: children.min(1),
-        started: Instant::now(),
-        timings: Arc::default(),
-        content: None,
-    });
-    let harness = open_agent(directory.path(), provider).await?;
-    let output = harness.run("scale agent w").await?;
-    assert!(output.text.starts_with("done "), "{output:?}");
-    Ok(())
-}
-
-/// Per-agent ceilings for the CI-sized run. Each is a ratchet: a fix that
-/// lowers a cost lowers its ceiling in the same change.
+/// Per-agent ceilings for the CI-sized run, held by the cost each further
+/// agent adds (see [`Costs::marginal`]). Each is a ratchet: a fix that lowers
+/// a cost lowers its ceiling in the same change.
 mod bounds {
     /// Resident memory retained per idle agent.
     pub(super) const IDLE_RSS_BYTES: PerAgent = PerAgent::whole(12 * 1024 * 1024);
@@ -728,7 +709,8 @@ mod bounds {
     /// since source watches share one routing hub.
     pub(super) const IDLE_THREADS: PerAgent = PerAgent::whole(0);
     /// Process-wide pools that persist while idle: the native host's I/O and
-    /// native workers, with headroom.
+    /// native workers, with headroom. Only a cost counted from the baseline
+    /// includes them; the marginal cost excludes them by construction.
     pub(super) const POOL_THREADS: u64 = 32;
     /// Durable bytes and files per agent.
     pub(super) const DISK_BYTES: PerAgent = PerAgent::whole(1024 * 1024);
@@ -736,29 +718,88 @@ mod bounds {
     use super::PerAgent;
 }
 
-impl Report {
-    fn assert_bounds(&self) {
-        use bounds::*;
-        let idle_rss = self.per_agent(|r| r.rss, &self.idle);
-        let idle_fds = self.per_agent(|r| r.fds, &self.idle);
-        let peak_fds = self.per_agent(|r| r.fds, &self.peak);
-        let watches = self.per_agent(|r| r.watches, &self.idle);
-        let threads = PerAgent::of(
-            self.idle
-                .threads
-                .saturating_sub(self.baseline.threads + POOL_THREADS),
-            self.agents,
+/// Per-agent costs, each measured as the bounds define it.
+struct Costs {
+    idle_rss: PerAgent,
+    idle_fds: PerAgent,
+    peak_fds: PerAgent,
+    watches: PerAgent,
+    idle_threads: PerAgent,
+    disk_bytes: PerAgent,
+    disk_files: PerAgent,
+}
+
+impl Costs {
+    /// What each further agent adds: the difference between the runs of N
+    /// and 2N agents, divided by the N agents between them. Whatever the
+    /// process holds independently of its agent count (the native host's
+    /// pools, the mount library's state, the bounded descriptor cache and
+    /// admission allowance once each is full) is in both runs and cancels, so
+    /// no excluded warm-up agent is needed and nothing but O(N) cost remains.
+    /// Disk is the exception: each run has its own directory.
+    fn marginal(small: &Report, large: &Report) -> Self {
+        let agents = large.agents.saturating_sub(small.agents);
+        let slope = |value: &dyn Fn(&Report) -> u64| {
+            PerAgent::of(value(large).saturating_sub(value(small)), agents)
+        };
+        Self {
+            idle_rss: slope(&|r| r.idle.rss),
+            idle_fds: slope(&|r| r.idle.fds),
+            peak_fds: slope(&|r| r.peak.fds),
+            watches: slope(&|r| r.idle.watches),
+            idle_threads: slope(&|r| r.idle.threads),
+            // Each run writes its own directory, which holds nothing but its
+            // agents' stores, so its disk use divides over its own agents.
+            disk_bytes: PerAgent::of(large.disk_bytes, large.agents),
+            disk_files: PerAgent::of(large.disk_files, large.agents),
+        }
+    }
+
+    /// Everything counted from the cold baseline, divided by one run's
+    /// agents: the process-wide constant included. The negative control for
+    /// [`Self::marginal`].
+    fn from_baseline(report: &Report) -> Self {
+        Self {
+            idle_rss: report.per_agent(|r| r.rss, &report.idle),
+            idle_fds: report.per_agent(|r| r.fds, &report.idle),
+            peak_fds: report.per_agent(|r| r.fds, &report.peak),
+            watches: report.per_agent(|r| r.watches, &report.idle),
+            idle_threads: PerAgent::of(
+                report
+                    .idle
+                    .threads
+                    .saturating_sub(report.baseline.threads + bounds::POOL_THREADS),
+                report.agents,
+            ),
+            disk_bytes: PerAgent::of(report.disk_bytes, report.agents),
+            disk_files: PerAgent::of(report.disk_files, report.agents),
+        }
+    }
+
+    fn print(&self, measured: &str) {
+        println!(
+            "scale {measured} cost/agent: idle rss={}B idle fds={} peak fds={} watches={}              idle threads={} disk={}B files={}",
+            self.idle_rss,
+            self.idle_fds,
+            self.peak_fds,
+            self.watches,
+            self.idle_threads,
+            self.disk_bytes,
+            self.disk_files,
         );
-        let disk = PerAgent::of(self.disk_bytes, self.agents);
-        let files = PerAgent::of(self.disk_files, self.agents);
+    }
+
+    fn assert_bounds(&self, measured: &str) {
+        use bounds::*;
+        self.print(measured);
         let checks = [
-            ("idle rss bytes", idle_rss, IDLE_RSS_BYTES),
-            ("idle fds", idle_fds, IDLE_FDS),
-            ("peak fds", peak_fds, PEAK_FDS),
-            ("inotify watches", watches, WATCHES),
-            ("idle threads", threads, IDLE_THREADS),
-            ("disk bytes", disk, DISK_BYTES),
-            ("disk files", files, DISK_FILES),
+            ("idle rss bytes", self.idle_rss, IDLE_RSS_BYTES),
+            ("idle fds", self.idle_fds, IDLE_FDS),
+            ("peak fds", self.peak_fds, PEAK_FDS),
+            ("inotify watches", self.watches, WATCHES),
+            ("idle threads", self.idle_threads, IDLE_THREADS),
+            ("disk bytes", self.disk_bytes, DISK_BYTES),
+            ("disk files", self.disk_files, DISK_FILES),
         ];
         let exceeded = checks
             .iter()
@@ -772,40 +813,49 @@ impl Report {
     }
 }
 
-/// Measure from a baseline taken before the process-wide services start.
-const COLD_BASELINE: &str = "ACYCLIC_SCALE_COLD_BASELINE";
+/// Bound the cost counted from the cold baseline instead of the marginal
+/// cost: the negative control that shows the marginal cost is what excludes
+/// the process-wide constant.
+const FROM_BASELINE: &str = "ACYCLIC_SCALE_FROM_BASELINE";
 
 /// Descriptors each idle agent keeps beyond the harness's own: the negative
 /// control's leak.
 const LEAKED_DESCRIPTORS: &str = "ACYCLIC_SCALE_LEAKED_DESCRIPTORS";
 
-/// A bounded run's 48 agents: roots, each with `children` children that each
+/// A bounded run: N then 2N roots, each with `children` children that each
 /// run one checkout command, and the negative controls' faults.
 struct Run {
+    /// N, the smallest root count whose runs separate an O(1) per-agent cost
+    /// from an O(N) one: the process-wide pools are full at N, so the step
+    /// from N to 2N is the agents' own cost alone.
     roots: u64,
     children: u64,
     leaked_per_agent: u64,
     retain_child_views: bool,
-    /// Take the baseline before the process-wide services start, so their
-    /// constant handles count against the agents: the warm-up's negative
-    /// control.
-    cold_baseline: bool,
+    /// Bound the cost counted from the cold baseline: the marginal cost's
+    /// negative control.
+    from_baseline: bool,
 }
 
 impl Run {
     const ROOTS: Self = Self {
-        roots: 48,
+        roots: 4,
         children: 0,
         leaked_per_agent: 0,
         retain_child_views: false,
-        cold_baseline: false,
+        from_baseline: false,
     };
     #[cfg(feature = "native-execution")]
     const CHILDREN: Self = Self {
-        roots: 16,
+        roots: 2,
         children: 2,
         ..Self::ROOTS
     };
+
+    /// What the larger run's report line starts with.
+    fn largest(&self) -> String {
+        format!("scale agents={} ", 2 * self.roots * (1 + self.children))
+    }
 }
 
 /// The CI-sized run, bounds asserted, in its own process so that concurrently
@@ -833,24 +883,24 @@ fn bounded_run(run: &Run) -> Result<std::process::Output> {
             .split_once("::")
             .map_or("", |(_, name)| name)])
         .args(["--exact", "--ignored", "--nocapture", "--test-threads=1"])
-        // N then 2N roots: the per-agent idle cost must not grow with N.
+        // N then 2N roots: the per-agent cost is the step between them.
         .env(
             "ACYCLIC_SCALE_AGENTS",
-            format!("{},{}", run.roots / 2, run.roots),
+            format!("{},{}", run.roots, 2 * run.roots),
         )
         .env("ACYCLIC_SCALE_CHILDREN", run.children.to_string())
         .env("ACYCLIC_SCALE_IDLE_MS", "300")
         .env("ACYCLIC_SCALE_BOUNDS", "1")
         .env(LEAKED_DESCRIPTORS, run.leaked_per_agent.to_string())
-        .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "16")
-        // The default under the stock limit, set so that Windows, which has
-        // no limit to derive it from, bounds the same allowance.
-        .env(acyclic_native_runtime::ADMITTED_DESCRIPTORS_VARIABLE, "64")
+        // One cached and one admitted descriptor: both process-wide bounds
+        // are full at N, so neither adds to the step from N to 2N.
+        .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "1")
+        .env(acyclic_native_runtime::ADMITTED_DESCRIPTORS_VARIABLE, "1")
         .env_remove("ACYCLIC_SCALE_DIAG");
-    if run.cold_baseline {
-        command.env(COLD_BASELINE, "1");
+    if run.from_baseline {
+        command.env(FROM_BASELINE, "1");
     } else {
-        command.env_remove(COLD_BASELINE);
+        command.env_remove(FROM_BASELINE);
     }
     if run.retain_child_views {
         command.env(crate::local::children::RETAIN_CHILD_VIEWS, "1");
@@ -860,38 +910,40 @@ fn bounded_run(run: &Run) -> Result<std::process::Output> {
     command.output().map_err(storage)
 }
 
-#[test]
-fn per_agent_cost_is_bounded() -> Result<()> {
-    let output = bounded_run(&Run::ROOTS)?;
+/// Runs `run` and checks that it reached its larger count and that its
+/// bounds held, or, given `failure`, that they failed naming it.
+fn expect_run(run: &Run, failure: Option<&str>) -> Result<()> {
+    let output = bounded_run(run)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     println!("{stdout}");
+    let expected = match failure {
+        None => output.status.success(),
+        Some(failure) => !output.status.success() && format!("{stdout}{stderr}").contains(failure),
+    };
     assert!(
-        output.status.success() && stdout.contains("scale agents=48 "),
-        "{stdout}
-{}",
-        String::from_utf8_lossy(&output.stderr)
+        stdout.contains(&run.largest()) && expected,
+        "{stdout}\n{stderr}"
     );
     Ok(())
+}
+
+#[test]
+fn per_agent_cost_is_bounded() -> Result<()> {
+    expect_run(&Run::ROOTS, None)
 }
 
 /// The bound fails an agent that keeps one descriptor more than it allows,
 /// on whichever OS counts them, so the counts it checks are real.
 #[test]
 fn a_descriptor_leaked_per_agent_fails_the_bound() -> Result<()> {
-    let output = bounded_run(&Run {
-        leaked_per_agent: bounds::IDLE_FDS.0 / 1000 + 1,
-        ..Run::ROOTS
-    })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success()
-            && stdout.contains("scale agents=48 ")
-            && format!("{stdout}{stderr}").contains("idle fds/agent"),
-        "{stdout}
-{stderr}"
-    );
-    Ok(())
+    expect_run(
+        &Run {
+            leaked_per_agent: bounds::IDLE_FDS.0 / 1000 + 1,
+            ..Run::ROOTS
+        },
+        Some("idle fds/agent"),
+    )
 }
 
 /// Children that ran a checkout command through the stock controller keep no
@@ -920,16 +972,7 @@ async fn settled_children_keep_no_task_view() -> Result<()> {
 #[test]
 #[cfg(feature = "native-execution")]
 fn settled_children_cost_is_bounded() -> Result<()> {
-    let output = bounded_run(&Run::CHILDREN)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("{stdout}");
-    assert!(
-        output.status.success() && stdout.contains("scale agents=48 "),
-        "{stdout}
-{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
+    expect_run(&Run::CHILDREN, None)
 }
 
 /// Settled children that keep their task views exceed the bounds, so the
@@ -937,44 +980,29 @@ fn settled_children_cost_is_bounded() -> Result<()> {
 #[test]
 #[cfg(feature = "native-execution")]
 fn retained_child_views_fail_the_bound() -> Result<()> {
-    let output = bounded_run(&Run {
-        retain_child_views: true,
-        ..Run::CHILDREN
-    })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success()
-            && stdout.contains("scale agents=48 ")
-            && format!("{stdout}{stderr}").contains("per-agent ceilings exceeded"),
-        "{stdout}
-{stderr}"
-    );
-    Ok(())
+    expect_run(
+        &Run {
+            retain_child_views: true,
+            ..Run::CHILDREN
+        },
+        Some("per-agent ceilings exceeded"),
+    )
 }
 
-/// Measured from a cold baseline, the process-wide services' constant handles
-/// (the native host's I/O pool threads and the native mount library's state,
-/// which Windows counts as handles) exceed the idle bound, so the warm-up the
-/// bounded runs take before their baseline is what excludes them.
+/// Counted from the cold baseline, the process-wide services' constant
+/// handles (the native host's I/O pool threads and the native mount
+/// library's state, which Windows counts as handles) exceed the idle bound,
+/// so taking the step from N to 2N is what excludes them.
 #[test]
 #[cfg(all(windows, feature = "native-execution"))]
-fn a_cold_baseline_fails_the_idle_bound() -> Result<()> {
-    let output = bounded_run(&Run {
-        cold_baseline: true,
-        ..Run::CHILDREN
-    })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("{stdout}");
-    assert!(
-        !output.status.success()
-            && stdout.contains("scale agents=48 ")
-            && format!("{stdout}{stderr}").contains("idle fds/agent"),
-        "{stdout}
-{stderr}"
-    );
-    Ok(())
+fn a_cost_counted_from_the_baseline_fails_the_idle_bound() -> Result<()> {
+    expect_run(
+        &Run {
+            from_baseline: true,
+            ..Run::CHILDREN
+        },
+        Some("idle fds/agent"),
+    )
 }
 
 /// A numeric run setting from the environment.
@@ -1002,35 +1030,40 @@ fn ramp() -> Result<()> {
         .map(|count| count.trim().parse::<u64>().map_err(storage))
         .collect::<Result<Vec<_>>>()?;
     runtime()?.block_on(async {
-        if crate::native_environment::variable(COLD_BASELINE).is_none() {
-            warm_up(children).await?;
-        }
-        // One baseline for every count, so each run counts everything but
-        // the warm-up, including what an earlier run left behind.
+        // One baseline, taken before anything starts the process-wide
+        // services, for every count: each run counts everything, including
+        // what an earlier run left behind.
         let baseline = Baseline::now()?;
         let mut previous: Option<Report> = None;
-        for (index, count) in counts.iter().enumerate() {
+        for count in &counts {
             let report = measure(*count, children, baseline).await?;
-            if bounded {
-                // The ceilings hold at the largest count; the smaller ones
-                // show that the per-agent cost does not grow with the count.
-                if index + 1 == counts.len() {
-                    report.assert_bounds();
-                }
-                if let Some(previous) =
-                    previous.filter(|previous| previous.agents < report.agents)
-                {
-                    assert!(
-                        report.idle_fds() <= previous.idle_fds(),
-                        "idle fds/agent grew with the agent count: {} at {} -> {} at {}",
-                        previous.idle_fds(),
-                        previous.agents,
-                        report.idle_fds(),
-                        report.agents,
-                    );
+            if bounded
+                && let Some(previous) = previous.filter(|previous| previous.agents < report.agents)
+            {
+                assert!(
+                    report.idle_fds() <= previous.idle_fds(),
+                    "idle fds/agent grew with the agent count: {} at {} -> {} at {}",
+                    previous.idle_fds(),
+                    previous.agents,
+                    report.idle_fds(),
+                    report.agents,
+                );
+                let marginal = Costs::marginal(&previous, &report);
+                let from_baseline = Costs::from_baseline(&report);
+                if crate::native_environment::variable(FROM_BASELINE).is_some() {
+                    marginal.print("marginal");
+                    from_baseline.assert_bounds("from-baseline");
+                } else {
+                    from_baseline.print("from-baseline");
+                    marginal.assert_bounds("marginal");
                 }
             }
             previous = Some(report);
+        }
+        if bounded && counts.len() != 2 {
+            return Err(Error::Invalid(format!(
+                "a bounded run measures exactly N and 2N roots, not {counts:?}"
+            )));
         }
         Ok(())
     })
