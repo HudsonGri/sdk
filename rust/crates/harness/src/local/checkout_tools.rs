@@ -246,7 +246,7 @@ impl CheckoutTools {
                 context.task().ordinary_journal_owner::<LocalStream>()?,
                 false,
             )),
-        )
+        )?
         .await?;
         let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
         let files = output::Output::open(context, Arc::clone(&self.task_files), request).await?;
@@ -280,7 +280,7 @@ impl CheckoutTools {
             1,
             PublicationPermit::Unrestricted,
             Some((Arc::clone(&publication), true)),
-        )
+        )?
         .await?;
         publication.verify(true, &mut None).await?;
         if let Ok(result) = &result {

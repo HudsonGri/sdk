@@ -363,3 +363,92 @@ fn transaction_operations_retain_only_owned_polling_handles() {
         "transaction staging embeds concrete SDK operations in its poll frame"
     );
 }
+
+#[test]
+fn publication_children_retain_only_owned_polling_handles() {
+    type Workspace = acyclic_fs::Workspace<MemoryAuthorityBackend, MemoryObjectBackend>;
+    type Generation = acyclic_fs::Generation<MemoryAuthorityBackend, MemoryObjectBackend>;
+    type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
+    let authorization = retained_operation_bytes(
+        |(host, workspace, grant): (&'static Host, &'static Workspace, &'static ContentGrant)| {
+            host.authorize_content_write(workspace, grant, "file", false, None, None)
+        },
+    );
+    let retained_read = retained_operation_bytes(
+        |(host, generation, file): (&'static Host, &'static Generation, &'static FileRef)| {
+            host.read_retained_file(generation, file, 64, None)
+        },
+    );
+    let begin = retained_operation_bytes(
+        |(workspace, key, cancellation): (
+            &'static Workspace,
+            FilesystemKey,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                workspace.begin_transaction(key, acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            })
+        },
+    );
+    let begin_at = retained_operation_bytes(
+        |(workspace, generation, key, cancellation): (
+            &'static Workspace,
+            &'static Generation,
+            FilesystemKey,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                workspace.begin_transaction_at(
+                    generation,
+                    key,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+            })
+        },
+    );
+    let rebase = retained_operation_bytes(
+        |(transaction, cancellation): (
+            &'static mut Transaction,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                transaction.rebase(1, acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+            })
+        },
+    );
+    let commit = retained_operation_bytes(
+        |(transaction, cancellation): (
+            &'static mut Transaction,
+            &'static acyclic_fs::CancellationToken,
+        )| {
+            unmeasured_workspace_operation(|| {
+                transaction.commit(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation,
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        })
+                    },
+                )
+            })
+        },
+    );
+    let sizes = [
+        authorization,
+        retained_read,
+        begin,
+        begin_at,
+        rebase,
+        commit,
+    ];
+    eprintln!("publication child retained bytes: {sizes:?}");
+    assert!(
+        sizes.into_iter().all(|bytes| bytes <= 512),
+        "publication embeds concrete validation or transaction lifecycle futures"
+    );
+}

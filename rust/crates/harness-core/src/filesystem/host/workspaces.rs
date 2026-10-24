@@ -1,18 +1,18 @@
 use super::*;
 
-type WorkspaceOperation<'a, T> = crate::conversation::BoundedContentFuture<
+type WorkspaceOperation<'a, T, E = WorkspaceError> = crate::conversation::BoundedContentFuture<
     'a,
-    acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, WorkspaceError>,
+    acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, E>,
 >;
 
 // Keep SDK result/receipt mapping at each caller, while constructing its
 // concrete operation before the caller's poll frame is entered again.
 #[inline(never)]
-fn unmeasured_workspace_operation<'a, T: 'a, F>(
+fn unmeasured_workspace_operation<'a, T: 'a, E: 'a, F>(
     build: impl FnOnce() -> F,
-) -> Result<WorkspaceOperation<'a, T>>
+) -> Result<WorkspaceOperation<'a, T, E>>
 where
-    F: Future<Output = acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, WorkspaceError>>
+    F: Future<Output = acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, E>>
         + acyclic_stream::ProviderTask
         + 'a,
 {
@@ -270,25 +270,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let mut transaction = match expected_generation {
                 Some(reference) => {
                     let generation = self.generation(&workspace, reference, None).await?;
-                    workspace
-                        .begin_transaction_at(&generation, key, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?
-                }
-                None => workspace
-                    .begin_transaction(key, budget, &cancellation)
-                    .await
+                    unmeasured_workspace_operation(|| {
+                        workspace.begin_transaction_at(&generation, key, budget, &cancellation)
+                    })?
+                    .await?
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(map_error)?,
+                    .map_err(map_error)?
+                }
+                None => unmeasured_workspace_operation(|| {
+                    workspace.begin_transaction(key, budget, &cancellation)
+                })?
+                .await?
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(map_error)?,
             };
             if let Some(fence) = publication.fence() {
-                transaction
-                    .observe_policy_fence(fence, budget, &cancellation)
-                    .await
-                    .map_err(|failure| map_error(failure.error))?;
+                unmeasured_workspace_operation(|| {
+                    transaction.observe_policy_fence(fence, budget, &cancellation)
+                })?
+                .await?
+                .map_err(|failure| map_error(failure.error))?;
             }
             Self::stage_unmeasured(
                 &mut transaction,
@@ -300,8 +303,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?
             .await?;
             loop {
-                let committed = transaction
-                    .commit(
+                let committed = unmeasured_workspace_operation(|| {
+                    transaction.commit(
                         None,
                         acyclic_fs::PublicationPermit::Unrestricted,
                         budget,
@@ -317,9 +320,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                         },
                     )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?;
+                })?
+                .await?
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
                 return match committed {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
@@ -331,11 +335,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     {
                         // Reuse the original candidate only when the SDK proves its
                         // exact observations and mutation dependencies still hold.
-                        match transaction
-                            .rebase(1, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| map_error(failure.error))?
+                        match unmeasured_workspace_operation(|| {
+                            transaction.rebase(1, budget, &cancellation)
+                        })?
+                        .await?
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| map_error(failure.error))?
                         {
                             acyclic_fs::TransactionRebase::Rebased(_) => continue,
                             acyclic_fs::TransactionRebase::Conflicted { .. } => {

@@ -122,7 +122,7 @@ impl LocalHarness {
             let discovery = self
                 .instructions(&policy.instruction_names, maximum, publisher)
                 .await?;
-            let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
+            let (goal, plans) = self.file_guidance(prompt.unwrap_or_default())?.await?;
             let manifest =
                 ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
             #[cfg(any(any(test, feature = "native-execution"), feature = "hooks"))]
@@ -265,6 +265,24 @@ mod tests {
 
     fn retained_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
         std::mem::size_of::<T>()
+    }
+
+    #[test]
+    fn manifest_children_retain_only_owned_polling_handles() {
+        let observation = retained_operation_bytes(
+            |(local, publisher): (&'static LocalHarness, &'static dyn ContentPublisher)| {
+                local.observe_context_manifest(OperationId::from_bytes([1; 16]), publisher)
+            },
+        );
+        let guidance =
+            retained_operation_bytes(|local: &'static LocalHarness| local.file_guidance(""));
+        eprintln!("manifest child retained bytes: [{observation}, {guidance}]");
+        assert!(
+            [observation, guidance]
+                .into_iter()
+                .all(|bytes| bytes <= 512),
+            "manifest embeds concrete observation or guidance futures"
+        );
     }
 
     #[test]
