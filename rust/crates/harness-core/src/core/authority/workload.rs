@@ -9,11 +9,27 @@ use acyclic_auth::{
 use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 mod admission;
+pub(crate) use admission::AuthenticatedRecord;
 pub(super) use admission::{live_record, record, verify_record};
 
 pub(super) struct AuthenticatedWorkload {
     digest: [u8; 32],
     capability: std::sync::Arc<VerifiedCapability>,
+    attributes: RecordAttributes,
+    last: Claims,
+}
+
+fn authenticated(
+    capability: VerifiedCapability,
+    digest: [u8; 32],
+) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
+    let (attributes, last) = admission::scope_facts(&capability, false)?;
+    Ok(std::sync::Arc::new(AuthenticatedWorkload {
+        digest,
+        capability: std::sync::Arc::new(capability),
+        attributes,
+        last,
+    }))
 }
 
 fn authenticate(
@@ -22,7 +38,7 @@ fn authenticate(
     scope: &Scope,
     timestamp: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<std::sync::Arc<VerifiedCapability>> {
+) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
         io.hashed_bytes(scope.workload.len() as u64)?;
@@ -32,16 +48,14 @@ fn authenticate(
     if let Some(authenticated) = retained.as_ref()
         && authenticated.digest == digest
     {
-        return Ok(authenticated.capability.clone());
+        return Ok(authenticated.clone());
     }
-    let capability = std::sync::Arc::new(
+    let authenticated = authenticated(
         verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
-    );
-    *retained = Some(AuthenticatedWorkload {
         digest,
-        capability: capability.clone(),
-    });
-    Ok(capability)
+    )?;
+    *retained = Some(authenticated.clone());
+    Ok(authenticated)
 }
 
 const CLAIM: &str = "harness.scope.";
@@ -311,8 +325,8 @@ pub(super) fn verify(
         return Err(unauthorized("foreign issuer"));
     }
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
-    let capability = authenticate(&verifier.public, &*trust, scope, timestamp, work)?;
-    authorize_scope(&*trust, audience, scope, timestamp, capability, work)
+    let authenticated = authenticate(&verifier.public, &*trust, scope, timestamp, work)?;
+    authorize_scope(&*trust, audience, scope, timestamp, &authenticated, work)
 }
 pub(super) fn verify_trusted(
     trust: &dyn verify::Trust,
@@ -321,13 +335,15 @@ pub(super) fn verify_trusted(
     timestamp: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::sync::Arc<VerifiedCapability>> {
-    if let Some(io) = work.as_deref() {
+    if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
+        io.hashed_bytes(scope.workload.len() as u64)?;
     }
-    let capability = std::sync::Arc::new(
+    let authenticated = authenticated(
         verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
-    );
-    authorize_scope(trust, audience, scope, timestamp, capability, work)
+        *blake3::hash(&scope.workload).as_bytes(),
+    )?;
+    authorize_scope(trust, audience, scope, timestamp, &authenticated, work)
 }
 
 fn authorize_scope(
@@ -335,49 +351,27 @@ fn authorize_scope(
     audience: &Authority,
     scope: &Scope,
     timestamp: u64,
-    capability: std::sync::Arc<VerifiedCapability>,
+    authenticated: &AuthenticatedWorkload,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::sync::Arc<VerifiedCapability>> {
     if let Some(io) = work.as_deref() {
         io.check_cancellation()?;
     }
+    let capability = &authenticated.capability;
     if capability.account_id().map_err(unauthorized)? != scope.issuer {
         return Err(unauthorized("foreign account"));
     }
     let name = resource(audience)?;
-    let mut attributes = Vec::new();
-    let mut previous: Option<Claims> = None;
-    for (index, scoped) in capability.effective().pins().enumerate() {
-        let pin = scoped.pin();
-        if scoped.declaring_block() != index || pin.name != format!("{CLAIM}{index}") {
-            return Err(unauthorized("invalid scope ancestry"));
-        }
-        let PinValue::Literal(value) = &pin.value else {
-            return Err(unauthorized("nonliteral scope"));
-        };
-        let current: Claims = serde_json::from_slice(value).map_err(unauthorized)?;
-        if current.issuer != scope.issuer
-            || previous.as_ref().is_some_and(|parent| {
-                current.agent != parent.agent
-                    || !current.capabilities.is_subset_of(&parent.capabilities)
-                    || current.parent != capability.block_ids().get(index - 1).copied()
-            })
-        {
-            return Err(unauthorized("scope widens its ancestor"));
-        }
-        previous = Some(current);
-        attributes.push(Attribute {
-            name: pin.name.clone(),
-            value: value.clone(),
-        });
-    }
-    if attributes.len() != capability.block_ids().len()
-        || previous.as_ref() != Some(&Claims::from_scope(scope))
+    let last = &authenticated.last;
+    if last.id != scope.id
+        || last.capabilities != scope.capabilities
+        || last.agent != scope.agent
+        || last.issuer != scope.issuer
+        || last.parent != scope.parent_proof
         || capability.block_ids().last() != Some(scope.proof.as_ref())
     {
         return Err(unauthorized("scope does not match its authenticated tip"));
     }
-    let attributes = RecordAttributes::try_new(attributes).map_err(unauthorized)?;
     capability
         .authorize(
             trust,
@@ -390,7 +384,7 @@ fn authorize_scope(
                 holder: Some(&scope.issuer),
                 now_unix_seconds: timestamp,
                 keys: &[],
-                attributes: &attributes,
+                attributes: &authenticated.attributes,
                 usage: &usage(),
                 cpu_millis: 0,
                 memory_bytes: 0,
@@ -398,7 +392,7 @@ fn authorize_scope(
             PolicyDecision::Allow,
         )
         .map_err(unauthorized)?;
-    Ok(capability)
+    Ok(capability.clone())
 }
 
 #[cfg(test)]
