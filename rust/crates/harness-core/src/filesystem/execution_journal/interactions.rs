@@ -22,9 +22,15 @@ where
                 owner.verify(true, &mut None).await?;
             }
             let approval = matches!(response, InteractionResponse::Approval { .. });
-            host.resolve_latest(id, response, responder, owner).await?;
+            let resolution = host.resolve_latest(id, response, responder, owner);
             if approval {
+                // Only the complete approval publication can certify a
+                // verdict. Its explicit receipts still flush every staged
+                // write before any caller receives the decision.
+                acyclic_stream::deferring_durability(resolution).await?;
                 self.published_decision(id, None).await?;
+            } else {
+                resolution.await?;
             }
             if let Some(owner) = owner {
                 owner.verify(true, &mut None).await?;

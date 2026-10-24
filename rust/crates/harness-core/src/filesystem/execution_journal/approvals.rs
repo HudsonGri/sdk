@@ -122,8 +122,17 @@ where
             owner.require_interaction_grant(&mut None)?;
             owner.verify(true, &mut None).await?;
         }
-        host.resolve_decision(id, decision, responder, owner, &mut transaction)
-            .await?;
+        // The resolution's filesystem staging and canonical append are one
+        // publication. Its explicit receipt below remains the durability gate;
+        // intermediate appends must not each submit a separate device flush.
+        acyclic_stream::deferring_durability(host.resolve_decision(
+            id,
+            decision,
+            responder,
+            owner,
+            &mut transaction,
+        ))
+        .await?;
         self.published_decision_from(id, None, transaction.aggregate, None)
             .await?;
         if let Some(owner) = owner {

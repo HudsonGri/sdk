@@ -17,6 +17,15 @@ mod binding;
 #[path = "approval_install_tests.rs"]
 mod install;
 
+#[cfg(all(
+    feature = "filesystem-local",
+    not(target_arch = "wasm32"),
+    not(acyclic_loom),
+    not(acyclic_harness_loom)
+))]
+#[path = "approval_flush_tests.rs"]
+mod flush;
+
 type Journal =
     FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 const TASK: u8 = 80;
@@ -32,7 +41,12 @@ fn conversation() -> AuthorityIssuer {
     )
 }
 
-async fn bind(fixture: &Fixture, conversation: &AuthorityIssuer) -> Result<()> {
+async fn bind<P, A, O>(fixture: &Fixture<P, A, O>, conversation: &AuthorityIssuer) -> Result<()>
+where
+    P: StreamProvider + 'static,
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     let mut aggregate = StreamAggregate::open(
         &fixture.stream,
         (
