@@ -50,7 +50,7 @@ async fn paused_command_remains_recoverable<const BROKEN: bool>(task_root: bool)
         // The old first-delivery path archived a passive wait as a terminal
         // command result. Reopen then suppressed the still-unanswered request.
         let bytes =
-            archive::output_bytes(0, &Err(Error::Indeterminate(operation)), 65_536).unwrap();
+            archive::output_bytes(1, &Err(Error::Indeterminate(operation)), 65_536).unwrap();
         commands
             .publish(result_key.clone(), bytes, true)
             .await
@@ -89,9 +89,18 @@ async fn paused_command_remains_recoverable<const BROKEN: bool>(task_root: bool)
 fn passive_approval_keeps_first_and_recovered_command_deliveries_open() {
     for task_root in [false, true] {
         futures::executor::block_on(paused_command_remains_recoverable::<false>(task_root));
-        std::panic::catch_unwind(|| {
+        let failure = std::panic::catch_unwind(|| {
             futures::executor::block_on(paused_command_remains_recoverable::<true>(task_root));
         })
         .expect_err("terminal-publication negative control escaped the recovery oracle");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("passive approval was archived as terminal"),
+            "negative control failed before the recovery oracle: {message}"
+        );
     }
 }

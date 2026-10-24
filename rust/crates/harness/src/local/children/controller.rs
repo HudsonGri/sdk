@@ -1,4 +1,5 @@
 use super::*;
+use crate::package::harness::worker::DriveState;
 use crate::{
     filesystem::TaskCommandHost,
     runtime::TaskStateProvider,
@@ -26,6 +27,13 @@ mod stopping;
 pub(super) struct ChildSignals {
     inherited: Option<acyclic_fs::CancellationToken>,
     parent_done: acyclic_fs::CancellationToken,
+    parent_passive: acyclic_fs::CancellationToken,
+}
+
+#[derive(Debug)]
+pub(super) enum ChildCompletion {
+    Settled(Component, u64),
+    AwaitingApproval,
 }
 
 impl LocalHarness {
@@ -35,10 +43,16 @@ impl LocalHarness {
         reference: Component,
         request: FileValue,
         signals: Option<ChildSignals>,
-    ) -> BoxProviderFuture<'a, Result<(Component, u64)>> {
+    ) -> BoxProviderFuture<'a, Result<ChildCompletion>> {
         Box::pin(async move {
-            let (inherited, parent_done) = signals
-                .map(|signals| (signals.inherited, signals.parent_done))
+            let (inherited, parent_done, parent_passive) = signals
+                .map(|signals| {
+                    (
+                        signals.inherited,
+                        signals.parent_done,
+                        signals.parent_passive,
+                    )
+                })
                 .unwrap_or_default();
             let FileKey::Child {
                 reference: requested,
@@ -93,7 +107,7 @@ impl LocalHarness {
                     .await
                     .map_err(storage)?,
             )? {
-                return Ok((reference, generation.position));
+                return Ok(ChildCompletion::Settled(reference, generation.position));
             }
             let child = self.admit_child_task(files.as_ref(), &request).await?;
             let parsed = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?;
@@ -174,7 +188,7 @@ impl LocalHarness {
                     )
                     .await?
                     {
-                        return Ok((reference, generation.position));
+                        return Ok(ChildCompletion::Settled(reference, generation.position));
                     }
                     continue;
                 }
@@ -277,7 +291,7 @@ impl LocalHarness {
                     )
                     .await?
                     {
-                        return Ok((reference, generation.position));
+                        return Ok(ChildCompletion::Settled(reference, generation.position));
                     }
                     continue;
                 }
@@ -328,6 +342,7 @@ impl LocalHarness {
                             files: files.clone(),
                             reference: reference.clone(),
                             parent_done: parent_done.clone(),
+                            parent_passive: parent_passive.clone(),
                         }),
                     );
                     let controls = async {
@@ -365,7 +380,11 @@ impl LocalHarness {
                             }
                         }
                     };
-                    stopping::drain(advance, controls, &cancellation).await?;
+                    if stopping::drain(advance, controls, &cancellation).await?
+                        == DriveState::AwaitingApproval
+                    {
+                        return Ok(ChildCompletion::AwaitingApproval);
+                    }
                 }
                 let (processed, results) = self
                     .child_processed(child, journal.as_ref(), &reference, &values)
@@ -438,7 +457,7 @@ impl LocalHarness {
                 )
                 .await?
                 {
-                    return Ok((reference, generation.position));
+                    return Ok(ChildCompletion::Settled(reference, generation.position));
                 }
             }
         })
