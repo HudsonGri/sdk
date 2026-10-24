@@ -557,8 +557,10 @@ fn drive(mut command: Command, case: Case, operation: OperationId) -> String {
                 .files
                 .into_iter()
                 .filter_map(|file| {
-                    (file.segments.len() == 1)
-                        .then(|| FileValue::new(file.key, file.segments[0].clone()))
+                    if file.segments.len() != 1 {
+                        return None;
+                    }
+                    Some(FileValue::new(file.key, file.segments.into_iter().next()?))
                 })
                 .collect()
         } else {

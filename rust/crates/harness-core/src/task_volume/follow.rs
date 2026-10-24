@@ -104,10 +104,10 @@ impl Change {
             .collect();
         for key in &retained {
             if let FileKey::Task { task, file } = key {
-                let request = match file {
-                    TaskFile::ApprovalRequest(request)
-                    | TaskFile::ApprovalReview { request, .. } => request,
-                    _ => continue,
+                let (TaskFile::ApprovalRequest(request) | TaskFile::ApprovalReview { request, .. }) =
+                    file
+                else {
+                    continue;
                 };
                 if decisions.contains(&(task, request)) {
                     change.removed.push((*key).clone());

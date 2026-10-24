@@ -24,7 +24,7 @@ impl Event {
         }
     }
 }
-pub(super) type Events = BoxProviderStream<'static, Result<Event>>;
+pub(super) type Events = BoxProviderStream<'static, Result<Box<Event>>>;
 type Feed = BoxProviderStream<'static, Result<(TaskId, bool, Change)>>;
 
 struct Tree {
@@ -85,10 +85,10 @@ impl Tree {
                     }
                 ) {
                     let child = ChildStatus::parse(&file.bytes)?.task;
-                    if !self.seen.contains(&child) {
-                        if let Some(files) = self.local.approval_child_files(parent, child).await? {
-                            self.watch(child, files, false).await?;
-                        }
+                    if !self.seen.contains(&child)
+                        && let Some(files) = self.local.approval_child_files(parent, child).await?
+                    {
+                        self.watch(child, files, false).await?;
                     }
                 }
                 continue;
@@ -126,6 +126,6 @@ pub(super) fn follow(local: Arc<LocalHarness>, root: TaskId) -> Events {
     };
     Box::pin(futures::stream::try_unfold(tree, |mut tree| async move {
         let event = tree.next().await?;
-        Ok(Some((event, tree)))
+        Ok(Some((Box::new(event), tree)))
     }))
 }

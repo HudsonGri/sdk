@@ -420,7 +420,7 @@ impl LocalFileClient {
                 Input(Option<Result<String>>),
                 File(Result<()>),
                 Host(Result<()>),
-                Approval(Option<Result<approvals::Event>>),
+                Approval(Option<Result<Box<approvals::Event>>>),
             }
             let next = tokio::select! {
                 biased;
@@ -443,7 +443,7 @@ impl LocalFileClient {
                 Next::File(result) => {
                     result?;
                 }
-                Next::Approval(Some(event)) => event?.publish(output)?,
+                Next::Approval(Some(event)) => (*event?).publish(output)?,
                 Next::Approval(None) => {
                     return Err(Error::Storage("approval tree follow ended".into()));
                 }

@@ -562,7 +562,7 @@ async fn approval_history_is_independent_of_message_attachment_limits() -> Resul
                     ));
                     let original = request.as_ref().unwrap();
                     let FileKey::Task {
-                        task,
+                        task: component,
                         file: TaskFile::ApprovalRequest(id),
                     } = &original.key
                     else {
@@ -575,7 +575,7 @@ async fn approval_history_is_independent_of_message_attachment_limits() -> Resul
                     )?;
                     let decision = FileValue::new(
                         FileKey::Task {
-                            task: task.clone(),
+                            task: component.clone(),
                             file: TaskFile::ApprovalDecision {
                                 request: id.clone(),
                                 principal: Component::new(ApprovalDecisionFile::principal_file(

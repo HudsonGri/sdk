@@ -6,6 +6,16 @@ use std::collections::{BTreeMap, BTreeSet};
 const SLOTS: usize = 9;
 const UNCLASSIFIED: usize = SLOTS - 1;
 
+fn pending_approval(key: &FileKey) -> bool {
+    matches!(
+        key,
+        FileKey::Task {
+            file: TaskFile::ApprovalRequest(_) | TaskFile::ApprovalReview { .. },
+            ..
+        }
+    )
+}
+
 struct Entry {
     order: u64,
     slot: usize,
@@ -52,7 +62,7 @@ impl Window {
         };
         let mut evicted = Vec::new();
         for (order, file) in files.iter().enumerate() {
-            if file.bytes.len() <= maximum_bytes {
+            if file.bytes.len() <= maximum_bytes || pending_approval(&file.key) {
                 window.put(file, order as u64, &mut evicted);
             }
         }
@@ -103,7 +113,7 @@ impl Window {
     fn put(&mut self, file: &FileValue, order: u64, removed: &mut Vec<FileKey>) {
         let previous = self.take(&file.key);
         let bytes = file.bytes.len();
-        if bytes > self.maximum_bytes {
+        if bytes > self.maximum_bytes && !pending_approval(&file.key) {
             if let Some((key, generation)) = previous
                 && generation < self.generation
             {
@@ -164,16 +174,7 @@ impl Window {
             .filter_map(|slot| {
                 self.ordered[slot]
                     .iter()
-                    .find(|(_, key)| {
-                        !matches!(
-                            key,
-                            FileKey::Task {
-                                file: TaskFile::ApprovalRequest(_)
-                                    | TaskFile::ApprovalReview { .. },
-                                ..
-                            }
-                        )
-                    })
+                    .find(|(_, key)| !pending_approval(key))
                     .map(|oldest| (oldest, slot))
             })
             .min()

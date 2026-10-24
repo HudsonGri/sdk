@@ -163,11 +163,9 @@ impl LocalHarness {
     }
 
     pub(crate) async fn awaiting_operation_approval(&self, root: TaskId) -> Result<bool> {
-        let mut tasks = vec![root];
+        let mut tasks = std::collections::VecDeque::from([root]);
         let mut seen = std::collections::BTreeSet::from([root]);
-        let mut index = 0;
-        while index < tasks.len() {
-            let task = tasks[index];
+        while let Some(task) = tasks.pop_front() {
             if self.awaiting_approval_stage(task, true).await? {
                 return Ok(true);
             }
@@ -186,7 +184,7 @@ impl LocalHarness {
                 };
                 for child in page.entries {
                     if seen.insert(child.task_id) {
-                        tasks.push(child.task_id);
+                        tasks.push_back(child.task_id);
                     }
                 }
                 revision = Some(page.revision);
@@ -195,7 +193,6 @@ impl LocalHarness {
                     break;
                 }
             }
-            index += 1;
         }
         Ok(false)
     }

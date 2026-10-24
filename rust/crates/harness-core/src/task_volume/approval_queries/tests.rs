@@ -277,6 +277,13 @@ async fn approval_live_window_refuses_overfull_pending_set_instead_of_eviction()
         .await
         .unwrap()
         .changes;
+    assert!(
+        matches!(
+            volume.observe_files(query.clone(), None, 8, 5).await,
+            Err(Error::LimitExceeded)
+        ),
+        "an individually oversized unanswered request must be refused, not omitted"
+    );
     volume
         .append(
             generation,
