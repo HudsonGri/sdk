@@ -267,16 +267,17 @@ fn charge(drop_observer: bool, broken: bool) {
             }
         }
         drop(task);
-        assert!(
-            meter.memory.load(Ordering::SeqCst) >= funded,
-            "live shared state lost its funding"
-        );
+        let live_funding = meter.memory.load(Ordering::SeqCst);
         if let Some(worker) = worker {
             worker.join().unwrap();
         }
-        assert_eq!(meter.memory.load(Ordering::SeqCst), funded);
+        let joined_funding = meter.memory.load(Ordering::SeqCst);
         drop(state);
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        // Capture the raced observation first, but retire the modeled worker
+        // before panicking: its destructor must run inside this Loom model.
+        assert!(live_funding >= funded, "live shared state lost its funding");
+        assert_eq!(joined_funding, funded);
     });
     if !drop_observer {
         assert_ne!(
@@ -365,12 +366,10 @@ fn waiter_charge(cancel: bool, broken: bool) {
             }
             assert!(pending.is_none() && waiter.is_none());
         }
-        // Checked before the notifier is joined: it may still hold the node.
-        assert_eq!(
-            meter.memory.load(Ordering::SeqCst),
-            registered,
-            "live shared waiter lost its funding"
-        );
+        // Observe before joining: the notifier may still hold the node. Defer
+        // a failing assertion until it has retired inside the model, so the
+        // negative control cannot strand a modeled receiver during unwind.
+        let retained_funding = meter.memory.load(Ordering::SeqCst);
         notifier.join().unwrap();
         drop(retained);
         assert_eq!(meter.memory.load(Ordering::SeqCst), registered - funded);
@@ -385,6 +384,10 @@ fn waiter_charge(cancel: bool, broken: bool) {
         drop(pending);
         drop(task);
         assert_eq!(meter.memory.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            retained_funding, registered,
+            "live shared waiter lost its funding"
+        );
     });
     eprintln!(
         "waiter charge schedules (cancel={cancel}): {}",
