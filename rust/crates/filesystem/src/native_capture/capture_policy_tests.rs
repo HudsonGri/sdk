@@ -228,6 +228,53 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[tokio::test]
+async fn recorded_metadata_capture_retains_backdated_access_without_reading_the_body()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    let file = source.path().join("file");
+    std::fs::write(&file, b"body")?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work).await?;
+    let options = options(source.path(), 8)?;
+    let policy = CapturePolicy::default();
+    capture_baseline(
+        &mut checkout,
+        &options,
+        &policy,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
+    let receipt = capture_recorded_metadata(
+        &mut checkout,
+        &options,
+        &policy,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(receipt.value.changed_paths, 1);
+    assert_eq!(receipt.value.staged_file_bytes, 0);
+    assert_eq!(std::fs::metadata(&file)?.accessed()?, std::time::UNIX_EPOCH);
+    let path = path("/file")?;
+    let (lookup, _custody) = checkout
+        .lookup_batch_no_follow(&[path], &work, &cancellation)
+        .await?;
+    let record = lookup.entries[0].record.ok_or("file disappeared")?;
+    let metadata = checkout
+        .read_metadata(record.file_id, &work, &cancellation)
+        .await?;
+    assert_eq!(metadata.accessed_ns, MetadataField::Value(0));
+    Ok(())
+}
+
 #[cfg(unix)]
 mod unchanged_properties {
     use super::*;
