@@ -57,7 +57,12 @@ where
             .collect();
         self.validate().await?;
         let result = self
-            .diff_read_only(Some(&current), &target_tree, &tracked_paths)
+            .diff_read_only(
+                Some(&current),
+                &target_tree,
+                &tracked_paths,
+                readonly::DiffBefore::Working,
+            )
             .await?;
         self.validate().await?;
         Ok(super::Output {
