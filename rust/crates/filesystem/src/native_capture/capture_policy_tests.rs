@@ -231,13 +231,27 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
 #[tokio::test]
 async fn recorded_metadata_capture_retains_backdated_access_without_reading_the_body()
 -> Result<(), Box<dyn std::error::Error>> {
+    assert_recorded_metadata_capture(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "metadata capture must not read file bodies")]
+async fn recorded_metadata_negative_control_detects_complete_body_capture() {
+    assert_recorded_metadata_capture(true).await.unwrap();
+}
+
+async fn assert_recorded_metadata_capture(
+    complete: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     let file = source.path().join("file");
     std::fs::write(&file, b"body")?;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let mut checkout = native_checkout(&work).await?;
+    let mut checkout = native_checkout(&work)
+        .await
+        .map_err(|error| format!("create capture fixture: {error:?}"))?;
     let options = options(source.path(), 8)?;
     let policy = CapturePolicy::default();
     capture_baseline(
@@ -247,31 +261,61 @@ async fn recorded_metadata_capture_retains_backdated_access_without_reading_the_
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await?;
+    .await
+    .map_err(|error| format!("capture initial baseline: {error:?}"))?;
     std::fs::File::options()
         .write(true)
         .open(&file)?
         .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
-    let receipt = capture_recorded_metadata(
-        &mut checkout,
-        &options,
-        &policy,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
+    let receipt = if complete {
+        super::entry::capture_recorded_with_intent(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            CaptureIntent::Complete,
+        )
+        .await
+        .map_err(|error| format!("capture complete metadata control: {error:?}"))?
+    } else {
+        capture_recorded_metadata(
+            &mut checkout,
+            &options,
+            &policy,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|error| format!("capture recorded metadata: {error:?}"))?
+    };
+    assert_eq!(
+        receipt.value.staged_file_bytes, 0,
+        "metadata capture must not read file bodies"
+    );
     assert_eq!(receipt.value.changed_paths, 1);
-    assert_eq!(receipt.value.staged_file_bytes, 0);
     assert_eq!(std::fs::metadata(&file)?.accessed()?, std::time::UNIX_EPOCH);
     let path = path("/file")?;
-    let (lookup, _custody) = checkout
-        .lookup_batch_no_follow(&[path], &work, &cancellation)
-        .await?;
-    let record = lookup.entries[0].record.ok_or("file disappeared")?;
+    // Capture replaced the candidate and its original accounting scope. The old
+    // native ledger must not be used to observe the replacement's dependencies.
+    assert!(matches!(
+        checkout
+            .lookup_batch_no_follow(std::slice::from_ref(&path), &work, &cancellation)
+            .await,
+        Err(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::InvalidLayout
+        ))
+    ));
+    let lookup = checkout
+        .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| format!("lookup captured file: {error:?}"))?;
+    let record = lookup.value.record.ok_or("file disappeared")?;
     let metadata = checkout
-        .read_metadata(record.file_id, &work, &cancellation)
-        .await?;
-    assert_eq!(metadata.accessed_ns, MetadataField::Value(0));
+        .read_metadata(record.file_id, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|error| format!("read captured metadata: {error:?}"))?;
+    assert_eq!(metadata.value.accessed_ns, MetadataField::Value(0));
     Ok(())
 }
 
