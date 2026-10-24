@@ -71,6 +71,10 @@ import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import crypto from 'node:crypto';
 process.env.BUILD_SLOT_REMOTE_FETCH='/work/target/debug/tool';process.env.BUILD_SLOT_GLIBC='2.35';
+function captureBeforeNode(body){
+const capture=body.indexOf('capture-limits'),node=body.indexOf('node $J.receipt-tool.mjs');
+if(capture<0||node<0||capture>node)throw Error('Node raises nofile before caller capture');
+}
 for(const gate of [false,true])for(const input of [['bash','-c','echo okay'],['cargo','metadata','--format-version','1'],['cargo','build']]){
 const argv=pinGlibc(input);
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
@@ -88,6 +92,13 @@ if(inner.slice(0,first)!=='export BB_TARGET_REQUEST_SHA256='+requestHash)throw E
 if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo bypasses target proxy');
 if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
 if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
+if(inner.includes('ulimit -n'))throw Error('job overrides caller nofile limit');
+if(!bodies[2].includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
+if(!bodies[2].includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
+captureBeforeNode(bodies[3]);
+for(const broken of [bodies[3].replaceAll('capture-limits','missing-capture'),bodies[3].replaceAll('node $J.receipt-tool.mjs','missing-node')]){
+let rejected=false;try{captureBeforeNode(broken);}catch{rejected=true;}if(!rejected)throw Error('missing capture/Node negative control passed');
+}
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
