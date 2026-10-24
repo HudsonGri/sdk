@@ -162,39 +162,8 @@ impl LocalHarness {
         self.submit_approval_decision(file).await
     }
 
-    pub(crate) async fn awaiting_operation_approval(&self, root: TaskId) -> Result<bool> {
-        let mut tasks = std::collections::VecDeque::from([root]);
-        let mut seen = std::collections::BTreeSet::from([root]);
-        while let Some(task) = tasks.pop_front() {
-            if self.awaiting_approval_stage(task, true).await? {
-                return Ok(true);
-            }
-            let mut revision = None;
-            let mut after = None;
-            loop {
-                let page = match self
-                    .runtime
-                    .task_host()
-                    .children(task, revision, after, 64)
-                    .await
-                {
-                    Ok(page) => page,
-                    Err(Error::NotFound(_)) if task == root => return Ok(false),
-                    Err(error) => return Err(error),
-                };
-                for child in page.entries {
-                    if seen.insert(child.task_id) {
-                        tasks.push_back(child.task_id);
-                    }
-                }
-                revision = Some(page.revision);
-                after = page.next_after;
-                if after.is_none() {
-                    break;
-                }
-            }
-        }
-        Ok(false)
+    pub(crate) async fn awaiting_human_approval(&self, task: TaskId) -> Result<bool> {
+        self.awaiting_approval_stage(task, true).await
     }
 
     /// Whether a suspended task has reached an external approver. Automatic

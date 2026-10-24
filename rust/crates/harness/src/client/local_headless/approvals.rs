@@ -24,7 +24,21 @@ impl Event {
         }
     }
 }
-pub(super) type Events = BoxProviderStream<'static, Result<Box<Event>>>;
+pub(super) struct Events {
+    events: BoxProviderStream<'static, Result<Box<Event>>>,
+    tasks: Arc<std::sync::Mutex<Vec<TaskId>>>,
+}
+impl Events {
+    pub(super) async fn next(&mut self) -> Option<Result<Box<Event>>> {
+        self.events.next().await
+    }
+    pub(super) fn tasks(&self) -> Result<Vec<TaskId>> {
+        self.tasks
+            .lock()
+            .map(|tasks| tasks.clone())
+            .map_err(|_| Error::Storage("approval discovery state poisoned".into()))
+    }
+}
 type Feed = BoxProviderStream<'static, Result<(TaskId, bool, Change)>>;
 
 struct Tree {
@@ -35,6 +49,7 @@ struct Tree {
     feeds: SelectAll<Feed>,
     statuses: VecDeque<(TaskId, FileValue)>,
     ready: VecDeque<Event>,
+    tasks: Arc<std::sync::Mutex<Vec<TaskId>>>,
 }
 impl Tree {
     async fn watch(
@@ -64,6 +79,14 @@ impl Tree {
             self.ready.push_back(Event::Snapshot(query, snapshot));
         }
         self.seen.insert(task);
+        if !root {
+            // Publish discovery before its snapshot can be delivered. The same
+            // authenticated set owns both following and disconnect detection.
+            self.tasks
+                .lock()
+                .map_err(|_| Error::Storage("approval discovery state poisoned".into()))?
+                .push(task);
+        }
         Ok(())
     }
     async fn next(&mut self) -> Result<Event> {
@@ -115,6 +138,7 @@ impl Tree {
 }
 
 pub(super) fn follow(local: Arc<LocalHarness>, root: TaskId) -> Events {
+    let tasks = Arc::new(std::sync::Mutex::new(vec![root]));
     let tree = Tree {
         local,
         root,
@@ -123,9 +147,11 @@ pub(super) fn follow(local: Arc<LocalHarness>, root: TaskId) -> Events {
         feeds: SelectAll::new(),
         statuses: VecDeque::new(),
         ready: VecDeque::new(),
+        tasks: tasks.clone(),
     };
-    Box::pin(futures::stream::try_unfold(tree, |mut tree| async move {
+    let events = Box::pin(futures::stream::try_unfold(tree, |mut tree| async move {
         let event = tree.next().await?;
         Ok(Some((Box::new(event), tree)))
-    }))
+    }));
+    Events { events, tasks }
 }

@@ -349,10 +349,17 @@ impl LocalFileClient {
     }
 
     async fn awaiting_approval(&mut self) -> Result<bool> {
-        let task = crate::runtime::task_id_for_admission(self.operation);
+        let tasks = self.approvals.tasks()?;
         let local = self.local.clone();
-        self.while_driving(local.awaiting_operation_approval(task))
-            .await?
+        self.while_driving(async move {
+            for task in tasks {
+                if local.awaiting_human_approval(task).await? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .await?
     }
 
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {
