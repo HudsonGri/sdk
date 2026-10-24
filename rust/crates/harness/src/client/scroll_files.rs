@@ -7,16 +7,6 @@ fn modal(layout: &serde_json::Value) -> bool {
     layout.get("open_view").and_then(serde_json::Value::as_str) == Some("shortcuts")
 }
 
-fn layout<P: StreamProvider + ?Sized>(files: &CommandSession<P>) -> Result<serde_json::Value> {
-    let value = files
-        .state(CommandFileRoot::Session, "layout.json")?
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !value.is_object() {
-        return Err(Error::Invalid("layout must be an object".into()));
-    }
-    Ok(value)
-}
-
 fn modal_scroll(layout: &serde_json::Value) -> Result<usize> {
     if !modal(layout) {
         return Ok(0);
@@ -117,27 +107,44 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
 ) -> Result<()> {
     let motions: Vec<_> = motions.into_iter().collect();
     let modal_motion = folded_motion(motions.iter().copied(), maximum_modal);
-    files.update_state(CommandFileRoot::Session, "layout.json", |value| {
-        if modal(value) {
-            let back = modal_scroll(value)?;
-            let next = modal_motion(back);
-            if next == back { return Ok(false); }
-            value["view_back"] = serde_json::json!(next);
-        } else {
-            let from = anchor(value)?;
-            let next = motions.iter().fold(from, |current, rows| move_view(current, rows.saturating_neg()));
-            if next == from { return Ok(false); }
-            set_anchor(value, next)?;
-        }
-        Ok(true)
-    }).await
+    files
+        .update_state(CommandFileRoot::Session, "layout.json", |value| {
+            if modal(value) {
+                let back = modal_scroll(value)?;
+                let next = modal_motion(back);
+                if next == back {
+                    return Ok(false);
+                }
+                value
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Invalid("layout must be an object".into()))?
+                    .insert("view_back".into(), serde_json::json!(next));
+            } else {
+                let from = anchor(value)?;
+                let next = motions.iter().fold(from, |current, rows| {
+                    move_view(current, rows.saturating_neg())
+                });
+                if next == from {
+                    return Ok(false);
+                }
+                set_anchor(value, next)?;
+            }
+            Ok(true)
+        })
+        .await
 }
 
 fn set_anchor(value: &mut serde_json::Value, next: Option<TranscriptAnchor>) -> Result<()> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("layout must be an object".into()))?;
     if let Some(next) = next {
-        value["transcript_top"] = serde_json::to_value(next).map_err(|error| Error::Invalid(error.to_string()))?;
+        object.insert(
+            "transcript_top".into(),
+            serde_json::to_value(next).map_err(|error| Error::Invalid(error.to_string()))?,
+        );
     } else {
-        value.as_object_mut().ok_or_else(|| Error::Invalid("layout must be an object".into()))?.remove("transcript_top");
+        object.remove("transcript_top");
     }
     Ok(())
 }
@@ -147,13 +154,15 @@ pub(super) async fn seek_tui<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
     next: Option<TranscriptAnchor>,
 ) -> Result<()> {
-    files.update_state(CommandFileRoot::Session, "layout.json", |value| {
-        if modal(value) || value["open_view"] == "feedback" || anchor(value)? == next {
-            return Ok(false);
-        }
-        set_anchor(value, next)?;
-        Ok(true)
-    }).await
+    files
+        .update_state(CommandFileRoot::Session, "layout.json", |value| {
+            if modal(value) || value["open_view"] == "feedback" || anchor(value)? == next {
+                return Ok(false);
+            }
+            set_anchor(value, next)?;
+            Ok(true)
+        })
+        .await
 }
 
 /// Effects for the next decoded input event plus the view motions decoded

@@ -221,7 +221,11 @@ fn render_view<P: tui::term::Present, S: acyclic_stream::StreamProvider + ?Sized
         &acyclic_harness::wire::Authority,
     ),
     prompt: (&mut PromptInput, &mut Viewport),
-    device: (&mut FrameTerminal<P>, Size, &mut Option<(Rect, tui::TranscriptAnchor)>),
+    device: (
+        &mut FrameTerminal<P>,
+        Size,
+        &mut Option<(Rect, tui::TranscriptAnchor)>,
+    ),
     frame: (&client::InputBatch, bool, &Instant),
 ) -> Result<(tui::ScreenAreas, usize), Box<dyn std::error::Error>> {
     let (commands, client, authority) = files;
@@ -282,7 +286,7 @@ fn diff_is_open<S: acyclic_stream::StreamProvider + ?Sized>(
     commands: &client::CommandSession<S>,
 ) -> acyclic_harness::Result<bool> {
     Ok(commands
-        .state(client::CommandFileRoot::Session, "layout.json")?
+        .state_ref(client::CommandFileRoot::Session, "layout.json")?
         .is_some_and(|layout| {
             layout.get("open_view").and_then(|value| value.as_str()) == Some("diff")
         }))

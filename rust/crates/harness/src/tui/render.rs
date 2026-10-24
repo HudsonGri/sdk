@@ -451,7 +451,7 @@ impl ClientRenderer {
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<Screen<'_>> {
         use crate::client::CommandFileRoot;
-        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let layout = files.state_ref(CommandFileRoot::Session, "layout.json")?;
         let confirmation = layout
             .as_ref()
             .and_then(|layout| layout.get("confirmation"))

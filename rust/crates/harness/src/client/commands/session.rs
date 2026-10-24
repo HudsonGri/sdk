@@ -26,11 +26,11 @@ mod init_models;
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[path = "session_resume.rs"]
+mod resume;
 #[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
 #[path = "session_scroll_models.rs"]
 mod scroll_models;
-#[path = "session_resume.rs"]
-mod resume;
 #[path = "session_state.rs"]
 mod state;
 #[path = "session_view.rs"]
@@ -299,7 +299,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// immutable clear outcome itself even after independent reopen.
     pub fn history_after(&self) -> Result<u64> {
         Ok(self
-            .state(CommandFileRoot::Session, "layout.json")?
+            .state_ref(CommandFileRoot::Session, "layout.json")?
             .and_then(|value| value.get("history_after").and_then(Value::as_u64))
             .unwrap_or(0)
             .max(self.cleared_output))
@@ -703,7 +703,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             self.pending.push_back(file.clone());
         }
         self.fold_pending_execution(&file.key);
-        if self.files.get(&file.key).is_none_or(|cached| cached.value != file) {
+        if self
+            .files
+            .get(&file.key)
+            .is_none_or(|cached| cached.value != file)
+        {
             self.files.insert(file.key.clone(), StateFile::new(file));
         }
         if let Some(previous) = previous
