@@ -1,6 +1,9 @@
 //! One Filesystem/Stream bridge for the conversation-owned interaction ledger.
 
-use super::{DecodeReservation, FilesystemContentVerifier, FilesystemHost, InternalContentClass, PreparationIo};
+use super::{
+    DecodeReservation, FilesystemContentVerifier, FilesystemHost, InternalContentClass,
+    PreparationIo,
+};
 use crate::contract::capability;
 use crate::contract::next_revision;
 use crate::executor::with_history_io;
