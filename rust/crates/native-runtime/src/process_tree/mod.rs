@@ -89,6 +89,9 @@ pub struct ProcessTree {
     exit_fd: Option<std::os::fd::OwnedFd>,
     /// Owner of overlapped stdin writes, created by the first write.
     writer: platform::Writer,
+    /// The process-event hub every wait of this tree arms, held from before
+    /// its child is created.
+    _events: events::Events,
 }
 
 impl ProcessTree {
