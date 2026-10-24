@@ -212,11 +212,35 @@ print('WIN_TEST_ARCHIVE',hashlib.file_digest(archive.open('rb'),'sha256').hexdig
 '''
 
 
+INPUT_ROOT = '/mnt/bb/jobs'
+# The consumer verifies and takes ownership before executing the program. The
+# producer never removes an input which a dispatched job may still need.
+CONSUME_INPUT = """import hashlib,pathlib,sys
+p=pathlib.Path(sys.argv[1]); program=p.read_bytes()
+if hashlib.sha256(program).hexdigest()!=sys.argv[2]: raise RuntimeError('Windows input digest mismatch')
+p.unlink()
+exec(compile(program,str(p),'exec'),{'__name__':'__main__'})
+"""
+STAGE_INPUT = """import hashlib,os,pathlib,sys
+p=pathlib.Path(sys.argv[1]); program=sys.stdin.buffer.read()
+if hashlib.sha256(program).hexdigest()!=sys.argv[2]: raise RuntimeError('Windows input transfer digest mismatch')
+with os.fdopen(os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o444),'wb') as f:
+ f.write(program); f.flush(); os.fsync(f.fileno())
+print('WIN_TEST_INPUT',sys.argv[2],len(program),str(p),flush=True)
+"""
+
+
 def remote_invocation(config):
-    # Own the complete program as argv bytes. No producer may delete an input
-    # pathname while another build-slot captures this worktree.
-    payload = 'import json\nCONFIG=json.loads(' + repr(json.dumps(config)) + ')\n' + REMOTE
-    return ['python3', '-c', payload]
+    # Only a digest and an immutable owned input path enter executor argv. Nested
+    # executor shell quoting cannot expand the program beyond OS argument bounds.
+    program = ('import json\nCONFIG=json.loads(' + repr(json.dumps(config)) + ')\n' + REMOTE).encode('utf-8')
+    checksum = hashlib.sha256(program).hexdigest()
+    filename = INPUT_ROOT + '/win-input-' + checksum + '.py'
+    return ['python3', '-c', CONSUME_INPUT, filename, checksum], program
+
+
+def stage_invocation(command):
+    return ['python3', '-c', STAGE_INPUT, *command[-2:]]
 
 
 def main():
@@ -254,7 +278,11 @@ def main():
         if not config['target_dir']:
             fail('A persistent source clock requires an explicit lane target')
         config['target_clock'] = Path('Q:/lanes/cargo-target-clock.py').read_text(encoding='utf-8')
-    payload = remote_invocation(config)
+    payload, program = remote_invocation(config)
+    import shlex
+    # This transfers bytes only. Compilation remains inside bs.ps1 below.
+    stage = ['wsl.exe', '-d', 'Ubuntu', '-e', 'ssh', '-F', '/home/var/.ssh/buildbox/config', '-o', 'BatchMode=yes', 'bb2', shlex.join(stage_invocation(payload))]
+    subprocess.run(stage, input=program, check=True)
     env = os.environ.copy()
     env['BUILD_SLOT_REMOTE_FETCH'] = archive.name
     fetch_dir = '/mnt/' + records.drive[0].lower() + records.as_posix()[2:]
