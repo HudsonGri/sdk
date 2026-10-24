@@ -20,6 +20,14 @@ mod tests;
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
 const MAXIMUM_BYTES: u64 = 65_536;
 
+// Both endpoints observe their own reads. Admit only events that can change
+// the projection, so opening a file cannot schedule another scan of itself.
+fn projection_changed(event: &notify::Result<notify::Event>) -> bool {
+    !event
+        .as_ref()
+        .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Endpoint {
@@ -58,10 +66,7 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
     let request_path = directory.join("requests").join(format!("{operation}.json"));
     let (wake, events) = std::sync::mpsc::sync_channel(1);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event
-            .as_ref()
-            .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
-        {
+        if !projection_changed(&event) {
             return;
         }
         let _ = wake.try_send(event.map(|_| ()));
@@ -176,7 +181,7 @@ pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         // Scanning requests opens the watched directory. Access notifications
         // must not wake this same scan indefinitely and starve native mounts.
-        if !event.is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_))) {
+        if projection_changed(&event) {
             wake.notify_one();
         }
     })
