@@ -280,3 +280,87 @@ async fn approval_submission_consumes_one_authenticated_binding_for_both_entry_p
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn approval_terminal_retry_uses_the_owner_decision_value_for_both_entry_points() -> Result<()>
+{
+    for reviewed in [false, true] {
+        let initialized = setup().await?;
+        let runtime = &initialized.runtime;
+        let task = initialized.task;
+        let mut decision = request(&initialized).await?;
+        let value = ApprovalDecisionFile::decode(&decision.bytes, runtime.maximum_payload_bytes)?;
+        decision.bytes = serde_json::to_vec_pretty(&value)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .into();
+        if reviewed {
+            runtime.submit_reviewed_approval(task, &decision).await?;
+        } else {
+            runtime
+                .write_approval_decision(task, &decision, &initialized.responder)
+                .await?;
+        }
+        let retained = initialized
+            .files
+            .snapshot(&Query::File(decision.key.clone()), 1)
+            .await?;
+        let [owner] = retained.files.as_slice() else {
+            panic!("owner decision absent")
+        };
+        // Executed negative control: the former raw-byte predicate refuses an
+        // exact retry of the same bytes that the owner already admitted.
+        assert_ne!(owner.bytes, decision.bytes);
+        assert_eq!(
+            ApprovalDecisionFile::decode(&owner.bytes, runtime.maximum_payload_bytes)?,
+            value
+        );
+        runtime
+            .task_host()
+            .settle_task(
+                task,
+                &LeaseFence::from(&initialized.lease.reservation),
+                crate::Outcome::Failed {
+                    message: "terminal retry fixture".into(),
+                },
+                &mut None,
+            )
+            .await?;
+        for changed in 0..6 {
+            let mut retry = decision.clone();
+            let mut body = value.clone();
+            match changed {
+                1 => body.principal = "another-human".into(),
+                2 => body.request_sha256 = "11".repeat(32),
+                3 => body.expected_version += 1,
+                4 => body.verdict = crate::interaction::ApprovalVerdict::Deny,
+                5 => body.reason = Some("changed decision".into()),
+                _ => {}
+            }
+            retry.bytes = serde_json::to_vec_pretty(&body)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .into();
+            let result = if reviewed {
+                runtime.submit_reviewed_approval(task, &retry).await
+            } else {
+                runtime
+                    .write_approval_decision(task, &retry, &initialized.responder)
+                    .await
+            };
+            assert_eq!(
+                result.is_ok(),
+                changed == 0,
+                "reviewed={reviewed}, changed={changed}: {result:?}"
+            );
+        }
+        assert_eq!(
+            initialized
+                .files
+                .snapshot(&Query::File(decision.key.clone()), 1)
+                .await?
+                .files,
+            retained.files,
+            "terminal retry changed the owner file"
+        );
+    }
+    Ok(())
+}

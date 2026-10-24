@@ -20,6 +20,7 @@ where
 }
 
 /// [`publish`] for owner files that carry their caller's native work.
+#[cfg(feature = "filesystem")]
 pub(crate) async fn publish_with_work<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     generation: Generation,
@@ -43,8 +44,8 @@ pub struct DurableFile {
 }
 
 impl DurableFile {
-    /// The confirmed file.
-    pub(crate) fn key(&self) -> &FileKey {
+    /// The exact file certified by this proof, for binding it at a consumer.
+    pub fn key(&self) -> &FileKey {
         &self.key
     }
 }

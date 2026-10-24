@@ -100,6 +100,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
 
     /// Publishes an owner-produced immutable file through the shared
     /// generation-retry path. An identical accepted copy is success.
+    #[cfg(feature = "filesystem")]
     pub(crate) async fn publish_owned(
         &self,
         file: &FileValue,
@@ -111,6 +112,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
     }
 
     /// Publishes an owner-produced immutable file and proves it is durable.
+    #[cfg(feature = "filesystem")]
     pub(crate) async fn publish_durable(
         &self,
         file: &FileValue,
