@@ -143,10 +143,10 @@ mod tests {
         let (entered, started) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
         let occupied = runtime.spawn_blocking(move || {
-            entered.send(()).unwrap();
-            wait.recv().unwrap();
+            entered.send(()).map_err(std::io::Error::other)?;
+            wait.recv().map_err(std::io::Error::other)
         });
-        started.recv().unwrap();
+        started.recv().map_err(std::io::Error::other)?;
         runtime.block_on(async {
             let command_started = std::cell::Cell::new(false);
             let status = git_status_from(root.path(), || {
@@ -158,15 +158,16 @@ mod tests {
             tokio::time::advance(GIT_STATUS_TIMEOUT).await;
             let settled = futures::poll!(status.as_mut());
             // Release the worker before assertions, including in the old-shape control.
-            release.send(()).unwrap();
-            occupied.await.unwrap();
+            release.send(()).map_err(std::io::Error::other)?;
+            occupied.await.map_err(std::io::Error::other)??;
             assert!(first.is_pending());
             assert!(
                 matches!(settled, std::task::Poll::Ready(None)),
                 "Git discovery escaped the summary deadline"
             );
             assert!(!command_started.get());
-        });
+            Ok::<(), std::io::Error>(())
+        })?;
         Ok(())
     }
 
