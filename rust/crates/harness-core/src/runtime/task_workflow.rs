@@ -48,8 +48,12 @@ pub(super) fn task_machine_identity<'a>(
     Ok(machine.identity())
 }
 
-pub(super) async fn observe_task_open_admission(
-    host: &dyn DurableTaskHost,
+/// Reads the existing immutable admission on the caller's original work ledger.
+/// Native providers must return custody from that same ledger; the shared
+/// boundary verifies and retains it before exposing the admitted definition.
+/// This operation never admits a task or opens its workspace.
+pub async fn observe_task_admission(
+    host: &dyn TaskStateProvider,
     task: TaskId,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<TaskAdmissionRecord> {

@@ -155,7 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return self.source.watch(sink, work, cancel).map_err(Into::into);
         }
         let result = self.source.watch(sink, ctx.remaining()?, cancel);
-        accept_receipt(result, ctx)
+        ctx.accept_receipt(result)
     }
 
     #[cfg(feature = "native-mount")]

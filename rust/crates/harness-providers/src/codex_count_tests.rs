@@ -25,6 +25,21 @@ proptest! {
         // of the output-token count from the response which produced it.
         request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text(delta) });
         let next = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
+        // Independent pre-consolidation Serde bytes are the wire oracle. The
+        // shared encoder must preserve both the total and every prefix hash.
+        let header = serde_json::to_vec(&(&request.model, &request.tools)).unwrap();
+        let mut wire = header.clone();
+        let mut pretty_wire = serde_json::to_vec_pretty(&(&request.model, &request.tools)).unwrap();
+        for (index, message) in request.messages.iter().enumerate() {
+            wire.extend(serde_json::to_vec(message).unwrap());
+            pretty_wire.extend(serde_json::to_vec_pretty(message).unwrap());
+            let (digest, _) = footprint(&next, index + 1).unwrap();
+            prop_assert_eq!(digest, *blake3::hash(&wire).as_bytes());
+        }
+        prop_assert_eq!(footprint(&next, request.messages.len()).unwrap().1, wire.len() as u64);
+        // A formatter change is observable even when it decodes to the same
+        // values; the real old/new compact byte oracle rejects that control.
+        prop_assert_ne!(blake3::hash(&wire), blake3::hash(&pretty_wire));
         let (_, before) = footprint(&first, 1).unwrap();
         let (_, after) = footprint(&next, 1).unwrap();
         prop_assert_eq!(counter.count(&next).unwrap(), tokens + (after-before).div_ceil(3));

@@ -6,7 +6,6 @@ use crate::{
     fork::{ForkPreparation, ForkRequest, ForkSelection, ResourceRevision},
     resource_preparation::ResourcePreparationRequest,
     resources::{GenerationRef, ProviderRef, ResourceKind, ResourceRef},
-    runtime::TaskStateProvider,
     task_volume::{ChildFile, ChildRequest, FileKey, FileValue, Query, TaskFiles},
 };
 use acyclic_fs::facade::FsWork as _;
@@ -41,28 +40,10 @@ impl LocalHarness {
         let parent = file.requester.ok_or_else(|| {
             Error::Unauthorized("child request has no authenticated parent".into())
         })?;
-        let operation = child_operation(files.volume(), reference.as_str(), b"child")?;
-        let admitted = match self
-            .runtime
-            .task_host()
-            .observe_admission(TaskId::from_bytes(operation.into_bytes()))
-            .await
-        {
-            Ok(record) => Some(record),
-            Err(Error::NotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
-        if let Some(admitted) = admitted {
-            if !crate::filesystem::child_agent::is_child(&admitted) {
-                return Err(Error::Conflict(
-                    "child request task definition changed".into(),
-                ));
-            }
-            if admitted.parent != Some(parent) {
-                return Err(Error::Conflict("child parent changed".into()));
-            }
-            return Ok(admitted.task_id());
+        if let Some(task) = self.admitted_child(files, reference, parent).await? {
+            return Ok(task);
         }
+        let operation = child_operation(files.volume(), reference.as_str(), b"child")?;
 
         let preparation_operation =
             child_operation(files.volume(), reference.as_str(), b"preparation")?;

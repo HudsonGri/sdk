@@ -63,6 +63,13 @@ fn qualify(operations: &[u8], early_durable: bool) -> Result {
                     continue;
                 }
                 let actual = provider.watermarks(path.clone()).await?;
+                let original = std::sync::Arc::new(crate::test_meter::Meter::default());
+                let native = provider
+                    .native_watermarks(path.clone(), original.original())
+                    .await??;
+                assert_eq!(*native.value(), actual);
+                drop(native);
+                original.assert_refunded();
                 assert_eq!(actual.accepted, accepted);
                 assert_eq!(
                     actual.durable, *durable,

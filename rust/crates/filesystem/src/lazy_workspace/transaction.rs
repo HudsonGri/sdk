@@ -25,7 +25,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 })
             })
             .await;
-        accept_receipt(result, ctx)
+        ctx.accept_receipt(result)
     }
     /// Removes only the requested identity and records the deleted source version.
     pub async fn remove(

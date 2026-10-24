@@ -89,22 +89,7 @@ where
         task: TaskId,
         _native_io: Option<&PreparationIo>,
     ) -> Result<TaskAdmissionRecord> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_native_io) = _native_io {
-            let work = _native_io
-                .original_native_work()
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "worker observation requires original native work",
-                })?;
-            let (admission, custody) = self
-                .host
-                .observe_admission_with_native_work(task, work)?
-                .await?;
-            _native_io.absorb_native_custody(custody)?;
-            return Ok(admission);
-        }
-        self.host.observe_admission(task).await
+        crate::runtime::observe_task_admission(self.host.as_ref(), task, _native_io).await
     }
 
     pub(in crate::filesystem) async fn outcome_observed(

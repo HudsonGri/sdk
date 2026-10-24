@@ -18,9 +18,10 @@ build = "build.rs"
 [features]
 default = ["host"]
 host = ["dep:acyclic-auth", "dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroize"]
-http-codec = ["dep:prost-reflect", "dep:serde_json"]
+http-codec = ["dep:prost-reflect", "dep:serde_json", "dep:acyclic-json"]
 
 [dependencies]
+acyclic-json = { version = "=0.2.0", path = "../json", optional = true }
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
 prost.workspace = true
 sha2.workspace = true

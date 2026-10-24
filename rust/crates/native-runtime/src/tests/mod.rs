@@ -187,6 +187,7 @@ pub(super) struct ReadBudgetMeter {
     pub(super) deny_allocations: AtomicBool,
     pub(super) operation_denial: Option<NativeOperationKind>,
     pub(super) cancel_after_operation: bool,
+    pub(super) fail_recorded_operation: Option<u64>,
     memory_limit: u64,
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
@@ -247,6 +248,9 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn record_reserved_operation(&self, _: NativeOperationKind) -> io::Result<()> {
         if self.cancel_after_operation {
             self.cancelled.store(true, Ordering::Release);
+        }
+        if self.fail_recorded_operation == Some(self.used_operations.load(Ordering::Acquire)) {
+            return Err(Self::refuse());
         }
         Ok(())
     }

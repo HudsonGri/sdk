@@ -185,6 +185,18 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 
+    /// Observes accepted and durable visibility on the original invocation.
+    /// Unsupported native observation never falls back to ordinary I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_watermarks(
+        &self,
+        path: StreamPath,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, StreamWatermarks> {
+        let _ = path;
+        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+    }
+
     /// Canonical retained-window observation on the original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_bounds(

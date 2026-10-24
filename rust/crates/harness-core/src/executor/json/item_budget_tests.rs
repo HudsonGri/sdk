@@ -3,6 +3,98 @@ thread_local! {
     pub(super) static RESTORE_BYTE_CHARGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[test]
+fn encoding_denial_stops_visiting_the_value_on_every_sink() {
+    use super::*;
+    use serde::ser::SerializeSeq as _;
+    use std::cell::Cell;
+    struct Sequence<'a>(&'a Cell<usize>);
+    impl serde::Serialize for Sequence<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            let mut seq = serializer.serialize_seq(Some(1000))?;
+            for _ in 0..1000 {
+                self.0.set(self.0.get() + 1);
+                seq.serialize_element(&0)?;
+            }
+            seq.end()
+        }
+    }
+    let visits = Cell::new(0);
+    let bounds = JsonBounds {
+        maximum_bytes: 4096,
+        maximum_items: 1,
+        maximum_depth: 8,
+    };
+    assert!(json_count_bounded(&Sequence(&visits), bounds).is_err());
+    assert_eq!(visits.replace(0), 1);
+    assert!(json_bytes_bounded(&Sequence(&visits), bounds, None, &mut |_| Ok(())).is_err());
+    assert_eq!(visits.replace(0), 1);
+    assert!(
+        json_to_writer_bounded(&Sequence(&visits), &mut Vec::new(), bounds, &mut |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(visits.replace(0), 1);
+    // The former deferred-failure writer acknowledged every write after its
+    // first denial. It still visited the complete value despite bounded output.
+    struct Deferred;
+    impl std::io::Write for Deferred {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Deferred, &Sequence(&visits)).unwrap();
+    assert_eq!(visits.get(), 1000);
+}
+
+#[test]
+fn external_sink_uses_the_owned_encoder_item_and_cancellation_boundary() {
+    use super::*;
+    let value = serde_json::json!([1, 2, 3]);
+    let bounds = JsonBounds {
+        maximum_bytes: 128,
+        maximum_items: 3,
+        maximum_depth: 8,
+    };
+    // Counting, owned encoding, and an externally owned transport sink must
+    // reject the same fourth item. The former byte-only sink accepts it.
+    let mut old = Vec::new();
+    serde_json::to_writer(&mut old, &value).unwrap();
+    assert_eq!(old, b"[1,2,3]");
+    assert!(json_bytes_bounded(&value, bounds, None, &mut |_| Ok(())).is_err());
+    assert!(count_json_bytes_trusted(&value, bounds, None, &mut |_| Ok(())).is_err());
+    let mut output = Vec::new();
+    assert!(json_to_writer_bounded(&value, &mut output, bounds, &mut |_| Ok(())).is_err());
+    let mut output = Vec::new();
+    assert!(
+        json_to_writer_bounded(&value, &mut output, bounds, &mut |_| {
+            Err(Error::Conflict("original operation cancelled".into()))
+        })
+        .is_err()
+    );
+    assert!(
+        output.is_empty(),
+        "a denied original operation reached the transport"
+    );
+    let bytes = json_to_writer_bounded(
+        &value,
+        &mut output,
+        JsonBounds {
+            maximum_items: 4,
+            ..bounds
+        },
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(bytes as usize, old.len());
+    assert_eq!(output, old);
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native {
     use super::*;
@@ -105,4 +197,27 @@ mod native {
             check(prior, false).map_err(TestCaseError::fail)?;
         }
     }
+}
+
+#[test]
+fn unobserved_size_count_uses_the_same_depth_admission_as_owned_encoding() {
+    use super::{JsonBounds, json_byte_length, json_bytes_bounded};
+    let mut value = serde_json::Value::Null;
+    for _ in 0..257 {
+        value = serde_json::Value::Array(vec![value]);
+    }
+    assert!(json_byte_length(&value, 4096, &mut None).is_err());
+    let bounds = JsonBounds {
+        maximum_bytes: 4096,
+        maximum_items: 4096,
+        maximum_depth: 256,
+    };
+    assert!(json_bytes_bounded(&value, bounds, None, &mut |_| Ok(())).is_err());
+    // The former standalone serde counter has no nesting admission.
+    let old = serde_json::to_vec(&value).unwrap();
+    assert!(old.len() < 4096);
+    assert_eq!(
+        json_byte_length(&serde_json::json!({"x": [1, true]}), 14, &mut None).unwrap(),
+        14
+    );
 }

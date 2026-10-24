@@ -113,3 +113,15 @@ impl<E: std::error::Error + 'static> From<WorkspaceError> for GitCaptureAuthenti
         Self::Capture(GitCaptureError::from(error))
     }
 }
+
+impl<E: std::error::Error + 'static> From<crate::FsError> for GitCaptureAuthenticationError<E> {
+    fn from(error: crate::FsError) -> Self {
+        Self::from(WorkspaceError::from(error))
+    }
+}
+
+impl<E: std::error::Error + 'static> From<crate::WorkError> for GitCaptureAuthenticationError<E> {
+    fn from(error: crate::WorkError) -> Self {
+        Self::from(WorkspaceError::from(error))
+    }
+}

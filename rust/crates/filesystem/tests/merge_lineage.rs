@@ -11,17 +11,16 @@ use acyclic_fs::{
     AppendOutcome, ApplyOptions, AsyncAuthorityStore, AttributeRule, AuthorityId,
     CachedMergeResolution, CancellationToken, ConflictKey, ConflictKind, ConflictSide,
     ConflictValue, Digest, DrivenJoinError, Epoch, FenceOutcome, FileId, ForkOptions, Fs,
-    GenerationId, Head, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache, MergeDriver,
-    MergeDriverMode, MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
+    GenerationId, Head, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache,
+    MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, MergeDriver, MergeDriverMode,
+    MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, OperationId, ProposedCommit, ResolutionKey, StreamAuthorityStore,
-    WorkBudget, WorkspaceGraph, WorkspaceId, WorkspaceLineageError, WorkspaceLineageRecord,
-    WorkspaceLineageStore, resolve_merge_plan,
+    WorkBudget, WorkspaceGraph, WorkspaceLineageError, resolve_merge_plan,
 };
 use acyclic_stream::MemoryStream;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use thiserror::Error;
 
 fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
@@ -373,50 +372,11 @@ fn typed_conflict_categories_and_keys_survive_immutable_planning() {
     }
 }
 
-#[derive(Clone, Default)]
-struct SharedLineageStore(Arc<Mutex<BTreeMap<WorkspaceId, WorkspaceLineageRecord>>>);
-
-#[derive(Debug, Error)]
-#[error("lineage test store unavailable")]
-struct LineageStoreError;
-
-impl WorkspaceLineageStore for SharedLineageStore {
-    type Error = LineageStoreError;
-
-    async fn load(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-        self.0
-            .lock()
-            .map_err(|_| LineageStoreError)
-            .map(|records| records.get(&workspace_id).cloned())
-    }
-
-    async fn compare_and_swap(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: WorkspaceLineageRecord,
-    ) -> Result<bool, Self::Error> {
-        let mut records = self.0.lock().map_err(|_| LineageStoreError)?;
-        if records
-            .get(&workspace_id)
-            .map_or(0, |record| record.revision)
-            != expected_revision
-        {
-            return Ok(false);
-        }
-        records.insert(workspace_id, replacement);
-        Ok(true)
-    }
-}
-
 #[tokio::test]
 async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let store = SharedLineageStore::default();
+    let store = Arc::new(MemoryWorkspaceLineageStore::new());
     let graph = WorkspaceGraph::new(store.clone());
     let root = fs
         .create_workspace(
@@ -428,59 +388,39 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     graph.register_root(&root).await?;
+    use acyclic_fs::facade::FsWork as _;
+    let cancellation = CancellationToken::new();
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
     let child_key = IdempotencyKey::from_bytes([1; 16]);
     let child = graph
-        .fork(
+        .fork::<_, _, _, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>, _>(
             &root,
             "graph-child",
             child_key,
             None,
-            |generation| {
-                let root = &root;
-                async move {
-                    root.fork::<_, _, acyclic_fs::WorkspaceError>(
-                        "graph-child",
-                        ForkOptions::from_generation(generation, child_key),
-                        acyclic_fs::PublicationPermit::Unrestricted,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                        (),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| {
-                        WorkspaceLineageError::<LineageStoreError>::from(failure.error)
-                    })
-                }
+            &mut accounting,
+            acyclic_fs::lineage::GenerationFork {
+                parent: &root,
+                destination: "graph-child",
+                key: child_key,
+                permit: acyclic_fs::PublicationPermit::Unrestricted,
             },
             |child| child,
         )
         .await?;
     let grandchild_key = IdempotencyKey::from_bytes([2; 16]);
     let grandchild = graph
-        .fork(
+        .fork::<_, _, _, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>, _>(
             &child,
             "graph-grandchild",
             grandchild_key,
             None,
-            |generation| {
-                let child = &child;
-                async move {
-                    child
-                        .fork::<_, _, acyclic_fs::WorkspaceError>(
-                            "graph-grandchild",
-                            ForkOptions::from_generation(generation, grandchild_key),
-                            acyclic_fs::PublicationPermit::Unrestricted,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                            (),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| {
-                            WorkspaceLineageError::<LineageStoreError>::from(failure.error)
-                        })
-                }
+            &mut accounting,
+            acyclic_fs::lineage::GenerationFork {
+                parent: &child,
+                destination: "graph-grandchild",
+                key: grandchild_key,
+                permit: acyclic_fs::PublicationPermit::Unrestricted,
             },
             |child| child,
         )

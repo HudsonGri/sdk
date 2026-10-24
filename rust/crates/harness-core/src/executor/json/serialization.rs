@@ -49,11 +49,6 @@ impl Scope<'_> {
         self.retained = retained;
         Ok(())
     }
-    fn error(&mut self, error: serde_json::Error) -> Error {
-        self.failed
-            .take()
-            .unwrap_or_else(|| records::decode_error(error, self.code))
-    }
     fn stop(&mut self, error: Error) -> std::io::Error {
         if self.failed.is_none() {
             self.failed = Some(error);
@@ -89,20 +84,10 @@ impl Write for Writer<'_, '_, '_, '_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let mut scope = self.state.borrow_mut();
         if scope.failed.is_some() {
-            return Ok(bytes.len());
+            return Err(std::io::ErrorKind::Other.into());
         }
         let result = (|| {
-            let written = checked(
-                self.written.checked_add(bytes.len() as u64),
-                "JSON byte count overflow",
-            )?;
-            if written > self.maximum {
-                return Err(boundary("JSON exceeds admitted output", scope.code));
-            }
-            scope.event(JsonCodecCharge::Work {
-                bytes: bytes.len() as u64,
-                items: 0,
-            })?;
+            let previous = self.written;
             {
                 let Scope {
                     lexical,
@@ -111,17 +96,12 @@ impl Write for Writer<'_, '_, '_, '_> {
                     charge,
                     ..
                 } = &mut **scope;
-                let mut forward = |event| {
-                    let event = match event {
-                        JsonCodecCharge::Work { bytes, items } => {
-                            let admitted = items.min(self.admitted_items);
-                            self.admitted_items -= admitted;
-                            JsonCodecCharge::Work {
-                                bytes,
-                                items: items - admitted,
-                            }
-                        }
-                        event => event,
+                let forward = |bytes, items: u64| {
+                    let admitted = items.min(self.admitted_items);
+                    self.admitted_items -= admitted;
+                    let event = JsonCodecCharge::Work {
+                        bytes,
+                        items: items - admitted,
                     };
                     // The chunk charge above checks cancellation. Items funded
                     // by the admission pass need no second zero-work callback.
@@ -130,19 +110,35 @@ impl Write for Writer<'_, '_, '_, '_> {
                         event => charge(event),
                     }
                 };
-                let charge =
-                    RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
-                for byte in bytes {
-                    let depth = lexical.depth;
-                    let string = lexical.string;
-                    let item = lexical.byte(*byte, *bounds, *code, &charge)?;
-                    if self.prefix != 0 {
-                        let output = self.output.as_deref_mut().expect("indexed output");
-                        self.index
-                            .byte(&mut output[..self.prefix], *byte, depth, string, item)?;
-                    }
-                }
+                acyclic_json::admit_chunk(
+                    &mut lexical.0,
+                    &mut self.written,
+                    bytes,
+                    JsonBounds {
+                        maximum_bytes: self.maximum,
+                        ..*bounds
+                    },
+                    forward,
+                    |byte, depth, string, item| {
+                        if self.prefix != 0 {
+                            let output = self.output.as_deref_mut().expect("indexed output");
+                            self.index.byte(
+                                &mut output[..self.prefix],
+                                byte,
+                                depth,
+                                string,
+                                item,
+                            )?;
+                        }
+                        Ok(())
+                    },
+                )
+                .map_err(|error| match error {
+                    acyclic_json::Failure::Admission(error) => admission_error(error, *code),
+                    acyclic_json::Failure::Observer(error) => error,
+                })?;
             }
+            let written = self.written;
             if let Some(output) = &mut self.output {
                 if scope.grow_output {
                     reserve_output(output, written, self.maximum, &mut scope)?;
@@ -156,15 +152,14 @@ impl Write for Writer<'_, '_, '_, '_> {
                 digest(bytes)?;
             }
             if let Some((expected, matched)) = &mut self.compare {
-                **matched &= expected.get(self.written as usize..written as usize) == Some(bytes);
+                **matched &= expected.get(previous as usize..written as usize) == Some(bytes);
             }
-            self.written = written;
             Ok(())
         })();
-        // Defer admission failures to write()'s typed boundary. Returning an IO
-        // error here makes Serde allocate an error box after budget exhaustion.
+        // The enclosing attempt funded its abort diagnostic before entering
+        // Serde. Stop traversal at the first denial and preserve its typed cause.
         if let Err(error) = result {
-            scope.stop(error);
+            return Err(scope.stop(error));
         }
         Ok(bytes.len())
     }
@@ -235,7 +230,7 @@ impl Formatter for Format<'_, '_, '_> {
         fragment: &str,
     ) -> std::io::Result<()> {
         if self.state.borrow().failed.is_some() {
-            return Ok(());
+            return Err(std::io::ErrorKind::Other.into());
         }
         if !self.canonical {
             return CompactFormatter.write_raw_fragment(writer, fragment);
@@ -326,8 +321,7 @@ impl Formatter for Format<'_, '_, '_> {
             match result {
                 Ok(value) => value,
                 Err(error) => {
-                    scope.stop(error);
-                    return Ok(());
+                    return Err(scope.stop(error));
                 }
             }
         };
@@ -351,6 +345,49 @@ fn write<T: Serialize + ?Sized>(
     maximum: u64,
     canonical: bool,
 ) -> Result<u64> {
+    write_classified(value, scope, output, digest, compare, maximum, canonical)
+        .map_err(JsonEncodeError::into_error)
+}
+
+/// Encoding failures retain the distinction between admission and a serializer
+/// rejecting its value. Callers must not report a malformed value as overflow.
+#[derive(Debug)]
+pub enum JsonEncodeError {
+    /// The original work, byte, item, depth or output boundary refused progress.
+    Admission(Error),
+    /// The value's serializer rejected its input independently of those bounds.
+    Serialization(Error),
+}
+
+impl JsonEncodeError {
+    /// Recover the original typed SDK error without rendering or relabeling it.
+    pub fn into_error(self) -> Error {
+        match self {
+            Self::Admission(error) | Self::Serialization(error) => error,
+        }
+    }
+}
+
+fn write_classified<T: Serialize + ?Sized>(
+    value: &T,
+    scope: &mut Scope<'_>,
+    output: Option<&mut Vec<u8>>,
+    digest: Option<&mut dyn FnMut(&[u8]) -> Result<()>>,
+    compare: Option<(&[u8], &mut bool)>,
+    maximum: u64,
+    canonical: bool,
+) -> std::result::Result<u64, JsonEncodeError> {
+    // Returning a writer error makes serde_json allocate its diagnostic box.
+    // Fund that transient allocation before serialization, while admission can
+    // still refuse it without visiting the value. Deferred errors would keep
+    // walking an arbitrarily large or deeply nested value after a denial.
+    let diagnostic = sdk_json_diagnostic_bytes();
+    scope
+        .retain(diagnostic)
+        .map_err(JsonEncodeError::Admission)?;
+    scope
+        .event(JsonCodecCharge::AllocationOperation { bytes: diagnostic })
+        .map_err(JsonEncodeError::Admission)?;
     let admitted_items = scope.lexical.items;
     scope.lexical = admission::Lexical::default();
     let state = RefCell::new(&mut *scope);
@@ -385,16 +422,26 @@ fn write<T: Serialize + ?Sized>(
         None
     };
     drop(writer);
-    result.map_err(|error| scope.error(error))?;
     if let Some(error) = scope.failed.take() {
-        return Err(error);
+        drop(result);
+        scope
+            .release(diagnostic)
+            .map_err(JsonEncodeError::Admission)?;
+        return Err(JsonEncodeError::Admission(error));
     }
+    scope
+        .release(diagnostic)
+        .map_err(JsonEncodeError::Admission)?;
+    result.map_err(|error| {
+        JsonEncodeError::Serialization(records::decode_error(error, scope.code))
+    })?;
     if let Some(indexed) = indexed {
-        indexed?;
+        indexed.map_err(JsonEncodeError::Admission)?;
     }
-    if scope.lexical.string || scope.lexical.depth != 0 {
-        return Err(boundary("incomplete JSON document", scope.code));
-    }
+    scope
+        .lexical
+        .finish()
+        .map_err(|error| JsonEncodeError::Admission(admission_error(error, scope.code)))?;
     Ok(written)
 }
 fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Value> {
@@ -701,6 +748,53 @@ pub(crate) fn count_json_bytes_trusted<
     )?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     Ok(size)
+}
+
+/// Count compact JSON without allocating its document, preserving the reason
+/// serialization stopped. Uses the same admission engine as owned encodings.
+pub fn json_count_bounded<T: Serialize + ?Sized>(
+    value: &T,
+    bounds: JsonBounds,
+) -> std::result::Result<u64, JsonEncodeError> {
+    let mut charge = |_| Ok(());
+    let mut scope = scope(bounds, None, &mut charge);
+    write_classified(
+        value,
+        &mut scope,
+        None,
+        None,
+        None,
+        bounds.maximum_bytes,
+        false,
+    )
+}
+
+/// Encodes into a caller-owned sink through the same byte, item and nesting
+/// admission as owned JSON buffers and counters. The caller owns allocation
+/// custody and rollback of the sink; this path creates no intermediate buffer.
+pub fn json_to_writer_bounded<T: Serialize + ?Sized>(
+    value: &T,
+    output: &mut impl Write,
+    bounds: JsonBounds,
+    charge: &mut impl FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<u64> {
+    let mut scope = scope(bounds, None, charge);
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    let written = write(
+        value,
+        &mut scope,
+        None,
+        Some(&mut |bytes| {
+            output
+                .write_all(bytes)
+                .map_err(|error| Error::Storage(error.to_string()))
+        }),
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    Ok(written)
 }
 
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]

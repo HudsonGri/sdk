@@ -51,7 +51,8 @@ pub use records::json_value_logical_owned_bytes;
 pub(crate) use records::json_value_retained_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub use serialization::{
-    canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
+    JsonEncodeError, canonical_json_bytes_bounded, json_bytes_bounded, json_count_bounded,
+    json_to_writer_bounded, json_value_bounded, json_value_copy_bounded,
 };
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use serialization::{json_digest_bounded, json_write_bounded};
@@ -82,15 +83,18 @@ fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Er
     Error::Invalid(kind.to_string())
 }
 
-/// Finite byte, node and nesting admission for one document.
-#[derive(Clone, Copy, Debug)]
-pub struct JsonBounds {
-    /// UTF-8 input/output bytes.
-    pub maximum_bytes: u64,
-    /// Values and keys, including replaced duplicate entries.
-    pub maximum_items: u64,
-    /// Zero-based nesting depth.
-    pub maximum_depth: u32,
+pub use acyclic_json::Bounds as JsonBounds;
+
+fn admission_error(error: acyclic_json::Admission, code: Option<crate::wire::ErrorCode>) -> Error {
+    use acyclic_json::Admission;
+    match error {
+        Admission::Depth => input_error(JsonInputError::Depth, code),
+        Admission::Nesting => input_error(JsonInputError::Nesting, code),
+        Admission::Incomplete => input_error(JsonInputError::Incomplete, code),
+        Admission::Bytes => boundary("JSON exceeds admitted output", code),
+        Admission::Items => boundary("JSON exceeds declared structural bound", code),
+        Admission::Overflow => boundary("JSON count overflow", code),
+    }
 }
 
 pub use schema::JsonValueSchema;

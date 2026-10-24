@@ -1,6 +1,81 @@
 use super::*;
 
 #[tokio::test]
+async fn graph_lazy_creator_rejects_another_cut_before_creating_a_child() {
+    use crate::WorkspaceLineageStore as _;
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let old = root.snapshot(accounting!()).await.unwrap();
+    root.workspace()
+        .write_text("/new", "new cut")
+        .await
+        .unwrap();
+    let current = root.snapshot(accounting!()).await.unwrap();
+    assert_ne!(old.authored_generation, current.authored_generation);
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+    graph.register_root(root.workspace()).await.unwrap();
+    let destination = "graph-lazy-cut";
+    let key = IdempotencyKey::from_bytes([91; 16]);
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let fork = async |cut, accounting: &mut KernelAccounting<'_>| {
+        graph
+            .fork::<_, _, _, Box<dyn std::error::Error + Send + Sync>, _>(
+                root.workspace(),
+                destination,
+                key,
+                Some(current.authored_generation),
+                accounting,
+                crate::lineage::LazyFork {
+                    parent: &root,
+                    destination,
+                    cut,
+                    key,
+                    permit: crate::PublicationPermit::Unrestricted,
+                },
+                |result| result.0.workspace(),
+            )
+            .await
+    };
+    // The former creator ignored the graph's authenticated generation, created
+    // a child at `old`, and only failed when graph registration checked it.
+    let failure = fork(old, &mut accounting)
+        .await
+        .err()
+        .expect("mismatched cut must fail");
+    assert!(matches!(
+        failure.downcast_ref::<LazyWorkspaceError>(),
+        Some(LazyWorkspaceError::OriginalSnapshotUnavailable)
+    ));
+    assert!(
+        fs.open_workspace(destination, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .is_err()
+    );
+    let child_id = fs.workspace_id(destination).unwrap();
+    assert!(
+        root.store
+            .load_lazy_workspace(child_id, &mut accounting)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!graph.store().load(child_id).await.unwrap().unwrap().ready);
+    let recovered = fork(current, &mut accounting).await.unwrap();
+    assert_eq!(
+        graph.resolve(child_id).await.unwrap().fork_generation,
+        current.authored_generation
+    );
+    assert_eq!(recovered.0.workspace().id(), child_id);
+}
+
+#[tokio::test]
 async fn snapshot_validation_requires_available_indexes_and_generation() {
     let fs = Fs::memory();
     let root = attach(

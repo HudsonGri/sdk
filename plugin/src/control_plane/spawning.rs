@@ -1,6 +1,7 @@
 //! Durable child preparation and recovery.
 
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 
 impl ControlPlane {
     /// Builds and mounts the actual child workspace before the host is allowed
@@ -89,55 +90,39 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-                let parent_lazy = LazyWorkspace::open(
-                    parent_workspace,
-                    source,
-                    store.clone(),
-                    &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                        allocations: Default::default(),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                        budget: WorkBudget::UNBOUNDED,
-                        cancellation: &CancellationToken::new(),
-                    },
-                )
-                .await
-                .map_err(display)?;
+                let cancellation = CancellationToken::new();
+                let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+                let parent_lazy =
+                    LazyWorkspace::open(parent_workspace, source, store.clone(), &mut accounting)
+                        .await
+                        .map_err(display)?;
                 let root_name = route_name(*root_id);
                 let child_name = format!("{}-{root_name}", pending.workspace_name);
-                let fork_generation = parent_lazy
-                    .workspace()
-                    .head(
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(display)?
-                    .id();
-                let child = parent_lazy
-                    .fork(
-                        &child_name,
-                        derived_idempotency_key(fork_key, *root_id),
-                        acyclic_fs::PublicationPermit::Unrestricted,
-                        &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                            allocations: Default::default(),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
-                            budget: WorkBudget::UNBOUNDED,
-                            cancellation: &CancellationToken::new(),
-                        },
-                    )
-                    .await
-                    .map_err(display)?
-                    .0;
-                WorkspaceGraph::new(store.clone())
-                    .register_existing_child(
-                        parent_lazy.workspace(),
-                        child.workspace(),
-                        fork_generation,
-                    )
+                let key = derived_idempotency_key(fork_key, *root_id);
+                let cut = parent_lazy
+                    .prepare_fork(&child_name, key, &mut accounting)
                     .await
                     .map_err(display)?;
+                let fork_generation = cut.authored_generation;
+                let created: Result<_, Box<dyn std::error::Error + Send + Sync>> =
+                    WorkspaceGraph::new(store.clone())
+                        .fork(
+                            parent_lazy.workspace(),
+                            &child_name,
+                            key,
+                            Some(fork_generation),
+                            &mut accounting,
+                            acyclic_fs::lineage::LazyFork {
+                                parent: &parent_lazy,
+                                destination: &child_name,
+                                cut,
+                                key,
+                                permit: acyclic_fs::PublicationPermit::Unrestricted,
+                            },
+                            |result| result.0.workspace(),
+                        )
+                        .await;
+                let child = created.map_err(display)?.0;
                 context_roots.push(WorkspaceContextRoot {
                     root_id: *root_id,
                     source_path: source_binding.path.clone(),

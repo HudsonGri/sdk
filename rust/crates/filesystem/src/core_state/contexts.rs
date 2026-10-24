@@ -19,6 +19,81 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
             .await
     }
+
+    async fn load_accounted(
+        &self,
+        id: WorkspaceId,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        Option<crate::kernel::Owned<WorkspaceLineageRecord>>,
+        crate::WorkspaceLineageError<Self::Error>,
+    > {
+        let work = nodes::core_lazy_work(accounting).map_err(|error| {
+            crate::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(error))
+        })?;
+        let result = self
+            .load_lineage(id, &work, accounting.cancellation())
+            .await;
+        nodes::finish_core_lazy(Ok(()), &work, accounting).map_err(|error| {
+            crate::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(error))
+        })?;
+        let result = result.map_err(|(error, _custody)| error)?;
+        result
+            .map(|(value, allocation)| {
+                let bytes = allocation.bytes();
+                if accounting.native_work().is_some() {
+                    return Ok(crate::kernel::Owned::new(
+                        value,
+                        crate::kernel::KernelOwnedAllocation::NativeOriginal(allocation),
+                        bytes,
+                    ));
+                }
+                let (mut held, admitted) = accounting.record_actual_owned(bytes)?;
+                if let Err(error) = admitted {
+                    drop((value, allocation));
+                    accounting.release_owned(&mut held, bytes)?;
+                    return Err(error.into());
+                }
+                drop(allocation);
+                Ok(crate::kernel::Owned::new(value, held, bytes))
+            })
+            .transpose()
+    }
+
+    async fn compare_accounted(
+        &self,
+        id: WorkspaceId,
+        revision: u64,
+        replacement: &WorkspaceLineageRecord,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<bool, crate::WorkspaceLineageError<Self::Error>> {
+        let work = nodes::core_lazy_work(accounting).map_err(|error| {
+            crate::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(error))
+        })?;
+        let result = async {
+            let mut native =
+                crate::kernel::KernelAccounting::native(&work, accounting.cancellation());
+            let owned = crate::lineage::work::copy::<Self::Error>(replacement, &mut native)?;
+            let crate::kernel::KernelOwnedAllocation::NativeOriginal(allocation) = owned.allocation
+            else {
+                return Err(crate::WorkspaceLineageError::IncompatibleState);
+            };
+            self.compare_lineage(
+                id,
+                revision,
+                (owned.value, allocation),
+                &work,
+                accounting.cancellation(),
+            )
+            .await
+            .map_err(|(error, _custody)| error)
+        }
+        .await;
+        nodes::finish_core_lazy(Ok(()), &work, accounting).map_err(|error| {
+            crate::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(error))
+        })?;
+        result
+    }
 }
 
 impl WorkspaceContextStore for LocalCoreStateStore {

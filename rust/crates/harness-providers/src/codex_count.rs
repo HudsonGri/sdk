@@ -1,6 +1,5 @@
 //! Codex has no public preflight count route. Keep usage plus a local delta.
 use acyclic_harness_core::{Result, model::PreparedModelRequest};
-use serde::Serialize as _;
 
 use crate::usage_snapshot::{Snapshot, Usage};
 
@@ -50,44 +49,39 @@ fn estimate(snapshot: Option<Usage>, prefix: [u8; 32], total: u64) -> u64 {
 }
 
 fn footprint(request: &PreparedModelRequest, prefix: usize) -> Result<([u8; 32], u64)> {
-    struct Writer {
-        hash: blake3::Hasher,
-        bytes: u64,
-    }
-    impl std::io::Write for Writer {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.hash.update(data);
-            self.bytes = self
-                .bytes
-                .checked_add(data.len() as u64)
-                .ok_or_else(|| std::io::Error::other("Codex input size overflow"))?;
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let input = request.request();
-    let mut writer = Writer {
-        hash: blake3::Hasher::new(),
-        bytes: 0,
+    use acyclic_harness_core::executor::json::{JsonBounds, json_to_writer_bounded};
+    let bounds = JsonBounds {
+        // Every serialized component belongs to this already admitted request.
+        maximum_bytes: request.bytes().len() as u64,
+        maximum_items: request.bytes().len() as u64,
+        maximum_depth: 256,
     };
-    serde_json::to_writer(&mut writer, &(&input.model, &input.tools))
-        .map_err(|_| crate::invalid("Codex count encoding failed"))?;
-    let mut digest = *writer.hash.finalize().as_bytes();
+    let input = request.request();
+    let mut hash = blake3::Hasher::new();
+    let mut bytes = json_to_writer_bounded(
+        &(&input.model, &input.tools),
+        &mut hash,
+        bounds,
+        &mut |_| Ok(()),
+    )?;
+    let mut digest = *hash.finalize().as_bytes();
     for (index, message) in input.messages.iter().enumerate() {
-        message
-            .serialize(&mut serde_json::Serializer::new(&mut writer))
-            .map_err(|_| crate::invalid("Codex count encoding failed"))?;
-        writer.bytes = writer
-            .bytes
+        bytes = bytes
+            .checked_add(json_to_writer_bounded(
+                message,
+                &mut hash,
+                bounds,
+                &mut |_| Ok(()),
+            )?)
+            .ok_or_else(|| crate::invalid("Codex input size overflow"))?;
+        bytes = bytes
             .checked_add(crate::files::extra_bytes(&message.content, u64::MAX)? as u64)
             .ok_or_else(|| crate::invalid("Codex file input size overflow"))?;
         if index + 1 == prefix {
-            digest = *writer.hash.finalize().as_bytes();
+            digest = *hash.finalize().as_bytes();
         }
     }
-    Ok((digest, writer.bytes))
+    Ok((digest, bytes))
 }
 
 #[cfg(test)]

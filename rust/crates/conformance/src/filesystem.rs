@@ -1829,35 +1829,6 @@ impl From<SelectorError> for SelectedCorpusError {
     }
 }
 
-struct BoundedJsonWriter {
-    bytes: Box<[u8]>,
-    written: usize,
-    exceeded: bool,
-}
-
-impl std::io::Write for BoundedJsonWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let required = self.written.checked_add(bytes.len());
-        if required.is_none_or(|required| required > self.bytes.len()) {
-            self.exceeded = true;
-            return Err(std::io::Error::other(
-                "selected workload JSON limit exceeded",
-            ));
-        }
-        let required = required.unwrap_or(self.bytes.len());
-        self.bytes
-            .get_mut(self.written..required)
-            .ok_or_else(|| std::io::Error::other("selected workload JSON limit exceeded"))?
-            .copy_from_slice(bytes);
-        self.written = required;
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Renders the deterministic duplicate-free pairwise workload corpus as JSON.
 ///
 /// Every case contains one level index for every entry in [`DIMENSIONS`]. The
@@ -1907,13 +1878,8 @@ pub fn selected_workload_corpus_json(
     let cases = select_workload_cases(selectors, limits)?;
     let mut canonical: Vec<_> = selectors.iter().map(ToString::to_string).collect();
     canonical.sort_unstable();
-    let mut writer = BoundedJsonWriter {
-        bytes: vec![0; limits.maximum_json_bytes].into_boxed_slice(),
-        written: 0,
-        exceeded: false,
-    };
-    let encoded = serde_json::to_writer_pretty(
-        &mut writer,
+    let mut bytes = vec![0; limits.maximum_json_bytes];
+    let written = acyclic_json::to_writer(
         &SelectedWorkloadCorpus {
             schema: "acyclic-fs-selected-workload-corpus-v1",
             corpus_digest: workload_corpus_digest(),
@@ -1921,16 +1887,26 @@ pub fn selected_workload_corpus_json(
             dimension_order: DIMENSIONS.iter().map(|dimension| dimension.name).collect(),
             cases,
         },
-    );
-    if writer.exceeded {
-        return Err(SelectedCorpusError::OutputLimit {
+        &mut bytes.as_mut_slice(),
+        acyclic_json::Bounds {
+            maximum_bytes: limits.maximum_json_bytes as u64,
+            maximum_items: limits.maximum_json_bytes as u64,
+            maximum_depth: 128,
+        },
+        true,
+    )
+    .map_err(|error| match error {
+        acyclic_json::EncodeError::Admission(_) => SelectedCorpusError::OutputLimit {
             limit: limits.maximum_json_bytes,
-        });
-    }
-    encoded.map_err(SelectedCorpusError::Serialization)?;
-    let written = writer.written;
-    let mut bytes = writer.bytes.into_vec();
-    bytes.truncate(written);
+        },
+        acyclic_json::EncodeError::Serialization(error) => {
+            SelectedCorpusError::Serialization(error)
+        }
+        acyclic_json::EncodeError::Output(error) => {
+            SelectedCorpusError::Serialization(serde_json::Error::io(error))
+        }
+    })?;
+    bytes.truncate(written as usize);
     String::from_utf8(bytes).map_err(|error| {
         SelectedCorpusError::Serialization(serde_json::Error::io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -2257,22 +2233,29 @@ mod tests {
     }
 
     #[test]
-    fn bounded_json_writer_never_exceeds_its_fixed_allocation() -> std::io::Result<()> {
+    fn bounded_json_writer_never_exceeds_its_fixed_allocation() {
         let limit = 80 * 1024;
-        let mut writer = BoundedJsonWriter {
-            bytes: vec![0; limit].into_boxed_slice(),
-            written: 0,
-            exceeded: false,
+        let mut bytes = vec![0; limit].into_boxed_slice();
+        let bounds = acyclic_json::Bounds {
+            maximum_bytes: limit as u64,
+            maximum_items: limit as u64,
+            maximum_depth: 128,
         };
-        std::io::Write::write_all(&mut writer, &vec![7; 70 * 1024])?;
-        assert_eq!(writer.bytes.len(), limit);
-        assert_eq!(writer.written, 70 * 1024);
-        assert!(!writer.exceeded);
-        assert!(std::io::Write::write_all(&mut writer, &vec![8; 11 * 1024]).is_err());
-        assert_eq!(writer.bytes.len(), limit);
-        assert_eq!(writer.written, 70 * 1024);
-        assert!(writer.exceeded);
-        Ok(())
+        assert_eq!(
+            acyclic_json::to_writer(&"x".repeat(70 * 1024), &mut bytes.as_mut(), bounds, false)
+                .unwrap(),
+            70 * 1024 + 2
+        );
+        assert_eq!(bytes.len(), limit);
+        assert!(matches!(
+            acyclic_json::to_writer(&"x".repeat(81 * 1024), &mut bytes.as_mut(), bounds, false),
+            Err(acyclic_json::EncodeError::Admission(
+                acyclic_json::Admission::Bytes
+            ))
+        ));
+        assert_eq!(bytes.len(), limit);
+        // The old generic Vec writer can grow past the fixed corpus allowance.
+        assert!(serde_json::to_vec(&"x".repeat(81 * 1024)).unwrap().len() > limit);
     }
 
     #[test]

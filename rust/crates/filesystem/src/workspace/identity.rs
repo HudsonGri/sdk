@@ -29,11 +29,41 @@ impl WorkspaceName {
         ascii: impl Fn(&char) -> bool,
         probe: &mut impl FnMut(u8, u64, u64),
     ) -> Result<Self, WorkspaceError> {
+        Self::with_canonical(name, accounting, ascii, probe, Self::retain)
+    }
+
+    pub(crate) fn canonical_matches(
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, WorkspaceError> {
+        Self::with_canonical(
+            name,
+            accounting,
+            char::is_ascii,
+            &mut |_, _, _| {},
+            |canonical, _, _| Ok(canonical == name),
+        )
+    }
+
+    fn with_canonical<T, P: FnMut(u8, u64, u64)>(
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+        ascii: impl Fn(&char) -> bool,
+        probe: &mut P,
+        finish: impl FnOnce(&str, &mut KernelAccounting<'_>, &mut P) -> Result<T, WorkspaceError>,
+    ) -> Result<T, WorkspaceError> {
         accounting.check()?;
         let (all_ascii, invalid_ascii, maximum_pending, maximum_chunk) =
             plan::inspect(name, accounting, ascii, probe)?;
         if !all_ascii {
-            return normalize::parse(name, maximum_pending, maximum_chunk, accounting, probe);
+            return normalize::parse(
+                name,
+                maximum_pending,
+                maximum_chunk,
+                accounting,
+                probe,
+                finish,
+            );
         }
         // No normalization scratch or temporary UTF-8 copy for ASCII. Retain
         // the zero-work admission before reporting canonical-name errors.
@@ -50,7 +80,7 @@ impl WorkspaceName {
         if invalid_ascii {
             return Err(WorkspaceNameError::InvalidCharacter.into());
         }
-        Self::retain(name, accounting, probe)
+        finish(name, accounting, probe)
     }
 
     fn retain(
@@ -66,15 +96,7 @@ impl WorkspaceName {
         // keeps String's invariant without validating the copied bytes again.
         let mut name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
         append(canonical, &mut name, accounting, probe)?;
-        let control = const {
-            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
-                String,
-                KernelOwnedAllocation,
-            )>()) {
-                Ok(bytes) => bytes as u64,
-                Err(_) => panic!("workspace name Arc layout overflow"),
-            }
-        };
+        let control = Self::CONTROL_BYTES;
         owned
             .allocation
             .absorb(&mut accounting.claim_owned(control, 1)?)?;
@@ -82,6 +104,30 @@ impl WorkspaceName {
         #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
         name_tests::redundant_allocation();
         Ok(output)
+    }
+
+    const CONTROL_BYTES: u64 = {
+        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
+            String,
+            KernelOwnedAllocation,
+        )>()) {
+            Ok(bytes) => bytes as u64,
+            Err(_) => panic!("workspace name Arc layout overflow"),
+        }
+    };
+
+    pub(crate) fn retire_unique(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), WorkspaceError> {
+        let (name, mut allocation) = Arc::try_unwrap(self.0)
+            .map_err(|_| WorkspaceError::Engine("retiring a shared workspace name".into()))?;
+        let bytes = (name.capacity() as u64)
+            .checked_add(Self::CONTROL_BYTES)
+            .ok_or(crate::WorkError::Overflow)?;
+        drop(name);
+        accounting.release_owned(&mut allocation, bytes)?;
+        Ok(())
     }
 
     /// Returns the canonical customer spelling.
@@ -161,7 +207,7 @@ impl WorkspaceId {
         work.finish(result, &accounting)
     }
 
-    fn with_accounting(
+    pub(crate) fn with_accounting(
         namespace: [u8; 16],
         name: &WorkspaceName,
         accounting: &mut KernelAccounting<'_>,

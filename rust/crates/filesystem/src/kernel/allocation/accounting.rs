@@ -1,6 +1,68 @@
 use super::*;
 
+/// Dispatches one facade call on the original native ledger or the caller's
+/// remaining standalone budget, retaining failed work in the same receipt.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! accounted_fs {
+    ($ctx:expr, $error:ty, |$work:ident, $cancel:ident| $call:expr) => {{
+        (async {
+            let $cancel = $ctx.cancellation();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some($work) = $ctx.native_work() {
+                return $call.await.map_err(<$error>::from);
+            }
+            let $work = $ctx
+                .remaining()
+                .map_err($crate::FsError::from)
+                .map_err(<$error>::from)?;
+            $ctx.accept_receipt::<_, _, $error>($call.await)
+        })
+        .await
+    }};
+}
+
 impl<'a> KernelAccounting<'a> {
+    /// Caller cancellation shared by every nested filesystem operation.
+    pub fn cancellation(&self) -> &'a crate::CancellationToken {
+        match self {
+            Self::Standalone { cancellation, .. }
+            | Self::BorrowedStandalone { cancellation, .. } => cancellation,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { cancellation, .. } => cancellation,
+        }
+    }
+
+    /// Accounts a nested standalone operation, including its failed work, before
+    /// returning its value. Native operations charge their original ledger directly.
+    pub fn accept_receipt<T, E, F>(
+        &mut self,
+        result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
+    ) -> Result<T, F>
+    where
+        E: Into<F>,
+        F: From<crate::FsError>,
+    {
+        let (result, spent) = match result {
+            Ok(receipt) => (Ok(receipt.value), receipt.work),
+            Err(failure) => (Err(failure.error.into()), *failure.work),
+        };
+        let (ledger, work, budget, _) = self
+            .standalone_parts()
+            .ok_or_else(|| F::from(crate::FsError::from(crate::WorkError::Overflow)))?;
+        *work = work
+            .with_backend(spent, ledger.live_bytes())
+            .map_err(crate::FsError::from)
+            .map_err(F::from)?;
+        work.verify(budget)
+            .map_err(crate::FsError::from)
+            .map_err(F::from)?;
+        if result.is_ok() {
+            self.check().map_err(F::from)?;
+        }
+        result
+    }
+
     pub(crate) fn standalone(
         budget: WorkBudget,
         cancellation: &'a crate::CancellationToken,
@@ -495,7 +557,8 @@ impl<'a> KernelAccounting<'a> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native_work(&self) -> Option<&'a crate::NativeMaterializationWork> {
+    /// Original native invocation, when this is a native accounting context.
+    pub fn native_work(&self) -> Option<&'a crate::NativeMaterializationWork> {
         match self {
             Self::Standalone { .. } | Self::BorrowedStandalone { .. } => None,
             Self::NativeOriginal { work, .. } => Some(*work),

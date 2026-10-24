@@ -157,7 +157,7 @@ const PAIR_MAGIC: &[u8; 8] = b"ACYPAIR1";
 pub(super) fn encode_pair(
     writes: &[Write; 2],
     work: NativeWork<'_>,
-) -> Result<(OwnedBytes, Vec<FileValue>)> {
+) -> Result<(OwnedBytes, Files)> {
     validate_pair(&writes[0], &writes[1])?;
     let (left, mut first) = encode(&writes[0], work)?;
     let (right, mut second) = encode(&writes[1], work)?;
@@ -211,7 +211,13 @@ pub(super) fn encode_pair(
     let bytes: OwnedBytes = bytes.into();
     first.bytes = bytes.slice(PREFIX + left.len() - first.bytes.len()..PREFIX + left.len());
     second.bytes = bytes.slice(total - second.bytes.len()..);
-    Ok((bytes, vec![first, second]))
+    Ok((
+        bytes,
+        Files {
+            first,
+            second: Some(second),
+        },
+    ))
 }
 
 pub(super) struct Files {
@@ -219,6 +225,12 @@ pub(super) struct Files {
     second: Option<FileValue>,
 }
 impl Files {
+    pub(super) fn one(first: FileValue) -> Self {
+        Self {
+            first,
+            second: None,
+        }
+    }
     pub(super) fn iter(&self) -> impl Iterator<Item = &FileValue> {
         std::iter::once(&self.first).chain(self.second.as_ref())
     }

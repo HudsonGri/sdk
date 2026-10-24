@@ -633,32 +633,29 @@ impl NativeBudget {
 
 // Stream exact JSON into a capped counter, never into a document-sized buffer.
 fn encoded_budget(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
-    struct Counter {
-        bytes: usize,
-        exceeded: bool,
-    }
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            if bytes.len() > MAX_JSON_BYTES - self.bytes {
-                self.exceeded = true;
-                return Err(std::io::Error::other("json-size"));
-            }
-            self.bytes += bytes.len();
-            Ok(bytes.len())
+    acyclic_json::count(
+        manifest,
+        acyclic_json::Bounds {
+            maximum_bytes: MAX_JSON_BYTES as u64,
+            maximum_items: MAX_NODES as u64,
+            maximum_depth: 128,
+        },
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        acyclic_json::EncodeError::Admission(error) => ManifestError::invalid(
+            "$",
+            match error {
+                acyclic_json::Admission::Items => "node-limit",
+                acyclic_json::Admission::Depth => "depth-limit",
+                _ => "json-size",
+            },
+        ),
+        acyclic_json::EncodeError::Serialization(error) => ManifestError::json(error),
+        acyclic_json::EncodeError::Output(error) => {
+            ManifestError::json(serde_json::Error::io(error))
         }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter {
-        bytes: 0,
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut counter, manifest);
-    if counter.exceeded {
-        return Err(ManifestError::invalid("$", "json-size"));
-    }
-    result.map_err(ManifestError::json)
+    })
 }
 
 fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {

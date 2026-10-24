@@ -5,7 +5,7 @@ use crate::mcp::sync::{
 use bytes::{BufMut as _, BytesMut};
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
 use serde::{Serialize, de::DeserializeOwned};
-use std::io::{self, Write};
+use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
 pub(super) struct BoundedCodec<T> {
@@ -53,15 +53,16 @@ impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
 
     fn encode(&mut self, item: T, buffer: &mut BytesMut) -> io::Result<()> {
         let start = buffer.len();
-        let maximum = start
-            .checked_add(self.maximum.load(Ordering::Acquire) as usize)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let result = serde_json::to_writer(
-            BoundedWrite {
-                buffer: &mut *buffer,
-                maximum,
-            },
+        let maximum = u64::from(self.maximum.load(Ordering::Acquire));
+        let result = crate::executor::json::json_to_writer_bounded(
             &item,
+            &mut (&mut *buffer).writer(),
+            crate::executor::json::JsonBounds {
+                maximum_bytes: maximum,
+                maximum_items: maximum,
+                maximum_depth: 256,
+            },
+            &mut |_| Ok(()),
         );
         if let Err(error) = result {
             buffer.truncate(start);
@@ -72,30 +73,43 @@ impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
     }
 }
 
-struct BoundedWrite<'a> {
-    buffer: &'a mut BytesMut,
-    maximum: usize,
-}
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod bounded_encoder_tests {
+    use super::*;
+    use proptest::prelude::*;
 
-impl Write for BoundedWrite<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self
-            .buffer
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|length| length > self.maximum)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "MCP message exceeds its byte bound",
-            ));
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn wire_bytes_are_unchanged_and_failed_messages_preserve_the_prefix(text in ".{0,256}") {
+            let value = serde_json::json!({"message": text, "values": [null, true, 17]});
+            let encoded = serde_json::to_vec(&value).unwrap();
+            let limit = Arc::new(AtomicU32::new(encoded.len() as u32));
+            let mut codec = BoundedCodec::new(Arc::clone(&limit));
+            let prefix = b"an earlier message\n";
+            let mut buffer = BytesMut::from(&prefix[..]);
+            codec.encode(value.clone(), &mut buffer).unwrap();
+            prop_assert_eq!(&buffer[prefix.len()..buffer.len() - 1], encoded.as_slice());
+            prop_assert_eq!(buffer.last(), Some(&b'\n'));
+            let completed = buffer.clone();
+            limit.store(encoded.len() as u32 - 1, Ordering::Release);
+            prop_assert!(codec.encode(value, &mut buffer).is_err());
+            prop_assert_eq!(buffer, completed);
         }
-        self.buffer.extend_from_slice(bytes);
-        Ok(bytes.len())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    #[test]
+    fn transport_cannot_bypass_the_shared_nesting_admission() {
+        let mut value = serde_json::Value::Null;
+        for _ in 0..257 {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        // Actual former serde writer admitted this message under its byte bound.
+        assert!(serde_json::to_vec(&value).unwrap().len() < 4096);
+        let mut codec = BoundedCodec::new(Arc::new(AtomicU32::new(4096)));
+        let mut buffer = BytesMut::from(&b"retained\n"[..]);
+        assert!(codec.encode(value, &mut buffer).is_err());
+        assert_eq!(buffer.as_ref(), b"retained\n");
     }
 }
 

@@ -2,6 +2,31 @@ use super::*;
 use proptest::prelude::*;
 use serde_json::json;
 
+#[test]
+fn serialization_failure_is_not_reported_as_a_hook_output_limit() {
+    struct Invalid;
+    impl Serialize for Invalid {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom(
+                "invalid hook serialization fixture",
+            ))
+        }
+    }
+    let error = encoded_size(&Invalid, 1024).unwrap_err();
+    assert!(matches!(&error, Error::Invalid(message)
+        if message == "invalid hook serialization fixture"));
+    // The former adapter relabeled every failure as an output limit.
+    let former = Err::<u64, _>(error).map_err(|_| exceeded()).unwrap_err();
+    assert!(matches!(
+        former,
+        Error::Process(ProcessError::OutputLimit { .. })
+    ));
+    assert!(matches!(
+        encoded_size(&"too large", 2),
+        Err(Error::Process(ProcessError::OutputLimit { .. }))
+    ));
+}
+
 proptest! {
     // Property: every admitted canonical delta is charged exactly, including
     // escaping, replacement and first-wins decisions. Exhaustion keeps a bounded

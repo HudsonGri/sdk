@@ -117,6 +117,7 @@ pub mod model;
 pub mod mount;
 pub mod multi_root;
 mod obs;
+mod ordered_tree;
 pub use acyclic_fs_base::numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;

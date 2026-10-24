@@ -195,40 +195,51 @@ pub(super) fn spawn_controlled(
 /// Spawns into a Job created under `name`, which must not already exist.
 pub(super) fn spawn_named(
     command: &mut Command,
+    meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
     name: &[u16],
-    record: &mut super::custody::Record,
+    record: super::custody::Record,
+    recorded: io::Result<()>,
 ) -> io::Result<()> {
-    spawn_in_job(command, None, custody, Some((name, record)))
+    spawn_in_job(command, meter, custody, Some((name, record, recorded)))
 }
 
 fn spawn_in_job(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
-    mut named: Option<(&[u16], &mut super::custody::Record)>,
+    named: Option<(&[u16], super::custody::Record, io::Result<()>)>,
 ) -> io::Result<()> {
+    let (name, record, recorded) = match named {
+        Some((name, record, recorded)) => (Some(name), Some(record), recorded),
+        None => (None, None, Ok(())),
+    };
     *custody = Some(super::ProcessTree {
         child: None,
         guard: Guard::empty(meter.is_none()),
         output_taken: false,
         cleanup_on_drop: meter.is_none(),
-        custody: None,
+        custody: record,
     });
+    // The physical record may already exist when completion accounting fails.
+    // Put its recovery authority in the caller's slot before propagating that
+    // failure, just as for later Job initialization or process admission.
+    recorded?;
     let initialized = custody
         .as_mut()
         .ok_or(io::ErrorKind::NotFound)?
         .guard
-        .initialize(meter, named.as_ref().map(|(name, _)| *name));
+        .initialize(meter, name);
     if initialized.is_err() && custody.as_ref().is_some_and(super::ProcessTree::is_reaped) {
         custody.take();
     }
     initialized?;
     let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
     // A named tree's custodian holds its Job until every member has exited.
-    let custodian = named
+    let custodian = tree
+        .custody
         .as_mut()
-        .map(|(_, record)| super::custodian::launch(tree.guard.job, record))
+        .map(|record| super::custodian::launch(tree.guard.job, record))
         .transpose()?;
     let started = start_in_job(command, meter, tree);
     if started.is_err()

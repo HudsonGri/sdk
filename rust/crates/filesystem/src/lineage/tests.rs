@@ -1,4 +1,5 @@
 use super::*;
+use crate::facade::FsWork as _;
 use crate::{Digest, Fs, WorkspaceName};
 
 fn workspace(name: &str) -> WorkspaceId {
@@ -324,29 +325,22 @@ async fn dropped_external_creator_cannot_publish_lineage_or_change_the_recovery_
         .id();
     let parent_ref = &parent;
     let (created, observed) = tokio::sync::oneshot::channel();
+    let cancellation = CancellationToken::new();
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
     let mut attempt = Box::pin(graph.fork(
         &parent,
         "external-child",
         key,
         Some(cut),
-        |generation| async move {
-            let child = parent_ref
-                .fork::<_, _, WorkspaceError>(
-                    "external-child",
-                    crate::ForkOptions::from_generation(generation, key),
-                    crate::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                    (),
-                )
-                .await
-                .map_err(|failure| {
-                    WorkspaceLineageError::<MemoryWorkspaceLineageStoreError>::from(failure.error)
-                })?
-                .value;
-            created.send(()).unwrap();
-            std::future::pending::<()>().await;
-            Ok::<_, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>>(child)
+        &mut accounting,
+        TestFork {
+            parent: parent_ref,
+            destination: "external-child",
+            key,
+            cut: Some(cut),
+            interrupted: Some(created),
+            called: None,
+            refuse: false,
         },
         |child| child,
     ));
@@ -369,24 +363,15 @@ async fn dropped_external_creator_cannot_publish_lineage_or_change_the_recovery_
             "external-child",
             key,
             None,
-            |generation| async move {
-                assert_eq!(generation.id(), cut);
-                parent_ref
-                    .fork::<_, _, WorkspaceError>(
-                        "external-child",
-                        crate::ForkOptions::from_generation(generation, key),
-                        crate::PublicationPermit::Unrestricted,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                        (),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| {
-                        WorkspaceLineageError::<MemoryWorkspaceLineageStoreError>::from(
-                            failure.error,
-                        )
-                    })
+            &mut accounting,
+            TestFork {
+                parent: parent_ref,
+                destination: "external-child",
+                key,
+                cut: Some(cut),
+                interrupted: None,
+                called: None,
+                refuse: false,
             },
             |child| child,
         )
@@ -403,27 +388,358 @@ async fn fork_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     destination: &str,
     key: IdempotencyKey,
 ) -> Result<Workspace<A, O>, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>> {
+    let cancellation = CancellationToken::new();
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
     graph
         .fork(
             parent,
             destination,
             key,
             None,
-            |generation| async move {
-                parent
-                    .fork::<_, _, WorkspaceError>(
-                        destination,
-                        crate::ForkOptions::from_generation(generation, key),
-                        crate::PublicationPermit::Unrestricted,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                        (),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| WorkspaceLineageError::from(failure.error))
+            &mut accounting,
+            GenerationFork {
+                parent,
+                destination,
+                key,
+                permit: crate::PublicationPermit::Unrestricted,
             },
             |child| child,
         )
         .await
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn fork_refuses_the_original_work_budget_before_any_creator_or_durable_intent() {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let parent = fs
+        .create_workspace("budget-parent", WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .unwrap()
+        .value;
+    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    let mut budget = crate::performance::work_budget(4096, 8 * 1024 * 1024);
+    budget.items_examined = 0;
+    let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+    let original_work = &original;
+    let mut accounting = original_work.accounting(&cancellation);
+    let called = std::sync::atomic::AtomicBool::new(false);
+    let attempt = graph
+        .fork(
+            &parent,
+            "budget-child",
+            IdempotencyKey::from_bytes([95; 16]),
+            None,
+            &mut accounting,
+            TestFork {
+                parent: &parent,
+                destination: "budget-child",
+                key: IdempotencyKey::from_bytes([95; 16]),
+                cut: None,
+                interrupted: None,
+                called: Some(&called),
+                refuse: false,
+            },
+            |child| child,
+        )
+        .await;
+    assert!(attempt.is_err());
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        graph
+            .store()
+            .load(fs.workspace_id("budget-child").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // The old graph's replacement UNBOUNDED allowance reaches the creator on
+    // exactly the same input. Retain this causal control through production code.
+    let mut reset = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let attempt = graph
+        .fork(
+            &parent,
+            "budget-child",
+            IdempotencyKey::from_bytes([95; 16]),
+            None,
+            &mut reset,
+            TestFork {
+                parent: &parent,
+                destination: "budget-child",
+                key: IdempotencyKey::from_bytes([95; 16]),
+                cut: None,
+                interrupted: None,
+                called: Some(&called),
+                refuse: true,
+            },
+            |child| child,
+        )
+        .await;
+    assert!(matches!(
+        attempt,
+        Err(WorkspaceLineageError::UnauthorizedJoin)
+    ));
+    assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn memory_lineage_keeps_payload_on_its_original_ledger_until_replacement_and_drop() {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(
+        crate::performance::work_budget(256, 64 * 1024),
+        &cancellation,
+    )
+    .unwrap();
+    let original_work = &original;
+    let mut accounting = original_work.accounting(&cancellation);
+    let store = MemoryWorkspaceLineageStore::new();
+    let baseline = original.live_allocation_bytes();
+    assert_eq!(
+        baseline,
+        crate::NativeMaterializationWork::accounting_state_bytes()
+    );
+    let record = WorkspaceLineageRecord {
+        version: LINEAGE_VERSION,
+        revision: 1,
+        ready: true,
+        workspace_id: workspace("owned-child"),
+        workspace_name: "owned-child".into(),
+        parent_workspace_id: Some(workspace("owned-parent")),
+        parent_workspace_name: Some("owned-parent".into()),
+        creation_operation: Some(crate::OperationId::from_bytes([96; 16])),
+        fork_generation: generation(1),
+        initial_generation: generation(2),
+    };
+    let bytes =
+        (record.workspace_name.len() + record.parent_workspace_name.as_ref().unwrap().len()) as u64;
+    let retained = bytes + MemoryWorkspaceLineageStore::node_bytes();
+    assert!(
+        store
+            .compare_accounted(record.workspace_id, 0, &record, &mut accounting)
+            .await
+            .unwrap()
+    );
+    assert_eq!(original.live_allocation_bytes(), baseline + retained);
+    let loaded = store
+        .load_accounted(record.workspace_id, &mut accounting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        original.live_allocation_bytes(),
+        baseline + retained + bytes
+    );
+    loaded.retire(&mut accounting).unwrap();
+    assert_eq!(original.live_allocation_bytes(), baseline + retained);
+    // A zero-ownership original cannot make the old adapter's uncharged clone.
+    let mut budget = crate::performance::work_budget(256, 64 * 1024);
+    budget.peak_allocation_bytes = 0;
+    let mut limited = budget.accounting(&cancellation);
+    assert!(
+        store
+            .load_accounted(record.workspace_id, &mut limited)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.load(record.workspace_id).await.unwrap(),
+        Some(record.clone())
+    );
+    let mut replacement = record.clone();
+    replacement.revision += 1;
+    assert!(
+        store
+            .compare_accounted(record.workspace_id, 1, &replacement, &mut accounting)
+            .await
+            .unwrap()
+    );
+    assert_eq!(original.live_allocation_bytes(), baseline + retained);
+    drop(store);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+}
+
+struct TestFork<'a, A, O> {
+    parent: &'a Workspace<A, O>,
+    destination: &'a str,
+    key: IdempotencyKey,
+    cut: Option<GenerationId>,
+    interrupted: Option<tokio::sync::oneshot::Sender<()>>,
+    called: Option<&'a std::sync::atomic::AtomicBool>,
+    refuse: bool,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore>
+    WorkspaceForkCreator<
+        A,
+        O,
+        Workspace<A, O>,
+        WorkspaceLineageError<MemoryWorkspaceLineageStoreError>,
+    > for TestFork<'_, A, O>
+{
+    async fn create(
+        self,
+        generation: crate::Generation<A, O>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Workspace<A, O>, WorkspaceLineageError<MemoryWorkspaceLineageStoreError>> {
+        if let Some(called) = self.called {
+            called.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if self.refuse {
+            return Err(WorkspaceLineageError::UnauthorizedJoin);
+        }
+        if let Some(cut) = self.cut {
+            assert_eq!(generation.id(), cut);
+        }
+        let child: Result<
+            Workspace<A, O>,
+            WorkspaceLineageError<MemoryWorkspaceLineageStoreError>,
+        > = GenerationFork {
+            parent: self.parent,
+            destination: self.destination,
+            key: self.key,
+            permit: crate::PublicationPermit::Unrestricted,
+        }
+        .create(generation, accounting)
+        .await;
+        let child = child?;
+        if let Some(interrupted) = self.interrupted {
+            interrupted.send(()).unwrap();
+            std::future::pending::<()>().await;
+        }
+        Ok(child)
+    }
+}
+
+/// A storage adapter that schedules one competing publication at the CAS cut.
+struct PromotionRace {
+    inner: MemoryWorkspaceLineageStore,
+    legal_winner: bool,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+impl WorkspaceLineageStore for PromotionRace {
+    type Error = MemoryWorkspaceLineageStoreError;
+
+    async fn load(&self, id: WorkspaceId) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
+        self.inner.load(id).await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        id: WorkspaceId,
+        revision: u64,
+        replacement: WorkspaceLineageRecord,
+    ) -> Result<bool, Self::Error> {
+        self.inner.compare_and_swap(id, revision, replacement).await
+    }
+
+    async fn load_accounted(
+        &self,
+        id: WorkspaceId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Owned<WorkspaceLineageRecord>>, WorkspaceLineageError<Self::Error>> {
+        self.inner.load_accounted(id, accounting).await
+    }
+
+    async fn compare_accounted(
+        &self,
+        id: WorkspaceId,
+        revision: u64,
+        replacement: &WorkspaceLineageRecord,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, WorkspaceLineageError<Self::Error>> {
+        let attempt = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if attempt == 0 {
+            let mut winner = work::copy(replacement, accounting)?;
+            if !self.legal_winner {
+                // A new pending revision is not the sole legal intent -> ready
+                // transition. Retrying would silently accept this corruption.
+                winner.value.ready = false;
+                winner.value.initial_generation = winner.value.fork_generation;
+            }
+            let published = self
+                .inner
+                .compare_accounted(id, revision, &winner.value, accounting)
+                .await;
+            winner.retire(accounting)?;
+            assert!(published?);
+            return Ok(false);
+        }
+        self.inner
+            .compare_accounted(id, revision, replacement, accounting)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn promotion_cas_loser_accepts_only_the_single_legal_terminal_transition() {
+    for legal_winner in [false, true] {
+        let store = PromotionRace {
+            inner: MemoryWorkspaceLineageStore::new(),
+            legal_winner,
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let planned = WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: false,
+            workspace_id: workspace("promotion-child"),
+            workspace_name: "promotion-child".into(),
+            parent_workspace_id: Some(workspace("promotion-parent")),
+            parent_workspace_name: Some("promotion-parent".into()),
+            creation_operation: Some(crate::OperationId::from_bytes([81; 16])),
+            fork_generation: generation(1),
+            initial_generation: generation(1),
+        };
+        assert!(
+            store
+                .inner
+                .compare_and_swap(planned.workspace_id, 0, planned.clone())
+                .await
+                .unwrap()
+        );
+        let graph = WorkspaceGraph::new(store);
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let result = work::promote(&graph, &planned, generation(2), &mut accounting).await;
+        if legal_winner {
+            result.unwrap();
+            assert_eq!(
+                graph
+                    .resolve(planned.workspace_id)
+                    .await
+                    .unwrap()
+                    .initial_generation,
+                generation(2)
+            );
+        } else {
+            // Negative control: the old CAS loop makes a second publication and
+            // succeeds on precisely this still-pending replacement.
+            assert!(matches!(
+                result,
+                Err(WorkspaceLineageError::ConflictingRegistration)
+            ));
+            assert!(
+                !graph
+                    .store()
+                    .inner
+                    .load(planned.workspace_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .ready
+            );
+        }
+        assert_eq!(
+            graph
+                .store()
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
 }

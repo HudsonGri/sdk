@@ -13,6 +13,8 @@ mod capture;
 mod custodian;
 mod custody;
 pub use custody::ProcessCustody;
+mod storage;
+pub use storage::ProcessTreeStorage;
 #[cfg(unix)]
 mod warden;
 
@@ -46,8 +48,6 @@ use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
 mod prepared;
 #[cfg(unix)]
 pub use prepared::PreparedClosedProcess;
-#[cfg(unix)]
-use prepared::prepared_process_vec;
 #[cfg(test)]
 mod custody_tests;
 #[cfg(unix)]
@@ -102,29 +102,54 @@ impl ProcessTree {
     /// [`ProcessCustody::fence_stale`] returns only after it is dead.
     /// `command` must not be reused for another spawn.
     pub fn spawn_in_custody(command: &mut Command, custody: &ProcessCustody) -> io::Result<Self> {
+        let mut retained = None;
+        if let Err(error) = Self::spawn_in_custody_controlled(command, custody, None, &mut retained)
+        {
+            if let Some(tree) = retained.as_mut() {
+                tree.terminate(None)?;
+            }
+            return Err(error);
+        }
+        retained.ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+
+    /// Starts a durably recorded tree on the original invocation's meter.
+    /// Admission and cleanup failures leave every acquired tree and record in
+    /// `retained`. The caller keeps this slot through recovery; an error does
+    /// not mean that the tree is absent or that its effects can be settled.
+    pub fn spawn_in_custody_controlled(
+        command: &mut Command,
+        custody: &ProcessCustody,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<Self>,
+    ) -> io::Result<()> {
+        if retained.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
         #[cfg(unix)]
         {
-            let directory = custody.arm(command)?;
-            let mut tree = Self::spawn(command)?;
-            let pid = libc::pid_t::try_from(tree.owned_child_id()?)
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            tree.custody = Some(custody::Record::new(directory, pid));
-            Ok(tree)
+            let directory =
+                process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+                    custody.arm(command)
+                })?;
+            let spawned = Self::spawn_controlled(command, meter, retained);
+            if let Some(tree) = retained.as_mut()
+                && (tree.child.is_some() || tree.native_child.is_some())
+            {
+                let pid = libc::pid_t::try_from(tree.owned_child_id()?)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                tree.custody = Some(custody::Record::new(directory, pid));
+            }
+            spawned
         }
         #[cfg(windows)]
         {
-            let (mut record, name) = custody.record()?;
-            let mut tree = None;
-            if let Err(admission) = platform::spawn_named(command, &mut tree, &name, &mut record) {
-                if let Some(tree) = tree.as_mut() {
-                    tree.terminate(None)?;
-                }
-                record.remove()?;
-                return Err(admission);
-            }
-            let mut tree = tree.ok_or(io::ErrorKind::NotFound)?;
-            tree.custody = Some(record);
-            Ok(tree)
+            let (record, recorded) =
+                pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
+                    custody.record()
+                })?;
+            let (record, name) = record?;
+            platform::spawn_named(command, meter, retained, &name, record, recorded)
         }
     }
 
@@ -186,7 +211,7 @@ impl ProcessTree {
         let argument_slots = argument_count
             .checked_add(2)
             .ok_or(io::ErrorKind::InvalidInput)?;
-        let mut arguments = prepared_process_vec(argument_slots, &meter)?;
+        let mut arguments = crate::meter::ReadBuffer::new(argument_slots, &meter)?;
         // Actual pointer writes and their copy receipt occur at the later
         // synchronous spawn, never hypothetically.
         arguments
@@ -207,11 +232,11 @@ impl ProcessTree {
                     .ok_or(io::ErrorKind::InvalidInput)?;
             }
         }
-        let mut environment = prepared_process_vec(environment_count, &meter)?;
+        let mut environment = crate::meter::ReadBuffer::new(environment_count, &meter)?;
         let pointer_count = environment_count
             .checked_add(1)
             .ok_or(io::ErrorKind::InvalidInput)?;
-        let mut environment_pointers = prepared_process_vec(pointer_count, &meter)?;
+        let mut environment_pointers = crate::meter::ReadBuffer::new(pointer_count, &meter)?;
         for index in 0..environment_count {
             meter.examine(1, 0)?;
             // SAFETY: `index` precedes the terminator counted above.
@@ -228,7 +253,7 @@ impl ProcessTree {
             }
             let terminated = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
             meter.admit_examination(0, terminated as u64)?;
-            let mut bytes = prepared_process_vec(terminated, &meter)?;
+            let mut bytes = crate::meter::ReadBuffer::new(terminated, &meter)?;
             // SAFETY: the entry's `length` bytes and its terminator were read above.
             bytes.data.extend_from_slice(unsafe {
                 std::slice::from_raw_parts(value.cast::<u8>(), terminated)
@@ -663,9 +688,7 @@ impl ProcessTree {
                 })?;
             }
             self.guard.close(meter)?;
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             Ok(())
         }
     }
@@ -709,9 +732,7 @@ impl ProcessTree {
             }
             // The exited leader still holds its PID, so no new tree's record
             // can take this name before it is removed.
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             let (reaped, recorded) =
                 platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
             if reaped.is_some() {
@@ -735,10 +756,11 @@ impl ProcessTree {
         #[cfg(unix)]
         return self.child.is_none()
             && self.native_child.is_none()
-            && !self.spawn_resources.pending();
+            && !self.spawn_resources.pending()
+            && self.custody.is_none();
         #[cfg(windows)]
         {
-            self.child.is_none() && !self.guard.pending()
+            self.child.is_none() && !self.guard.pending() && self.custody.is_none()
         }
     }
 

@@ -58,13 +58,10 @@ impl<'a> View<'a> {
         maximum: u64,
     ) -> crate::Result<acyclic_stream::OwnedBytes> {
         let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
         match self {
             Self::Checkout(view) => view
-                .read(
-                    path,
-                    maximum,
-                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                )
+                .read(path, maximum, &mut accounting)
                 .await
                 .map(|chunk| chunk.bytes)
                 .map_err(Error::from),
@@ -89,15 +86,10 @@ impl<'a> View<'a> {
         permit: PublicationPermit,
     ) -> crate::Result<GitTreeRef> {
         let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
         match self {
             Self::Checkout(view) if exact => {
-                let generation = view
-                    .exactify(
-                        "/",
-                        permit,
-                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                    )
-                    .await?;
+                let generation = view.exactify("/", permit, &mut accounting).await?;
                 Ok(GitTreeRef::exact(view.workspace().id(), generation.id()))
             }
             Self::Checkout(view) => view
@@ -126,61 +118,62 @@ impl<'a> View<'a> {
         let cancellation = CancellationToken::new();
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
         let graph = WorkspaceGraph::new(store.clone());
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        self.fork_accounted(destination, key, permit, &graph, &mut accounting, None)
+            .await
+    }
+
+    pub(super) async fn fork_accounted<'original>(
+        self,
+        destination: &str,
+        key: IdempotencyKey,
+        permit: PublicationPermit,
+        graph: &WorkspaceGraph<LocalCoreStateStore>,
+        accounting: &mut acyclic_fs::kernel::KernelAccounting<'original>,
+        selected: Option<acyclic_fs::LazySnapshotRef>,
+    ) -> crate::Result<OwnedView> {
         match self {
             Self::Checkout(view) => {
-                let cut = view
-                    .prepare_fork(
-                        destination,
-                        key,
-                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                    )
-                    .await?;
+                let cut = match selected {
+                    Some(cut) => cut,
+                    None => view.prepare_fork(destination, key, accounting).await?,
+                };
                 let (child, _) = graph
-                    .fork(
+                    .fork::<_, _, _, Error, _>(
                         view.workspace(),
                         destination,
                         key,
                         Some(cut.authored_generation),
-                        |_generation| async {
-                            view.fork_snapshot(
-                                destination,
-                                cut,
-                                key,
-                                permit,
-                                &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                            )
-                            .await
-                            .map_err(Error::from)
+                        accounting,
+                        acyclic_fs::lineage::LazyFork {
+                            parent: view,
+                            destination,
+                            cut,
+                            key,
+                            permit,
                         },
                         |result| result.0.workspace(),
                     )
                     .await?;
                 Ok(OwnedView::Checkout(child))
             }
-            Self::Volume(view) => {
-                graph
-                    .fork(
-                        view,
+            Self::Volume(view) => graph
+                .fork::<_, _, _, Error, _>(
+                    view,
+                    destination,
+                    key,
+                    None,
+                    accounting,
+                    acyclic_fs::lineage::GenerationFork {
+                        parent: view,
                         destination,
                         key,
-                        None,
-                        |generation| async move {
-                            view.fork::<_, _, WorkspaceError>(
-                                destination,
-                                acyclic_fs::ForkOptions::from_generation(generation, key),
-                                permit,
-                                WorkBudget::UNBOUNDED,
-                                &cancellation,
-                                (),
-                            )
-                            .await
-                            .map(|receipt| OwnedView::Volume(receipt.value))
-                            .map_err(|failure| Error::from(failure.error))
-                        },
-                        OwnedView::workspace,
-                    )
-                    .await
-            }
+                        permit,
+                    },
+                    |child| child,
+                )
+                .await
+                .map(OwnedView::Volume),
         }
     }
 

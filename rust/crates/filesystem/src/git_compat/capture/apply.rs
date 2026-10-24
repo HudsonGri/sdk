@@ -18,35 +18,18 @@ pub(super) async fn apply_git_capture<
     let destination = format!("git-capture-{workspace_hash}-{}", hex::encode(bytes));
     let source_workspace = parent.workspace();
     let key = IdempotencyKey::from_bytes(bytes);
-    let capture = graph
-        .fork(
-            &source_workspace,
-            &destination,
-            key,
-            Some(parent.id()),
-            |generation| {
-                let source_workspace = &source_workspace;
-                let destination = &destination;
-                async move {
-                    source_workspace
-                        .fork::<_, _, WorkspaceError>(
-                            &destination,
-                            crate::ForkOptions::from_generation(generation, key),
-                            crate::PublicationPermit::Unrestricted,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                            (),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| {
-                            GitCaptureAuthenticationError::<S::Error>::from(failure.error)
-                        })
-                }
-            },
-            |child| child,
-        )
-        .await?;
+    use crate::facade::FsWork as _;
+    let cancellation = CancellationToken::new();
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let capture = fork_capture_workspace(
+        graph,
+        &source_workspace,
+        &destination,
+        parent.id(),
+        key,
+        &mut accounting,
+    )
+    .await?;
     let mut apply_bytes = bytes;
     apply_bytes[0] ^= 0xa5;
     let apply_key = IdempotencyKey::from_bytes(apply_bytes);
@@ -117,4 +100,35 @@ pub(super) async fn apply_git_capture<
         tracked_paths,
         origin: Some((parent.clone(), initial_generation)),
     })
+}
+
+async fn fork_capture_workspace<
+    'original,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    S: crate::WorkspaceLineageStore,
+>(
+    graph: &crate::WorkspaceGraph<S>,
+    source: &crate::Workspace<A, O>,
+    destination: &str,
+    cut: GenerationId,
+    key: IdempotencyKey,
+    accounting: &mut crate::kernel::KernelAccounting<'original>,
+) -> Result<crate::Workspace<A, O>, GitCaptureAuthenticationError<S::Error>> {
+    graph
+        .fork(
+            source,
+            destination,
+            key,
+            Some(cut),
+            accounting,
+            crate::lineage::GenerationFork {
+                parent: source,
+                destination,
+                key,
+                permit: crate::PublicationPermit::Unrestricted,
+            },
+            |child| child,
+        )
+        .await
 }

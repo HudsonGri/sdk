@@ -1,7 +1,65 @@
 //! Lifecycle cuts exclude retained prompts, inbox bodies and earlier answers.
 use super::*;
 
+/// One coherent direct-child observation with a caller-bounded answer window.
+/// Retained prompts, older answers and unrelated children are never projected.
+#[derive(Clone, Debug)]
+pub struct ChildObservation {
+    /// Desired state after the latest admitted control.
+    pub state: ChildState,
+    /// Last worker acknowledgment, absent before its first claim.
+    pub status: Option<ChildStatus>,
+    /// Inputs not yet acknowledged as delivered.
+    pub pending_inputs: u64,
+    /// Gapless delivered input sequence.
+    pub delivered: u64,
+    /// At most the requested number of immutable answers after the turn cursor.
+    pub results: Vec<FileValue>,
+    /// Exact task-volume cut shared by all fields above.
+    pub generation: Generation,
+    /// Opens the ordinary child follow at that same cut.
+    pub cursor: Cursor,
+}
+
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    /// Observes one admitted child without scanning its siblings or replaying
+    /// answer bodies before `after`. `None` denotes bounded journal progress;
+    /// no incomplete observation is returned as a settled child.
+    pub async fn observe_child(
+        &self,
+        reference: &Component,
+        after: u64,
+        maximum: usize,
+    ) -> Result<Option<ChildObservation>> {
+        if maximum == 0 {
+            return Err(Error::LimitExceeded);
+        }
+        let (_, complete) = self.refresh_bounded::<true>(maximum as u64).await?;
+        if !complete {
+            return Ok(None);
+        }
+        let index = self.index.lock().await;
+        let LifecycleObservation {
+            state,
+            status,
+            pending_inputs,
+            delivered,
+            results,
+        } = observation(&index, reference, after, maximum)?;
+        let generation = self.generation(&index);
+        drop(index);
+        let watermarks = self.provider.watermarks(self.path.clone()).await?;
+        Ok(Some(ChildObservation {
+            state,
+            status,
+            pending_inputs,
+            delivered,
+            results,
+            generation,
+            cursor: self.cursor(&Query::Child(reference.clone()), generation, watermarks)?,
+        }))
+    }
+
     /// A bounded direct-child page, resuming strictly after its last reference.
     /// `None` means a bounded suffix replay made progress; continue with the
     /// same key. New references preceding an existing cursor arrive through
@@ -37,25 +95,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if !complete {
             return Ok(None);
         }
-        let Some(first) = after.checked_add(1) else {
-            return Ok(Some(Vec::new()));
-        };
-        let key = |turn| FileKey::Child {
-            reference: reference.clone(),
-            file: ChildFile::Result(turn),
-        };
         let index = self.index.lock().await;
-        Ok(Some(
-            index
-                .files
-                .range(key(first)..=key(u64::MAX))
-                .take(maximum)
-                .map(|(_, stored)| {
-                    item_examined();
-                    stored.file.clone()
-                })
-                .collect(),
-        ))
+        Ok(Some(result_page(&index, reference, after, maximum)))
     }
 
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -145,6 +186,76 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
+fn result_page(index: &Index, reference: &Component, after: u64, maximum: usize) -> Vec<FileValue> {
+    let Some(first) = after.checked_add(1) else {
+        return Vec::new();
+    };
+    let key = |turn| FileKey::Child {
+        reference: reference.clone(),
+        file: ChildFile::Result(turn),
+    };
+    index
+        .files
+        .range(key(first)..=key(u64::MAX))
+        .take(maximum)
+        .map(|(_, stored)| stored.file.clone())
+        .collect()
+}
+
+struct LifecycleObservation {
+    state: ChildState,
+    status: Option<ChildStatus>,
+    pending_inputs: u64,
+    delivered: u64,
+    results: Vec<FileValue>,
+}
+
+fn observation(
+    index: &Index,
+    reference: &Component,
+    after: u64,
+    maximum: usize,
+) -> Result<LifecycleObservation> {
+    let key = |file| FileKey::Child {
+        reference: reference.clone(),
+        file,
+    };
+    item_examined();
+    if !index.child_requests.contains(reference) {
+        return Err(Error::InvalidSegment);
+    }
+    let state = super::child_turn::child_state(index, reference)?;
+    let status = index
+        .files
+        .get(&key(ChildFile::Status))
+        .map(|stored| ChildStatus::parse(&stored.file.bytes))
+        .transpose()?;
+    let delivered = match index.files.get(&key(ChildFile::Delivered)) {
+        Some(stored) => {
+            let (task, delivered): (crate::TaskId, u64) =
+                serde_json::from_slice(&stored.file.bytes).map_err(|_| Error::InvalidSegment)?;
+            if status.is_none_or(|status| status.task != task) {
+                return Err(Error::FenceConflict);
+            }
+            delivered
+        }
+        None => 0,
+    };
+    item_examined();
+    let inputs = index
+        .child_inputs
+        .get(reference)
+        .map_or(0, |inputs| inputs.len() as u64);
+    let pending_inputs = inputs.checked_sub(delivered).ok_or(Error::InvalidSegment)?;
+    Ok(LifecycleObservation {
+        state,
+        status,
+        pending_inputs,
+        delivered,
+        results: result_page(index, reference, after, maximum),
+    })
+}
+
 fn reference_page(index: &Index, after: Option<&Component>, maximum: usize) -> Vec<Component> {
     index
         .child_requests
@@ -211,6 +322,94 @@ mod tests {
         });
         assert_eq!(page, (99_991..99_995).map(reference).collect::<Vec<_>>());
         assert_eq!(examined, 4);
+    }
+
+    #[test]
+    fn child_observation_shares_one_cut_and_does_not_visit_unrelated_requests() {
+        let mut index = Index::default();
+        for n in 0..100_000 {
+            let key = FileKey::Child {
+                reference: reference(n),
+                file: ChildFile::Request,
+            };
+            apply(&mut index, FileValue::new(key, b"work".to_vec()), 1);
+        }
+        let reference = reference(99_999);
+        let task = crate::TaskId::from_bytes([83; 16]);
+        let key = |file| FileKey::Child {
+            reference: reference.clone(),
+            file,
+        };
+        for turn in 2..=8 {
+            let inbox = key(ChildFile::Inbox(
+                Component::new(format!("mail-{turn}")).unwrap(),
+            ));
+            apply(&mut index, FileValue::new(inbox, b"work".to_vec()), turn);
+        }
+        let status = ChildStatus {
+            task,
+            state: ChildState::Running,
+            settled: true,
+            inputs: 8,
+        };
+        apply(
+            &mut index,
+            FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap()),
+            9,
+        );
+        apply(
+            &mut index,
+            FileValue::new(
+                key(ChildFile::Delivered),
+                serde_json::to_vec(&(task, 8)).unwrap(),
+            ),
+            10,
+        );
+        for turn in 1..=8 {
+            let result = ChildTurnResult {
+                task,
+                turn,
+                outcome: crate::Outcome::Cancelled,
+            };
+            apply(
+                &mut index,
+                FileValue::new(
+                    key(ChildFile::Result(turn)),
+                    serde_json::to_vec(&result).unwrap(),
+                ),
+                10 + turn,
+            );
+        }
+        let (observed, examined) = crate::test_support::measure_task_volume_work(|| {
+            observation(&index, &reference, 4, 4).unwrap()
+        });
+        assert_eq!(observed.state, ChildState::Running);
+        assert_eq!(observed.status, Some(status));
+        assert_eq!(observed.pending_inputs, 0);
+        assert_eq!(observed.delivered, 8);
+        assert_eq!(
+            observed
+                .results
+                .iter()
+                .map(|file| ChildTurnResult::parse(&file.bytes).unwrap().turn)
+                .collect::<Vec<_>>(),
+            vec![5, 6, 7, 8]
+        );
+        assert_eq!(examined, 9);
+        assert!(result_page(&index, &reference, u64::MAX, 4).is_empty());
+
+        // Restore the former all-files projection before filtering the child.
+        // The same four-result request now examines every unrelated request.
+        let (_, old) = crate::test_support::measure_task_volume_work(|| {
+            index.files.iter().filter_map(|(candidate, stored)| {
+            matches!(candidate, FileKey::Child { reference: child, file: ChildFile::Result(turn) } if child == &reference && *turn > 4)
+                .then_some(stored.file.clone())
+        }).take(4).collect::<Vec<_>>()
+        });
+        assert!(
+            old > 100_000,
+            "old broad projection escaped the bounded oracle"
+        );
     }
     #[test]
     #[should_panic(expected = "child page exceeded its work bound")]

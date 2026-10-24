@@ -3,17 +3,51 @@ use super::*;
 use crate::{OperationId, Outcome, TaskId, executor::TurnOutput};
 
 /// An exact, durable execution claim, safe to retain across a host restart.
+/// Claims are issued by `TaskVolume::claim_child_turn`, never constructed by
+/// an adapter. Deserialized claims are authenticated against the durable index
+/// before either replay or completion.
+///
+/// ```compile_fail
+/// use acyclic_harness_core::{task_volume::{ChildTurnClaim, Component}, TaskId, OperationId};
+/// let claim = ChildTurnClaim {
+///     reference: Component::new("worker").unwrap(),
+///     task: TaskId::from_bytes([1; 16]), turn: 1,
+///     operation: OperationId::from_bytes([2; 16]),
+/// };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildTurnClaim {
     /// Direct child in the owning parent's private volume.
-    pub reference: Component,
+    pub(super) reference: Component,
     /// Original admitted child task.
-    pub task: TaskId,
+    pub(super) task: TaskId,
     /// Gapless accepted input sequence.
-    pub turn: u64,
+    pub(super) turn: u64,
     /// Fences a later claimant and identifies replay of this claim.
-    pub operation: OperationId,
+    pub(super) operation: OperationId,
+}
+
+impl ChildTurnClaim {
+    /// Direct child selected by the winning claim.
+    pub fn reference(&self) -> &Component {
+        &self.reference
+    }
+
+    /// Original admitted child task.
+    pub const fn task(&self) -> TaskId {
+        self.task
+    }
+
+    /// Gapless accepted input sequence.
+    pub const fn turn(&self) -> u64 {
+        self.turn
+    }
+
+    /// Exact operation fence, retained unchanged across native host recovery.
+    pub const fn operation(&self) -> OperationId {
+        self.operation
+    }
 }
 
 /// Existing owner conditions and budget for one exact task-volume transition.
@@ -67,6 +101,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     ) -> Result<Option<ChildTurn>> {
         let expected = publication.expected;
         let deadline = publication.deadline;
+        let work = publication.work;
         self.refresh().await?;
         let index = self.index.lock().await;
         if let Some(claim) = index.child_claims.get(&operation) {
@@ -150,7 +185,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             b"claim",
         )?;
         drop(index);
-        self.commit_append(expected, prepared.0, prepared.1, prepared.2, deadline)
+        self.commit_append(expected, prepared, deadline, work)
             .await?;
         Ok(Some(ChildTurn::Claimed { claim, input }))
     }
@@ -166,6 +201,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     ) -> Result<Generation> {
         let expected = publication.expected;
         let deadline = publication.deadline;
+        let work = publication.work;
         self.refresh().await?;
         let index = self.index.lock().await;
         if index.child_claims.get(&claim.operation) != Some(claim) {
@@ -236,8 +272,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             b"complete",
         )?;
         drop(index);
-        self.commit_append(expected, prepared.0, prepared.1, prepared.2, deadline)
-            .await
+        self.commit_append(expected, prepared, deadline, work).await
     }
 
     fn claimed_turn(index: &Index, claim: &ChildTurnClaim) -> Result<ChildTurn> {
@@ -280,10 +315,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         writes: [FileValue; 2],
         claim: &ChildTurnClaim,
         phase: &[u8],
-    ) -> Result<(CommitRequest, Vec<FileValue>, u64)> {
+    ) -> Result<PreparedAppend> {
         let ChildTurnPublication {
             expected,
-            mut conditions,
+            conditions,
             work,
             ..
         } = publication;
@@ -295,33 +330,29 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .position
             .checked_add(1)
             .ok_or(Error::LimitExceeded)?;
-        conditions.push(CommitCondition::Head {
+        let fence = CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
             commit_id: CommitId::from_bytes(expected.commit),
-        });
+        };
         let mut identity = blake3::Hasher::new();
         identity.update(b"harness:child-turn:v1");
         identity.update(&expected.volume);
         identity.update(&claim.operation.into_bytes());
         identity.update(phase);
         identity.update(&expected.commit);
-        Ok((
-            CommitRequest {
-                conditions,
-                mutations: vec![CommitMutation::Append {
-                    path: self.path.clone(),
-                    records: vec![record.into()],
-                }],
-                idempotency_key: IdempotencyKey::new(identity.finalize().as_bytes().to_vec())?,
-            },
+        Ok(PreparedAppend {
+            conditions,
+            fence,
+            record,
             files,
             next,
-        ))
+            key: *identity.finalize().as_bytes(),
+        })
     }
 }
 
-fn child_state(index: &Index, reference: &Component) -> Result<ChildState> {
+pub(super) fn child_state(index: &Index, reference: &Component) -> Result<ChildState> {
     let key = FileKey::Child {
         reference: reference.clone(),
         file: ChildFile::Control,

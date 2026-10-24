@@ -7,6 +7,9 @@ pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;
 pub use prepared::PreparedNativeCommit;
 
+#[cfg(test)]
+mod watermark_tests;
+
 pub(crate) fn vector<T>(
     length: usize,
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,

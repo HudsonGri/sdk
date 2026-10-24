@@ -260,26 +260,26 @@ impl FileHeadlessClient {
         file: &'a FileValue,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-        if let Admission::Deployed(admission) = &self.admission {
-            admission.submit(self.operation, file.clone()).await?;
+            if let Admission::Deployed(admission) = &self.admission {
+                admission.submit(self.operation, file.clone()).await?;
+                self.submitted = true;
+                return Ok(());
+            }
+            let local = self
+                .admission
+                .local()
+                .ok_or_else(|| Error::Invalid("missing request admission".into()))?;
+            let cursor = self.query.cursor();
+            let expected = Generation {
+                volume: cursor.volume,
+                epoch: cursor.epoch,
+                position: cursor.position,
+                commit: cursor.commit,
+            };
+            admit_request(local, self.operation, file, expected).await?;
             self.submitted = true;
-            return Ok(());
-        }
-        let local = self
-            .admission
-            .local()
-            .ok_or_else(|| Error::Invalid("missing request admission".into()))?;
-        let cursor = self.query.cursor();
-        let expected = Generation {
-            volume: cursor.volume,
-            epoch: cursor.epoch,
-            position: cursor.position,
-            commit: cursor.commit,
-        };
-        admit_request(local, self.operation, file, expected).await?;
-        self.submitted = true;
-        Ok(())
-            })
+            Ok(())
+        })
     }
 
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {
@@ -299,72 +299,81 @@ impl FileHeadlessClient {
 /// Publish a request through the one owner-authorized task-file admission path.
 /// A concurrent publisher can advance the cut, but cannot change this request's
 /// immutable identity or bypass `TaskFiles`' write authorization.
-pub async fn admit_request(
-    local: &LocalHarness,
+#[inline(never)]
+pub fn admit_request<'a>(
+    local: &'a LocalHarness,
     operation: OperationId,
-    file: &FileValue,
+    file: &'a FileValue,
     mut expected: Generation,
-) -> Result<()> {
-    let normalized = resolve_request(local, operation, file).await?;
-    loop {
-        match local.task_files().write(expected, &normalized).await {
-            Ok(_) => return Ok(()),
-            Err(crate::task_volume::Error::Conflict(next)) if next.position > expected.position => {
-                expected = next;
+) -> futures::future::BoxFuture<'a, Result<()>> {
+    Box::pin(async move {
+        let normalized = resolve_request(local, operation, file).await?;
+        loop {
+            match local.task_files().write(expected, &normalized).await {
+                Ok(_) => return Ok(()),
+                Err(crate::task_volume::Error::Conflict(next))
+                    if next.position > expected.position =>
+                {
+                    expected = next;
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
         }
-    }
+    })
 }
 
 /// The stock package's single request admission policy, shared by embedded and
 /// deployed entry points. Resolution pins exact input before execution starts.
-async fn resolve_request(
-    local: &LocalHarness,
+#[inline(never)]
+fn resolve_request<'a>(
+    local: &'a LocalHarness,
     operation: OperationId,
-    file: &FileValue,
-) -> Result<FileValue> {
-    validate(file, operation)?;
-    // Both -p and JSONL enter through this boundary. Already pinned prompt
-    // resolutions are data, so template expansion is never parsed twice.
-    let normalized;
-    let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
-        Ok(CommandResolution::Prompt {
-            text,
-            source: None,
-            mentions,
-        }) if mentions.is_empty() => {
-            let resolution = local.resolve_input(operation, &text).await?;
-            let mut captured = file.clone();
-            captured.bytes = serde_json::to_vec(&resolution)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .into();
-            normalized = captured;
-            validate(&normalized, operation)?;
-            &normalized
+    file: &'a FileValue,
+) -> futures::future::BoxFuture<'a, Result<FileValue>> {
+    Box::pin(async move {
+        validate(file, operation)?;
+        // Both -p and JSONL enter through this boundary. Already pinned prompt
+        // resolutions are data, so template expansion is never parsed twice.
+        let normalized;
+        let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
+            Ok(CommandResolution::Prompt {
+                text,
+                source: None,
+                mentions,
+            }) if mentions.is_empty() => {
+                let resolution = local.resolve_input(operation, &text).await?;
+                let mut captured = file.clone();
+                captured.bytes = serde_json::to_vec(&resolution)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .into();
+                normalized = captured;
+                validate(&normalized, operation)?;
+                &normalized
+            }
+            _ => file,
+        };
+        let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
+            .or_else(|_| {
+                serde_json::from_slice::<CommandRequest>(&file.bytes)
+                    .map(|request| CommandResolution::Submit { request })
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        match resolution {
+            CommandResolution::Select { .. }
+            | CommandResolution::Confirm { .. }
+            | CommandResolution::Sdk { .. }
+            | CommandResolution::Submit {
+                request:
+                    CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+            } => {
+                return Err(Error::Unsupported(
+                    "command requires an interactive client".into(),
+                ));
+            }
+            _ => {}
         }
-        _ => file,
-    };
-    let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
-        .or_else(|_| {
-            serde_json::from_slice::<CommandRequest>(&file.bytes)
-                .map(|request| CommandResolution::Submit { request })
-        })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    match resolution {
-        CommandResolution::Select { .. }
-        | CommandResolution::Confirm { .. }
-        | CommandResolution::Sdk { .. }
-        | CommandResolution::Submit {
-            request: CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
-        } => {
-            return Err(Error::Unsupported(
-                "command requires an interactive client".into(),
-            ));
-        }
-        _ => {}
-    }
-    Ok(file.clone())
+        Ok(file.clone())
+    })
 }
 
 impl FileHeadlessClient {
@@ -448,9 +457,18 @@ impl FileHeadlessClient {
                         self.host_done = true;
                         self.host_error = result.err();
                         self.drain_through = match &self.admission {
-                            Admission::Local(local) => local.task_files().inner
-                                .snapshot(&selection(operation)?, MAXIMUM_FILES).await?.cursor.position,
-                            Admission::Deployed(admission) => admission.drain_cut(operation).await?,
+                            Admission::Local(local) => {
+                                local
+                                    .task_files()
+                                    .inner
+                                    .snapshot(&selection(operation)?, MAXIMUM_FILES)
+                                    .await?
+                                    .cursor
+                                    .position
+                            }
+                            Admission::Deployed(admission) => {
+                                admission.drain_cut(operation).await?
+                            }
                         };
                     }
                 }

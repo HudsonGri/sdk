@@ -18,12 +18,7 @@ pub(super) fn lazy_store_write_work() -> WorkCounters {
 }
 
 pub(super) fn cancellation<'a>(ctx: &KernelAccounting<'a>) -> &'a CancellationToken {
-    match ctx {
-        KernelAccounting::Standalone { cancellation, .. }
-        | KernelAccounting::BorrowedStandalone { cancellation, .. } => cancellation,
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
-    }
+    ctx.cancellation()
 }
 
 pub(super) fn retire_node<T: MemoryLazyNode>(
@@ -33,25 +28,6 @@ pub(super) fn retire_node<T: MemoryLazyNode>(
     let bytes = node.0.owned_bytes();
     drop(node.0);
     Ok(crate::kernel::retire_allocation(node.1, bytes, ctx)?)
-}
-
-pub(super) fn accept_receipt<T, E: Into<LazyWorkspaceError>>(
-    result: crate::MeasuredResult<OperationReceipt<T>, E>,
-    ctx: &mut KernelAccounting<'_>,
-) -> Result<T, LazyWorkspaceError> {
-    let (result, spent) = match result {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err(failure) => (Err(failure.error.into()), *failure.work),
-    };
-    let (ledger, work, budget, _) = ctx
-        .standalone_parts()
-        .ok_or(LazyWorkspaceError::Concurrent)?;
-    *work = work.with_backend(spent, ledger.live_bytes())?;
-    work.verify(budget)?;
-    if result.is_ok() {
-        ctx.check()?;
-    }
-    result
 }
 
 pub(super) fn source_kind(kind: crate::kernel::FileKind) -> SourceNodeKind {

@@ -234,7 +234,10 @@ impl AgentHarness {
 }
 
 impl TaskContext {
-    pub(crate) fn preparation_io(&self) -> Result<Option<crate::executor::PreparationIo>> {
+    /// Shares this task's original metadata work and cancellation with a host
+    /// adapter. An unissued context has no native work to lend; this method
+    /// never constructs a replacement allowance or grants resource authority.
+    pub fn preparation_io(&self) -> Result<Option<crate::executor::PreparationIo>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_custody.is_some() || self.model_steps.1.is_some() {
             return crate::executor::PreparationIo::from_native_work(self.native_work()?).map(Some);

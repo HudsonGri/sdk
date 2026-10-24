@@ -1,5 +1,7 @@
 //! Both model and direct calls select the admitted task's sparse fork.
 use super::*;
+use crate::filesystem::PreparationIo;
+use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{
     CancellationToken, IdempotencyKey, LazyWorkspaceStore as _, WorkBudget,
     kernel::KernelAccounting,
@@ -7,13 +9,38 @@ use acyclic_fs::{
 
 impl CheckoutTools {
     pub(super) async fn select(&self, context: &ToolContext) -> Result<Option<Arc<Self>>> {
-        let (task, _) = context.task().owned_task_binding(None)?;
+        let io = context.task().preparation_io()?;
+        let cancellation = io
+            .as_ref()
+            .map_or_else(CancellationToken::new, |io| io.cancellation().clone());
+        // Only an unissued standalone call starts an allowance here. Every
+        // phase of an issued call borrows the same original native ledger.
+        let mut accounting = match &io {
+            Some(io) => io.accounting(&cancellation),
+            None => WorkBudget::UNBOUNDED.accounting(&cancellation),
+        };
+        let result = self
+            .select_accounted(context, &mut accounting, io.as_ref())
+            .await;
+        match &io {
+            Some(io) => io.sdk(io.finish(result, &accounting)),
+            None => result,
+        }
+    }
+
+    async fn select_accounted(
+        &self,
+        context: &ToolContext,
+        accounting: &mut KernelAccounting<'_>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Arc<Self>>> {
+        let (task, _) = context.task().owned_task_binding(io)?;
         let owner = context
             .task()
             .owned_mailbox
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("tool task owner missing".into()))?;
-        owner.verify_owner(None)?.await?;
+        owner.verify_owner(io)?.await?;
         let admission = owner.admission().0;
         let task = if admission.task.name == "acyclic.direct_tool" {
             admission.parent.unwrap_or(task)
@@ -27,14 +54,6 @@ impl CheckoutTools {
             if let Some(tools) = state.children.get(&task) {
                 return Ok((task, Some(Arc::clone(tools))));
             }
-            let cancellation = CancellationToken::new();
-            let work =
-                acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let mut accounting = KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            };
             let ancestors = context.task().ancestors(task)?;
             futures::pin_mut!(ancestors);
             let mut root = task;
@@ -51,7 +70,7 @@ impl CheckoutTools {
                 if self
                     .workspace
                     .store
-                    .load_lazy_workspace(id, &mut accounting)
+                    .load_lazy_workspace(id, accounting)
                     .await
                     .map_err(storage)?
                     .is_none()
@@ -59,7 +78,7 @@ impl CheckoutTools {
                     continue;
                 }
                 let view = self
-                    .fork_task(candidate, self.workspace.view(), owner)
+                    .fork_task(candidate, self.workspace.view(), owner, accounting, io)
                     .await?;
                 let tools = Arc::new(
                     self.mount_task_view(view, owner, None, &self.signed)
@@ -81,7 +100,7 @@ impl CheckoutTools {
                 from_selected(
                     state.active.as_ref(),
                     parent.workspace.view(),
-                    async |view| self.fork_task(task, view, owner).await,
+                    async |view| self.fork_task(task, view, owner, accounting, io).await,
                 )
                 .await
             })
@@ -89,7 +108,7 @@ impl CheckoutTools {
         } else {
             serialized(&self.state, async |state| {
                 from_selected(state.active.as_ref(), self.workspace.view(), async |view| {
-                    self.fork_task(task, view, owner).await
+                    self.fork_task(task, view, owner, accounting, io).await
                 })
                 .await
             })
@@ -106,20 +125,15 @@ impl CheckoutTools {
         })
         .await
     }
-    async fn fork_task(
+    async fn fork_task<'original>(
         &self,
         task: TaskId,
         view: &workspace::View,
         owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
+        accounting: &mut KernelAccounting<'original>,
+        io: Option<&PreparationIo>,
     ) -> Result<workspace::View> {
-        let cancellation = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        owner.verify_owner(None)?.await?;
+        owner.verify_owner(io)?.await?;
         let name = format!("task-{task}");
         // Reopening a task retains its original fork even if the
         // parent's selected branch changed after child admission.
@@ -131,7 +145,7 @@ impl CheckoutTools {
         let saved = self
             .workspace
             .store
-            .load_lazy_workspace(id, &mut accounting)
+            .load_lazy_workspace(id, accounting)
             .await
             .map_err(storage)?;
         let original = if let Some(saved) = saved {
@@ -151,7 +165,7 @@ impl CheckoutTools {
                 .await
                 .map_err(storage)?;
                 Some(
-                    view.open_related(source, &mut accounting)
+                    view.open_related(source, accounting)
                         .await
                         .map_err(storage)?,
                 )
@@ -162,32 +176,29 @@ impl CheckoutTools {
         let view = original.as_ref().unwrap_or(view);
         let key = IdempotencyKey::from_bytes(task.into_bytes());
         let cut = view
-            .prepare_fork(&name, key, &mut accounting)
+            .prepare_fork(&name, key, accounting)
             .await
             .map_err(storage)?;
         let graph = acyclic_fs::WorkspaceGraph::new(self.workspace.store.clone());
+        owner.verify_owner(io)?.await?;
         let (view, _) = graph
-            .fork(
+            .fork::<_, _, _, Error, _>(
                 view.workspace(),
                 &name,
                 key,
                 Some(cut.authored_generation),
-                |_generation| async {
-                    owner.verify_owner(None)?.await?;
-                    view.fork_snapshot(
-                        &name,
-                        cut,
-                        key,
-                        PublicationPermit::Unrestricted,
-                        &mut accounting,
-                    )
-                    .await
-                    .map_err(Error::from)
+                accounting,
+                acyclic_fs::lineage::LazyFork {
+                    parent: view,
+                    destination: &name,
+                    cut,
+                    key,
+                    permit: PublicationPermit::Unrestricted,
                 },
                 |result| result.0.workspace(),
             )
             .await?;
-        owner.verify_owner(None)?.await?;
+        owner.verify_owner(io)?.await?;
         Ok(view)
     }
 

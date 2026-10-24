@@ -13,4 +13,6 @@ mod cuts;
 #[cfg(any(test, feature = "native-execution"))]
 mod lazy;
 #[cfg(any(test, feature = "native-execution"))]
+mod observation;
+#[cfg(any(test, feature = "native-execution"))]
 mod preparation;

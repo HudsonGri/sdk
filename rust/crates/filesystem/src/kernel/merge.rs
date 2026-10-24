@@ -136,9 +136,44 @@ impl<'a> MergeGenerationBorrowedRequest<'a> {
 enum ResolutionView<'a> {
     #[cfg(feature = "native-mount")]
     DistinctAdditions,
-    Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Slice(&'a [(MergeConflict, MergeConflictResolution)]),
+    Entries(&'a [ResolutionEntry<'a>]),
+}
+
+struct ResolutionEntry<'a> {
+    key: &'a MergeConflict,
+    value: &'a MergeConflictResolution,
+}
+
+// Map and slice adapters admit one borrowed index. Every lookup thereafter
+// uses the same metered binary search; no names or file records are recopied.
+fn index_resolutions<'a>(
+    entries: impl ExactSizeIterator<Item = (&'a MergeConflict, &'a MergeConflictResolution)>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Owned<Vec<ResolutionEntry<'a>>>, FsError> {
+    let mut indexed = Owned::allocate(entries.len(), accounting)?;
+    let result = (|| {
+        let mut previous = None;
+        for (key, value) in entries {
+            let work = WorkCounters {
+                items_examined: 1,
+                bytes_copied: std::mem::size_of::<ResolutionEntry<'_>>() as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            accounting.admit(work)?;
+            accounting.record_completed(work)?;
+            if previous.is_some_and(|previous| previous >= key) {
+                return Err(FsError::InvalidDiff);
+            }
+            indexed.value.push(ResolutionEntry { key, value });
+            previous = Some(key);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        indexed.retire(accounting)?;
+        return Err(error);
+    }
+    Ok(indexed)
 }
 
 impl<'a> ResolutionView<'a> {
@@ -158,30 +193,15 @@ impl<'a> ResolutionView<'a> {
         match self {
             #[cfg(feature = "native-mount")]
             Self::DistinctAdditions => Ok(None),
-            Self::Map(map) => {
-                for (key, value) in map {
-                    accounting.charge(WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    match compare(key) {
-                        std::cmp::Ordering::Less => {}
-                        std::cmp::Ordering::Equal => return Ok(Some(value)),
-                        std::cmp::Ordering::Greater => break,
-                    }
-                }
-                Ok(None)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Slice(slice) => {
+            Self::Entries(entries) => {
                 let index =
-                    super::search::binary_search_with_accounting(slice, accounting, |(key, _)| {
-                        compare(key)
+                    super::search::binary_search_with_accounting(entries, accounting, |entry| {
+                        compare(entry.key)
                     })?;
                 Ok(index
                     .ok()
-                    .and_then(|index| slice.get(index))
-                    .map(|(_, value)| value))
+                    .and_then(|index| entries.get(index))
+                    .map(|entry| entry.value))
             }
         }
     }
@@ -437,10 +457,10 @@ pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
         maximum_conflicts: request.maximum_conflicts,
         content,
     };
-    merge_generation_core(
+    merge_generation_with_borrowed_map_resolutions_with_accounting(
         store,
-        inputs,
-        ResolutionView::Map(&request.resolutions),
+        &inputs,
+        &request.resolutions,
         limits,
         accounting,
         cancellation,
@@ -458,15 +478,8 @@ pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounti
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
-    merge_generation_core(
-        store,
-        *request,
-        ResolutionView::Map(resolutions),
-        limits,
-        accounting,
-        cancellation,
-    )
-    .await
+    let indexed = index_resolutions(resolutions.iter(), accounting)?;
+    merge_generation_indexed(store, *request, indexed, limits, accounting, cancellation).await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -480,24 +493,32 @@ pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
-    for [left, right] in resolutions.array_windows::<2>() {
-        accounting.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        if left.0 >= right.0 {
-            return Err(FsError::InvalidDiff);
-        }
-    }
-    merge_generation_core(
+    let indexed = index_resolutions(
+        resolutions.iter().map(|(key, value)| (key, value)),
+        accounting,
+    )?;
+    merge_generation_indexed(store, request, indexed, limits, accounting, cancellation).await
+}
+
+async fn merge_generation_indexed<S: AsyncObjectStore>(
+    store: &S,
+    request: MergeGenerationBorrowedRequest<'_>,
+    indexed: Owned<Vec<ResolutionEntry<'_>>>,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
+    let result = merge_generation_core(
         store,
         request,
-        ResolutionView::Slice(resolutions),
+        ResolutionView::Entries(&indexed.value),
         limits,
         accounting,
         cancellation,
     )
-    .await
+    .await;
+    indexed.retire(accounting)?;
+    result
 }
 
 include!("merge/tables.rs");
@@ -535,3 +556,7 @@ fn project_merge_error(error: FsError) -> MergeGenerationError {
 #[cfg(test)]
 #[path = "tests/merge/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "merge/resolution_tests.rs"]
+mod resolution_tests;

@@ -276,26 +276,19 @@ impl Reservation<'_> {
 }
 
 pub(super) fn encoded_size(value: &impl Serialize, maximum: u64) -> Result<u64> {
-    struct Count {
-        used: u64,
-        maximum: u64,
-    }
-    impl std::io::Write for Count {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.used = self
-                .used
-                .checked_add(bytes.len() as u64)
-                .filter(|used| *used <= self.maximum)
-                .ok_or_else(|| std::io::Error::other("hook output budget exhausted"))?;
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut count = Count { used: 0, maximum };
-    serde_json::to_writer(&mut count, value).map_err(|_| exceeded())?;
-    Ok(count.used)
+    use crate::executor::json::{JsonBounds, JsonEncodeError, json_count_bounded};
+    json_count_bounded(
+        value,
+        JsonBounds {
+            maximum_bytes: maximum,
+            maximum_items: maximum,
+            maximum_depth: 256,
+        },
+    )
+    .map_err(|error| match error {
+        JsonEncodeError::Admission(_) => exceeded(),
+        JsonEncodeError::Serialization(error) => error,
+    })
 }
 
 fn exceeded() -> Error {

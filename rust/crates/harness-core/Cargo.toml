@@ -62,6 +62,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+acyclic-json = { version = "=0.2.0", path = "../json" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 zeroize.workspace = true

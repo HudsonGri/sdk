@@ -358,10 +358,13 @@ impl LocalHarness {
                     };
                     stopping::drain(advance, controls, &cancellation).await?;
                 }
-                let (processed, results) = self
-                    .child_processed(child, journal.as_ref(), &reference, &values)
-                    .await?;
-                for file in results {
+                let processed = loop {
+                    let (processed, result) = self
+                        .child_processed(child, journal.as_ref(), &reference, &values)
+                        .await?;
+                    let Some(file) = result else {
+                        break processed;
+                    };
                     loop {
                         if values.get(&file.key) == Some(&file) {
                             break;
@@ -369,6 +372,14 @@ impl LocalHarness {
                         match files.inner.append(generation, &file).await {
                             Ok(next) => {
                                 generation = next;
+                                let FileKey::Child {
+                                    file: ChildFile::Result(turn),
+                                    ..
+                                } = &file.key
+                                else {
+                                    unreachable!("child projection only publishes answers");
+                                };
+                                result_slot::evict(&mut values, &reference, *turn);
                                 values.insert(file.key.clone(), file.clone());
                                 break;
                             }
@@ -385,7 +396,7 @@ impl LocalHarness {
                             Err(error) => return Err(storage(error)),
                         }
                     }
-                }
+                };
                 let state = desired(&reference, &values)?;
                 if state == ChildState::Running
                     && processed

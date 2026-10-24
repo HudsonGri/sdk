@@ -1,6 +1,15 @@
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use super::*;
 
+#[cfg(all(
+    test,
+    feature = "local",
+    not(target_arch = "wasm32"),
+    not(acyclic_fs_loom)
+))]
+#[path = "collection_lineage_tests.rs"]
+mod lineage_tests;
+
 /// Bounded reclamation result for the canonical local Stream/Objects composition.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

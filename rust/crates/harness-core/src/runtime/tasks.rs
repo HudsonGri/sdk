@@ -386,7 +386,7 @@ impl<I, O> TaskDefinition<I, O> {
             let retained = if let Some((retained, _)) = original {
                 retained
             } else {
-                observed = observe_task_open_admission(host.as_ref(), task_id, observer).await?;
+                observed = observe_task_admission(host.as_ref(), task_id, observer).await?;
                 context
                     .harness
                     .validate_observed_admission(&observed, observer)

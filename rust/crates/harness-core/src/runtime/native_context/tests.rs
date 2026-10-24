@@ -16,6 +16,44 @@ fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializ
     })
 }
 
+#[tokio::test]
+async fn admission_observation_retains_only_the_original_provider_custody() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original = work(&cancellation)?;
+    let baseline = original.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+    let admission = crate::runtime::observe_task_admission(
+        fixture.runtime.task_host().as_ref(),
+        fixture.root,
+        Some(&io),
+    )
+    .await?;
+    assert_eq!(admission.task_id(), fixture.root);
+    assert!(original.live_allocation_bytes() > baseline);
+
+    let foreign = work(&acyclic_fs::CancellationToken::new())?;
+    let foreign_baseline = foreign.live_allocation_bytes();
+    let foreign_custody = foreign.claim(1, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+    let rejected = super::super::task_workflow::retain_task_value(
+        (admission, Some(foreign_custody)),
+        Some(&io),
+    );
+    assert!(matches!(
+        rejected,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+            ..
+        })
+    ));
+    assert_eq!(foreign.live_allocation_bytes(), foreign_baseline + 1);
+    drop(rejected);
+    assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
+    drop(io);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 async fn root_context(
     fixture: &CreationFixture,
     work: &NativeMaterializationWork,
@@ -42,6 +80,46 @@ fn exhaust_memory(
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
     Ok((buffer, quota))
+}
+
+#[tokio::test]
+async fn host_preparation_borrows_the_original_allowance_and_cancellation() -> Result<()> {
+    let fixture = CreationFixture::new().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let original = work(&cancellation)?;
+    let context = root_context(&fixture, &original).await?;
+    let io = context.preparation_io()?.expect("issued native context");
+    let mut accounting = io.accounting(io.cancellation());
+    assert!(
+        accounting
+            .native_work()
+            .unwrap()
+            .shares_allocation_context(&original)
+    );
+    let used = original.receipt().items_examined;
+    original.charge(acyclic_fs::WorkCounters {
+        items_examined: BUDGET.items_examined - used,
+        ..Default::default()
+    })?;
+    assert!(
+        accounting
+            .charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })
+            .is_err()
+    );
+    // The old host-created ledger admits that same item independently.
+    let independent_cancellation = acyclic_fs::CancellationToken::new();
+    let independent = work(&independent_cancellation)?;
+    independent.charge(acyclic_fs::WorkCounters {
+        items_examined: 1,
+        ..Default::default()
+    })?;
+    cancellation.cancel();
+    assert!(accounting.charge(Default::default()).is_err());
+    independent_cancellation.check()?;
+    Ok(())
 }
 
 #[tokio::test]

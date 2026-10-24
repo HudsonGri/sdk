@@ -28,6 +28,7 @@ httpdate = "1.0.3"
 serde.workspace = true
 serde_json.workspace = true
 url = "2.5.7"
+uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
@@ -59,7 +60,6 @@ acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0", featu
 prost.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace = true
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 # The paused clock drives the exchange deadline properties without wall time.
 tokio = { workspace = true, features = ["test-util"] }

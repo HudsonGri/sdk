@@ -1,4 +1,5 @@
 use super::{ObservationSignal, State};
+use crate::ordered_tree;
 use crate::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -8,7 +9,7 @@ pub(super) struct Volume {
 }
 
 pub(super) type Key = (Volume, u64);
-type Tree = Option<Box<Node>>;
+type Tree = ordered_tree::Tree<Node>;
 
 // Each registration owns one node. Tree rotations and removal move boxes,
 // never allocate or retire a different lease's storage. A shared BTreeMap node
@@ -78,7 +79,9 @@ impl Registry {
             left: None,
             right: None,
         });
-        self.root = Some(insert(self.root.take(), node));
+        let (root, replaced) = ordered_tree::insert::<Node>(self.root.take(), node);
+        self.root = Some(root);
+        drop(replaced);
         self.next = next;
         Ok(key)
     }
@@ -137,7 +140,7 @@ impl Registry {
 
     // Drop the detached node after the registry lock has been released.
     pub(super) fn remove(&mut self, key: Key) -> Option<Box<Node>> {
-        let (root, removed) = remove(self.root.take(), key);
+        let (root, removed) = ordered_tree::remove::<Node>(self.root.take(), &key);
         self.root = root;
         removed
     }
@@ -146,10 +149,6 @@ impl Registry {
     pub(super) fn is_empty(&self) -> bool {
         self.root.is_none()
     }
-}
-
-fn height(tree: &Tree) -> usize {
-    tree.as_ref().map_or(0, |node| node.height)
 }
 
 fn totals(tree: &Tree) -> State {
@@ -169,104 +168,9 @@ impl Node {
                 + usize::from(!self.projection && self.observer.is_none()),
             observers: left.observers + right.observers + usize::from(self.observer.is_some()),
         };
-        self.height = 1 + height(&self.left).max(height(&self.right));
+        self.height = 1 + ordered_tree::height::<Node>(&self.left)
+            .max(ordered_tree::height::<Node>(&self.right));
     }
-}
-
-fn left(mut node: Box<Node>) -> Box<Node> {
-    let Some(mut pivot) = node.right.take() else {
-        return node;
-    };
-    node.right = pivot.left.take();
-    node.refresh();
-    pivot.left = Some(node);
-    pivot.refresh();
-    pivot
-}
-
-fn right(mut node: Box<Node>) -> Box<Node> {
-    let Some(mut pivot) = node.left.take() else {
-        return node;
-    };
-    node.left = pivot.right.take();
-    node.refresh();
-    pivot.right = Some(node);
-    pivot.refresh();
-    pivot
-}
-
-fn balance(mut node: Box<Node>) -> Box<Node> {
-    node.refresh();
-    if height(&node.left) > height(&node.right) + 1 {
-        if node
-            .left
-            .as_ref()
-            .is_some_and(|child| height(&child.right) > height(&child.left))
-        {
-            node.left = node.left.take().map(left);
-        }
-        return right(node);
-    }
-    if height(&node.right) > height(&node.left) + 1 {
-        if node
-            .right
-            .as_ref()
-            .is_some_and(|child| height(&child.left) > height(&child.right))
-        {
-            node.right = node.right.take().map(right);
-        }
-        return left(node);
-    }
-    node
-}
-
-fn insert(tree: Tree, inserted: Box<Node>) -> Box<Node> {
-    let Some(mut node) = tree else {
-        return inserted;
-    };
-    if inserted.key < node.key {
-        node.left = Some(insert(node.left.take(), inserted));
-    } else {
-        node.right = Some(insert(node.right.take(), inserted));
-    }
-    balance(node)
-}
-
-fn detach_first(mut node: Box<Node>) -> (Tree, Box<Node>) {
-    let Some(first) = node.left.take() else {
-        return (node.right.take(), node);
-    };
-    let (remaining, first) = detach_first(first);
-    node.left = remaining;
-    (Some(balance(node)), first)
-}
-
-fn remove(tree: Tree, key: Key) -> (Tree, Option<Box<Node>>) {
-    let Some(mut node) = tree else {
-        return (None, None);
-    };
-    let removed = match key.cmp(&node.key) {
-        std::cmp::Ordering::Less => {
-            let (remaining, removed) = remove(node.left.take(), key);
-            node.left = remaining;
-            removed
-        }
-        std::cmp::Ordering::Greater => {
-            let (remaining, removed) = remove(node.right.take(), key);
-            node.right = remaining;
-            removed
-        }
-        std::cmp::Ordering::Equal => {
-            let Some(right) = node.right.take() else {
-                return (node.left.take(), Some(node));
-            };
-            let (remaining, mut first) = detach_first(right);
-            first.left = node.left.take();
-            first.right = remaining;
-            return (Some(balance(first)), Some(node));
-        }
-    };
-    (Some(balance(node)), removed)
 }
 
 fn prefix(tree: &Tree, volume: Volume, inclusive: bool) -> State {
@@ -289,3 +193,29 @@ fn prefix(tree: &Tree, volume: Volume, inclusive: bool) -> State {
 #[cfg(all(test, not(acyclic_fs_loom)))]
 #[path = "registry/tests.rs"]
 mod tests;
+
+impl ordered_tree::Node for Node {
+    type Key = Key;
+    type Pointer = Box<Self>;
+    fn key(&self) -> &Key {
+        &self.key
+    }
+    fn left(&self) -> &Tree {
+        &self.left
+    }
+    fn left_mut(&mut self) -> &mut Tree {
+        &mut self.left
+    }
+    fn right(&self) -> &Tree {
+        &self.right
+    }
+    fn right_mut(&mut self) -> &mut Tree {
+        &mut self.right
+    }
+    fn height(&self) -> usize {
+        self.height
+    }
+    fn refresh(&mut self) {
+        Node::refresh(self);
+    }
+}

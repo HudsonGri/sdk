@@ -5,7 +5,7 @@
 //! response validation. Adapters must apply those checks to the generated wire
 //! messages. For `runs/watch`, encode each event separately and frame it as NDJSON.
 
-use std::{io::Write, sync::OnceLock};
+use std::sync::OnceLock;
 
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MethodDescriptor, Value};
@@ -99,24 +99,6 @@ pub fn decode_http_request(path: &str, json: &[u8]) -> Result<Vec<u8>, &'static 
     Ok(message.encode_to_vec())
 }
 
-struct BoundedJson(Vec<u8>);
-
-impl Write for BoundedJson {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAXIMUM_HTTP_JSON_BYTES.saturating_sub(self.0.len()) {
-            return Err(std::io::Error::other(
-                "inference HTTP response exceeds JSON ceiling",
-            ));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Encode a bounded generated response or one server-streaming event as JSON.
 ///
 /// Protobuf's JSON mapping preserves uint64 values as decimal strings, bytes as
@@ -130,8 +112,17 @@ pub fn encode_http_response(path: &str, bytes: &[u8]) -> Result<Vec<u8>, &'stati
     }
     let message = DynamicMessage::decode(method(path)?.output(), bytes)
         .map_err(|_| "malformed inference protobuf response")?;
-    let mut output = BoundedJson(Vec::new());
-    serde_json::to_writer(&mut output, &message)
-        .map_err(|_| "inference HTTP response serialization failed or exceeds JSON ceiling")?;
-    Ok(output.0)
+    let mut output = Vec::new();
+    acyclic_json::to_writer(
+        &message,
+        &mut output,
+        acyclic_json::Bounds {
+            maximum_bytes: MAXIMUM_HTTP_JSON_BYTES as u64,
+            maximum_items: MAXIMUM_HTTP_JSON_BYTES as u64,
+            maximum_depth: 128,
+        },
+        false,
+    )
+    .map_err(|_| "inference HTTP response serialization failed or exceeds JSON ceiling")?;
+    Ok(output)
 }

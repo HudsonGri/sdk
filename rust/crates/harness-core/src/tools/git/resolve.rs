@@ -25,11 +25,10 @@ where
                         "volume repository refers to a foreign native source".into(),
                     ));
                 };
+                let cancellation = CancellationToken::new();
+                let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
                 let lazy = current
-                    .open_related(
-                        workspace,
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                    )
+                    .open_related(workspace, &mut accounting)
                     .await
                     .map_err(Error::from)?;
                 let snapshot_bytes = snapshot.id.into_bytes();
@@ -41,37 +40,24 @@ where
                         &destination,
                         snapshot,
                         acyclic_fs::OperationId::from_bytes(identity),
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                        &mut accounting,
                     )
                     .await
                     .map_err(Error::from)?;
                 let graph = WorkspaceGraph::new(self.store.clone());
-                let (child, _) = graph
-                    .fork(
-                        lazy.workspace(),
+                let child = View::Checkout(&lazy)
+                    .fork_accounted(
                         &destination,
                         IdempotencyKey::from_bytes(identity),
-                        Some(snapshot.authored_generation),
-                        |_generation| async {
-                            lazy.fork_snapshot(
-                                &destination,
-                                snapshot,
-                                IdempotencyKey::from_bytes(identity),
-                                PublicationPermit::Unrestricted,
-                                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                            )
-                            .await
-                            .map_err(Error::from)
-                        },
-                        |result| result.0.workspace(),
-                    )
-                    .await?;
-                child
-                    .exactify(
-                        "/",
                         PublicationPermit::Unrestricted,
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                        &graph,
+                        &mut accounting,
+                        Some(snapshot),
                     )
+                    .await?
+                    .into_checkout()?;
+                child
+                    .exactify("/", PublicationPermit::Unrestricted, &mut accounting)
                     .await
                     .map_err(Error::from)
             }

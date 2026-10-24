@@ -75,40 +75,16 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<u64> {
     let Some(observer) = work.as_deref_mut() else {
-        if maximum_depth != u32::MAX {
-            return count_json_bytes_trusted(
-                value,
-                JsonBounds {
-                    maximum_bytes: maximum,
-                    maximum_items: u64::MAX,
-                    maximum_depth,
-                },
-                None,
-                &mut |_| Ok(()),
-            );
-        }
-        return {
-            struct Budget(u64);
-
-            impl std::io::Write for Budget {
-                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                    self.0 = self
-                        .0
-                        .checked_sub(bytes.len() as u64)
-                        .ok_or_else(|| std::io::Error::other("JSON exceeds declared byte bound"))?;
-                    Ok(bytes.len())
-                }
-
-                fn flush(&mut self) -> std::io::Result<()> {
-                    Ok(())
-                }
-            }
-
-            let mut budget = Budget(maximum);
-            serde_json::to_writer(&mut budget, value)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            Ok(maximum - budget.0)
-        };
+        return count_json_bytes_trusted(
+            value,
+            JsonBounds {
+                maximum_bytes: maximum,
+                maximum_items: maximum,
+                maximum_depth,
+            },
+            None,
+            &mut |_| Ok(()),
+        );
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let native_code = observer

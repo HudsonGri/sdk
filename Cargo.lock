@@ -128,6 +128,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-json",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -446,6 +447,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-json",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -644,6 +646,7 @@ name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-json",
  "acyclic-proto-build",
  "proptest",
  "prost",
@@ -672,6 +675,16 @@ dependencies = [
  "prost-reflect",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "acyclic-json"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -769,6 +782,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-json",
  "acyclic-stream",
  "bytes",
  "futures",

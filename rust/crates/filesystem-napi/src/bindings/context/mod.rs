@@ -49,39 +49,10 @@ impl NativeWorkspaceGraph {
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
         let key = native_idempotency_key(idempotency_key)?;
-        self.inner
-            .fork(
-                &parent.inner,
-                &destination,
-                key,
-                None,
-                |generation| {
-                    let destination = &destination;
-                    async move {
-                        parent
-                            .inner
-                            .fork::<_, _, acyclic_fs::WorkspaceError>(
-                                &destination,
-                                acyclic_fs::ForkOptions::from_generation(generation, key),
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                acyclic_fs::WorkBudget::UNBOUNDED,
-                                &acyclic_fs::CancellationToken::new(),
-                                (),
-                            )
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| {
-                                acyclic_fs::WorkspaceLineageError::<
-                                    acyclic_fs::LocalCoreStateStoreError,
-                                >::from(failure.error)
-                            })
-                    }
-                },
-                |child| child,
-            )
-            .await
-            .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+        use acyclic_fs::facade::FsWork as _;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        fork_accounted(&self.inner, parent, &destination, key, &mut accounting).await
     }
 
     #[napi]
@@ -139,4 +110,21 @@ pub(in crate::bindings) fn native_workspace_lineage_record(
         fork_generation: Buffer::from(record.fork_generation.digest().into_bytes().to_vec()),
         initial_generation: Buffer::from(record.initial_generation.digest().into_bytes().to_vec()),
     }
+}
+
+async fn fork_accounted<'original>(
+    graph: &WorkspaceGraph<LocalCoreStateStore>,
+    parent: &NativeWorkspace,
+    destination: &str,
+    key: acyclic_fs::IdempotencyKey,
+    accounting: &mut acyclic_fs::kernel::KernelAccounting<'original>,
+) -> Result<NativeWorkspace> {
+    graph.fork::<_, _, _, acyclic_fs::WorkspaceLineageError<acyclic_fs::LocalCoreStateStoreError>, _>(
+        &parent.inner, destination, key, None, accounting,
+        acyclic_fs::lineage::GenerationFork {
+            parent: &parent.inner, destination, key,
+            permit: acyclic_fs::PublicationPermit::Unrestricted,
+        },
+        |child| child,
+    ).await.map(|inner| NativeWorkspace { inner }).map_err(napi_error)
 }

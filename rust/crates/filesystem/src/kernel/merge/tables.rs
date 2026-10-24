@@ -112,22 +112,6 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                     if ours.value.truncated || theirs.value.truncated {
                         return Err(FsError::MergeChangeLimit);
                     }
-                    let mut frontier_indices = [0, 0];
-                    let mut frontier = 0_usize;
-                    while next_changes(
-                        &ours.value.changes,
-                        &theirs.value.changes,
-                        &mut frontier_indices,
-                    )
-                    .is_some()
-                    {
-                        accounting.charge(WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::UNCHARGED
-                        })?;
-                        frontier = frontier.checked_add(1).ok_or(WorkError::Overflow)?;
-                    }
-                    state.consume(frontier)?;
                     let mut indices = [0, 0];
                     while let Some([left, right]) =
                         next_changes(&ours.value.changes, &theirs.value.changes, &mut indices)
@@ -136,6 +120,11 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             items_examined: 1,
                             ..WorkCounters::UNCHARGED
                         })?;
+                        // The same frontier visit both admits and plans this
+                        // file. Directory bindings consume the same remaining
+                        // allowance; a later denial leaves only unpublished
+                        // immutable objects, never a partial generation.
+                        state.consume(1)?;
                         let file = left.or(right).ok_or(FsError::InvalidDiff)?.key;
                         let base = left.or(right).and_then(|change| change.before);
                         let ours_value = left.map_or(base, |change| change.after);

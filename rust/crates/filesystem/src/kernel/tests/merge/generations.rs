@@ -420,13 +420,14 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
     )]);
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut state = MergeState::new(8, &mut accounting)?;
+    let indexed = index_resolutions(resolutions.iter(), &mut accounting)?;
     let record = (merge_directory_record_with_resolutions_async(
         &store,
         directory_id,
         base,
         ours,
         theirs,
-        ResolutionView::Map(&resolutions),
+        ResolutionView::Entries(&indexed.value),
         8,
         DecodeLimits::default(),
         &mut state,
@@ -435,6 +436,7 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
     ))
     .await?
     .ok_or("resolved directory merge produced no record")?;
+    indexed.retire(&mut accounting)?;
     state.records.retire(&mut accounting)?;
     state.conflicts.retire(&mut accounting)?;
     state.folds.retire(&mut accounting)?;

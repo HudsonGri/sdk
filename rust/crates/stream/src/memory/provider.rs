@@ -364,6 +364,25 @@ impl StreamProvider for MemoryStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn native_watermarks(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::StreamWatermarks> {
+        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
+            let result = self.native_tail(path, meter).await?;
+            Ok(result.map(|output| {
+                let (accepted, allocation) = output.into_parts();
+                // Same guarantee as StreamProvider::watermarks: memory has
+                // accepted visibility but does not claim durable persistence.
+                crate::NativeStreamOutput::new(
+                    crate::StreamWatermarks { accepted, durable: 0 }, allocation,
+                )
+            }))
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn native_bounds(
         &self,
         path: StreamPath,

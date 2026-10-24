@@ -59,7 +59,7 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
     }
 }
 
-fn core_lazy_work(
+pub(super) fn core_lazy_work(
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<crate::NativeMaterializationWork, crate::LazyWorkspaceError> {
     if let Some(original) = accounting.native_work() {
@@ -72,27 +72,37 @@ fn core_lazy_work(
     };
     crate::NativeMaterializationWork::new(accounting.remaining()?, cancellation).map_err(
         |(cause, work)| {
-            if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
-                *prefix = prefix
-                    .checked_add(*work)
-                    .expect("constructor used its remaining allowance");
-            }
-            crate::LazyWorkspaceError::NativeWork(cause)
+            accounting
+                .accept_receipt::<(), _, crate::LazyWorkspaceError>(Err(
+                    crate::OperationFailure::new(
+                        crate::LazyWorkspaceError::NativeWork(cause),
+                        *work,
+                    ),
+                ))
+                .expect_err("failed native work construction has no value")
         },
     )
 }
 
-fn finish_core_lazy<T>(
+pub(super) fn finish_core_lazy<T>(
     result: Result<T, LocalCoreStateStoreError>,
     work: &crate::NativeMaterializationWork,
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<T, crate::LazyWorkspaceError> {
-    if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
-        *prefix = prefix
-            .checked_add(work.receipt())
-            .map_err(crate::LazyWorkspaceError::from)?;
+    if accounting.native_work().is_some() {
+        return result.map_err(native_core_error);
     }
-    result.map_err(native_core_error)
+    let result = match result {
+        Ok(value) => Ok(crate::OperationReceipt {
+            value,
+            work: work.receipt(),
+        }),
+        Err(error) => Err(crate::OperationFailure::new(
+            native_core_error(error),
+            work.receipt(),
+        )),
+    };
+    accounting.accept_receipt(result)
 }
 
 fn core_lazy_node<T: crate::lazy_workspace::MemoryLazyNode>(

@@ -46,21 +46,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         &'a self,
         cancellation: &'a CancellationToken,
     ) -> acyclic_fs::kernel::KernelAccounting<'a> {
-        use acyclic_fs::kernel::KernelAccounting;
-        match self {
-            #[cfg(not(target_arch = "wasm32"))]
-            PreparationIo::Native { work, .. } => {
-                KernelAccounting::NativeOriginal { work, cancellation }
-            }
-            PreparationIo::Owned { .. } => KernelAccounting::Standalone {
-                allocations: Default::default(),
-                work: WorkCounters::default(),
-                budget: self
-                    .remaining()
-                    .unwrap_or_else(|_| acyclic_fs::performance::work_budget(0, 0)),
-                cancellation,
-            },
-        }
+        PreparationIo::accounting(self, cancellation)
     }
     fn finish<T, E>(
         &self,
@@ -87,6 +73,24 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
 }
 
 impl PreparationIo {
+    /// Borrows this invocation for a composite filesystem operation. The host
+    /// must finish the operation on this same preparation source.
+    #[doc(hidden)]
+    pub fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => KernelAccounting::NativeOriginal { work, cancellation },
+            Self::Owned { .. } => KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: WorkCounters::default(),
+                budget: self
+                    .remaining()
+                    .unwrap_or_else(|_| acyclic_fs::performance::work_budget(0, 0)),
+                cancellation,
+            },
+        }
+    }
+
     #[doc(hidden)]
     pub fn sdk<T, E: Into<Error>>(
         &self,

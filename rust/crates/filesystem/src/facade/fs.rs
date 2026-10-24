@@ -60,15 +60,6 @@ impl<A, O> Fs<A, O> {
     pub fn capabilities(&self) -> EmbeddedCapabilities {
         self.inner.capabilities
     }
-    /// Drops every cached publication proof, restoring the full walk for the next commit.
-    #[cfg(test)]
-    pub(crate) fn forget_publication_proofs(&self) {
-        *self
-            .inner
-            .publication_proof
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Default::default();
-    }
     pub(crate) fn workspace_name_identity(
         &self,
         name: impl AsRef<str>,
@@ -85,23 +76,20 @@ impl<A, O> Fs<A, O> {
         &self,
         name: &str,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), WorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let name = crate::WorkspaceName::new(name, &original, cancellation)?;
-            let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
-            return Ok((name, id));
-        }
-        let named = crate::WorkspaceName::new(name, &accounting.remaining()?, cancellation);
-        let spent = match &named {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
+        let name = crate::WorkspaceName::with_accounting(name, accounting)?;
+        let id = match crate::WorkspaceId::with_accounting(
+            self.inner.workspace_namespace,
+            &name,
+            accounting,
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                name.retire_unique(accounting)?;
+                return Err(error);
+            }
         };
-        merge_creation_backend_work(accounting, spent)?;
-        let name = named.map_err(|failure| failure.error)?.value;
-        accounting.claim_owned(name.retained_bytes(), 0)?;
-        let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
         Ok((name, id))
     }
 
