@@ -85,7 +85,8 @@ async fn open(
         config = config.search_provider(provider);
     }
     config = config.settings(settings).web_tools();
-    Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
+    let code = acyclic_harness::package::harness::HarnessCode::new()?;
+    Ok(Arc::new(phase(|| code.open_local(config)).await?))
 }
 
 // Own native phase futures separately from the CLI orchestration frame.

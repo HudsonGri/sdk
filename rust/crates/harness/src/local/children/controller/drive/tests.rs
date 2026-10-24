@@ -35,7 +35,10 @@ async fn outcome_after_ready_child_io(broken: bool) -> Result<bool> {
         panic!("parent admission");
     };
     let commands = harness.commands()?;
-    let advancing = harness.advance_while(task, &commands, || async { Ok(true) });
+    let advancing =
+        crate::package::harness::worker::advance_while(&harness, task, &commands, || async {
+            Ok(true)
+        });
     let bytes = std::mem::size_of_val(&advancing);
     assert!(bytes <= 4096, "parent retains a {bytes}-byte worker future");
     drop(advancing);

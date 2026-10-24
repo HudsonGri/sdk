@@ -2,8 +2,6 @@ use super::*;
 use crate::{executor::TurnOutput, runtime::TaskStateProvider};
 use acyclic_stream::BoxProviderFuture;
 
-const TRANSITIONS_PER_SLICE: u32 = 32;
-
 impl LocalHarness {
     /// Stock command bindings using retained task inheritance.
     pub(super) async fn stock_commands(
@@ -561,88 +559,6 @@ impl LocalHarness {
         }
     }
 
-    pub(super) async fn advance(
-        &self,
-        task: TaskId,
-        commands: &dyn crate::filesystem::TaskCommandHost,
-    ) -> Result<()> {
-        self.advance_while(task, commands, || async { Ok(true) })
-            .await
-    }
-
-    // Keep the worker state out of the parent's child-coordination frame. On
-    // Windows those frames share the default main-thread stack with storage IO.
-    #[inline(never)]
-    pub(super) fn advance_while<'a, F, Fut>(
-        &'a self,
-        task: TaskId,
-        commands: &'a dyn crate::filesystem::TaskCommandHost,
-        continue_work: F,
-    ) -> BoxProviderFuture<'a, Result<()>>
-    where
-        F: Fn() -> Fut + Send + Sync + 'a,
-        Fut: Future<Output = Result<bool>> + Send,
-    {
-        Box::pin(async move {
-            let worker = crate::distributed::Worker {
-                id: format!("local-{}", crate::identity::fresh_uuid()),
-                available: Default::default(),
-                labels: Default::default(),
-            };
-            let mut attempt =
-                match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
-                    crate::distributed::WorkPull::Claimed(lease) => Some(
-                        self.runtime
-                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                            .await,
-                    ),
-                    crate::distributed::WorkPull::Unresolved { error, .. } => {
-                        if self.runtime.task_host().outcome(task).await?.is_none() {
-                            return Err(error);
-                        }
-                        None
-                    }
-                    crate::distributed::WorkPull::Idle => {
-                        self.runtime
-                            .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                            .await?
-                    }
-                };
-            loop {
-                match attempt {
-                    Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
-                        return Err(error);
-                    }
-                    Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                        crate::filesystem::TaskWorkerOutcome::Yielded { lease },
-                    )) => {
-                        attempt = Some(
-                            self.runtime
-                                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                                .await,
-                        );
-                    }
-                    Some(crate::filesystem::TaskWorkerAttempt::Progress(
-                        crate::filesystem::TaskWorkerOutcome::Suspended { .. },
-                    )) => {
-                        if !continue_work().await? {
-                            break;
-                        }
-                        // Only an authenticated wake makes a passive command claimable.
-                        // Without one, run_operation returns None and yields control.
-                        attempt = self
-                            .runtime
-                            .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                            .await?;
-                    }
-                    _ => break,
-                }
-            }
-            self.refresh_command_task(task).await?;
-            Ok(())
-        })
-    }
-
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
     pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
         Box::pin(async move {
@@ -723,7 +639,10 @@ impl LocalHarness {
                 self.advance_with_children(task, &commands, self.task_files.clone(), None)
                     .await?;
                 #[cfg(not(feature = "native-execution"))]
-                Box::pin(self.advance(task, &commands)).await?;
+                Box::pin(crate::package::harness::worker::advance(
+                    self, task, &commands,
+                ))
+                .await?;
                 if self.runtime.task_host().outcome(task).await?.is_none() {
                     let admission = self.runtime.task_host().observe_admission(task).await?;
                     return Err(Error::Indeterminate(admission.operation_id));

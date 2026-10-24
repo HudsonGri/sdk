@@ -23,24 +23,16 @@ pub(super) struct Configuration<'a> {
 }
 
 pub(super) async fn open(
+    code: &crate::package::harness::HarnessCode,
     config: Configuration<'_>,
 ) -> Result<(
     Arc<LocalTaskRuntime>,
     Scope,
     Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
 )> {
-    let stock = Arc::new(StockTurnMachine::new());
-    let preparation = Arc::new(ForkPreparationMachine::new());
-    let child = Arc::new(crate::filesystem::ChildAgentMachine::new());
-    let definition = stock.definition()?;
-    let child_definition = child.definition()?;
-    let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
-    let task_grants = [
-        child_definition.identity(),
-        definition.identity(),
-        fork.identity(),
-    ]
-    .map(|identity| format!("task:spawn:{}@{}", identity.name, identity.version));
+    let task_grants = code
+        .actors()
+        .map(|identity| format!("task:spawn:{}@{}", identity.name, identity.version));
     let (scope, signed) = scopes(&config, task_grants)?;
     let projection_files = Arc::new(
         crate::task_volume::TaskFiles::open(
@@ -58,15 +50,7 @@ pub(super) async fn open(
         config.issuer,
         None,
     )?);
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    tasks.register(child_definition)?;
-    tasks.register(fork)?;
-    let mut machines = MachineRegistry::default();
-    LocalHarness::register_commands(&mut tasks, &mut machines)?;
-    machines.register(stock, &mut None)?;
-    machines.register(child, &mut None)?;
-    machines.register(preparation, &mut None)?;
+    let machines = code.registry()?;
     let mut runtime = LocalTaskRuntime::open(
         config.stream,
         config.files.clone(),
@@ -75,7 +59,7 @@ pub(super) async fn open(
         config.verifier,
         &signed,
         &scope,
-        &tasks,
+        code.tasks(),
         &machines,
         config.tools,
         config.session_limits,
@@ -121,9 +105,11 @@ pub(super) async fn open(
     Ok((Arc::new(runtime), signed, projection_files))
 }
 
-fn scopes(config: &Configuration<'_>, task_grants: [String; 3]) -> Result<(RuntimeScope, Scope)> {
+fn scopes(
+    config: &Configuration<'_>,
+    task_grants: impl IntoIterator<Item = String>,
+) -> Result<(RuntimeScope, Scope)> {
     let mut grants = vec![
-        "task:spawn:acyclic.direct_tool@1".to_owned(),
         "model:generate".to_owned(),
         crate::contract::capability::INTERACTION_ROUTE.to_owned(),
         "operation:declare".to_owned(),
