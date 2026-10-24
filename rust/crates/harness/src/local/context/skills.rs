@@ -45,7 +45,7 @@ impl LocalHarness {
                 )));
             }
             let view = selected.as_ref().unwrap_or_else(|| workspace.view());
-            return sources.catalog(&workspace.path, view).await;
+            return sources.catalog(&workspace.path, view)?.await;
         }
         let workspace = crate::filesystem::workspace_ref(
             self.project.provider().clone(),

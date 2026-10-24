@@ -345,187 +345,201 @@ impl NativeSkills {
         Ok(Some(chunk.bytes))
     }
 
-    pub async fn catalog(&self, root: &Path, view: &View) -> Result<Vec<SkillMetadata>> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = native_work(&cancellation)?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        let cut = view.snapshot(&mut accounting).await?;
-        let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
-        if let Some((id, skills)) = &*cached
-            && id == &cut.id
-        {
-            return Ok(skills.clone());
-        }
-        let mut skills = self.user_catalog().await?;
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-        let native = NativeDemandSource::open(
-            std::borrow::Cow::Borrowed(root),
-            config.profile,
-            config.limits,
-            Some(cut.source),
-            None,
-            &work,
-            &cancellation,
-        )
-        .await
-        .map_err(storage)?;
-        let scan = ProjectCatalog {
-            sources: self,
-            root,
-            view,
-            cut,
-            native,
-        };
-        let mut bounds = crate::sync::owned::lock_owned(self.users.clone())
-            .await
-            .as_ref()
-            .map(|(_, bounds)| *bounds)
-            .unwrap_or_default();
-        let mut records = RetainedBatch::default();
-        for directory in [".agents/skills", ".claude/skills"] {
-            bounds.directory()?;
-            let mut cursor = None;
-            loop {
-                let listed = view
-                    .list_directory_at_snapshot(
-                        cut,
-                        &format!("/{directory}"),
-                        cursor,
-                        bounds.page()?,
-                        &mut accounting,
-                    )
-                    .await;
-                let (page, _, _allocation) = match listed {
-                    Ok(page) => page,
-                    Err(
-                        acyclic_fs::LazyWorkspaceError::NotFound
-                        | acyclic_fs::LazyWorkspaceError::Filesystem(acyclic_fs::FsError::NotFound),
-                    ) => break,
-                    Err(error) => return Err(error.into()),
-                };
-                bounds.entries(page.entries.len())?;
-                for entry in &page.entries {
-                    if entry.kind != SourceNodeKind::Directory {
-                        continue;
-                    }
-                    bounds.directory()?;
-                    let (name, _allocation) = entry
-                        .name
-                        .unicode_text(&work, &cancellation)
-                        .map_err(storage)?;
-                    if let Some(skill) = scan
-                        .skill(directory, &name, &bounds, &mut records, &mut accounting)
-                        .await?
-                    {
-                        skills.push(skill);
-                    }
-                }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
-                }
+    #[inline(never)]
+    pub fn catalog<'a>(
+        &'a self,
+        root: &'a Path,
+        view: &'a View,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(&cancellation)?;
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            };
+            let cut = view.snapshot(&mut accounting).await?;
+            let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
+            if let Some((id, skills)) = &*cached
+                && id == &cut.id
+            {
+                return Ok(skills.clone());
             }
-        }
-        validate(&skills)?;
-        records.publish(self.directory.clone()).await?;
-        *cached = Some((cut.id, skills.clone()));
-        Ok(skills)
-    }
-
-    pub async fn user_catalog(&self) -> Result<Vec<SkillMetadata>> {
-        let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
-        if let Some((skills, _)) = &*cached {
-            return Ok(skills.clone());
-        }
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = native_work(&cancellation)?;
-        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        let mut bounds = Bounds::default();
-        let mut skills = Vec::new();
-        let mut roots = std::collections::HashSet::new();
-        let mut records = RetainedBatch::default();
-        for root in &self.user_roots {
-            let source = match NativeDemandSource::open(
+            let mut skills = self.user_catalog()?.await?;
+            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let native = NativeDemandSource::open(
                 std::borrow::Cow::Borrowed(root),
                 config.profile,
                 config.limits,
-                None,
+                Some(cut.source),
                 None,
                 &work,
                 &cancellation,
             )
             .await
-            {
-                Ok(source) => source,
-                Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(error) => return Err(storage(error)),
+            .map_err(storage)?;
+            let scan = ProjectCatalog {
+                sources: self,
+                root,
+                view,
+                cut,
+                native,
             };
-            // Identity comes from the handle already opened by native I/O,
-            // so aliases collapse before any directory entries are scanned.
-            if !roots.insert(source.root_identity()) {
-                continue;
+            let mut bounds = crate::sync::owned::lock_owned(self.users.clone())
+                .await
+                .as_ref()
+                .map(|(_, bounds)| *bounds)
+                .unwrap_or_default();
+            let mut records = RetainedBatch::default();
+            for directory in [".agents/skills", ".claude/skills"] {
+                bounds.directory()?;
+                let mut cursor = None;
+                loop {
+                    let listed = view
+                        .list_directory_at_snapshot(
+                            cut,
+                            &format!("/{directory}"),
+                            cursor,
+                            bounds.page()?,
+                            &mut accounting,
+                        )
+                        .await;
+                    let (page, _, _allocation) = match listed {
+                        Ok(page) => page,
+                        Err(
+                            acyclic_fs::LazyWorkspaceError::NotFound
+                            | acyclic_fs::LazyWorkspaceError::Filesystem(
+                                acyclic_fs::FsError::NotFound,
+                            ),
+                        ) => break,
+                        Err(error) => return Err(error.into()),
+                    };
+                    bounds.entries(page.entries.len())?;
+                    for entry in &page.entries {
+                        if entry.kind != SourceNodeKind::Directory {
+                            continue;
+                        }
+                        bounds.directory()?;
+                        let (name, _allocation) = entry
+                            .name
+                            .unicode_text(&work, &cancellation)
+                            .map_err(storage)?;
+                        if let Some(skill) = scan
+                            .skill(directory, &name, &bounds, &mut records, &mut accounting)
+                            .await?
+                        {
+                            skills.push(skill);
+                        }
+                    }
+                    cursor = page.next;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
             }
-            bounds.directory()?;
-            let reference = source.reference();
-            let (path, _allocation) = NamespacePath::parse_in_profile(
-                "/",
-                config.profile,
-                config.limits,
-                &mut accounting,
-                &cancellation,
-            )?;
-            let mut cursor = None;
-            loop {
-                let mut page = source
-                    .list_page(
-                        reference,
-                        &path,
-                        cursor,
-                        bounds.page()?,
-                        &work,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(storage)?;
-                bounds.entries(page.entries.len())?;
-                for entry in &page.entries {
-                    if entry.node.kind != SourceNodeKind::Directory {
+            validate(&skills)?;
+            records.publish(self.directory.clone()).await?;
+            *cached = Some((cut.id, skills.clone()));
+            Ok(skills)
+        })
+    }
+
+    #[inline(never)]
+    pub fn user_catalog(
+        &self,
+    ) -> Result<crate::conversation::BoundedContentFuture<'_, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
+            if let Some((skills, _)) = &*cached {
+                return Ok(skills.clone());
+            }
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(&cancellation)?;
+            let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            };
+            let mut bounds = Bounds::default();
+            let mut skills = Vec::new();
+            let mut roots = std::collections::HashSet::new();
+            let mut records = RetainedBatch::default();
+            for root in &self.user_roots {
+                let source = match NativeDemandSource::open(
+                    std::borrow::Cow::Borrowed(root),
+                    config.profile,
+                    config.limits,
+                    None,
+                    None,
+                    &work,
+                    &cancellation,
+                )
+                .await
+                {
+                    Ok(source) => source,
+                    Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                         continue;
                     }
-                    bounds.directory()?;
-                    let (name, _allocation) = entry
-                        .name
-                        .unicode_text(&work, &cancellation)
+                    Err(error) => return Err(storage(error)),
+                };
+                // Identity comes from the handle already opened by native I/O,
+                // so aliases collapse before any directory entries are scanned.
+                if !roots.insert(source.root_identity()) {
+                    continue;
+                }
+                bounds.directory()?;
+                let reference = source.reference();
+                let (path, _allocation) = NamespacePath::parse_in_profile(
+                    "/",
+                    config.profile,
+                    config.limits,
+                    &mut accounting,
+                    &cancellation,
+                )?;
+                let mut cursor = None;
+                loop {
+                    let mut page = source
+                        .list_page(
+                            reference,
+                            &path,
+                            cursor,
+                            bounds.page()?,
+                            &work,
+                            &cancellation,
+                        )
+                        .await
                         .map_err(storage)?;
-                    if let Some(skill) = self
-                        .user_skill(&source, root, &name, &work, &bounds, &mut records)
-                        .await?
-                    {
-                        skills.push(skill);
+                    bounds.entries(page.entries.len())?;
+                    for entry in &page.entries {
+                        if entry.node.kind != SourceNodeKind::Directory {
+                            continue;
+                        }
+                        bounds.directory()?;
+                        let (name, _allocation) = entry
+                            .name
+                            .unicode_text(&work, &cancellation)
+                            .map_err(storage)?;
+                        if let Some(skill) = self
+                            .user_skill(&source, root, &name, &work, &bounds, &mut records)
+                            .await?
+                        {
+                            skills.push(skill);
+                        }
+                    }
+                    if let Some(publication) = page.publication.as_mut() {
+                        publication.accept(&mut accounting).map_err(storage)?;
+                    }
+                    cursor = page.next;
+                    if cursor.is_none() {
+                        break;
                     }
                 }
-                if let Some(publication) = page.publication.as_mut() {
-                    publication.accept(&mut accounting).map_err(storage)?;
-                }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
-                }
             }
-        }
-        validate(&skills)?;
-        records.publish(self.directory.clone()).await?;
-        *cached = Some((skills.clone(), bounds));
-        Ok(skills)
+            validate(&skills)?;
+            records.publish(self.directory.clone()).await?;
+            *cached = Some((skills.clone(), bounds));
+            Ok(skills)
+        })
     }
 
     async fn user_skill(
@@ -584,7 +598,7 @@ impl NativeSkills {
     pub async fn user_discovery(
         &self,
     ) -> Result<(Vec<SkillMetadata>, crate::context::DiscoveryWork)> {
-        let skills = self.user_catalog().await?;
+        let skills = self.user_catalog()?.await?;
         let cached = crate::sync::owned::lock_owned(self.users.clone()).await;
         let bounds = cached
             .as_ref()

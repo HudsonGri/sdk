@@ -363,7 +363,7 @@ impl LocalHarness {
         Ok(match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
-                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                self.stage_context_manifest_with(operation, Some(prompt), publisher)?
                     .await?
             }
         })

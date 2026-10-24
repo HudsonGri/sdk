@@ -37,7 +37,7 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         None,
         vec![root.path().join("skills")],
     )?;
-    let skills = sources.user_catalog().await?;
+    let skills = sources.user_catalog()?.await?;
     assert_eq!(skills.len(), 2);
     let mut records = RetainedBatch::default();
     let mut paths = Vec::new();
