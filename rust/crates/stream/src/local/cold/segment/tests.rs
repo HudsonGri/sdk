@@ -7,6 +7,58 @@ const MAXIMUM: u64 = 1024 * 1024;
 
 mod ordering;
 
+#[test]
+fn segment_handle_admission_precedes_header_io_on_create_and_open()
+-> Result<(), Box<dyn std::error::Error>> {
+    for opening in [false, true] {
+        let file = tempfile::tempfile()?;
+        if opening {
+            let mut segment = Segment::create(file.try_clone()?, 0, None, MAXIMUM, None)?;
+            let slot = append_root(&mut segment, 1)?;
+            segment.publish(slot, LocalDurability::FullFlush, None)?;
+        }
+        let length = file.metadata()?.len();
+        let meter = Arc::new(Meter::local());
+        let work = crate::memory::Work::new(meter.original())?;
+        let baseline = meter.held.load(Ordering::SeqCst);
+        meter.deny_allocation.store(true, Ordering::SeqCst);
+        let result = if opening {
+            Segment::open(file.try_clone()?, 0, MAXIMUM, Some(&work))
+        } else {
+            Segment::create(file.try_clone()?, 0, None, MAXIMUM, Some(&work))
+        };
+        assert!(result.is_err(), "segment bypassed shared handle admission");
+        assert_eq!(
+            meter.read_operations.load(Ordering::SeqCst),
+            0,
+            "segment read its header before handle admission"
+        );
+        assert_eq!(
+            meter.write_operations.load(Ordering::SeqCst),
+            0,
+            "segment wrote its header before handle admission"
+        );
+        assert_eq!(file.metadata()?.len(), length);
+        assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+        let failure = work
+            .finish::<(), crate::StreamError>(Err(crate::StreamError::Unavailable))
+            .err()
+            .ok_or("segment lost its original handle denial")?;
+        assert_eq!(
+            failure
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<crate::test_meter::NativeDenial>())
+                .map(|cause| cause.0),
+            Some("allocation"),
+            "segment replaced its original handle denial"
+        );
+        drop(work);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+    }
+    Ok(())
+}
+
 struct Active<'a> {
     segment: &'a mut Segment,
     work: Option<Arc<crate::memory::Work>>,

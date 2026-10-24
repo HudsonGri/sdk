@@ -2,11 +2,17 @@
 //! CPU is reported in OS ticks, including worker threads; this is not span time.
 use acyclic_harness::{Error, Result};
 
+#[cfg(any(target_os = "linux", test))]
+#[path = "resources/io.rs"]
+mod io;
+
 #[derive(Clone, Copy)]
 struct Sample {
     cpu_ticks: u64,
     rss_bytes: u64,
     peak_rss_bytes: u64,
+    #[cfg(target_os = "linux")]
+    io: io::Counters,
 }
 
 #[derive(Default)]
@@ -51,6 +57,8 @@ fn parse(stat: &str, status: &str) -> Result<Sample> {
         cpu_ticks: user.checked_add(system).ok_or_else(invalid)?,
         rss_bytes: bytes("VmRSS:")?,
         peak_rss_bytes: bytes("VmHWM:")?,
+        #[cfg(target_os = "linux")]
+        io: io::Counters::default(),
     })
 }
 
@@ -60,7 +68,12 @@ fn sample() -> Result<Sample> {
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let status = std::fs::read_to_string("/proc/self/status")
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    parse(&stat, &status)
+    let mut sample = parse(&stat, &status)?;
+    sample.io = io::Counters::parse(
+        &std::fs::read_to_string("/proc/self/io")
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+    )?;
+    Ok(sample)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -109,6 +122,8 @@ impl Samples {
             current.rss_bytes,
             current.peak_rss_bytes
         );
+        #[cfg(target_os = "linux")]
+        current.io.report(previous.io, step, turns)?;
         self.0 = Some((current, step));
         Ok(())
     }

@@ -211,7 +211,9 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
     .unwrap();
     // Exact snapshot of the complete capture, including the shared-prefix
     // header, segment, manifest and projection metadata. This is equality,
-    // not a growing allowance; restoring extra preparation must still fail.
+    // The response context helper drops its copied ContextInput before
+    // accounting/staging: one allocation and eight peak bytes in this fixture.
+    // This is not a growing allowance; restoring extra preparation must still fail.
     // The table is feature-independent: the boxed source projection, whose
     // size follows cfg-gated filesystem state, is added from its type.
     let mut expected = expected[format!("preparation.{invalid}")].clone();

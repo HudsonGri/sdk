@@ -1,13 +1,17 @@
 //! File-backed roots and immutable pages. A fixed locator selects the active
 //! segment, so opening never scans a directory or replays earlier publications.
+use super::directory::Directory;
 use super::*;
 use root::{Root, Slot};
 use segment::Segment;
 use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+mod captured;
+mod cut;
 mod locator;
 mod spans;
+pub(in crate::local::cold) use cut::Cut;
 #[cfg(test)]
 mod tests;
 
@@ -22,7 +26,6 @@ enum Access {
 }
 
 pub(super) struct Store {
-    root: PathBuf,
     active: Segment,
     head: File,
     state: Root,
@@ -31,7 +34,8 @@ pub(super) struct Store {
     maximum: u64,
     durability: super::super::LocalDurability,
     failed: bool,
-    _ownership: acyclic_native_runtime::FileLock,
+    // Every file closes before the last directory/root gate is released.
+    root: Arc<Directory>,
 }
 
 fn filename(number: u64) -> Result<[u8; 16], LocalStreamError> {
@@ -108,6 +112,15 @@ impl Store {
         maximum: u64,
         durability: super::super::LocalDurability,
     ) -> Result<Self, LocalStreamError> {
+        Self::open_with_anchor(root, maximum, durability, None)
+    }
+
+    pub(super) fn open_with_anchor(
+        root: &Path,
+        maximum: u64,
+        durability: super::super::LocalDurability,
+        anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
+    ) -> Result<Self, LocalStreamError> {
         if maximum < segment::DATA_START + root::ROOT_BYTES {
             return Err(LocalStreamError::InvalidLimits);
         }
@@ -118,7 +131,7 @@ impl Store {
                 ..Default::default()
             },
         )?;
-        let root = root.to_path_buf();
+        let root = Directory::new(root.to_path_buf(), ownership, anchor);
         let head_path = physical::path(&root, HEAD, None)?;
         let head = match OpenOptions::new()
             .read(true)
@@ -149,7 +162,6 @@ impl Store {
             maximum,
             durability,
             failed: false,
-            _ownership: ownership,
         };
         let state = Root::load(
             &mut Reader {

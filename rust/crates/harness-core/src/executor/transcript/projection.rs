@@ -15,6 +15,60 @@ type PreparedProjection = (
 );
 type AdmittedProjection = (ResponseProjection, crate::model::PreparedModelRequest);
 
+impl StoredProjection {
+    /// The running stock turn already owns this projection's admitted request.
+    /// Read its small metadata without decoding any historical message segment.
+    pub(in crate::executor) async fn continuation_metadata(
+        journal: &dyn ExecutionJournal,
+        reference: &FileRef,
+        original: Option<&PreparationIo>,
+    ) -> Result<ResponseProjection> {
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::new(original)?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = original;
+        let stored = retain_preparation(load_json::<Self>(journal, reference, io).await?)?;
+        #[cfg(feature = "filesystem")]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let context = crate::context::copy_context(
+            &crate::context::Context {
+                messages: Vec::new(),
+                metadata: stored.metadata,
+                current_input_index: stored.current_input_index,
+            },
+            io,
+        )?;
+        let working = stored
+            .working
+            .as_ref()
+            .map(|reference| crate::model::clone_file(reference, io))
+            .transpose()?;
+        drop((
+            stored.request,
+            stored.canonical,
+            stored.checkpoint,
+            stored.working,
+        ));
+        #[cfg(feature = "filesystem")]
+        {
+            let retained = io.map_or(Ok(0), |io| {
+                io.owned_bytes()?
+                    .checked_sub(before)
+                    .ok_or_else(|| invalid(Some(io)))
+            })?;
+            scope.finish(retained)?;
+        }
+        Ok(ResponseProjection {
+            context,
+            canonical: None,
+            checkpoint: None,
+            working,
+        })
+    }
+}
+
 async fn load<'a>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,

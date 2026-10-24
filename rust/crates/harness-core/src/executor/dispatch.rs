@@ -73,6 +73,10 @@ impl StockExecution<'_> {
         self.record_model_phase(&admission, started);
         if admission.completed {
             crate::obs::obs_record!("items" = replayed.len());
+            if purpose == ModelPurpose::Response {
+                self.retain_response_request(journal, input, step, prior_messages.len(), request)
+                    .await?;
+            }
             return Ok(replayed);
         }
         let dispatch = crate::model::ModelDispatch {
@@ -148,10 +152,10 @@ impl StockExecution<'_> {
                         .map(|result| self.admit_model_event(result)),
                 )
             } else {
-                Either::Left(self.stock.provider.generate(request, dispatch))
+                Either::Left(self.stock.provider.generate(&request, dispatch))
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let generated = self.stock.provider.generate(request, dispatch);
+            let generated = self.stock.provider.generate(&request, dispatch);
             Either::Right(generated)
         };
         let observed = super::phase::run(
@@ -167,6 +171,10 @@ impl StockExecution<'_> {
             ),
         )
         .await?;
+        if purpose == ModelPurpose::Response && admission.completed {
+            self.retain_response_request(journal, input, step, prior_messages.len(), request)
+                .await?;
+        }
         crate::obs::obs_record!("items" = observed.len());
         Ok(observed)
     }
@@ -179,7 +187,7 @@ impl StockExecution<'_> {
         retained_request: Option<crate::model::PreparedModelRequest>,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (step, prior_messages, purpose) = turn;
-        let request = match retained_request {
+        let mut request = match retained_request {
             Some(recorded) => {
                 if purpose == ModelPurpose::Summary
                     && self
@@ -200,7 +208,8 @@ impl StockExecution<'_> {
             }
             None => self.prepare_request(input, step, prior_messages).await?,
         };
-        self.verify_model_request_content(journal, &request).await?;
+        self.verify_model_request_content(journal, &mut request)
+            .await?;
         Ok(request)
     }
 

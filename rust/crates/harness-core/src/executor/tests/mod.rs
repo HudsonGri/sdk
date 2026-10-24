@@ -435,6 +435,10 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn has_file_bound_model_verification(&self) -> bool {
+        true
+    }
+
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
         self.8.as_ref()
     }
@@ -772,6 +776,8 @@ mod output_bounds;
 mod reconciliation_scan;
 mod recovery;
 mod replay;
+#[cfg(feature = "filesystem")]
+mod request_continuation;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
 #[cfg(feature = "filesystem")]

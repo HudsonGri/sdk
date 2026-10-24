@@ -2,11 +2,107 @@ use super::*;
 use crate::local::LocalDurability;
 use crate::test_meter::Meter;
 use crate::{CommitId, OwnedBytes, Record, RecordHeaders};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod atomic_segments;
+mod captures;
+
+struct ExternalGate(Arc<AtomicBool>);
+impl Drop for ExternalGate {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn first_open_rejects_incompatible_history_before_creating_any_cold_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    for names in [
+        vec!["stream.journal"],
+        vec!["stream.snapshot"],
+        vec!["stream.journal", "stream.snapshot"],
+    ] {
+        let directory = tempfile::tempdir()?;
+        for name in &names {
+            std::fs::write(
+                directory.path().join(name),
+                b"retained incompatible history",
+            )?;
+        }
+        assert!(
+            matches!(
+                Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush),
+                Err(LocalStreamError::Corrupt)
+            ),
+            "first open silently replaced incompatible history"
+        );
+        assert!(!directory.path().join(HEAD).try_exists()?);
+        assert!(!directory.path().join("0000000000000000").try_exists()?);
+        for name in names {
+            assert_eq!(
+                std::fs::read(directory.path().join(name))?,
+                b"retained incompatible history"
+            );
+        }
+    }
+    Ok(())
+}
 
 const MAXIMUM: u64 = 8 * 1024;
+
+#[test]
+fn captured_accepted_roots_outlive_the_mutator_and_retain_exclusive_root_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
+    for native in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let released = Arc::new(AtomicBool::new(false));
+        let anchor =
+            acyclic_native_runtime::OwnershipAnchor::new(ExternalGate(Arc::clone(&released)));
+        let mut store = Store::open_with_anchor(
+            directory.path(),
+            MAXIMUM,
+            LocalDurability::FullFlush,
+            Some(anchor),
+        )?;
+        let meter = Arc::new(Meter::local());
+        let work = native
+            .then(|| crate::memory::Work::new(meter.original()))
+            .transpose()?;
+        let baseline = meter.held.load(Ordering::SeqCst);
+        for sequence in 1..=16 {
+            accept(&mut store, sequence, work.clone())?;
+        }
+        let mut captured = store.capture(work.clone())?;
+        let state = captured.state;
+        for sequence in 17..=32 {
+            accept(&mut store, sequence, work.clone())?;
+        }
+        drop(store);
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "captured cut released its external root owner"
+        );
+        assert!(
+            matches!(
+                Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush),
+                Err(LocalStreamError::AlreadyOpen)
+            ),
+            "captured cut released the root owner before its last read"
+        );
+        let reference = index::get(&mut captured, state.points, &16_u64.to_be_bytes())?
+            .ok_or("lost captured record")?;
+        assert_eq!(record::read(&mut captured, reference)?, sample(16));
+        assert!(index::get(&mut captured, state.points, &17_u64.to_be_bytes())?.is_none());
+        drop(captured);
+        assert!(released.load(Ordering::SeqCst));
+        assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+        let store = Store::open(directory.path(), MAXIMUM, LocalDurability::FullFlush)?;
+        drop(store);
+        drop(work);
+        meter.assert_refunded();
+    }
+    Ok(())
+}
 
 fn sample(sequence: u64) -> Record {
     let mut commit = [0; 32];
@@ -66,7 +162,11 @@ fn cold_store_rollover_reopen_and_historical_roots_keep_exact_records_on_the_ori
             .ok_or("missing record")?;
         assert_eq!(record::read(&mut reader, reference)?, sample(sequence));
         drop(reader);
-        assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+        assert_eq!(
+            meter.held.load(Ordering::SeqCst),
+            baseline + store.active.file.funded_bytes(),
+            "only the active shared handle may retain writer funding"
+        );
     }
     assert!(
         store.active.number > 0,

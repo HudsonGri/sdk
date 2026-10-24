@@ -55,7 +55,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FlushCounter {
 impl Timing {
     fn report_checkpoint(&mut self) -> Result<()> {
         let end = self.intervals.len();
-        if [1, 10, 14, 100, 1000].contains(&end) {
+        if [1, 10, 14, 100, 1_000, 10_000, 100_000, 1_000_000].contains(&end) {
             let (total, flushes, count) = self.intervals.summary();
             println!(
                 "tool-to-model ending at turn {end}: {:.3} ms/turn; {flushes} stream flushes/{count} turns",
@@ -117,7 +117,7 @@ impl ModelProvider for Provider {
     }
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         let request_bytes = request.bytes().len();
@@ -132,7 +132,6 @@ impl ModelProvider for Provider {
                 if text.starts_with("Summarize the preceding context for continued work."))
         });
         if self.compact && summary {
-            drop(request);
             self.timing
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -146,9 +145,8 @@ impl ModelProvider for Provider {
                 }),
             ]));
         }
-        // Include destruction of the SDK's owned request in runtime overhead;
-        // this fixture retains neither earlier requests nor their full messages.
-        drop(request);
+        // The executor owns the borrowed request throughout generation. This
+        // fixture retains neither earlier requests nor their full messages.
         let mut timing = self.timing.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((finished, flushes)) = timing.tool_finished.take() {
             let step_flushes = timing.stream_flushes.load(Ordering::Relaxed) - flushes;

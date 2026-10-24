@@ -215,6 +215,15 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Non-file content has no independent journal policy beyond its immutable
+    /// shape and the executor's limits. Opting in permits a single executor to
+    /// retain that admission under this journal's stable cache identity. Files,
+    /// native configurations and summary provenance are still checked on every
+    /// dispatch. Rebinding this contract requires a fresh cache identity.
+    fn has_file_bound_model_verification(&self) -> bool {
+        false
+    }
+
     /// Verifies data and original option bindings without granting fresh execution.
     fn verify_model_content<'a>(
         &'a self,

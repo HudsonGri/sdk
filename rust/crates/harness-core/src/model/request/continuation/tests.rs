@@ -51,8 +51,9 @@ fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<
                         Some(io),
                     )?;
                     let before = io.receipt();
-                    let (mut continued, _) = continuation.validate(Limits::default(), Some(io))?;
+                    continuation.validate_suffix(Limits::default(), Some(io))?;
                     let suffix_items = io.receipt().items_examined - before.items_examined;
+                    let (mut continued, _) = continuation.validate(Limits::default(), Some(io))?;
                     let ModelContent::Text(value) = &continued.messages.first().unwrap().content
                     else {
                         unreachable!()
@@ -270,3 +271,11 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
     assert!(continued.instruction_remaining < 2_000);
     Ok(())
 }
+
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[path = "ownership_tests.rs"]
+mod ownership_tests;

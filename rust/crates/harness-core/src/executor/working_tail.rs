@@ -125,15 +125,8 @@ impl<'a> StockExecution<'a> {
             return Ok((context_input, base, None));
         };
         let mut cache = self.working_tail.lock().await;
-        // Providers without an explicit identity must authenticate every read;
-        // keeping the last cut still lets this execution retire its driver tail.
-        if journal.cache_identity().is_none()
-            || cache.retained.as_ref().is_none_or(|cached| {
-                cached.reference != reference || cached.journal != journal.cache_identity()
-            })
-        {
-            cache.retained = Some(self.load_working_cut(journal, &reference).await?);
-        }
+        self.refresh_working_cut(&mut cache, journal, &reference)
+            .await?;
         let retained = cache
             .retained
             .as_ref()
@@ -169,6 +162,55 @@ impl<'a> StockExecution<'a> {
         })?;
         crate::context::validate_projected_context(&base, self.stock.limits, self.io)?;
         Ok((context_input, base, Some(reference)))
+    }
+
+    async fn refresh_working_cut(
+        &self,
+        cache: &mut TailCache<'a>,
+        journal: &dyn ExecutionJournal,
+        reference: &FileRef,
+    ) -> Result<()> {
+        // A running request can skip rebuilding its base, but a new compacted
+        // cut still has to authenticate and retire the driver's old tail.
+        if journal.cache_identity().is_none()
+            || cache.retained.as_ref().is_none_or(|cached| {
+                &cached.reference != reference || cached.journal != journal.cache_identity()
+            })
+        {
+            cache.retained = Some(self.load_working_cut(journal, reference).await?);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn synchronize_working_cut(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior: usize,
+        reference: Option<&FileRef>,
+    ) -> Result<()> {
+        let mut cache = self.working_tail.lock().await;
+        let Some(reference) = reference else {
+            return if cache.prior_offset == 0 {
+                Ok(())
+            } else {
+                Err(self.invalid_working_cut())
+            };
+        };
+        self.refresh_working_cut(&mut cache, journal, reference)
+            .await?;
+        let retained = cache
+            .retained
+            .as_ref()
+            .ok_or_else(|| self.invalid_working_cut())?;
+        self.validate_working_cut(
+            retained,
+            input,
+            step,
+            self.prior_count(cache.prior_offset, prior)?,
+        )?;
+        Ok(())
     }
 
     pub(super) fn invalid_working_cut(&self) -> Error {

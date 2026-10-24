@@ -2,6 +2,11 @@
 use super::inventory::add;
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static REQUEST_MESSAGES_EXAMINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn map_slack(value: &Value) -> Result<u64> {
     crate::executor::json::json_value_retained_owned_bytes(value)?
         .checked_sub(crate::executor::json::json_value_logical_owned_bytes(
@@ -53,6 +58,8 @@ impl ModelRequest {
             }
         }
         for message in &self.messages {
+            #[cfg(test)]
+            REQUEST_MESSAGES_EXAMINED.set(REQUEST_MESSAGES_EXAMINED.get() + 1);
             for part in message.content.parts() {
                 bytes = add(bytes, part_slack(part)?)?;
             }

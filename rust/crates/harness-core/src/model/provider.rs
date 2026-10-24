@@ -166,10 +166,12 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             ))
         })
     }
-    /// Starts one request and emits ordered events.
+    /// Borrows one admitted request and emits ordered events. The stream cannot
+    /// outlive that admission; after dropping it the caller can continue the
+    /// original request without copying its history or encoded prefix.
     fn generate<'a>(
         &'a self,
-        request: PreparedModelRequest,
+        request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>>;
     /// Reconciles an interrupted run without starting another request.

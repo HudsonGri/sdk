@@ -187,12 +187,12 @@ impl StockExecution<'_> {
                 break;
             }
         }
-        for result in results {
+        for result in stock_into_iter(results, self.io)? {
             stock_vec_push(request.messages(), result, self.io)?;
         }
         super::turn::append_step_context(request.messages(), &mut hook_context, self.io)?;
-        let prepared = request.finish(self.stock.limits, self.io)?;
-        self.verify_model_request_content(journal, &prepared)
+        let mut prepared = request.finish(self.stock.limits, self.io)?;
+        self.verify_model_request_content(journal, &mut prepared)
             .await?;
         Ok(prepared)
     }
