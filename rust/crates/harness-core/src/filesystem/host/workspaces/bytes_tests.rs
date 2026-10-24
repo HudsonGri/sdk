@@ -308,3 +308,58 @@ fn workflow_commit_retains_only_its_owned_polling_handle() {
         "workflow embeds a concrete child operation in its caller"
     );
 }
+
+#[test]
+fn transaction_operations_retain_only_owned_polling_handles() {
+    type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
+    type Input = (
+        &'static mut Transaction,
+        &'static acyclic_fs::CancellationToken,
+    );
+    let directory = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.create_dir_all("/dir", acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        })
+    });
+    let write = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.write(
+                "/file",
+                acyclic_stream::OwnedBytes::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+        })
+    });
+    let create = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.create_file(
+                "/file",
+                acyclic_stream::OwnedBytes::new(),
+                acyclic_fs::kernel::FileMetadata::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+        })
+    });
+    let remove = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.remove("/file", acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        })
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let batch = retained_operation_bytes(|(transaction, cancellation): Input| {
+        unmeasured_workspace_operation(|| {
+            transaction.write_batch(&[], &[], acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        })
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let sizes = [directory, write, create, remove, batch];
+    #[cfg(target_arch = "wasm32")]
+    let sizes = [directory, write, create, remove];
+    eprintln!("transaction retained bytes: {sizes:?}");
+    assert!(
+        sizes.into_iter().all(|bytes| bytes <= 512),
+        "transaction staging embeds concrete SDK operations in its poll frame"
+    );
+}

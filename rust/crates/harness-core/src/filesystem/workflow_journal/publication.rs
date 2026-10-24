@@ -271,6 +271,38 @@ where
         Ok(Some(existing))
     }
 
+    async fn resolve_commit_append(
+        &self,
+        appended: Result<bool>,
+        record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        match appended {
+            Ok(true) => Ok(()),
+            Ok(false) => match self.reconcile(record, io).await? {
+                Some(_) => Ok(()),
+                None => Err(Error::Conflict(
+                    "workflow checkpoint or ownership changed".into(),
+                )),
+            },
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => {
+                match self.reconcile(record, io).await {
+                    Ok(Some(_)) => Ok(()),
+                    Ok(None) | Err(Error::Storage(_)) => {
+                        Err(Error::Indeterminate(record.operation_id))
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeStream {
+                        source: StreamError::Unavailable,
+                        ..
+                    }) => Err(Error::Indeterminate(record.operation_id)),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) async fn commit_with_io(
         &self,
         expected_revision: u64,
@@ -384,30 +416,7 @@ where
                     io,
                 )
                 .await;
-            match appended {
-                Ok(true) => Ok(()),
-                Ok(false) => match self.reconcile(record, io).await? {
-                    Some(_) => Ok(()),
-                    None => Err(Error::Conflict(
-                        "workflow checkpoint or ownership changed".into(),
-                    )),
-                },
-                Err(Error::Indeterminate(_)) if self.owner.is_none() => {
-                    match self.reconcile(record, io).await {
-                        Ok(Some(_)) => Ok(()),
-                        Ok(None) | Err(Error::Storage(_)) => {
-                            Err(Error::Indeterminate(record.operation_id))
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Err(Error::NativeStream {
-                            source: StreamError::Unavailable,
-                            ..
-                        }) => Err(Error::Indeterminate(record.operation_id)),
-                        Err(error) => Err(error),
-                    }
-                }
-                Err(error) => Err(error),
-            }
+            self.resolve_commit_append(appended, record, io).await
         })
     }
 }

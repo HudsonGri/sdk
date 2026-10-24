@@ -1,5 +1,24 @@
 use super::*;
 
+type WorkspaceOperation<'a, T> = crate::conversation::BoundedContentFuture<
+    'a,
+    acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, WorkspaceError>,
+>;
+
+// Keep SDK result/receipt mapping at each caller, while constructing its
+// concrete operation before the caller's poll frame is entered again.
+#[inline(never)]
+fn unmeasured_workspace_operation<'a, T: 'a, F>(
+    build: impl FnOnce() -> F,
+) -> Result<WorkspaceOperation<'a, T>>
+where
+    F: Future<Output = acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, WorkspaceError>>
+        + acyclic_stream::ProviderTask
+        + 'a,
+{
+    crate::conversation::BoundedContentFuture::new(None, || futures::FutureExt::map(build(), Ok))
+}
+
 #[derive(Clone, Copy)]
 enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
@@ -338,6 +357,75 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 
+    async fn stage_mutation_unmeasured(
+        transaction: &mut acyclic_fs::Transaction<A, O>,
+        mutation: &WorkspaceMutation,
+        invalidate_metadata: bool,
+        publication: FilePublication<'_>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<()> {
+        match mutation {
+            WorkspaceMutation::CreateDirectory { path } => {
+                unmeasured_workspace_operation(|| {
+                    transaction.create_dir_all(path, budget, cancellation)
+                })?
+                .await?
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(map_error)?;
+            }
+            WorkspaceMutation::PutFile { path, bytes } => {
+                match publication {
+                    FilePublication::Replace(_) | FilePublication::Authorized(..) => {
+                        unmeasured_workspace_operation(|| {
+                            transaction.write(path, bytes.clone(), budget, cancellation)
+                        })?
+                        .await?
+                        .map_err(|failure| map_error(failure.error))?
+                    }
+                    FilePublication::CreateOnly => unmeasured_workspace_operation(|| {
+                        transaction.create_file(
+                            path,
+                            bytes.clone(),
+                            acyclic_fs::kernel::FileMetadata::default(),
+                            budget,
+                            cancellation,
+                        )
+                    })?
+                    .await?
+                    .map_err(|failure| creation_error(failure.error, None))?,
+                };
+            }
+            WorkspaceMutation::Remove { path } => {
+                unmeasured_workspace_operation(|| transaction.remove(path, budget, cancellation))?
+                    .await?
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(map_error)?;
+            }
+        }
+        // Raw mutations do not carry a descriptor or write publication.
+        // Invalidate the old index atomically, including same-byte writes.
+        // The content writer supplies its own metadata in this transaction.
+        if invalidate_metadata
+            && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
+                mutation
+        {
+            let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+            match unmeasured_workspace_operation(|| {
+                transaction.remove(&metadata, budget, cancellation)
+            })?
+            .await?
+            {
+                Ok(_) => {}
+                Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                Err(failure) => return Err(map_error(failure.error)),
+            }
+        }
+        Ok(())
+    }
+
     fn stage_unmeasured<'a>(
         transaction: &'a mut acyclic_fs::Transaction<A, O>,
         mutations: &'a [WorkspaceMutation],
@@ -371,10 +459,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                transaction
-                    .write_batch(&directories, &files, budget, cancellation)
-                    .await
-                    .map_err(|failure| map_error(failure.error))?;
+                unmeasured_workspace_operation(|| {
+                    transaction.write_batch(&directories, &files, budget, cancellation)
+                })?
+                .await?
+                .map_err(|failure| map_error(failure.error))?;
                 true
             } else {
                 false
@@ -383,59 +472,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let batched = false;
             if !batched {
                 for mutation in mutations {
-                    match mutation {
-                        WorkspaceMutation::CreateDirectory { path } => {
-                            transaction
-                                .create_dir_all(path, budget, cancellation)
-                                .await
-                                .map(|receipt| receipt.value)
-                                .map_err(|failure| failure.error)
-                                .map_err(map_error)?;
-                        }
-                        WorkspaceMutation::PutFile { path, bytes } => {
-                            match publication {
-                                FilePublication::Replace(_) | FilePublication::Authorized(..) => {
-                                    transaction
-                                        .write(path, bytes.clone(), budget, cancellation)
-                                        .await
-                                        .map_err(|failure| map_error(failure.error))?
-                                }
-                                FilePublication::CreateOnly => transaction
-                                    .create_file(
-                                        path,
-                                        bytes.clone(),
-                                        acyclic_fs::kernel::FileMetadata::default(),
-                                        budget,
-                                        cancellation,
-                                    )
-                                    .await
-                                    .map_err(|failure| creation_error(failure.error, None))?,
-                            };
-                        }
-                        WorkspaceMutation::Remove { path } => {
-                            transaction
-                                .remove(path, budget, cancellation)
-                                .await
-                                .map(|receipt| receipt.value)
-                                .map_err(|failure| failure.error)
-                                .map_err(map_error)?;
-                        }
-                    }
-                    // Raw mutations do not carry a descriptor or write publication.
-                    // Invalidate the old index atomically, including same-byte writes.
-                    // The content writer supplies its own metadata in this transaction.
-                    if invalidate_metadata
-                        && let WorkspaceMutation::PutFile { path, .. }
-                        | WorkspaceMutation::Remove { path } = mutation
-                    {
-                        let metadata =
-                            content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                        match transaction.remove(&metadata, budget, cancellation).await {
-                            Ok(_) => {}
-                            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
-                            Err(failure) => return Err(map_error(failure.error)),
-                        }
-                    }
+                    Self::stage_mutation_unmeasured(
+                        transaction,
+                        mutation,
+                        invalidate_metadata,
+                        publication,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
                 }
             }
             Ok(())
