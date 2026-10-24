@@ -4,6 +4,7 @@ use acyclic_native_runtime::ReadAllocation;
 
 const PAGE_MAGIC: &[u8; 8] = b"ACYCLPG1";
 const PAGE_HEADER_BYTES: usize = 13;
+pub(super) const HEADER_BYTES: usize = PAGE_HEADER_BYTES;
 const PAGE_DOMAIN: &[u8] = b"acyclic.stream.cold.page/v1\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,6 +123,24 @@ impl Buffer {
             _allocation: None,
         })
     }
+
+    fn freeze(
+        mut self,
+        work: Option<&Arc<crate::memory::Work>>,
+    ) -> Result<crate::OwnedBytes, LocalStreamError> {
+        let Some(allocation) = self._allocation.as_ref() else {
+            return Ok(std::mem::take(&mut self.bytes).into());
+        };
+        let meter = Arc::clone(allocation.meter());
+        observe(
+            work,
+            crate::OwnedBytes::from_vec_with_guard_in_place(
+                &mut self.bytes,
+                &mut self._allocation,
+                &meter,
+            ),
+        )
+    }
 }
 
 pub(super) struct Page {
@@ -135,6 +154,17 @@ impl Page {
             .bytes
             .get(PAGE_HEADER_BYTES..)
             .ok_or(LocalStreamError::Corrupt)
+    }
+
+    pub(super) fn into_body(
+        self,
+        work: Option<&Arc<crate::memory::Work>>,
+    ) -> Result<crate::OwnedBytes, LocalStreamError> {
+        let bytes = self.encoded.freeze(work)?;
+        if bytes.len() < PAGE_HEADER_BYTES {
+            return Err(LocalStreamError::Corrupt);
+        }
+        Ok(bytes.slice(PAGE_HEADER_BYTES..))
     }
 }
 
@@ -224,14 +254,43 @@ fn read_chunk(
     Ok(output)
 }
 
-pub(super) fn append(
-    file: &File,
+pub(super) struct PendingPage {
+    encoded: Buffer,
+    reference: PageRef,
+    end: u64,
+}
+
+impl PendingPage {
+    pub(super) fn write(
+        self,
+        file: &File,
+        end: &mut u64,
+        work: Option<&Arc<crate::memory::Work>>,
+    ) -> Result<PageRef, LocalStreamError> {
+        if *end != self.reference.offset {
+            return Err(LocalStreamError::Corrupt);
+        }
+        observe(
+            work,
+            acyclic_native_runtime::write_all_at(
+                file,
+                *end,
+                &self.encoded.bytes,
+                work.map(|work| (work.meter.as_ref(), false)),
+            ),
+        )?;
+        *end = self.end;
+        Ok(self.reference)
+    }
+}
+
+pub(super) fn prepare(
     segment: u64,
-    end: &mut u64,
+    offset: u64,
     kind: PageKind,
     body: &[u8],
     work: Option<&Arc<crate::memory::Work>>,
-) -> Result<PageRef, LocalStreamError> {
+) -> Result<PendingPage, LocalStreamError> {
     if body.len() > MAX_COMMAND_BYTES {
         return Err(LocalStreamError::InvalidLimits);
     }
@@ -240,7 +299,7 @@ pub(super) fn append(
         .checked_add(PAGE_HEADER_BYTES)
         .ok_or(LocalStreamError::InvalidLimits)?;
     let bytes = u32::try_from(length).map_err(|_| LocalStreamError::InvalidLimits)?;
-    let next = end
+    let next = offset
         .checked_add(u64::from(bytes))
         .ok_or(LocalStreamError::InvalidLimits)?;
     let mut buffer = Buffer::new(length, work)?;
@@ -250,25 +309,30 @@ pub(super) fn append(
     buffer.bytes.push(kind as u8);
     buffer.bytes.extend_from_slice(&bytes.to_le_bytes());
     buffer.bytes.extend_from_slice(body);
-    let hash = digest(segment, *end, &buffer.bytes);
+    let hash = digest(segment, offset, &buffer.bytes);
     codec(work, length as u64, hash_bytes, false)?;
-    observe(
-        work,
-        acyclic_native_runtime::write_all_at(
-            file,
-            *end,
-            &buffer.bytes,
-            work.map(|work| (work.meter.as_ref(), false)),
-        ),
-    )?;
     let reference = PageRef {
         segment,
-        offset: *end,
+        offset,
         bytes,
         digest: hash,
     };
-    *end = next;
-    Ok(reference)
+    Ok(PendingPage {
+        encoded: buffer,
+        reference,
+        end: next,
+    })
+}
+
+pub(super) fn append(
+    file: &File,
+    segment: u64,
+    end: &mut u64,
+    kind: PageKind,
+    body: &[u8],
+    work: Option<&Arc<crate::memory::Work>>,
+) -> Result<PageRef, LocalStreamError> {
+    prepare(segment, *end, kind, body, work)?.write(file, end, work)
 }
 
 pub(super) fn read(
@@ -279,30 +343,7 @@ pub(super) fn read(
     let length = checked_length(reference.bytes)?;
     let mut encoded = Buffer::new(length, work)?;
     encoded.bytes.resize(length, 0);
-    let mut filled = 0;
-    while filled < length {
-        let offset = reference
-            .offset
-            .checked_add(filled as u64)
-            .ok_or(LocalStreamError::Corrupt)?;
-        let destination = encoded
-            .bytes
-            .get_mut(filled..)
-            .ok_or(LocalStreamError::Corrupt)?;
-        let count = read_chunk(work, destination.len(), || {
-            acyclic_native_runtime::read_at(file, offset, destination)
-        })?;
-        if count == 0 {
-            return observe(
-                work,
-                Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
-            );
-        }
-        filled = filled
-            .checked_add(count)
-            .filter(|end| *end <= length)
-            .ok_or(LocalStreamError::Corrupt)?;
-    }
+    read_exact(file, reference.offset, &mut encoded.bytes, work)?;
     let hash_bytes = length as u64 + PAGE_DOMAIN.len() as u64 + 16;
     codec(work, 0, hash_bytes, true)?;
     let found = digest(reference.segment, reference.offset, &encoded.bytes);
@@ -315,4 +356,35 @@ pub(super) fn read(
     }
     let kind = PageKind::try_from(*encoded.bytes.get(8).ok_or(LocalStreamError::Corrupt)?)?;
     Ok(Page { kind, encoded })
+}
+
+/// Preserve each physical prefix and original failure for fixed metadata and
+/// page bodies through the same read boundary.
+pub(super) fn read_exact(
+    file: &File,
+    start: u64,
+    bytes: &mut [u8],
+    work: Option<&Arc<crate::memory::Work>>,
+) -> Result<(), LocalStreamError> {
+    let mut filled = 0;
+    while filled < bytes.len() {
+        let offset = start
+            .checked_add(filled as u64)
+            .ok_or(LocalStreamError::Corrupt)?;
+        let destination = bytes.get_mut(filled..).ok_or(LocalStreamError::Corrupt)?;
+        let count = read_chunk(work, destination.len(), || {
+            acyclic_native_runtime::read_at(file, offset, destination)
+        })?;
+        if count == 0 {
+            return observe(
+                work,
+                Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
+            );
+        }
+        filled = filled
+            .checked_add(count)
+            .filter(|end| *end <= bytes.len())
+            .ok_or(LocalStreamError::Corrupt)?;
+    }
+    Ok(())
 }

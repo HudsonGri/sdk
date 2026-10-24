@@ -31,24 +31,46 @@ impl RecordHeaders {
     pub(crate) fn from_native_parts(
         keys: Vec<OwnedBytes>,
         attributes: Vec<Attribute>,
-        mut allocation: acyclic_native_runtime::ReadAllocation,
+        allocation: acyclic_native_runtime::ReadAllocation,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<Self> {
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        // A fallible control-header admission must not release the vector's
+        // funding before destroying the values in that vector.
+        let mut data = HeaderData {
+            keys,
+            attributes,
+            _allocation: Some(allocation),
+        };
+        if let Err(error) = Self::validate_parts(&data.keys, &data.attributes) {
+            return Ok(Err(error));
+        }
         let mut control = acyclic_native_runtime::ReadAllocation::new(
             meter,
             std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>(),
         )?;
-        allocation.absorb(&mut control)?;
-        Ok(Self(Some(Arc::new(HeaderData {
-            keys,
-            attributes,
-            _allocation: Some(allocation),
-        }))))
+        data._allocation
+            .as_mut()
+            .ok_or(std::io::ErrorKind::InvalidInput)?
+            .absorb(&mut control)?;
+        Ok(Ok(Self(Some(Arc::new(data)))))
     }
 
     /// Admit strictly sorted unique keys and attribute names. Producers supply
     /// canonical order; the provider never silently changes retry identities.
     pub fn new(keys: Vec<OwnedBytes>, attributes: Vec<Attribute>) -> Result<Self, StreamError> {
+        Self::validate_parts(&keys, &attributes)?;
+        if keys.is_empty() && attributes.is_empty() {
+            return Ok(Self::default());
+        }
+        Ok(Self(Some(Arc::new(HeaderData {
+            keys,
+            attributes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _allocation: None,
+        }))))
+    }
+
+    fn validate_parts(keys: &[OwnedBytes], attributes: &[Attribute]) -> Result<(), StreamError> {
         if keys.len() > MAX_RECORD_KEYS
             || attributes.len() > MAX_RECORD_ATTRIBUTES
             || keys.iter().any(|key| key.len() > MAX_RECORD_KEY_BYTES)
@@ -67,19 +89,10 @@ impl RecordHeaders {
         {
             return Err(StreamError::InvalidArgument);
         }
-        if keys.is_empty() && attributes.is_empty() {
-            return Ok(Self::default());
-        }
-        let headers = Self(Some(Arc::new(HeaderData {
-            keys,
-            attributes,
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
-        })));
-        if headers.payload_bytes() > crate::MAX_RECORD_BYTES {
+        if payload_bytes(keys, attributes) > crate::MAX_RECORD_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        Ok(headers)
+        Ok(())
     }
 
     /// Canonically sorted unique keys.
@@ -94,14 +107,7 @@ impl RecordHeaders {
 
     /// Bytes counted against the record's shared value-and-header bound.
     pub fn payload_bytes(&self) -> usize {
-        self.keys()
-            .iter()
-            .fold(0usize, |total, key| total.saturating_add(key.len()))
-            .saturating_add(self.attributes().iter().fold(0usize, |total, attribute| {
-                total
-                    .saturating_add(attribute.name.len())
-                    .saturating_add(attribute.value.len())
-            }))
+        payload_bytes(self.keys(), self.attributes())
     }
 
     pub(crate) fn hash_bytes(&self) -> u64 {
@@ -174,6 +180,16 @@ impl RecordHeaders {
         meter.check()?;
         Ok(headers)
     }
+}
+
+fn payload_bytes(keys: &[OwnedBytes], attributes: &[Attribute]) -> usize {
+    keys.iter()
+        .fold(0usize, |total, key| total.saturating_add(key.len()))
+        .saturating_add(attributes.iter().fold(0usize, |total, attribute| {
+            total
+                .saturating_add(attribute.name.len())
+                .saturating_add(attribute.value.len())
+        }))
 }
 
 impl PartialEq for RecordHeaders {
