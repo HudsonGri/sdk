@@ -21,6 +21,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-native-runtime",
  "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
@@ -59,6 +60,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "ts-rs",
+ "url",
  "zeroize",
 ]
 
@@ -284,12 +286,17 @@ dependencies = [
 name = "acyclic-markdown"
 version = "0.2.0"
 dependencies = [
+ "acyclic-markdown-work",
  "pulldown-cmark",
  "syntect",
  "unicase",
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "acyclic-markdown-work"
+version = "0.2.0"
 
 [[package]]
 name = "acyclic-native-runtime"
