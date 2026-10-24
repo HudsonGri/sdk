@@ -26,6 +26,10 @@ macro_rules! fixture {
 fn digest() -> Value {
     json!(vec![7_u8; 32])
 }
+/// Opaque admission bytes, which records carry as canonical base64.
+fn opaque() -> Value {
+    json!("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=")
+}
 fn id(byte: u8) -> Value {
     json!(uuid::Uuid::from_bytes([byte; 16]))
 }
@@ -113,7 +117,7 @@ impl Parts {
     fn scope(&self) -> Value {
         json!({
             "id": "scope", "capabilities": ["read"], "agent": id(2), "issuer": "issuer",
-            "parent_proof": digest(), "proof": digest(),
+            "parent_proof": digest(), "proof": digest(), "workload": opaque(),
         })
     }
     fn seed(&self) -> Value {
@@ -186,7 +190,7 @@ impl Parts {
         let attestation = json!({
             "provider": "provider", "effect_id": id(7), "attempt_id": id(8),
             "request_digest": digest(), "guarantee": "exactly_once",
-            "result_schema_digest": digest(), "status": self.status, "proof": digest(),
+            "result_schema_digest": digest(), "status": self.status, "proof": opaque(),
         });
         vec![
             json!({"kind": "lifecycle_transitioned", "from": "pending", "to": "active", "reason": "start"}),
@@ -216,7 +220,7 @@ impl Parts {
         json!({
             "revision": revision, "operation_id": id(6), "intent_digest": digest(),
             "scope": {"id": "scope", "capabilities": ["read"], "issuer": "issuer", "agent": id(2)},
-            "attestation": digest(), "causal_parent": self.reference, "payload": payload,
+            "attestation": opaque(), "causal_parent": self.reference, "payload": payload,
         })
     }
     /// A checkpoint whose every list, map, box and option is populated,
