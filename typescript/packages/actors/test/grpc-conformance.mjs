@@ -6,13 +6,12 @@ import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
-import { Code, ConnectError } from "@connectrpc/connect";
-import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
+import { connectNodeAdapter, createGrpcTransport } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
-import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
 
 const services = [ActorsService, StreamService, BucketsService, ObjectsService, MultipartService];
@@ -35,8 +34,9 @@ function rustRoutes(packageName, example) {
 const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
 
 function responseInitializer(method) {
-  if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
-  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
+  if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
+  if (["InvokeActor", "InvokeWorker"].includes(method.name)) return { status: 201, headers: [{ name: "location", value: "/result" }] };
+  if (["InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", homeRegion: "eu", codeSha256: new Uint8Array(32).fill(1), state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
 
   return {};
 }
@@ -53,7 +53,7 @@ function inspectActorRequest(method, request) {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "checkpoint-a");
   }
-  if (method.name === "DeleteActor") {
+  if (method.name === "DeleteAll") {
     assert.equal(request.actorId, "actor-a");
     assert.equal(request.idempotencyKey, "delete-a");
   }
@@ -72,17 +72,29 @@ if (process.argv.includes("--client")) {
   const options = JSON.parse(configText);
   const objects = createObjectsV1GrpcClients(options);
   const actors = await actorsClient(options);
-  const clients = [actors, createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
+  // This matrix qualifies every declared StreamService wire RPC. The public
+  // Stream follow/children adapters use StreamSessionService and are qualified
+  // separately by the Stream session tests, not a legacy RPC stand-in here.
+  const stream = createClient(StreamService,createGrpcTransport({baseUrl:options.endpoint,
+    nodeOptions:{ca:options.caCertificate},interceptors:[next => async request => {
+      request.header.set("authorization",`Bearer ${options.token}`);return next(request);
+    }]}));
+  const clients = [actors, stream, objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
       const initializer = {};
-      if (method.name === "CreateActor") Object.assign(initializer, {
-        codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu",
+      if (service === StreamService) Object.assign(initializer,{path:"events",source:"events",destination:"fork",limit:1});
+      if (["DeployNamespace", "DeployWorker"].includes(method.name)) Object.assign(initializer, {
+        name: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, idempotencyKey: "create-a",
       });
-      if (method.name === "UpdateActor") Object.assign(initializer, {
-        actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1),
+      if (method.name === "DeployWorker") {
+        delete initializer.limits;
+        initializer.workerLimits = { cpuMillis: 1, memoryBytes: 1024, timeoutMillis: 1000 };
+      }
+      if (method.name === "UpdateNamespace") Object.assign(initializer, {
+        namespaceId: "example", codeSha256: new Uint8Array(32).fill(1),
         limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, expectedConfigurationRevision: 1n, idempotencyKey: "update-a",
       });
       if (["InspectActor", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) Object.assign(initializer, {
@@ -96,7 +108,9 @@ if (process.argv.includes("--client")) {
         idempotencyKey: "subscribe-a",
       });
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
-      if (method.name === "DeleteActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
+      if (method.name === "InvokeWorker") Object.assign(initializer, { workerName: "example", method: "POST", url: "/invoke", headers: [{name:"content-type",value:"application/json"}], body: new Uint8Array([1]) });
+      if (method.name === "DeleteWorker") Object.assign(initializer, { workerName: "example", idempotencyKey: "delete-worker" });
+      if (method.name === "DeleteAll") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
       if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
 
       if (method.name === "Commit") initializer.mutations = [
@@ -232,7 +246,7 @@ try {
   });
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".actors.") ? 3 : 2, method);
-  assert.equal(httpSeen.size, 9);
+  assert.equal(httpSeen.size, ActorsService.methods.length);
   if (await (await actorsClient(options)).transport === "grpc-web") {
     assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
     assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));

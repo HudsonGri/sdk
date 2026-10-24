@@ -6,3 +6,8 @@ export type { TimerRecord } from "./generated/timers.js";
 export * from "./guest.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
 export { credentialProvider, type CredentialProvider, type CredentialOptions } from "./credential.js";
+
+export * from "./namespace.js";
+export * from "./durable.js";
+
+export { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";

@@ -69,11 +69,12 @@ function actorResponse(method, input) {
     assert.equal(input.subscription.streamPath, "events/input");
     assert.equal(input.subscription.start.start.value, 9007199254740993n);
   }
+  if (["DeployNamespace", "DeployWorker", "UpdateNamespace"].includes(method.name)) return { deployment: {name: "example", codeSha256: new Uint8Array(32).fill(1), revision: 1n} };
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
-  if (method.name === "DeleteActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
-  if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
+  if (method.name === "DeleteAll") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
+  if (["InvokeActor", "InvokeWorker"].includes(method.name)) return { status: 201, body: new Uint8Array([5]) };
 
-  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
+  if (["InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
   return {};
 }
 function grpcWebFrame(flags, payload) {
@@ -229,7 +230,7 @@ try {
   await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
   assert.equal(cancellationDispatched, true);
   console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
-  assert.equal(seen.size, 32, `expected 13 Objects, 9 Actor and 10 Stream HTTP routes: ${[...seen]}`);
+  assert.equal(seen.size, 23 + ActorsService.methods.length, `expected 13 Objects, ${ActorsService.methods.length} Actor and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
   const memory = await until("browser Objects v1 memory", async () => {

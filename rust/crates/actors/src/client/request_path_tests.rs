@@ -89,6 +89,12 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             ),
         };
         let request = wire::InvokeActorRequest {
+            invocation_order: None,
+            namespace: None,
+            account_id: Vec::new(),
+            location_hint: None,
+            binding_name: None,
+            rpc_method: None,
             actor_id: "actor-a".into(),
             method: "POST".into(),
             url: "/work".into(),
@@ -164,6 +170,12 @@ fn request_path_measure_admitted_request_conversion() -> Result<(), Error> {
         let requests: Result<Vec<_>, _> = (0..256)
             .map(|_| {
                 domain::InvokeActorRequest::try_from(wire::InvokeActorRequest {
+                    invocation_order: None,
+                    namespace: None,
+                    account_id: Vec::new(),
+                    location_hint: None,
+                    binding_name: None,
+                    rpc_method: None,
                     actor_id: "actor-a".into(),
                     method: "POST".into(),
                     url: "/work".into(),

@@ -30,7 +30,7 @@ function fixture(t, fault) {
     }
     for (const name of ["actors", "stream"]) writeFileSync(join(consumer, name + "_pb_route_fixture.erl"), "dynamic fixture " + name);
     fault?.({ ...f, root, sdk, consumer, libs });
-    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 20 populated native TCP RPC pairs",
+    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 23 populated native TCP RPC pairs",
       ...["actors", "stream"].map(name => name + "_pb differing modeled file descriptor fields: []"), "PASS installed SDK and loaded-module provenance"].join("\n") };
   };
   const options = { command, runtimePin: { ...pins.runtime["linux-x64"], inventory_sha256: sha256(runtimeBytes), otp_archive_sha256: rt.otp_archive_sha256, files: 1, links: 0 },
@@ -93,4 +93,12 @@ test("native Erlang coverage matches every canonical method and streaming shape"
   assert.equal(receipt.populated_rpc_message_pairs, methods.length);
   assert.equal(receipt.unary_rpc_calls, methods.filter(method => !method.clientStreaming && !method.serverStreaming).length);
   assert.equal(receipt.server_streaming_rpc_calls, methods.filter(method => method.serverStreaming).length);
+});
+test("invalid scalar controls name real Rust-owned messages", () => {
+  const proto = readFileSync(new URL("../../../../../rust/crates/actors/proto/actors/v1/actors.proto", import.meta.url),"utf8");
+  const messages = new Set([...proto.matchAll(/^message\s+(\w+)/gm)].map(([,name]) => "acyclic_" + name.replace(/[A-Z]/g,(letter,index) => (index ? "_" : "") + letter.toLowerCase())));
+  const consumer = readFileSync(new URL("./fixtures/consumer/rpc_route_control.erl",import.meta.url),"utf8");
+  const admit = source => {for (const [,name] of source.matchAll(/reject\(actors_pb,(\w+),/g)) assert.ok(messages.has(name),`unknown scalar-control message ${name}`);};
+  admit(consumer);
+  assert.throws(() => admit(consumer.replace("acyclic_deployment_request","acyclic_deploy_namespace_request")),/unknown scalar-control message/);
 });
