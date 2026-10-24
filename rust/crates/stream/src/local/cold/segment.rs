@@ -154,8 +154,10 @@ impl Segment {
         result
     }
 
-    /// All data pages precede this root; the caller authenticates the root
-    /// before invoking publication. Any failed publication poisons its owner.
+    /// Data pages become durable before a recovery slot can name them. The
+    /// second flush makes that slot durable before acknowledgement. A single
+    /// flush after both writes would allow a crash to persist the slot alone.
+    /// The caller authenticates the root; failed publication fences its owner.
     pub(super) fn publish(
         &mut self,
         slot: Slot,
@@ -179,15 +181,18 @@ impl Segment {
         let bytes = slot.encoded(self.number, ordinal);
         page::codec(work, SLOT_BYTES as u64, Slot::hash_bytes(), false)?;
         let offset = (PREFIX_BYTES + usize::from(ordinal) * SLOT_BYTES) as u64;
-        let written = page::observe(
-            work,
-            acyclic_native_runtime::write_all_at(
-                &self.file,
-                offset,
-                &bytes,
-                work.map(|work| (work.meter.as_ref(), false)),
-            ),
-        );
+        let durable = physical::sync(&self.file, durability, work);
+        let written = durable.and_then(|()| {
+            page::observe(
+                work,
+                acyclic_native_runtime::write_all_at(
+                    &self.file,
+                    offset,
+                    &bytes,
+                    work.map(|work| (work.meter.as_ref(), false)),
+                ),
+            )
+        });
         let result = written.and_then(|()| physical::sync(&self.file, durability, work));
         if result.is_err() {
             self.poisoned = true;

@@ -7,6 +7,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 mod locator;
+mod spans;
 #[cfg(test)]
 mod tests;
 
@@ -25,6 +26,8 @@ pub(super) struct Store {
     active: Segment,
     head: File,
     state: Root,
+    durable: Root,
+    pending: bool,
     maximum: u64,
     durability: super::super::LocalDurability,
     failed: bool,
@@ -141,6 +144,8 @@ impl Store {
             active,
             head,
             state: Root::default(),
+            durable: Root::default(),
+            pending: false,
             maximum,
             durability,
             failed: false,
@@ -155,6 +160,7 @@ impl Store {
         )?;
         store.active.discard_unpublished(None)?;
         store.state = state;
+        store.durable = state;
         Ok(store)
     }
 
@@ -208,16 +214,42 @@ impl Store {
         Ok(self.state)
     }
 
+    pub(super) fn durable_state(&self) -> Result<Root, LocalStreamError> {
+        self.state()?;
+        Ok(self.durable)
+    }
+
+    /// Accepted publications append immutable pages only. Exactly one root
+    /// slot becomes eligible for recovery at the phase barrier, preserving
+    /// both durable fallback slots throughout any number of accepted writes.
+    pub(super) fn seal(
+        &mut self,
+        work: Option<Arc<crate::memory::Work>>,
+    ) -> Result<(), LocalStreamError> {
+        let state = self.state()?;
+        if !self.pending {
+            return Ok(());
+        }
+        Transaction {
+            store: self,
+            state,
+            remaining: root::ROOT_BYTES,
+            work,
+        }
+        .publish()?;
+        Ok(())
+    }
+
     pub(super) fn begin(
         &mut self,
         maximum_bytes: u64,
         work: Option<Arc<crate::memory::Work>>,
     ) -> Result<Transaction<'_>, LocalStreamError> {
         let state = self.state()?;
-        if maximum_bytes < root::ROOT_BYTES || maximum_bytes > self.maximum - segment::DATA_START {
+        if maximum_bytes < root::ROOT_BYTES {
             return Err(LocalStreamError::InvalidLimits);
         }
-        if self.active.remaining() < maximum_bytes {
+        if self.active.remaining() < root::ROOT_BYTES {
             self.rollover(work.as_ref())?;
         }
         Ok(Transaction {
@@ -232,6 +264,9 @@ impl Store {
         &mut self,
         work: Option<&Arc<crate::memory::Work>>,
     ) -> Result<(), LocalStreamError> {
+        // A new locator must inherit the entire accepted prefix. It cannot
+        // abandon pending roots in the predecessor segment.
+        self.flush_predecessor(work)?;
         let current = self.active.number;
         let next = current
             .checked_add(1)
@@ -320,12 +355,26 @@ impl PageIo for Transaction<'_> {
             .remaining
             .checked_sub(length)
             .ok_or(LocalStreamError::InvalidLimits)?;
+        if kind != PageKind::Root && remaining < root::ROOT_BYTES {
+            return Err(LocalStreamError::InvalidLimits);
+        }
+        self.make_room(kind, length)?;
         let reference = self.store.active.append(kind, body, self.work.as_ref())?;
         self.remaining = remaining;
         Ok(reference)
     }
 }
 impl Transaction<'_> {
+    pub(super) fn accept(self) -> Result<(), LocalStreamError> {
+        self.store.state()?;
+        if self.remaining < root::ROOT_BYTES {
+            return Err(LocalStreamError::InvalidLimits);
+        }
+        self.store.state = self.state;
+        self.store.pending = true;
+        Ok(())
+    }
+
     pub(super) fn publish(mut self) -> Result<Slot, LocalStreamError> {
         let state = self.state;
         let revision = self
@@ -344,6 +393,8 @@ impl Transaction<'_> {
             .active
             .publish(slot, self.store.durability, self.work.as_ref())?;
         self.store.state = state;
+        self.store.durable = state;
+        self.store.pending = false;
         Ok(slot)
     }
 }

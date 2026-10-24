@@ -91,14 +91,84 @@ fn one_thousand_forks_read_the_shared_record_without_walking_parent_history()
             .ok_or("missing shared record")?;
         assert_eq!(actual, record(0, b"original"));
         assert_eq!(
-            disk.reads, 2,
-            "one sequence leaf and one fact, independent of fork depth"
+            disk.reads, 3,
+            "one sequence leaf, metadata and body, independent of fork depth"
         );
         drop(actual);
         assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
     }
     drop(disk);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}
+
+struct ReadCosts<'a> {
+    disk: &'a mut Disk,
+    bytes: u64,
+}
+impl PageRead for ReadCosts<'_> {
+    fn work(&self) -> Option<&Arc<crate::memory::Work>> {
+        self.disk.work()
+    }
+    fn read(&mut self, reference: PageRef) -> Result<Page, LocalStreamError> {
+        self.bytes += u64::from(reference.bytes);
+        self.disk.read(reference)
+    }
+}
+
+#[test]
+fn head_identity_reads_only_authenticated_metadata_and_full_reads_check_the_body_binding()
+-> Result<(), Box<dyn std::error::Error>> {
+    let meter = Arc::new(Meter::local());
+    let work = crate::memory::Work::new(meter.original())?;
+    let mut disk = Disk::new(Some(work))?;
+    let baseline = meter.held.load(Ordering::SeqCst);
+    let mut head = Head {
+        tail: 0,
+        records: None,
+        created_decision: 1,
+    };
+    let mut value = record(0, b"body");
+    value.value = OwnedBytes::from(vec![9; 64 * 1024]);
+    let body = head.append_record(&mut disk, &value)?;
+    {
+        let mut reads = ReadCosts {
+            disk: &mut disk,
+            bytes: 0,
+        };
+        assert_eq!(head.commit_id(&mut reads, 0)?, Some(value.commit_id));
+        assert!(
+            reads.bytes < 2_048,
+            "Head identity cannot load a 64 KiB body"
+        );
+        let before = reads.bytes;
+        assert_eq!(head.commit_id(&mut reads, 1)?, None);
+        assert_eq!(
+            reads.bytes, before,
+            "the fork visibility cut also protects metadata reads"
+        );
+    }
+    assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+    assert_eq!(head.record(&mut disk, 0)?, Some(value.clone()));
+    assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+    for (sequence, commit, time) in [
+        (1, value.commit_id, value.committed_at_micros),
+        (0, CommitId::from_bytes([8; 32]), value.committed_at_micros),
+        (0, value.commit_id, value.committed_at_micros + 1),
+    ] {
+        let wrong = entry::Entry {
+            sequence,
+            commit,
+            committed_at_micros: time,
+            body,
+        }
+        .append(&mut disk)?;
+        let records = Some(index::put(&mut disk, None, &0_u64.to_be_bytes(), wrong)?);
+        assert!(Head { records, ..head }.record(&mut disk, 0).is_err());
+        assert_eq!(meter.held.load(Ordering::SeqCst), baseline);
+    }
+    drop(disk);
     meter.assert_refunded();
     Ok(())
 }

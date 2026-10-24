@@ -420,6 +420,9 @@ pub(crate) fn clone_tool_definition(
         projection_schema: clone_value(&tool.projection_schema, io)?,
     })
 }
+// The former whole-context continuation copy remains only as an inventory
+// fixture and as the explicit growing-cost control for ownership transfer.
+#[cfg(test)]
 pub(crate) fn clone_request(
     request: &ModelRequest,
     io: Option<&PreparationIo>,

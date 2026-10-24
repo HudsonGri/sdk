@@ -49,9 +49,11 @@ pub use media::{
 pub use prefix::ModelPrefix;
 #[cfg(feature = "filesystem")]
 pub(crate) use preparation::MODEL_DIAGNOSTIC_LABEL_BYTES;
+#[cfg(test)]
+pub(crate) use preparation::clone_request;
 pub(crate) use preparation::{
-    charge_items, clone_content, clone_file, clone_messages, clone_model, clone_request,
-    clone_tool_definition, clone_value, hash_bytes, vec_with_capacity,
+    charge_items, clone_content, clone_file, clone_messages, clone_model, clone_tool_definition,
+    clone_value, hash_bytes, vec_with_capacity,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;

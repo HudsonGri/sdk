@@ -3,6 +3,8 @@
 use super::root::Root;
 use super::*;
 
+mod entry;
+
 #[cfg(test)]
 mod tests;
 
@@ -148,20 +150,48 @@ impl Head {
         if sequence >= self.tail {
             return Ok(None);
         }
-        let reference = index::get(io, self.records, &sequence.to_be_bytes())?
-            .ok_or(LocalStreamError::Corrupt)?;
-        let record = record::read(io, reference)?;
-        if record.sequence != sequence {
+        let entry = self.entry(io, sequence)?.ok_or(LocalStreamError::Corrupt)?;
+        let record = record::read(io, entry.body)?;
+        if record.sequence != sequence
+            || record.commit_id != entry.commit
+            || record.committed_at_micros != entry.committed_at_micros
+        {
             return Err(LocalStreamError::Corrupt);
         }
         Ok(Some(record))
+    }
+
+    fn entry(
+        self,
+        io: &mut impl PageRead,
+        sequence: u64,
+    ) -> Result<Option<entry::Entry>, LocalStreamError> {
+        if sequence >= self.tail {
+            return Ok(None);
+        }
+        let reference = index::get(io, self.records, &sequence.to_be_bytes())?
+            .ok_or(LocalStreamError::Corrupt)?;
+        let entry = entry::Entry::load(io, reference)?;
+        if entry.sequence != sequence {
+            return Err(LocalStreamError::Corrupt);
+        }
+        Ok(Some(entry))
+    }
+
+    /// An authenticated identity check never loads or re-hashes payload bytes.
+    pub(super) fn commit_id(
+        self,
+        io: &mut impl PageRead,
+        sequence: u64,
+    ) -> Result<Option<crate::CommitId>, LocalStreamError> {
+        Ok(self.entry(io, sequence)?.map(|entry| entry.commit))
     }
 
     pub(super) fn append_record(
         &mut self,
         io: &mut impl PageIo,
         record: &crate::Record,
-    ) -> Result<(), LocalStreamError> {
+    ) -> Result<PageRef, LocalStreamError> {
         if record.sequence != self.tail {
             return Err(LocalStreamError::Corrupt);
         }
@@ -169,11 +199,18 @@ impl Head {
             .tail
             .checked_add(1)
             .ok_or(LocalStreamError::InvalidLimits)?;
-        let reference = record::append(io, record)?;
+        let body = record::append(io, record)?;
+        let reference = entry::Entry {
+            sequence: record.sequence,
+            commit: record.commit_id,
+            committed_at_micros: record.committed_at_micros,
+            body,
+        }
+        .append(io)?;
         let records = index::put(io, self.records, &record.sequence.to_be_bytes(), reference)?;
         self.records = Some(records);
         self.tail = tail;
-        Ok(())
+        Ok(body)
     }
 }
 
