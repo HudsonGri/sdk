@@ -383,6 +383,128 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
+    /// Whether a recovered initial generation holds exactly `files`, decided
+    /// by reads alone: each file holds its bytes and the root lists nothing
+    /// else. The creation commit has no directories to create parents in, so
+    /// every file it publishes is a child of the root. A retry with other,
+    /// fewer or no files therefore never adopts the creation, and recovery
+    /// writes nothing. The caller releases the standalone read custody.
+    pub(super) async fn initial_generation_matches(
+        &self,
+        volume_id: VolumeId,
+        config: VolumeConfig,
+        generation_root: ObjectId,
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, FsError> {
+        let volume = Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
+        };
+        let mut checkout = volume
+            .unpublished_checkout(generation_root, accounting, cancellation)
+            .await?;
+        // Repeated paths are never one creation's files: the commit would
+        // refuse the second, so a retry naming one twice is rejected here.
+        let mut paths =
+            crate::kernel::Owned::<Vec<NamespacePath>>::allocate(files.len(), accounting)?;
+        for (path, bytes) in files {
+            let (path, mut allocation) = NamespacePath::parse_in_profile(
+                path,
+                config.profile,
+                config.limits,
+                accounting,
+                cancellation,
+            )?;
+            paths.allocation.absorb(&mut allocation)?;
+            accounting.charge(WorkCounters {
+                items_examined: paths.value.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if paths.value.contains(&path) {
+                return Ok(false);
+            }
+            let record = match checkout
+                .lookup_content_record(&path, accounting, cancellation)
+                .await
+            {
+                Ok(record) => record,
+                Err(FsError::NotFound) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            // Each file is a regular child of the root holding its bytes,
+            // read in chunks the volume allows.
+            let expected: &[u8] = bytes.as_ref();
+            let logical_bytes = match record.payload {
+                _ if path.depth() != 1 || record.kind != FileKind::Regular => return Ok(false),
+                FilePayload::InlineRegular(data) if data.as_bytes() == expected => 0,
+                FilePayload::Regular { logical_bytes, .. }
+                    if logical_bytes == expected.len() as u64 =>
+                {
+                    logical_bytes
+                }
+                _ => return Ok(false),
+            };
+            let step = config.limits.maximum_read_bytes.max(1);
+            let mut offset = 0;
+            while offset < logical_bytes {
+                let length = step.min(logical_bytes - offset);
+                let range = ByteRange { offset, length };
+                let read = checkout
+                    .read_record_range_with_accounting(
+                        record,
+                        range,
+                        range,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                let start = usize::try_from(offset).map_err(|_| WorkError::Overflow)?;
+                let end = usize::try_from(offset + length).map_err(|_| WorkError::Overflow)?;
+                if read.bytes.as_ref() != &expected[start..end] {
+                    return Ok(false);
+                }
+                offset += length;
+            }
+            paths.value.push(path);
+        }
+        // Each requested file is a distinct child of the root, so the root
+        // holds nothing else exactly when it lists no more entries than
+        // there are files. It is paged within the volume's page limit.
+        let root = NamespacePath::new(Vec::new(), config.limits)?;
+        let mut listed = 0_usize;
+        let mut after: Option<LogicalName> = None;
+        loop {
+            let bound = after
+                .as_ref()
+                .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+            let (mut page, _allocation) = checkout
+                .list_directory_with_accounting(
+                    &root,
+                    bound,
+                    config.limits.maximum_directory_page_entries,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            listed = listed
+                .checked_add(page.entries.len())
+                .ok_or(WorkError::Overflow)?;
+            if listed > files.len() {
+                return Ok(false);
+            }
+            if !page.has_more {
+                return Ok(listed == files.len());
+            }
+            let Some(last) = page.entries.pop() else {
+                return Ok(false);
+            };
+            after = Some(last.name);
+        }
+    }
+
     async fn populate_initial_generation(
         &self,
         volume_id: VolumeId,
