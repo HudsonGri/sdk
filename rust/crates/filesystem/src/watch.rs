@@ -990,7 +990,9 @@ impl WindowsDirectorySink {
                 HostChangeWide::Path { action, path } => {
                     self.deliver_names_locked(
                         wide_hint_names(&self.prefix.0).chain(wide_hint_names(path)),
-                        self.prefix.0.is_empty().then_some((*action, file)),
+                        (self.prefix.0.is_empty()
+                            || *action == crate::source_watch::ACCESS_METADATA_ACTION)
+                            .then_some((*action, file)),
                         &mut state,
                         work,
                     )?;
@@ -1110,6 +1112,11 @@ impl WindowsDirectorySink {
     ) -> Result<(), crate::demand::DemandError> {
         use crate::demand::DemandError;
         if path.is_root() {
+            if action
+                .is_some_and(|(action, _)| action == crate::source_watch::ACCESS_METADATA_ACTION)
+            {
+                return Ok(());
+            }
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
             return Ok(());
         }
@@ -1140,6 +1147,10 @@ impl WindowsDirectorySink {
             ..WorkCounters::default()
         })?;
         let change = match action {
+            Some((crate::source_watch::ACCESS_METADATA_ACTION, _)) => QueuedWatchChange {
+                change: WatchChange::MetadataChanged(path),
+                allocations: [allocation, None],
+            },
             Some((1, _)) => QueuedWatchChange {
                 change: WatchChange::Created(path),
                 allocations: [allocation, None],
@@ -4394,6 +4405,21 @@ mod demand_admission_tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        held.fence(Duration::from_secs(1))?;
+        held.poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+        std::fs::File::options()
+            .write(true)
+            .open(root.path().join("a/f"))?
+            .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
+        held.fence(Duration::from_secs(1))?;
+        assert!(
+            matches!(
+                held.poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value,
+                WatchBatch::Changes { changes, .. } if changes.iter().any(|change|
+                    matches!(change, WatchChange::MetadataChanged(path) if path == &expected))
+            ),
+            "the root channel lost a descendant access mutation"
+        );
         held.begin_rescan()?;
         assert!(held.windows_directories.is_empty());
         Ok(())

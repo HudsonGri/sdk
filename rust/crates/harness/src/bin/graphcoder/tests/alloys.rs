@@ -24,13 +24,20 @@ async fn crash_observer_drains_both_pipes_before_waiting_for_the_effect() -> Fix
     };
     #[cfg(not(unix))]
     let mut command = {
-        let mut command = Command::new("powershell.exe");
-        command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Console]::Out.Write('x' * 1048576); [Console]::Error.Write('y' * 1048576); [IO.File]::WriteAllText($env:PIPE_EFFECT_MARKER + '.tmp', 'done'); [IO.File]::Move($env:PIPE_EFFECT_MARKER + '.tmp', $env:PIPE_EFFECT_MARKER)",
-        ]);
+        let data = directory.path().join("data");
+        let script = directory.path().join("producer.cmd");
+        std::fs::write(&data, vec![b'x'; 1048576])?;
+        // Console.Write silently accepts a broken pipe on Windows. The native
+        // type command fails instead, so the marker requires both full writes.
+        std::fs::write(
+            &script,
+            "@echo off\r\ntype \"%PIPE_DATA_FILE%\" && type \"%PIPE_DATA_FILE%\" 1>&2 && (echo done)>\"%PIPE_EFFECT_MARKER%.tmp\" && move /y \"%PIPE_EFFECT_MARKER%.tmp\" \"%PIPE_EFFECT_MARKER%\" >nul\r\n",
+        )?;
+        let mut command = Command::new("cmd.exe");
+        command
+            .args(["/d", "/c"])
+            .arg(script)
+            .env("PIPE_DATA_FILE", data);
         command
     };
     command
@@ -40,7 +47,7 @@ async fn crash_observer_drains_both_pipes_before_waiting_for_the_effect() -> Fix
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let result = run(command, Some(marker.clone())).await;
-    assert_eq!(std::fs::read_to_string(&marker)?, "done");
+    assert_eq!(std::fs::read_to_string(&marker)?.trim_end(), "done");
     match result {
         Ok(output) => {
             assert!(output.status.success());

@@ -25,8 +25,21 @@ fn prompt(goal: bool, plans: bool) -> &'static str {
 #[tokio::test]
 async fn new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection()
 -> Result<()> {
-    let bootstrap = super::super::bootstrap::Bootstrap::new().await?;
-    futures::future::try_join_all((0..16).map(|bits| case(bits, &bootstrap))).await?;
+    let bootstrap = Arc::new(super::super::bootstrap::Bootstrap::new().await?);
+    // Each case owns an independent disk fixture. Polling them on this test's
+    // current thread serializes their synchronous storage and signing work.
+    // Reuse the fixture workers, with at most four cases alive at once.
+    for first in (0..16).step_by(4) {
+        for result in futures::future::try_join_all((first..first + 4).map(|bits| {
+            let bootstrap = Arc::clone(&bootstrap);
+            WORKERS.spawn(async move { case(bits, &bootstrap).await })
+        }))
+        .await
+        .map_err(super::super::super::storage)?
+        {
+            result?;
+        }
+    }
     Ok(())
 }
 

@@ -949,11 +949,11 @@ fn linux_demand_watch_accepts_directories_absent_from_the_source()
     Ok(())
 }
 
-mod work;
 #[cfg(unix)]
 mod fence_cookie;
 #[cfg(target_os = "macos")]
 mod fsevents_fence;
+mod work;
 
 /// A failed delivery batch is reported once, but it keeps the watch
 /// invalidated: every later fence refuses to confirm, and every poll asks for
@@ -995,7 +995,7 @@ fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn access_notifications_are_metadata_only_and_do_not_feed_back()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1007,9 +1007,10 @@ fn access_notifications_are_metadata_only_and_do_not_feed_back()
     let mut watch = NativeWatch::open(directory.path(), measured_watch_options())?;
     watch.begin_rescan()?;
     watch.finish_rescan()?;
-    std::fs::File::open(&file)?.set_times(
-        std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH),
-    )?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
     watch.fence(std::time::Duration::from_secs(1))?;
     let cancellation = CancellationToken::new();
     let batch = watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value;
@@ -1018,7 +1019,10 @@ fn access_notifications_are_metadata_only_and_do_not_feed_back()
             format!("access mutation unexpectedly invalidated the watcher: {batch:?}").into(),
         );
     };
-    assert!(matches!(changes.as_slice(), [WatchChange::MetadataChanged(_)]));
+    assert!(matches!(
+        changes.as_slice(),
+        [WatchChange::MetadataChanged(_)]
+    ));
     // Metadata-only capture uses stat, which cannot generate another access
     // notification. Reading the directory itself must not invalidate its root.
     let _ = std::fs::metadata(&file)?;
@@ -1027,6 +1031,23 @@ fn access_notifications_are_metadata_only_and_do_not_feed_back()
     assert!(matches!(
         watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value,
         WatchBatch::Changes { changes, .. } if changes.is_empty()
+    ));
+    // A same-length content mutation remains a content hint even when the
+    // caller restores both timestamps. Metadata hints cannot hide this channel.
+    let before = std::fs::metadata(&file)?;
+    std::fs::write(&file, b"different")?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(before.modified()?)
+                .set_accessed(before.accessed()?),
+        )?;
+    watch.fence(std::time::Duration::from_secs(1))?;
+    assert!(matches!(
+        watch.poll(64, WorkBudget::UNBOUNDED, &cancellation)?.value,
+        WatchBatch::Changes { changes, .. } if changes.iter().any(|change| matches!(change, WatchChange::Modified(_)))
     ));
     Ok(())
 }
