@@ -91,6 +91,15 @@ impl crate::pi_host::PiControlHost<'_> {
             .take())
     }
 
+    /// Takes the fork this invocation's `advance` prepared, if it ran.
+    pub(crate) fn prepared_fork(&self) -> Result<Option<crate::pi_fork::PreparedPiFork>> {
+        Ok(self
+            .prepared
+            .lock()
+            .map_err(|_| invalid("Pi prepared fork lock poisoned"))?
+            .take())
+    }
+
     pub(crate) fn coordinator(
         &self,
         work: &NativeMaterializationWork,
