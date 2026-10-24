@@ -86,7 +86,7 @@ mod replay;
 use append::seal;
 mod records;
 mod reservations;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 pub(crate) use records::object_key;

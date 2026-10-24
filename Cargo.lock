@@ -169,7 +169,6 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
- "acyclic-fs",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-grpc-observability",
@@ -339,7 +338,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
- "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-harness-search",
  "acyclic-harness-tui",

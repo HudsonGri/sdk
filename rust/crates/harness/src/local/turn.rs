@@ -706,17 +706,17 @@ impl LocalHarness {
         };
         if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
             let commands = self.commands()?;
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             self.advance_with_children(task, &commands, self.task_files.clone(), None)
                 .await?;
-            #[cfg(not(feature = "native-execution"))]
+            #[cfg(not(any(test, feature = "native-execution")))]
             Box::pin(self.advance(task, &commands)).await?;
             if self.runtime.task_host().outcome(task).await?.is_none() {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         } else {
-            #[cfg(feature = "native-execution")]
+            #[cfg(any(test, feature = "native-execution"))]
             self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
                 .await?;
             // Advance already refreshes projections; terminal recovery must repair them.
