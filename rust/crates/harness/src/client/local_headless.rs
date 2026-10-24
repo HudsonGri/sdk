@@ -15,6 +15,7 @@ const MAXIMUM_BYTES: usize = super::jsonl::MAXIMUM_REQUEST_BYTES;
 const MAXIMUM_FILES: usize = 4096;
 // Request size is a per-file admission bound, independent of retained display.
 const OBSERVATION_BYTES: u64 = 4 * 1024 * 1024;
+mod approvals;
 
 fn session(operation: OperationId) -> Result<Component> {
     Ok(Component::new(
@@ -51,7 +52,21 @@ pub fn prepare_local_prompt(operation: OperationId, prompt: &str) -> Result<File
 }
 
 fn validate(file: &FileValue, operation: OperationId) -> Result<()> {
-    if file.key != key(operation, TaskFile::Request)? || file.channel.is_some() {
+    if file.channel.is_some() || file.requester.is_some() || file.publication.is_some() {
+        return Err(Error::Unauthorized(
+            "stdin cannot supply owner metadata".into(),
+        ));
+    }
+    if let FileKey::Task {
+        task,
+        file: TaskFile::ApprovalDecision { .. },
+    } = &file.key
+    {
+        uuid::Uuid::parse_str(task.as_str()).map_err(|error| Error::Invalid(error.to_string()))?;
+        crate::interaction::ApprovalDecisionFile::decode(&file.bytes, MAXIMUM_BYTES as u64)?;
+        return Ok(());
+    }
+    if file.key != key(operation, TaskFile::Request)? {
         return Err(Error::Unauthorized(
             "stdin request targets another session or execution owner".into(),
         ));
@@ -90,6 +105,7 @@ pub struct LocalFileClient {
     local: Arc<LocalHarness>,
     operation: OperationId,
     query: ClientQuery,
+    approvals: approvals::Events,
     initial: bool,
     submitted: bool,
     host: Pin<Box<dyn Future<Output = Result<()>>>>,
@@ -100,6 +116,32 @@ pub struct LocalFileClient {
 }
 
 impl LocalFileClient {
+    // Task metadata can need a coordinator guard held by the paused driver.
+    // Poll both futures so that its IO can release that guard.
+    async fn while_driving<T>(&mut self, work: impl Future<Output = T>) -> Result<T> {
+        if self.host_done {
+            return Ok(work.await);
+        }
+        futures::pin_mut!(work);
+        match futures::future::select(work, self.host.as_mut()).await {
+            futures::future::Either::Left((result, _)) => Ok(result),
+            futures::future::Either::Right((result, work)) => {
+                self.host_done = true;
+                self.host_error = result.err();
+                let result = work.await;
+                self.drain_through = self
+                    .local
+                    .task_files()
+                    .inner
+                    .snapshot(&selection(self.operation)?, MAXIMUM_FILES)
+                    .await?
+                    .cursor
+                    .position;
+                Ok(result)
+            }
+        }
+    }
+
     pub(super) async fn open(local: Arc<LocalHarness>, operation: OperationId) -> Result<Self> {
         let query = ClientQuery::open(
             &local.task_files().inner,
@@ -120,6 +162,10 @@ impl LocalFileClient {
         );
         let attachment = subscription.take_attachment();
         Ok(Self {
+            approvals: approvals::follow(
+                local.clone(),
+                crate::runtime::task_id_for_admission(operation),
+            ),
             host: Box::pin(subscription),
             attachment,
             local,
@@ -143,7 +189,47 @@ impl LocalFileClient {
                 .file(&key(self.operation, TaskFile::Request)?)
                 .is_some();
         let mut settlement = Ok(());
-        if requested && !self.host_done && self.outcome()?.is_none() {
+        if requested && !self.host_done && self.outcome()?.is_none() && outcome.is_err() {
+            // Refused input must still retire a live invocation. Cancellation
+            // uses the existing task owner and publishes status to its follows.
+            let task = crate::runtime::task_id_for_admission(self.operation);
+            let cancel = self.local.dispatch_command(
+                OperationId::new(),
+                None,
+                CommandResolution::Submit {
+                    request: CommandRequest::Cancel { task },
+                },
+            );
+            // The driver may hold a coordinator guard across pending IO. Keep
+            // polling it while cancellation acquires and updates that owner.
+            match futures::future::select(Box::pin(cancel), self.host.as_mut()).await {
+                futures::future::Either::Left((result, _)) => {
+                    if matches!(result, Err(Error::NotFound(_))) {
+                        // Admission can still be queued on the runtime owner.
+                        // Stop its attachment and join below even without a
+                        // task to cancel; an observation is never settlement.
+                        drop(self.attachment.take());
+                    } else {
+                        result?;
+                        let _ = self.host.as_mut().await;
+                        self.host_done = true;
+                    }
+                }
+                futures::future::Either::Right((_, cancel)) => {
+                    self.host_done = true;
+                    if let Err(error) = cancel.await
+                        && !matches!(error, Error::NotFound(_))
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        if requested
+            && !self.host_done
+            && self.outcome()?.is_none()
+            && !self.awaiting_approval().await?
+        {
             // The one-request headless owner returns after saving its outcome.
             // Keep polling it until native work and publication have settled.
             settlement = self.host.as_mut().await;
@@ -156,13 +242,23 @@ impl LocalFileClient {
             settlement = self.host.as_mut().await;
         }
         let Self {
-            local, host, query, ..
+            local,
+            host,
+            query,
+            approvals,
+            ..
         } = self;
         drop(host);
         drop(query);
+        drop(approvals);
         super::disconnect_local(local).await?;
         match outcome {
             Err(error) => Err(error),
+            Ok(HeadlessOutcome::Indeterminate)
+                if matches!(settlement, Err(Error::Indeterminate(_))) =>
+            {
+                Ok(HeadlessOutcome::Indeterminate)
+            }
             Ok(value) => settlement.map(|()| value),
         }
     }
@@ -196,6 +292,21 @@ impl LocalFileClient {
 
     async fn submit(&mut self, file: &FileValue) -> Result<()> {
         validate(file, self.operation)?;
+        if matches!(
+            file.key,
+            FileKey::Task {
+                file: TaskFile::ApprovalDecision { .. },
+                ..
+            }
+        ) {
+            let local = self.local.clone();
+            return self
+                .while_driving(local.submit_operation_approval(
+                    crate::runtime::task_id_for_admission(self.operation),
+                    file,
+                ))
+                .await?;
+        }
         // Both -p and JSONL enter through this boundary. Already pinned prompt
         // resolutions are data, so template expansion is never parsed twice.
         let normalized;
@@ -259,6 +370,20 @@ impl LocalFileClient {
         }
     }
 
+    async fn awaiting_approval(&mut self) -> Result<bool> {
+        let tasks = self.approvals.tasks()?;
+        let local = self.local.clone();
+        self.while_driving(async move {
+            for task in tasks {
+                if local.awaiting_human_approval(task).await? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .await?
+    }
+
     fn outcome(&self) -> Result<Option<HeadlessOutcome>> {
         self.query
             .file(&key(self.operation, TaskFile::ExecutionResult)?)
@@ -285,6 +410,9 @@ impl LocalFileClient {
         self.initial(output)?;
         loop {
             let settled = self.outcome()?;
+            if settled.is_none() && !input_open && self.awaiting_approval().await? {
+                return Ok(HeadlessOutcome::Indeterminate);
+            }
             if settled.is_none()
                 && self.host_done
                 && self.query.cursor().position >= self.drain_through
@@ -321,11 +449,13 @@ impl LocalFileClient {
                 Input(Option<Result<String>>),
                 File(Result<()>),
                 Host(Result<()>),
+                Approval(Option<Result<Box<approvals::Event>>>),
             }
             let next = tokio::select! {
                 biased;
                 line = input.next(), if input_open => Next::Input(line),
                 change = self.query.publish_next(async |change| publish(output, change)) => Next::File(change),
+                approval = self.approvals.next() => Next::Approval(approval),
                 result = &mut self.host, if !self.host_done => Next::Host(result),
             };
             match next {
@@ -341,6 +471,10 @@ impl LocalFileClient {
                 }
                 Next::File(result) => {
                     result?;
+                }
+                Next::Approval(Some(event)) => (*event?).publish(output)?,
+                Next::Approval(None) => {
+                    return Err(Error::Storage("approval tree follow ended".into()));
                 }
                 Next::Host(result) => {
                     self.host_done = true;

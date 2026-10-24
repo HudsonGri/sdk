@@ -8,13 +8,14 @@ pub(crate) async fn advance(
     task: TaskId,
     commands: &dyn crate::filesystem::TaskCommandHost,
 ) -> Result<()> {
-    advance_while(local, task, commands, || async { Ok(true) }).await
+    advance_while(local, task, commands, None, || async { Ok(true) }).await
 }
 
 pub(crate) async fn advance_while<F, Fut>(
     local: &LocalHarness,
     task: TaskId,
     commands: &dyn crate::filesystem::TaskCommandHost,
+    inbox: Option<&crate::local::approvals::Inbox>,
     continue_work: F,
 ) -> Result<()>
 where
@@ -76,16 +77,21 @@ where
             }
             Some(crate::filesystem::TaskWorkerAttempt::Progress(
                 crate::filesystem::TaskWorkerOutcome::Suspended { .. },
-            )) => {
+            ))
+            | None => {
                 if !continue_work().await? {
                     break;
                 }
+                local.service_approvals(task, commands, inbox).await?;
                 // Only an authenticated wake makes a passive command claimable.
                 // Without one, run_operation returns None and yields control.
                 attempt = local
                     .task_runtime()
                     .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
                     .await?;
+                if attempt.is_none() {
+                    break;
+                }
             }
             _ => break,
         }
