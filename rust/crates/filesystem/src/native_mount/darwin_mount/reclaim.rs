@@ -44,16 +44,49 @@ fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
         && left.f_mntfromname == right.f_mntfromname
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static DENIED_DIRECT_UNMOUNTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_direct_unmount_denied<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DENIED_DIRECT_UNMOUNTS.set(self.0);
+        }
+    }
+    let _restore = Restore(DENIED_DIRECT_UNMOUNTS.replace(Some(0)));
+    let result = operation();
+    assert!(DENIED_DIRECT_UNMOUNTS.get().is_some_and(|count| count > 0));
+    result
+}
+
+fn direct_unmount(destination: &CStr) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(count) = DENIED_DIRECT_UNMOUNTS.get() {
+        DENIED_DIRECT_UNMOUNTS.set(Some(count + 1));
+        eprintln!("RECLAIM_DIRECT_UNMOUNT_DENIED errno=EPERM");
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    // SAFETY: destination borrows the terminated kernel mount name.
+    if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 // Like ordinary mount retirement, startup recovery must use Disk Arbitration
 // when the mount owner cannot issue the privileged unmount syscall directly.
 // The caller retains the authenticated destination fence throughout this call.
 pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
     let destination = field(&mount.f_mntonname)?;
-    // SAFETY: the caller retains the terminated kernel name and exclusive fence.
-    if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
-        return verify_detached(mount);
-    }
-    let error = std::io::Error::last_os_error();
+    let error = match direct_unmount(destination) {
+        Ok(()) => return verify_detached(mount),
+        Err(error) => error,
+    };
     if error.raw_os_error() != Some(libc::EPERM) {
         return Err(error.into());
     }
