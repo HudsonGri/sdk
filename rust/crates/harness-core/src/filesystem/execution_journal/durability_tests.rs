@@ -12,7 +12,7 @@ async fn fixture(
     root: &std::path::Path,
     operation: OperationId,
     io: Option<&PreparationIo>,
-) -> Result<Journal> {
+) -> Result<(Journal, crate::core::AuthorityIssuer)> {
     let stream = Arc::new(
         acyclic_stream::LocalStream::open(root.join("journal"), Default::default())
             .await
@@ -91,7 +91,7 @@ async fn fixture(
             None,
         )?
         .await?;
-    Ok(journal)
+    Ok((journal, fixture.issuer))
 }
 
 fn phase_request() -> Result<crate::model::PreparedModelRequest> {
@@ -132,7 +132,10 @@ async fn check_phase(mode: u8, defer: bool, fail: bool) -> Result<()> {
     let io = phase_io(mode)?;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let operation = OperationId::new();
-    let journal = fixture(directory.path(), operation, io.as_ref()).await?;
+    let (journal, runtime) = fixture(directory.path(), operation, io.as_ref()).await?;
+    // Journal admission ports are weak. The test's runtime owns signing custody
+    // until its final phase barrier and live-publication checks have completed.
+    let _runtime = runtime;
     assert!(journal.supports_deferred_durability());
     let path = journal.path(operation)?.path().clone();
     let baseline = journal.stream.watermarks(path.clone()).await?;
@@ -188,7 +191,11 @@ async fn check_phase(mode: u8, defer: bool, fail: bool) -> Result<()> {
     } else {
         future.await
     };
-    assert_eq!(result.is_err(), fail);
+    assert_eq!(
+        result.is_err(),
+        fail,
+        "phase result mode={mode} defer={defer} fail={fail}: {result:?}"
+    );
     assert_eq!(
         journal.stream.watermarks(path.clone()).await?.durable,
         baseline.accepted + 1

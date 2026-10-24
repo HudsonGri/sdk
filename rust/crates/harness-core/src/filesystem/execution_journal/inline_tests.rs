@@ -104,12 +104,12 @@ async fn inline_payloads_avoid_generations_and_match_the_file_replay_control() -
             } else {
                 PreparationIo::from_budget(budget, &cancellation)?
             };
-            let journal = if native {
+            let (journal, _runtime) = if native {
                 owned_journal(operation, Some(&io)).await?
             } else {
-                let (journal, _issuer) = test_support::journal().await?;
+                let (journal, issuer) = test_support::journal().await?;
                 initialize(&journal, operation).await?;
-                journal
+                (journal, issuer)
             };
             let expected = events();
             for (index, event) in expected.iter().enumerate() {
@@ -286,7 +286,10 @@ async fn inline_payloads_require_original_read_and_write_grants_and_canonical_bo
     Ok(())
 }
 
-async fn owned_journal(operation: OperationId, io: Option<&PreparationIo>) -> Result<Journal> {
+async fn owned_journal(
+    operation: OperationId,
+    io: Option<&PreparationIo>,
+) -> Result<(Journal, crate::core::AuthorityIssuer)> {
     use crate::runtime::DurableTaskHost;
     let fixture = crate::durable_host::tests::fixture::Fixture::new(
         Arc::new(acyclic_stream::MemoryStream::default()),
@@ -329,7 +332,7 @@ async fn owned_journal(operation: OperationId, io: Option<&PreparationIo>) -> Re
     .await?;
     let journal = journal.with_task_files(Some(Arc::new(files)));
     initialize(&journal, operation).await?;
-    Ok(journal)
+    Ok((journal, fixture.issuer))
 }
 
 #[tokio::test]
@@ -341,7 +344,7 @@ async fn inline_deltas_reach_existing_followers_before_completion_and_retries_he
         for conditional in [false, true] {
             for omit_publication in [false, true] {
                 let operation = OperationId::new();
-                let journal = owned_journal(operation, None).await?;
+                let (journal, _runtime) = owned_journal(operation, None).await?;
                 let files = journal.task_files.as_ref().unwrap();
                 let mut observation = files.inner.observe(Query::Root, None, 16).await?;
                 assert!(observation.snapshot.as_ref().unwrap().files.is_empty());
