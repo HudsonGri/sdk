@@ -20,6 +20,12 @@ pub(super) struct AuthenticatedWorkload {
     last: Claims,
 }
 
+#[derive(Default)]
+pub(super) struct WorkloadOwner {
+    latest: Option<std::sync::Arc<AuthenticatedWorkload>>,
+    certificates: verify::CertificateVerifier,
+}
+
 fn authenticated(
     capability: VerifiedCapability,
     digest: [u8; 32],
@@ -46,16 +52,19 @@ fn authenticate(
     }
     let digest = *blake3::hash(&scope.workload).as_bytes();
     let mut retained = public.workload.lock().map_err(unauthorized)?;
-    if let Some(authenticated) = retained.as_ref()
+    if let Some(authenticated) = retained.latest.as_ref()
         && authenticated.digest == digest
     {
         return Ok(authenticated.clone());
     }
     let authenticated = authenticated(
-        verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
+        retained
+            .certificates
+            .verify(&scope.workload, trust, timestamp)
+            .map_err(unauthorized)?,
         digest,
     )?;
-    *retained = Some(authenticated.clone());
+    retained.latest = Some(authenticated.clone());
     Ok(authenticated)
 }
 
