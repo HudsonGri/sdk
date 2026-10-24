@@ -843,19 +843,26 @@ impl ControlLedger {
         if response.len() >= crate::MAXIMUM_CONTROL_MESSAGE_BYTES {
             return Err("Acyclic control response exceeds the 4 MiB bound".to_owned());
         }
-        let mut ledger = self.lock()?;
-        ledger.commit(
+        self.finish(
             Record::Complete {
                 operation: envelope.operation,
                 response,
             },
             now,
-        )?;
+        )
+    }
+
+    /// Journals the end of a started operation, then applies the retention
+    /// policy and compacts the journal when it is due. Every way an operation
+    /// finishes goes through here, so none can grow the journal unbounded.
+    fn finish(&self, record: Record<'_>, now: Instant) -> Result<(), String> {
+        let mut ledger = self.lock()?;
+        ledger.commit(record, now)?;
         ledger.maintain(now);
         let Ledger { state, journal } = &mut *ledger;
         if journal.end >= journal.rewrite_at {
             // A failed compaction leaves the active slot complete and
-            // authoritative; the next completion retries it.
+            // authoritative; the next finished operation retries it.
             let _ = journal.rewrite(state);
         }
         Ok(())
@@ -865,11 +872,11 @@ impl ControlLedger {
     /// replay: its outcome stays indeterminate, so a retry is refused rather
     /// than re-executed, and it ages out within the normal retention window.
     pub(crate) fn interrupt<T>(&self, envelope: &ControlEnvelope<T>) -> Result<(), String> {
-        let now = Instant::now();
-        let mut ledger = self.lock()?;
-        ledger.commit(Record::Interrupt(envelope.operation), now)?;
-        ledger.maintain(now);
-        Ok(())
+        self.interrupt_at(envelope, Instant::now())
+    }
+
+    fn interrupt_at<T>(&self, envelope: &ControlEnvelope<T>, now: Instant) -> Result<(), String> {
+        self.finish(Record::Interrupt(envelope.operation), now)
     }
 
     /// Operations started and not yet finished.
@@ -1308,6 +1315,35 @@ mod tests {
             .expect("slot sizes");
         assert!(
             journal_bytes < 16 * 1024 * 1024,
+            "journal grew to {journal_bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn interrupted_traffic_alone_keeps_the_journal_compact() {
+        // Operations whose replies are never funded finish only through
+        // interrupts; their records still compact once their outcomes age out.
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let start = Instant::now();
+        let ledger = ControlLedger::open(temporary.path()).expect("ledger");
+        let step = OUTCOME_RETENTION / 8;
+        for index in 0..20_000_u32 {
+            let now = start + step * index;
+            let envelope = ControlEnvelope::new("unfunded");
+            assert_eq!(begin(&ledger, &envelope, now), Ok(true));
+            ledger.interrupt_at(&envelope, now).expect("interrupt");
+        }
+        let (started, outcomes) = {
+            let live = ledger.lock().expect("ledger state");
+            (live.state.started.len(), live.state.outcomes.len())
+        };
+        assert_eq!(started, 0);
+        assert!(outcomes <= 9, "{outcomes} outcomes outlived their window");
+        let journal_bytes = fs::metadata(active_slot(temporary.path()))
+            .expect("journal slot")
+            .len();
+        assert!(
+            journal_bytes < 4 * JOURNAL_REWRITE_SLACK,
             "journal grew to {journal_bytes} bytes"
         );
     }
