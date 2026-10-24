@@ -513,6 +513,26 @@ impl LocalMount {
 mod unmount_tests {
     use super::*;
 
+    async fn authenticated_source(
+        control: &mut ControlPlane,
+        name: &str,
+    ) -> Result<(String, LocalLazyWorkspace, MountOptions), String> {
+        let workspace = control
+            .roots
+            .pop_first()
+            .ok_or("fixture root is missing")?
+            .1;
+        let options = acyclic_harness::filesystem::local_owner_mount_options(
+            workspace.workspace(),
+            name,
+            true,
+        )
+        .await
+        .map_err(display)?
+        .publication(acyclic_fs::MountPublication::Manual);
+        Ok((name.to_owned(), workspace, options))
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn multi_root_unmount_publishes_each_route_once_before_detaching() {
         acyclic_native_runtime::initialize_native_io_services().unwrap();
@@ -532,7 +552,7 @@ mod unmount_tests {
                 .session_start(json!({"session_id":name,"cwd":root}))
                 .await
                 .unwrap();
-            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            sources.push(authenticated_source(&mut control, name).await.unwrap());
             controls.push(control);
             fixtures.push(directory);
         }
@@ -594,7 +614,7 @@ mod unmount_tests {
                 .session_start(json!({"session_id":name,"cwd":root}))
                 .await
                 .unwrap();
-            sources.push((name.to_owned(), control.roots.pop_first().unwrap().1));
+            sources.push(authenticated_source(&mut control, name).await.unwrap());
             controls.push(control);
         }
         let destination = tempfile::tempdir().unwrap();
