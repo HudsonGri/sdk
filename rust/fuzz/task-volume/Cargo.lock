@@ -59,6 +59,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "ts-rs",
+ "url",
  "zeroize",
 ]
 
