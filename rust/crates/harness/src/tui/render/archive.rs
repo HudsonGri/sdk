@@ -7,6 +7,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Archive {
+    origins: super::source_rows::SourceRows,
     source: Option<Arc<Query>>,
     first: Option<FileKey>,
     last: Option<(u64, FileKey)>,
@@ -58,6 +59,12 @@ impl Archive {
     pub(super) fn rows(&self) -> &[Line<'static>] {
         &self.rows
     }
+    pub(super) fn origin(&self, line: usize) -> Option<crate::tui::TranscriptOrigin> {
+        self.origins.origin(line)
+    }
+    pub(super) fn resolve(&self, origin: crate::tui::TranscriptOrigin) -> Option<usize> {
+        self.origins.resolve(origin)
+    }
     #[cfg(test)]
     pub(super) fn work(&self) -> usize {
         self.stream.work
@@ -79,6 +86,7 @@ impl Archive {
                 }
             }
             self.dropped = self.stream.discard_rows(through);
+            self.origins.discard(self.dropped);
             self.rows.drain(..self.dropped.min(self.rows.len()));
             self.settled = self.settled.saturating_sub(self.dropped);
             for (_, end) in &mut self.blocks {
@@ -129,13 +137,19 @@ impl Archive {
             .map(|(seq, key)| files.outputs_from(&owner, Some((*seq, key))))
             .into_iter()
             .flatten();
+        let mut pending_trimmed = false;
         for (key, row) in initial.chain(tail) {
+            if !pending_trimmed {
+                self.origins.truncate(self.settled);
+                pending_trimmed = true;
+            }
             dirty = true;
             self.last = Some((row.sequence, key.clone()));
             if row.sequence <= after {
                 continue;
             }
             self.first.get_or_insert_with(|| key.clone());
+            let previous = self.stream.len();
             if let Some(text) = files.command_prompt(key) {
                 changed = changed.min(self.stream.literal(prompt_rows(&text)));
             }
@@ -147,6 +161,11 @@ impl Archive {
             // makes its rendered prefix disposable without replaying successors.
             changed = changed.min(self.stream.boundary());
             self.blocks.push_back((key.clone(), self.stream.len()));
+            if previous != 0 && self.stream.len() > previous {
+                self.origins.extend_current(previous + 1);
+            }
+            self.origins
+                .extend(super::source_rows::identity(key), self.stream.len());
         }
         let same_pending =
             self.pending.len() == files.pending_prompts(&owner).count()
@@ -178,11 +197,16 @@ impl Archive {
         if !dirty {
             return self.rows.len();
         }
+        if !pending_trimmed {
+            self.origins.truncate(self.settled);
+        }
         self.rows.truncate(changed);
         self.rows.extend(self.stream.rows(changed));
         self.settled = self.rows.len();
-        for (_, rows) in &self.pending {
+        for (file, rows) in &self.pending {
             self.rows.extend_from_slice(rows);
+            self.origins
+                .extend(super::source_rows::identity(&file.key), self.rows.len());
         }
         changed
     }

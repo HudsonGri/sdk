@@ -23,6 +23,7 @@ fn fixture(n: usize) -> Result<FileViews> {
         files: (0..n)
             .map(|i| {
                 Ok(HeadFile {
+                    segment_sequences: Vec::new(),
                     key: FileKey::parse(&format!(".tasks/task/executions/id{i}/result.json"))?,
                     publication: None,
                     channel: None,

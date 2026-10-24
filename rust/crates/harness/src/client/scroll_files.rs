@@ -139,6 +139,11 @@ fn set_anchor(value: &mut serde_json::Value, next: Option<TranscriptAnchor>) -> 
         .as_object_mut()
         .ok_or_else(|| Error::Invalid("layout must be an object".into()))?;
     if let Some(next) = next {
+        if next.origin.is_none() {
+            return Err(Error::Invalid(
+                "saved transcript anchor requires source identity".into(),
+            ));
+        }
         object.insert(
             "transcript_top".into(),
             serde_json::to_value(next).map_err(|error| Error::Invalid(error.to_string()))?,
@@ -234,5 +239,20 @@ mod motion_tests {
             folded_motion([100, -1], 10)(0),
             "each movement keeps its boundary"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_admission_tests {
+    use super::*;
+
+    #[test]
+    fn bare_window_positions_cannot_cross_the_persistence_boundary() {
+        let mut layout = serde_json::json!({"peer":"retained"});
+        let before = layout.clone();
+        assert!(set_anchor(&mut layout, Some(TranscriptAnchor::default())).is_err());
+        assert_eq!(layout, before);
+        layout["transcript_top"] = serde_json::to_value(TranscriptAnchor::default()).unwrap();
+        assert!(anchor(&layout).is_err());
     }
 }

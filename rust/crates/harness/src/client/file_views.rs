@@ -81,33 +81,19 @@ impl FileViews {
             window: false,
         };
         for file in snapshot.files {
-            let text = matches!(
-                file.key,
-                FileKey::Task {
-                    file: TaskFile::TextHead { .. },
-                    ..
-                }
-            );
             if materialized
-                && (matches!(
+                && matches!(
                     file.key,
                     FileKey::Task {
                         file: TaskFile::Chunk { .. },
                         ..
                     }
-                ) || text != file.through_sequence.is_some())
-                || file.segments.is_empty()
+                )
             {
                 return Err(Error::InvalidSegment);
             }
-            let length = file.segments.iter().try_fold(0u64, |total, segment| {
-                total
-                    .checked_add(segment.len() as u64)
-                    .ok_or(Error::LimitExceeded)
-            })?;
-            if length != file.length {
-                return Err(Error::InvalidSegment);
-            }
+            file.validate_segments()?;
+            let length = file.length;
             let segments = view
                 .segments
                 .checked_add(file.segments.len())
@@ -189,6 +175,7 @@ impl FileViews {
             self.files.insert(
                 file.key.clone(),
                 HeadFile {
+                    segment_sequences: Vec::new(),
                     key: file.key.clone(),
                     publication: file.publication,
                     channel: file.channel,
@@ -436,6 +423,7 @@ impl Prepared {
                 Entry::Occupied(mut entry) if sequence.is_some() => {
                     let head = entry.get_mut();
                     head.segments.push(file.bytes.clone());
+                    head.segment_sequences.extend(sequence);
                     head.length = length;
                     head.through_sequence = sequence;
                 }
@@ -454,6 +442,7 @@ impl Prepared {
                         publication: file.publication,
                         channel: file.channel,
                         segments: vec![file.bytes.clone()],
+                        segment_sequences: sequence.into_iter().collect(),
                         length,
                         through_sequence: sequence,
                     });
@@ -471,6 +460,9 @@ impl Prepared {
                 .map(|bytes| bytes.len() as u64)
                 .sum::<u64>();
             head.length -= removed;
+            if !head.segment_sequences.is_empty() {
+                head.segment_sequences.drain(..count);
+            }
             if head.segments.is_empty() {
                 entry.remove();
                 view.disposable.remove(&key);

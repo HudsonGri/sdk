@@ -162,6 +162,7 @@ impl FileQueryView {
                 files: files
                     .into_iter()
                     .map(|(_, file)| crate::task_volume::HeadFile {
+                        segment_sequences: Vec::new(),
                         key: file.key,
                         publication: file.publication,
                         channel: file.channel,

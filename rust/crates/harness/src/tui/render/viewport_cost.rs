@@ -269,10 +269,13 @@ fn invisible_work<const WRAP_CONTROL: bool>(length: usize) {
     for (width, height) in [(0, 20), (80, 0)] {
         for find in [false, true] {
             let mut fixture = fixture(length);
-            let anchor = crate::tui::TranscriptAnchor {
-                part: crate::tui::TranscriptPart::Answer,
-                position: crate::tui::RowPosition { line: 10, row: 0 },
-            };
+            let anchor = fixture
+                .renderer
+                .source_anchor(crate::tui::TranscriptAnchor {
+                    origin: None,
+                    part: crate::tui::TranscriptPart::Answer,
+                    position: crate::tui::RowPosition { line: 10, row: 0 },
+                });
             fixture._runtime.block_on(async {
                 fixture
                     .files

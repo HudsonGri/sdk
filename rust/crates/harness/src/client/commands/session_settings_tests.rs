@@ -38,6 +38,10 @@ async fn model<const ALWAYS_SCAN: bool>(retained: usize) {
     for _ in 0..4 {
         crate::client::scroll_tui(&mut session, [3], 1000, |from, _| {
             Some(crate::tui::TranscriptAnchor {
+                origin: Some(crate::tui::TranscriptOrigin {
+                    file: [41; 32],
+                    line: 0,
+                }),
                 position: crate::tui::RowPosition {
                     line: from.map_or(1, |from| from.position.line + 1),
                     row: 0,
@@ -203,6 +207,10 @@ async fn negative_control_cached_scroll_fails_on_an_advanced_cut() {
 
 fn scroll_anchor(line: usize) -> crate::tui::TranscriptAnchor {
     crate::tui::TranscriptAnchor {
+        origin: Some(crate::tui::TranscriptOrigin {
+            file: [41; 32],
+            line: 0,
+        }),
         position: crate::tui::RowPosition { line, row: 0 },
         ..Default::default()
     }

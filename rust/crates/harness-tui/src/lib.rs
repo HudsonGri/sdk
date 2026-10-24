@@ -103,7 +103,9 @@ pub use wrapped_lines::{RowPosition, RowWindow, Top, WrappedLines};
 #[cfg(feature = "tui")]
 mod transcript_view;
 #[cfg(feature = "tui")]
-pub use transcript_view::{TranscriptAnchor, TranscriptPart, move_transcript, view_transcript};
+pub use transcript_view::{
+    TranscriptAnchor, TranscriptOrigin, TranscriptPart, move_transcript, view_transcript,
+};
 
 #[cfg(feature = "tui")]
 pub use screen::{Screen, ScreenAreas};

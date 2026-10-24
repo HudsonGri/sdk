@@ -31,6 +31,36 @@ pub(super) fn reasoning<P: StreamProvider + ?Sized>(
 }
 
 impl ClientRenderer {
+    pub(super) fn source_anchor(&self, mut anchor: TranscriptAnchor) -> TranscriptAnchor {
+        anchor.origin = if anchor.part == tui::TranscriptPart::Answer {
+            let prefix = self.archive.rows().len();
+            if anchor.position.line < prefix {
+                self.archive.origin(anchor.position.line)
+            } else {
+                self.task.origin(anchor.part, anchor.position.line - prefix)
+            }
+        } else {
+            self.task.origin(anchor.part, anchor.position.line)
+        };
+        anchor
+    }
+
+    fn resolve_anchor(&self, mut anchor: TranscriptAnchor) -> TranscriptAnchor {
+        if let Some(origin) = anchor.origin {
+            anchor.position.line = if anchor.part == tui::TranscriptPart::Answer {
+                self.archive.resolve(origin).or_else(|| {
+                    self.task
+                        .resolve(anchor.part, origin)
+                        .map(|line| self.archive.rows().len() + line)
+                })
+            } else {
+                self.task.resolve(anchor.part, origin)
+            }
+            .unwrap_or(0);
+        }
+        anchor
+    }
+
     pub(super) fn select_view<P: StreamProvider + ?Sized>(
         &mut self,
         files: &CommandSession<P>,
@@ -56,7 +86,7 @@ impl ClientRenderer {
         }
         let rows = tui::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
         self.search.project(rows, self.search_open);
-        let mut top = crate::client::tui_anchor(files)?;
+        let mut top = crate::client::tui_anchor(files)?.map(|anchor| self.resolve_anchor(anchor));
         if self.search_open {
             let index = layout
                 .get("search_index")
@@ -84,6 +114,7 @@ impl ClientRenderer {
             height,
             usize::from(self.busy),
         );
+        self.top = self.top.map(|anchor| self.source_anchor(anchor));
         if self.search_open {
             self.search.prepare(
                 tui::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools),
@@ -117,12 +148,14 @@ impl ClientRenderer {
             if source.shown().is_empty() {
                 continue;
             }
-            let top = TranscriptAnchor {
+            let top = self.source_anchor(TranscriptAnchor {
+                origin: None,
                 part,
                 position: source.window().top,
-            };
+            });
             let distance = from
                 .filter(|from| from.part == part)
+                .map(|from| self.resolve_anchor(from))
                 .and_then(|from| source.cached_distance(from.position, top.position));
             return (Some(top), distance);
         }
@@ -136,7 +169,8 @@ impl ClientRenderer {
         from: Option<TranscriptAnchor>,
         rows: isize,
     ) -> Option<TranscriptAnchor> {
-        tui::move_transcript(
+        let from = from.map(|anchor| self.resolve_anchor(anchor));
+        let anchor = tui::move_transcript(
             [
                 self.reasoning_visible
                     .then_some(&mut self.wrapped_reasoning),
@@ -147,7 +181,8 @@ impl ClientRenderer {
             rows,
             self.view_height,
             usize::from(self.busy),
-        )
+        );
+        anchor.map(|anchor| self.source_anchor(anchor))
     }
 }
 
@@ -168,6 +203,7 @@ impl ClientRenderer {
             let length = source.text().len() + 1;
             if byte < length {
                 anchor = Some(TranscriptAnchor {
+                    origin: None,
                     part,
                     position: source.position_of(byte.min(length - 1)),
                 });
@@ -175,7 +211,7 @@ impl ClientRenderer {
             }
             byte -= length;
         }
-        tui::view_transcript(
+        let anchor = tui::view_transcript(
             [
                 self.reasoning_visible
                     .then_some(&mut self.wrapped_reasoning),
@@ -185,7 +221,8 @@ impl ClientRenderer {
             anchor,
             self.view_height,
             usize::from(self.busy),
-        )
+        );
+        anchor.map(|anchor| self.source_anchor(anchor))
     }
 
     pub(super) fn source_window(&self) -> (std::ops::Range<usize>, usize) {

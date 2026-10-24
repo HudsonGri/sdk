@@ -37,6 +37,7 @@ fn eager(source: &[Vec<Line<'_>>; 3], width: u16) -> (Vec<String>, Vec<Transcrip
                         .collect(),
                 );
                 anchors.push(TranscriptAnchor {
+                    origin: None,
                     part: TranscriptPart::at(part),
                     position: RowPosition { line, row },
                 });
@@ -126,7 +127,7 @@ proptest! {
 
     #[test]
     fn source_anchors_round_trip_without_losing_large_offsets(line in any::<usize>(), row in any::<usize>(), part in 0usize..3) {
-        let anchor = TranscriptAnchor {part:TranscriptPart::at(part), position:RowPosition {line,row}};
+        let anchor = TranscriptAnchor { origin: Some(super::TranscriptOrigin {file: [41;32], line}),part:TranscriptPart::at(part), position:RowPosition {line,row}};
         let bytes = serde_json::to_vec(&anchor).unwrap();
         prop_assert_eq!(serde_json::from_slice::<TranscriptAnchor>(&bytes).unwrap(),anchor);
         let mut value = serde_json::to_value(anchor).unwrap();
@@ -141,6 +142,7 @@ fn zero_height_does_not_drop_a_saved_source_position() {
     let mut parts: [WrappedLines; 3] = std::array::from_fn(|_| WrappedLines::default());
     parts[1].update(&source, 0, 3);
     let anchor = Some(TranscriptAnchor {
+        origin: None,
         part: TranscriptPart::Answer,
         position: RowPosition { line: 1, row: 0 },
     });
@@ -206,6 +208,7 @@ fn seeking_into_the_last_page_follows_future_appends() {
     let anchor = view_transcript(
         parts.each_mut().map(Some),
         Some(TranscriptAnchor {
+            origin: None,
             part: TranscriptPart::Answer,
             position: RowPosition { line: 19, row: 0 },
         }),
@@ -231,6 +234,7 @@ fn endpoint_jumps(broken: bool) {
             view_transcript(
                 parts.each_mut().map(Some),
                 Some(TranscriptAnchor {
+                    origin: None,
                     part: TranscriptPart::Answer,
                     position: first,
                 }),
@@ -243,6 +247,7 @@ fn endpoint_jumps(broken: bool) {
         assert_eq!(
             jumped,
             Some(TranscriptAnchor {
+                origin: None,
                 part: TranscriptPart::Answer,
                 position: RowPosition::default()
             })
@@ -282,6 +287,7 @@ fn advancing_past_the_last_source_row_reaches_an_activity_only_frame() {
     assert_eq!(
         previous,
         Some(TranscriptAnchor {
+            origin: None,
             part: TranscriptPart::Tools,
             position: RowPosition { line: 0, row: 5 }
         })
@@ -292,4 +298,25 @@ fn advancing_past_the_last_source_row_reaches_an_activity_only_frame() {
     );
     // The old exhausted-part branch returned the same last source row.
     assert_ne!(previous, None);
+}
+
+#[test]
+fn persisted_anchor_requires_source_provenance() {
+    let anchor = TranscriptAnchor {
+        part: TranscriptPart::Answer,
+        position: RowPosition { line: 50, row: 2 },
+        origin: Some(super::TranscriptOrigin {
+            file: [19; 32],
+            line: 7,
+        }),
+    };
+    let mut encoded = serde_json::to_value(anchor).unwrap();
+    assert_eq!(
+        serde_json::from_value::<TranscriptAnchor>(encoded.clone()).unwrap(),
+        anchor
+    );
+    encoded.as_object_mut().unwrap().remove("origin");
+    assert!(serde_json::from_value::<TranscriptAnchor>(encoded.clone()).is_err());
+    encoded["origin"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<TranscriptAnchor>(encoded).is_err());
 }

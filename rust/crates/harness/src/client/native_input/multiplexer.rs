@@ -108,6 +108,10 @@ async fn model<const BROKEN: bool>(motions: usize) {
         10000,
         |from, rows| {
             Some(crate::tui::TranscriptAnchor {
+                origin: Some(crate::tui::TranscriptOrigin {
+                    file: [41; 32],
+                    line: 0,
+                }),
                 position: crate::tui::RowPosition {
                     line: from
                         .map_or(10000, |from| from.position.line)

@@ -16,6 +16,8 @@ struct SealedTurn {
 /// Disposable parsing cache; all source bytes remain in ClientViews.
 #[derive(Default)]
 pub(super) struct StreamText {
+    origins: super::source_rows::SourceRows,
+    last_origin: [u8; 32],
     markdown: Markdown,
     append: Option<(usize, usize, usize)>,
     append_only: bool,
@@ -184,12 +186,39 @@ impl StreamText {
         }
         let separator = usize::from(through < self.len());
         let removed = through + separator;
+        self.origins.discard(removed);
         self.stable.drain(..removed.min(self.stable.len()));
         self.provisional_row = self.provisional_row.map(|row| row.saturating_sub(removed));
         removed
     }
     pub(super) fn dropped(&self) -> usize {
         self.dropped
+    }
+    pub(super) fn origin(&self, line: usize) -> Option<crate::tui::TranscriptOrigin> {
+        self.origins.origin(line)
+    }
+    pub(super) fn resolve(&self, origin: crate::tui::TranscriptOrigin) -> Option<usize> {
+        self.origins.resolve(origin)
+    }
+    fn record_origin(&mut self, origin: [u8; 32], before: usize) {
+        self.origins.truncate(self.len());
+        let mut boundary = before.max(self.offset());
+        if self.last_origin != origin {
+            // A Markdown separator introduced between source blocks belongs to
+            // the preceding block. It disappears when that prefix is evicted.
+            while self
+                .markdown
+                .lines()
+                .get(boundary.saturating_sub(self.offset()))
+                .is_some_and(|line| line.spans.is_empty())
+                && boundary < self.len()
+            {
+                boundary += 1;
+            }
+        }
+        self.origins.extend_current(boundary);
+        self.origins.extend(origin, self.len());
+        self.last_origin = origin;
     }
     pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
         self.dropped = 0;
@@ -211,6 +240,11 @@ impl StreamText {
             .text_from(from.as_ref())
             .filter(|text| text.channel == channel)
         {
+            let origin = if self.last.as_ref() == Some(&text.file.key) {
+                self.last_origin
+            } else {
+                super::source_rows::identity(&text.file.key)
+            };
             let start = if self.last.as_ref() == Some(&text.file.key) {
                 self.segments
             } else {
@@ -235,16 +269,34 @@ impl StreamText {
             self.current_first
                 .get_or_insert_with(|| text.file.key.clone());
             for (index, segment) in text.file.segments.iter().enumerate().skip(start) {
+                let origin = text
+                    .file
+                    .segment_sequences
+                    .get(index)
+                    .map_or(origin, |sequence| {
+                        super::source_rows::identity(&FileKey::Task {
+                            task: task.task.clone(),
+                            file: crate::task_volume::TaskFile::Chunk {
+                                turn: text.turn,
+                                sequence: *sequence,
+                            },
+                        })
+                    });
                 if self.prefix.is_none() && !segment.is_empty() {
                     self.prefix = Some((text.file.key.clone(), index, segment.clone()));
                 }
                 if self.current_prefix.is_none() && !segment.is_empty() {
                     self.current_prefix = Some((text.file.key.clone(), index, segment.clone()));
                 }
+                let before = self.len();
                 changed = changed.min(self.push(segment));
+                self.record_origin(origin, before);
             }
             self.first.get_or_insert_with(|| text.file.key.clone());
             self.last = Some(text.file.key.clone());
+            if text.file.segment_sequences.is_empty() {
+                self.last_origin = origin;
+            }
             self.segments = text.file.segments.len();
         }
         changed
@@ -311,7 +363,9 @@ impl StreamText {
                 if self.prefix.is_none() && !bytes.is_empty() {
                     self.prefix = Some((file.key.clone(), index, bytes.clone()));
                 }
+                let before = self.len();
                 changed = changed.min(self.push_tool(bytes));
+                self.record_origin(super::source_rows::identity(&file.key), before);
             }
             self.first.get_or_insert_with(|| file.key.clone());
             self.last = Some(file.key.clone());
@@ -393,6 +447,8 @@ impl StreamText {
         }
         target.truncate(changed);
         target.extend(self.rows(changed));
+        self.origins.truncate(target.len());
+        self.origins.extend(self.last_origin, target.len());
     }
 
     pub(super) fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {

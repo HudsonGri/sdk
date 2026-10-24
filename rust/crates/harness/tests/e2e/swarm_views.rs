@@ -87,6 +87,7 @@ impl<'a> State<'a> {
                     files: view
                         .files(&agent)
                         .map(|file| HeadFile {
+                            segment_sequences: Vec::new(),
                             publication: file.publication,
                             channel: file.channel,
                             key: file.key.clone(),

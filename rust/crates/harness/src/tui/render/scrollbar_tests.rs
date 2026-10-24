@@ -178,10 +178,11 @@ async fn click_drag_reopen<const BOUND: bool>() {
             .iter()
             .any(|cell| cell.symbol() == "█")
     );
-    let first = Some(TranscriptAnchor {
+    let first = Some(fixture.renderer.source_anchor(TranscriptAnchor {
+        origin: None,
         part: TranscriptPart::Answer,
         position: RowPosition::default(),
-    });
+    }));
     for (kind, bottom, expected) in [
         (MouseEventKind::Down(MouseButton::Left), false, first),
         (MouseEventKind::Drag(MouseButton::Left), true, None),
@@ -418,10 +419,11 @@ fn inactive_scrollbars_release_capture_without_writing() {
 
 async fn route_sequence<const SKIP_FOCUS: bool>(actions: &[u8]) {
     let mut fixture = Fixture::new().await;
-    let first = Some(TranscriptAnchor {
+    let first = Some(fixture.renderer.source_anchor(TranscriptAnchor {
+        origin: None,
         part: TranscriptPart::Answer,
         position: RowPosition::default(),
-    });
+    }));
     let mut captured = false;
     let mut expected = None;
     for &action in actions {

@@ -102,7 +102,7 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
         .write_state(
             CommandFileRoot::Session,
             "layout.json",
-            &serde_json::json!({"transcript_top":{"part":"answer","position":{"line":12,"row":0}}}),
+            &serde_json::json!({"transcript_top":{"part":"answer","position":{"line":12,"row":0},"origin":{"file":([41;32]),"line":0}}}),
         )
         .await
         .unwrap();

@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
 #[derive(Default)]
 struct ToolRows {
+    origin: [u8; 32],
     request: Option<HeadFile>,
     result: Option<HeadFile>,
     stdout: StreamText,
@@ -15,6 +16,30 @@ struct ToolRows {
     err: Vec<Line<'static>>,
     rows: Vec<Line<'static>>,
     streamed: bool,
+}
+impl ToolRows {
+    fn origin(&self, row: usize) -> Option<crate::tui::TranscriptOrigin> {
+        let Some(row) = row.checked_sub(1) else {
+            return Some(crate::tui::TranscriptOrigin {
+                file: self.origin,
+                line: 0,
+            });
+        };
+        if self.streamed {
+            if row < self.out.len() {
+                self.stdout.origin(row)
+            } else {
+                self.stderr.origin(row - self.out.len())
+            }
+        } else {
+            self.result
+                .as_ref()
+                .map(|result| crate::tui::TranscriptOrigin {
+                    file: super::source_rows::identity(&result.key),
+                    line: row,
+                })
+        }
+    }
 }
 /// The one projection that owns the selected task's command answers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -31,6 +56,7 @@ pub(super) enum AnswerOwner {
 }
 #[derive(Default)]
 pub(super) struct TaskRows {
+    tool_origins: super::source_rows::SourceRows,
     identity: Option<(Arc<Query>, Component)>,
     pub(super) cut: u64,
     stream: StreamText,
@@ -70,6 +96,36 @@ impl TaskRows {
             &self.text
         } else {
             self.fallback.rows()
+        }
+    }
+    pub(super) fn origin(
+        &self,
+        part: crate::tui::TranscriptPart,
+        line: usize,
+    ) -> Option<crate::tui::TranscriptOrigin> {
+        use crate::tui::TranscriptPart;
+        match part {
+            TranscriptPart::Reasoning => self.reasoning.origin(line),
+            TranscriptPart::Tools => self.tool_origins.origin(line),
+            TranscriptPart::Answer if self.streamed || self.owner == AnswerOwner::Session => {
+                self.stream.origin(line)
+            }
+            TranscriptPart::Answer => self.fallback.origin(line),
+        }
+    }
+    pub(super) fn resolve(
+        &self,
+        part: crate::tui::TranscriptPart,
+        origin: crate::tui::TranscriptOrigin,
+    ) -> Option<usize> {
+        use crate::tui::TranscriptPart;
+        match part {
+            TranscriptPart::Reasoning => self.reasoning.resolve(origin),
+            TranscriptPart::Tools => self.tool_origins.resolve(origin),
+            TranscriptPart::Answer if self.streamed || self.owner == AnswerOwner::Session => {
+                self.stream.resolve(origin)
+            }
+            TranscriptPart::Answer => self.fallback.resolve(origin),
         }
     }
     pub(super) fn answer_dropped(&self) -> usize {
@@ -280,6 +336,16 @@ impl TaskRows {
                 continue;
             }
             let cached = self.tools.entry(key.clone()).or_default();
+            if cached.rows.is_empty() {
+                cached.origin = super::source_rows::identity(&FileKey::Task {
+                    task: task.task.clone(),
+                    file: TaskFile::Tool {
+                        turn: *turn,
+                        call: call.clone(),
+                        file: crate::task_volume::ToolFile::Request,
+                    },
+                });
+            }
             let stdout = cached.stdout.update_tool(&tool, false, 20);
             let stderr = cached
                 .stderr
@@ -298,10 +364,8 @@ impl TaskRows {
                 || cached.stderr.len() != cached.err.len()
                 || cached.rows.is_empty()
             {
-                cached.out.truncate(stdout);
-                cached.out.extend(cached.stdout.rows(stdout));
-                cached.err.truncate(stderr);
-                cached.err.extend(cached.stderr.rows(stderr));
+                cached.stdout.apply_rows(&mut cached.out, stdout);
+                cached.stderr.apply_rows(&mut cached.err, stderr);
                 if metadata_changed || cached.rows.is_empty() {
                     cached.rows.clear();
                     cached.rows.push(tool::heading(request, result, tool.call));
@@ -332,8 +396,12 @@ impl TaskRows {
         }
         if full {
             self.tool_rows.clear();
+            self.tool_origins = super::source_rows::SourceRows::default();
             for tool in self.tools.values() {
                 self.tool_rows.extend_from_slice(&tool.rows);
+                for row in 0..tool.rows.len() {
+                    self.tool_origins.push(tool.origin(row));
+                }
                 #[cfg(test)]
                 {
                     self.tool_copies += tool.rows.len();
@@ -354,6 +422,11 @@ impl TaskRows {
                     .tools
                     .get(key)
                     .map_or(&[][..], |tool| tool.rows.as_slice());
+                self.tool_origins.replace(
+                    old.clone(),
+                    (0..rows.len())
+                        .map(|row| self.tools.get(key).and_then(|tool| tool.origin(row))),
+                );
                 #[cfg(test)]
                 {
                     self.tool_copies += rows.len();

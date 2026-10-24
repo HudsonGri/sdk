@@ -32,6 +32,16 @@ impl TranscriptPart {
     }
 }
 
+/// A logical row within one immutable followed source file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptOrigin {
+    /// Canonical followed file identity, independent of the retained window.
+    pub file: [u8; 32],
+    /// Logical display line created by that source file.
+    pub line: usize,
+}
+
 /// Persisted top row. Absence means follow the live tail.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,12 +50,28 @@ pub struct TranscriptAnchor {
     pub part: TranscriptPart,
     /// Logical source line and physical row within it.
     pub position: RowPosition,
+    /// Followed source identity supplied by the host projection.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "source_origin"
+    )]
+    pub origin: Option<TranscriptOrigin>,
+}
+
+// Internal wrapping algorithms use positions before the host supplies provenance.
+// A persisted anchor must carry it; accepting a bare retained-window index would
+// silently reintroduce the eviction jump on reopen.
+fn source_origin<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<TranscriptOrigin>, D::Error> {
+    TranscriptOrigin::deserialize(deserializer).map(Some)
 }
 
 fn top(parts: &[Option<&mut WrappedLines>; 3]) -> Option<TranscriptAnchor> {
     parts.iter().enumerate().find_map(|(index, part)| {
         let part = part.as_deref()?;
         (!part.shown().is_empty()).then(|| TranscriptAnchor {
+            origin: None,
             part: TranscriptPart::at(index),
             position: part.window().top,
         })
@@ -139,6 +165,7 @@ pub fn move_transcript(
             part.as_deref()
                 .filter(|part| part.source_len() != 0)
                 .map(|_| TranscriptAnchor {
+                    origin: None,
                     part: TranscriptPart::at(index),
                     position: RowPosition::default(),
                 })
@@ -161,6 +188,7 @@ pub fn move_transcript(
                 part.as_deref_mut()?
                     .last_position()
                     .map(|position| TranscriptAnchor {
+                        origin: None,
                         part: TranscriptPart::at(index),
                         position,
                     })
@@ -205,6 +233,7 @@ pub fn move_transcript(
             break;
         };
         anchor = TranscriptAnchor {
+            origin: None,
             part: TranscriptPart::at(next),
             position: if rows < 0 {
                 parts.get_mut(next)?.as_deref_mut()?.last_position()?

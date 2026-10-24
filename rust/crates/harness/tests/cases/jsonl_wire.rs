@@ -164,7 +164,7 @@ proptest! {
         let cursor = cursor(id, digest, position);
         let at = split.index(bytes.len() + 1);
         let head = HeadSnapshot {
-            files: vec![HeadFile {
+            files: vec![HeadFile { segment_sequences: Vec::new(),
                 key: key.clone(),
                 channel: None,
                 publication: None,
@@ -225,6 +225,7 @@ fn frames_reject_segments_and_malformed_digests() {
     }
     let head = HeadSnapshot {
         files: vec![HeadFile {
+            segment_sequences: Vec::new(),
             key: request_key(operation),
             channel: None,
             publication: None,

@@ -109,6 +109,7 @@ impl<'a> TranscriptRows<'a> {
             )
         };
         Some(TranscriptAnchor {
+            origin: None,
             part,
             position: source.position_of(at),
         })

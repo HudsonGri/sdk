@@ -319,17 +319,53 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
         .await
         .unwrap(),
     );
-    let mut files = CommandSession::open(volume, uuid::Uuid::from_bytes([71; 16]), 65_536, 128)
+    let mut files = CommandSession::open(
+        volume.clone(),
+        uuid::Uuid::from_bytes([71; 16]),
+        65_536,
+        128,
+    )
+    .await
+    .unwrap();
+    let task = TaskId::from_bytes([72; 16]);
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task.to_string(),
+    };
+    let mut chunk = FileValue::new(
+        FileKey::Task {
+            task: Component::new(task.to_string()).unwrap(),
+            file: TaskFile::Chunk {
+                turn: 0,
+                sequence: 0,
+            },
+        },
+        format!("```text\n{}```\n", "needle\n".repeat(6000)).into_bytes(),
+    );
+    chunk.channel = Some(Channel::Text);
+    volume
+        .append(volume.head().await.unwrap(), &chunk)
         .await
         .unwrap();
-    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"transcript_top":{"part":"answer","position":{"line":3000,"row":0}}})).await.unwrap();
-    let mut input = PromptInput::default();
-    PromptFiles::default().refresh(&files, &mut input).unwrap();
+    let client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
     let mut renderer = ClientRenderer::default();
-    let source = (0..6000)
-        .map(|row| Line::raw(format!("row {row} needle")))
-        .collect::<Vec<_>>();
-    renderer.wrapped_transcript.replace(&source, 0);
+    renderer.update_files(&client, &owner);
+    let mut input = PromptInput::default();
+    renderer.layout(&files, &input, 80, 20).unwrap();
+    let anchor = renderer
+        .move_view(
+            Some(crate::tui::TranscriptAnchor {
+                part: crate::tui::TranscriptPart::Answer,
+                position: crate::tui::RowPosition { line: 3000, row: 0 },
+                origin: None,
+            }),
+            0,
+        )
+        .unwrap();
+    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"transcript_top":anchor})).await.unwrap();
+    PromptFiles::default().refresh(&files, &mut input).unwrap();
     paint_frame(&mut renderer, &files, &input, 80);
     assert!(renderer.search.pending());
     let initial = renderer

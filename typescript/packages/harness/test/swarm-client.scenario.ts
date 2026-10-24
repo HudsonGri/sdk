@@ -82,6 +82,8 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
     check(segments("swarm/a")?.join("") === "before live", "promotion lost streaming text");
     check(views.task("swarm/a", "task")?.text[0]?.file.segments === 2n, "task projection copied or lost segments");
     check(views.files("swarm/a")[0]?.segments === 2n, "text was concatenated instead of segmented");
+    check(views.files("swarm/a")[0]?.segment_sequences.join(",") === "1,2", "file projection lost canonical chunk identities");
+    check(views.task("swarm/a", "task")?.text[0]?.file.segment_sequences.join(",") === "1,2", "task projection lost canonical chunk identities");
     await layout("open-views", {}); await wait("prefetch");
     await layout("layout", { in_view: ["swarm/b"] }); await wait("snapshot:swarm/b");
     check(views.cursor("swarm/a") === null && segments("swarm/b")?.join("") === "other", "tier switch retained or lost content");

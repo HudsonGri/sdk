@@ -120,6 +120,10 @@ fn negative_control_cached_layout_fails_after_owner_publication() {
 
 fn scroll_anchor(line: usize) -> crate::tui::TranscriptAnchor {
     crate::tui::TranscriptAnchor {
+        origin: Some(crate::tui::TranscriptOrigin {
+            file: [41; 32],
+            line: 0,
+        }),
         position: crate::tui::RowPosition { line, row: 0 },
         ..Default::default()
     }

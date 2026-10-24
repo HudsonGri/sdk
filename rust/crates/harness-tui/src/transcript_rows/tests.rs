@@ -51,11 +51,13 @@ fn check<const OMIT_TOOLS: bool>(
         search.update(rows, query, selected_index, Style::default());
         let expected = if !answer.is_empty() && matched.start <= left.text().len() {
             TranscriptAnchor {
+                origin: None,
                 part: TranscriptPart::Answer,
                 position: left.position_of(matched.start),
             }
         } else {
             TranscriptAnchor {
+                origin: None,
                 part: TranscriptPart::Tools,
                 position: right.position_of(matched.start - offset),
             }

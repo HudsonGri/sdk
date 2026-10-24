@@ -33,6 +33,10 @@ fn move_model(
             .saturating_add_signed(rows)
             .min(maximum);
         (line < maximum).then_some(acyclic_harness::tui::TranscriptAnchor {
+            origin: Some(acyclic_harness::tui::TranscriptOrigin {
+                file: [41; 32],
+                line: 0,
+            }),
             position: acyclic_harness::tui::RowPosition { line, row: 0 },
             ..Default::default()
         })
@@ -687,7 +691,7 @@ fn assert_file_motion_allocations<const COLLECT: bool>() {
     for n in [32, 64] {
         let (_, mut files) = runtime.block_on(session("motion-allocations"));
         runtime.block_on(files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({
-            "transcript_top":{"part":"answer","position":{"line":9000,"row":0}},"selected_task":acyclic_harness::TaskId::from_bytes([41;16]).to_string()
+            "transcript_top":{"part":"answer","position":{"line":9000,"row":0},"origin":{"file":([41;32]),"line":0}},"selected_task":acyclic_harness::TaskId::from_bytes([41;16]).to_string()
         }))).unwrap();
         let mut input = PromptInput::default();
         let mut effects = Vec::new();

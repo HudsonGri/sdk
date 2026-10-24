@@ -14,6 +14,7 @@ mod archive;
 #[cfg(not(target_arch = "wasm32"))]
 mod pacing;
 mod selection;
+mod source_rows;
 mod stream_text;
 mod task;
 mod tool;
@@ -654,6 +655,9 @@ mod viewport_cost;
 #[cfg(test)]
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod scrollbar_tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod anchor_tests;
 
 #[cfg(test)]
 mod revision_tests;
