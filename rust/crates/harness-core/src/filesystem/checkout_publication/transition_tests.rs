@@ -57,6 +57,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> TestResult<Self> {
+        Self::with_alias(None).await
+    }
+    async fn with_alias(alias: Option<&str>) -> TestResult<Self> {
         acyclic_native_runtime::initialize_native_io_services()?;
         let directory = tempfile::tempdir()?;
         let filesystem = LocalFs::local(LocalOptions::new(directory.path().join("fs"))).await?;
@@ -77,6 +80,11 @@ impl Fixture {
         for name in ["note", ".git", ".system", ".volumes"] {
             workspace
                 .write_text(&format!("/{name}"), "candidate")
+                .await?;
+        }
+        if let Some(alias) = alias {
+            workspace
+                .write_text(&format!("/{alias}"), "candidate")
                 .await?;
         }
         let to = workspace.head(&work, &cancellation).await?;
@@ -395,6 +403,116 @@ async fn every_adapter_refuses_retained_internal_edits_with_old_path_control() -
         }
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn every_adapter_refuses_fresh_and_retained_reserved_aliases_before_host_effect() -> TestResult
+{
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        let fixture = Fixture::with_alias(Some(".GIT")).await?;
+        let operation = OperationId::new();
+        for _ in 0..2 {
+            // The first call prepares a fresh transition; the second follows
+            // the retained journal. Neither may publish even an allowed edit.
+            assert!(
+                fixture
+                    .publish(adapter, operation, &fixture.from)
+                    .await
+                    .is_err()
+            );
+            assert!(!fixture.root.join("note").exists());
+            for name in [".git", ".system", ".volumes"] {
+                assert_eq!(
+                    std::fs::read_to_string(fixture.root.join(name))?,
+                    "host-owned"
+                );
+            }
+        }
+        // The actual former path publishes the forbidden spelling. On Windows
+        // this resolves to the protected .git file through native lookup.
+        let publication = fixture.publication(operation)?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        acyclic_fs::publish_native_generation_transition(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            publication.request(&fixture.from, &fixture.to, &options, &fixture.work),
+            fixture.work.clone(),
+            || std::future::ready(Ok(())),
+        )
+        .await
+        .map_err(|(cause, _)| cause)?;
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join(".GIT"))?,
+            "candidate"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_reserved_ascii_spelling_is_refused_for_every_plan_edit() {
+    use acyclic_fs::{
+        Digest, GenerationId, MaterializationEdit, MaterializationIntent, MaterializationPlan,
+    };
+    let generation = GenerationId::new(Digest::from_bytes([0; 32]));
+    for reserved in EXCLUDED_NAMES {
+        for mask in 0..(1 << reserved.len()) {
+            let spelling: String = reserved
+                .bytes()
+                .enumerate()
+                .map(|(index, byte)| {
+                    char::from(if mask & (1 << index) == 0 {
+                        byte
+                    } else {
+                        byte.to_ascii_uppercase()
+                    })
+                })
+                .collect();
+            for path in [spelling.clone(), format!("{spelling}/config")] {
+                for edit in [
+                    MaterializationEdit::Install {
+                        path: path.clone(),
+                        image: vec![1],
+                    },
+                    MaterializationEdit::Remove { path: path.clone() },
+                    MaterializationEdit::SetMetadata {
+                        path: path.clone(),
+                        image: vec![1],
+                    },
+                    MaterializationEdit::Rename {
+                        from: path.clone(),
+                        to: "note".into(),
+                    },
+                    MaterializationEdit::Rename {
+                        from: "note".into(),
+                        to: path.clone(),
+                    },
+                ] {
+                    let mut plan = MaterializationPlan {
+                        operation_id: OperationId::from_bytes([1; 16]),
+                        intent: MaterializationIntent::GenerationTransition {
+                            from: generation,
+                            to: generation,
+                        },
+                        edits: vec![edit],
+                    };
+                    assert!(validate_plan(&plan).is_err(), "{path}");
+                    // Exact-byte matching admits case aliases; this is the
+                    // former predicate whose spelling-dependent gap is closed.
+                    if path.split('/').next().unwrap() != *reserved {
+                        assert!(!EXCLUDED_NAMES.contains(&path.split('/').next().unwrap()));
+                    }
+                    plan.edits = vec![MaterializationEdit::Remove {
+                        path: format!("{path}-other"),
+                    }];
+                    if !path.contains('/') {
+                        assert!(validate_plan(&plan).is_ok());
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]
