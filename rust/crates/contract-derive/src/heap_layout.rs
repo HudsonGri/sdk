@@ -145,7 +145,11 @@ impl Attrs {
         Ok(parsed)
     }
     fn serde(&mut self, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<()> {
-        let key = meta.path.get_ident().map(ToString::to_string).unwrap_or_default();
+        let key = meta
+            .path
+            .get_ident()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         match key.as_str() {
             "rename" => {
                 if let Some(name) = deserialize_name(meta)? {
@@ -301,7 +305,10 @@ fn record(members: &[Member], tag: Option<&str>) -> TokenStream {
         .into_iter()
         .chain(named.iter().flat_map(|member| {
             let layout = &member.layout;
-            member.names.iter().map(move |name| quote!((#name, #layout)))
+            member
+                .names
+                .iter()
+                .map(move |name| quote!((#name, #layout)))
         }));
     let flatten = flattened.iter().map(|member| &member.layout);
     let tagged = tag.is_some() || !flattened.is_empty();

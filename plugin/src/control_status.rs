@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, acyclic_harness::HeapLayout,
+)]
 #[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ControlStatus {

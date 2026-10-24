@@ -72,9 +72,12 @@ impl Snapshot {
                     } => {
                         let diagnostics =
                             crate::executor::json::history_diagnostic_bytes(value_shape, None)?;
-                        let bytes = maximum_owned_bytes.checked_add(diagnostics).ok_or_else(|| {
-                            Error::Storage("checkpoint admission overflows".into())
-                        })?;
+                        let bytes =
+                            maximum_owned_bytes
+                                .checked_add(diagnostics)
+                                .ok_or_else(|| {
+                                    Error::Storage("checkpoint admission overflows".into())
+                                })?;
                         let charge = Admission {
                             maximum_owned_bytes: bytes,
                             value_shape,

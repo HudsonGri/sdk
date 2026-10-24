@@ -33,7 +33,8 @@ pub enum ModelEvent {
     Completed {
         /// Usage and finish metadata.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-        #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
+        #[heap_layout(as = serde_json::Value)]
         metadata: Value,
     },
 }

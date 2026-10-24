@@ -605,7 +605,9 @@ fn invalid(message: &'static str) -> Error {
 }
 
 /// Decodes closed Pi DTOs directly from their original Value.
-pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned + acyclic_harness::HeapLayout>(
+pub(crate) fn decode_recovery_value<
+    T: serde::de::DeserializeOwned + acyclic_harness::HeapLayout,
+>(
     value: std::borrow::Cow<'_, serde_json::Value>,
     schema: &'static acyclic_harness::JsonValueSchema,
     maximum_bytes: u64,

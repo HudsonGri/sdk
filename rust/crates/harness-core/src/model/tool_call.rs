@@ -13,12 +13,14 @@ pub struct ToolCall {
     pub name: String,
     /// Schema-defined arguments.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-    #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub arguments: Value,
     /// Opaque provider continuation data retained for follow-ups and replay.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-    #[serde(deserialize_with = "crate::deserialize_json_value")] #[heap_layout(as = serde_json::Value)]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
+    #[heap_layout(as = serde_json::Value)]
     pub metadata: Value,
 }
 

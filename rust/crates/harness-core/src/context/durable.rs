@@ -45,8 +45,7 @@ pub struct DurableContextProvider {
 }
 
 #[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for StoredContextRevision {
-}
+impl crate::filesystem::PreparationRecord for StoredContextRevision {}
 
 impl DurableContextProvider {
     /// Creates a durable provider with a positive per-page work bound over one Stream path.

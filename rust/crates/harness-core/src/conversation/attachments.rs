@@ -328,13 +328,15 @@ pub enum ReferencedAttachments {
     /// Bounded small list retained directly in the event.
     Inline {
         /// Complete ordered attachments.
-        #[serde(deserialize_with = "deserialize_inline_attachments")] #[heap_layout(as = Vec<Attachment>)]
+        #[serde(deserialize_with = "deserialize_inline_attachments")]
+        #[heap_layout(as = Vec<Attachment>)]
         items: Vec<Attachment>,
     },
     /// Complete canonical JSON list retained as a file, never a partial page.
     Manifest {
         /// Version-pinned file containing a canonical JSON array.
-        #[serde(deserialize_with = "deserialize_manifest_file")] #[heap_layout(as = FileRef)]
+        #[serde(deserialize_with = "deserialize_manifest_file")]
+        #[heap_layout(as = FileRef)]
         manifest: FileRef,
         /// Exact number of list members.
         item_count: u32,
