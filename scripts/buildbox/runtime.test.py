@@ -28,14 +28,17 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
-        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir="/home/var"))
+        self.real_home=Path(tempfile.mkdtemp(prefix="gate-home-fixture-",dir=self.d))
     def tearDown(self):
-        self.temp.cleanup();job.remove_home(self.real_home)
+        self.temp.cleanup()
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
         shutil.copyfile(HERE/'job_custody.py',self.d/'job_custody.py')
         source=(HERE/'bb-job.py').read_text()
+        # Exercise the same constructor with an owned HOME fixture. The outer
+        # build-slot already protects the operator's actual HOME read-only.
+        source=source.replace("'/home/var'",repr(str(self.real_home)))
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('if job.exists(): remove_home(job)','raise OSError("cleanup control")')
@@ -46,6 +49,9 @@ class RuntimeTests(unittest.TestCase):
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
+        if env.get('BB_JOB_ACTIVE')=='1':
+            self.assertFalse(Path(str(meta)+'.runtime').exists(),'nested execution must reuse its owner receipt')
+            return result,{}
         clean=subprocess.run([sys.executable,str(self.d/'negative.py' if negative else self.d/'worker.py'),'cleanup',str(meta)+'.runtime'],cwd=self.d,env=env,capture_output=True)
         if clean.returncode:
             result=subprocess.CompletedProcess(result.args,224,result.stdout,result.stderr+clean.stderr)
@@ -268,7 +274,7 @@ finally:a.close();b.close()
         subprocess.run(['git','init','--quiet',str(repo)],check=True)
         before=(repo/'.git/HEAD').read_bytes()
         with self.assertRaisesRegex(RuntimeError,'private buildbox worktree namespace'):
-            job.private_git(self.d,Path('/home/var'),str(repo))
+            job.private_git(self.d,self.real_home,str(repo))
         self.assertEqual((repo/'.git/HEAD').read_bytes(),before)
 
     def test_private_git_base_preserves_local_main_fallback(self):
@@ -673,7 +679,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
     def test_storage_device_rejects_root_and_live_cleanup_requires_custody(self):
         self.assertEqual(job.require_data_path(self.d/'not-created/target')['device'],Path('/mnt/bb').stat().st_dev)
         with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path('/work/root-target-negative-control')
-        alias=self.d/'root-alias';alias.symlink_to('/work',target_is_directory=True)
+        alias=self.d/'root-alias';alias.symlink_to('/usr',target_is_directory=True)
         with self.assertRaisesRegex(RuntimeError,'/mnt/bb filesystem'):job.require_data_path(alias/'target')
         directory=Path(tempfile.mkdtemp(prefix='job-custody-control-',dir=job.JOBS))
         custody=job.job_custody.prepare()
