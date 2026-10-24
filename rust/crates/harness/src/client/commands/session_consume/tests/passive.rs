@@ -64,7 +64,9 @@ async fn paused_command_remains_recoverable<const BROKEN: bool>(task_root: bool)
     let result = reopened
         .consume_with_recovery::<true, _, _, _, _>(
             &request,
-            |_, _, _| async { panic!("claimed command was dispatched again") },
+            |_, _, _| -> futures::future::Ready<Result<Value>> {
+                panic!("claimed command was dispatched again")
+            },
             |_, _, _| {
                 recovered += 1;
                 async { Ok(json!({"done":true})) }
