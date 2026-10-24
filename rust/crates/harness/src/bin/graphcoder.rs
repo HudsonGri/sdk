@@ -75,7 +75,22 @@ async fn open(
     };
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
-    config = config.settings(settings).web_tools();
+    let policy_bytes = match &args.approval_policy {
+        Some(path) => std::fs::read(path)?,
+        None => include_bytes!("graphcoder/approval-policy.json").to_vec(),
+    };
+    let policy: acyclic_harness::approvals::ApprovalPolicy = serde_json::from_slice(&policy_bytes)?;
+    policy.bind()?;
+    for approver in &policy.approvers {
+        if let acyclic_harness::approvals::Approver::Llm { model, .. } = approver {
+            let provider = Arc::new(registry.resolve(model)?);
+            config = config.approval_model(model, (provider.model().clone(), provider));
+        }
+    }
+    config = config
+        .settings(settings)
+        .web_tools()
+        .approval_policy(policy);
     let code = acyclic_harness::package::harness::HarnessCode::new()?;
     Ok(Arc::new(phase(|| code.open_local(config)).await?))
 }
