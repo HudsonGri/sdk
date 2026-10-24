@@ -253,6 +253,8 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
     harness.admit_turn(broken, None, receive, model).await?;
     harness.resume(broken_task).await?;
     assert_eq!(guidance(&provider.request(2).unwrap()), (true, true));
-    harness.close().await?;
+    // HEAD intentionally remains the admitted, undriven parent. Require that
+    // state while consuming the quiescent host and retiring its native mounts.
+    harness.disconnect_unfinished().await?;
     Ok(())
 }
