@@ -126,12 +126,12 @@ async function diskGate(argv) {
 function sshRun(cmd, { input, timeout = 60000, host = HOST, connect = 15 } = {}) {
   return new Promise((resolve) => {
     const p = spawn('ssh', [...SSH, '-o', `ConnectTimeout=${connect}`, '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3', host, cmd], { stdio: ['pipe', 'pipe', 'pipe'] });
-    const out = [], err = []; let done = false;
-    const t = setTimeout(() => { if (!done) p.kill('SIGKILL'); }, timeout);
+    const out = [], err = []; let done = false, timedOut = false;
+    const t = setTimeout(() => { if (!done) { timedOut = true; p.kill('SIGKILL'); } }, timeout);
     p.stdout.on('data', (b) => out.push(b)); p.stderr.on('data', (b) => err.push(b));
     p.on('error', (e) => { err.push(Buffer.from(e.message)); });
     p.stdin.on('error', (e) => { err.push(Buffer.from(`stdin: ${e.message}\n`)); });  // remote exited early: its rc says why
-    p.on('close', (code) => { done = true; clearTimeout(t); resolve({ status: code ?? 255, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }); });
+    p.on('close', (code, signal) => { done = true; clearTimeout(t); resolve({ status: code ?? 255, signal, timedOut, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }); });
     p.stdin.end(input ?? '');
   });
 }
@@ -857,20 +857,30 @@ export function copyBackDestination(group, top, rel, env = process.env) {
   return destination;
 }
 
-async function copyBack(J, top, src, tkey, rel) {
+function copyBackFailure(stage, file, result) {
+  const evidence = { stage, path: file, exit_status: result.status, signal: result.signal ?? null,
+    timed_out: result.timedOut ?? false, stderr: String(result.stderr || result.error?.message || ''),
+    received_bytes: result.stdout?.length ?? 0 };
+  const error = new Error(`declared-output ${stage} failed (rc ${evidence.exit_status}, signal ${evidence.signal}, timed_out ${evidence.timed_out}): ${evidence.stderr}`);
+  error.copyBack = evidence;
+  return error;
+}
+
+async function copyBack(J, top, src, tkey, rel, { run = sshRun, extract = spawnSync } = {}) {
   if (!(process.env.BUILD_SLOT_REMOTE_FETCH || '').trim()) return;
-  const m = await sshRun(`cat ${J}.exports/manifest.json`, { timeout: 45000 });
-  if (m.status !== 0) throw new Error('missing declared-output manifest');
+  const manifest = `${J}.exports/manifest.json`;
+  const m = await run(`cat ${q(manifest)}`, { timeout: 45000 });
+  if (m.status !== 0) throw copyBackFailure('manifest read', manifest, m);
   for (const group of JSON.parse(m.stdout.toString())) {
-    const result = await sshRun(`cat ${q(group.archive)}`, { timeout: 600000 });
-    if (result.status !== 0) throw new Error('missing declared-output archive');
+    const result = await run(`cat ${q(group.archive)}`, { timeout: 600000 });
+    if (result.status !== 0) throw copyBackFailure('archive read', group.archive, result);
     const dest = copyBackDestination(group, top, rel);
     fs.mkdirSync(dest, { recursive: true });
-    const extract = spawnSync('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
-    if (extract.status !== 0) throw new Error(`copy-back extract rc ${extract.status}`);
+    const extracted = extract('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
+    if (extracted.status !== 0) throw copyBackFailure('archive extraction', group.archive, extracted);
     say(`copy-back: ${group.count} file(s) from job export into ${dest}`);
   }
-  await sshRun(`rm -rf -- ${J}.exports`, { timeout: 45000 });
+  await run(`rm -rf -- ${J}.exports`, { timeout: 45000 });
 }
 
 // Returns the job's rc, or 222 when the VM cannot take it (the caller then tries Daytona).
@@ -1052,7 +1062,7 @@ export function beginReceipt(argv) {
 }
 export function endReceipt(ctx, rc) {
   return finish(ctx.metaFile, rc, ctx.termination || ctx.remote?.termination || (cause || rc === 224 || rc === 222 ? 'infra' : rc >= 128 ? 'interrupted' : 'command'),
-    { reason: ctx.failure?.cause || cause || null, detail: ctx.failure?.detail || causeDetail || null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
+    { reason: ctx.failure?.cause || cause || null, detail: ctx.failure?.detail || causeDetail || null, copy_back_failure: ctx.copyBackFailure ?? null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
 }
 export async function run(argv, sharedReceipt) {
   if (sharedReceipt) return runTracked(argv, sharedReceipt);
@@ -1352,7 +1362,7 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   if (rc === 0 && process.env.BUILD_SLOT_REMOTE_FETCH) jobTdir = String((await sshRun(`cat ${J}.tdir 2>/dev/null`, { timeout: 45000 })).stdout || '').trim();
   if (rc === 0) {
     try { await copyBack(J, top, src, tkey, rel); }
-    catch (e) { say(`copy-back FAILED (${e.message.slice(0, 200)}); the job passed remotely but its declared outputs are not local`); rc = 1; ctx.termination = 'infra'; }
+    catch (e) { say(`copy-back FAILED (${e.message.slice(0, 200)}); the job passed remotely but its declared outputs are not local`); rc = 1; ctx.termination = 'infra'; ctx.copyBackFailure = e.copyBack ?? { stage: 'copy-back', detail: e.message }; }
   }
   if (rc === 0 && vkey && vbytes <= VC_MAX_BYTES) verdictPut(vkey, { at: new Date().toISOString(), rc, wall: Math.round((Date.now() - t0) / 1000), label: process.env.BUILD_SLOT_LABEL || path.basename(cwd), cwd, tree: `${id.commit} ${id.tree} ${id.content}`, cmd: argv.join(' ').slice(0, 300) }, Buffer.concat(vo), Buffer.concat(ve));
   // Keep bb2 logs, metadata and terminal receipt together for accounting/recovery.
