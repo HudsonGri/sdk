@@ -17,6 +17,7 @@ mod page;
 mod physical;
 mod planning;
 mod publication;
+mod query;
 mod record;
 mod retained;
 mod retry;
