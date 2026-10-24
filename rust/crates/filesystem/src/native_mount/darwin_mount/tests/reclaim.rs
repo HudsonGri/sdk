@@ -76,6 +76,16 @@ impl Drop for CrashRoots {
 #[test]
 #[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
+    check_startup_recovery(false)
+}
+
+#[test]
+#[ignore = "requires live macOS NFS mounts and SIGKILL"]
+fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
+    check_startup_recovery(true)
+}
+
+fn check_startup_recovery(deny_direct_unmount: bool) -> TestResult {
     let root = CrashRoots(Some(tempfile::tempdir()?));
     let canonical = root
         .0
@@ -126,7 +136,11 @@ fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -
         &foreign_fence,
         false,
     )?);
-    crate::initialize_native_mount_services()?;
+    if deny_direct_unmount {
+        super::super::reclaim::with_direct_unmount_denied(crate::initialize_native_mount_services)?;
+    } else {
+        crate::initialize_native_mount_services()?;
+    }
     assert!(
         !mounted(&canonical.join("owned"))?,
         "startup left the crashed SDK mount attached"
