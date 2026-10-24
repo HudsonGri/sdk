@@ -278,8 +278,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
                         Some(provider) => {
-                            self.capture(&journal, &request, index, selection, provider.as_ref())
-                                .await?
+                            self.capture(
+                                &journal,
+                                &request,
+                                &digest,
+                                index,
+                                selection,
+                                provider.as_ref(),
+                            )
+                            .await?
                         }
                         None => Capture::Unsupported(stock_string_copy(
                             "resource capture provider is not installed",
