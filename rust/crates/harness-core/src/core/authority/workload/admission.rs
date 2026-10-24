@@ -75,7 +75,7 @@ pub(in crate::core::authority) fn record(
     let authenticated = authenticate(&runtime.public, &*trust, scope, timestamp, work)?;
     let capability = authorize_scope(&*trust, audience, scope, timestamp, &authenticated, work)?;
     let name = resource(audience)?;
-    let signer = signer(id, &runtime.workload, timestamp, &name, None)?;
+    let signer = runtime.workload.receipt_signer(id, timestamp)?;
     let receipt = RuntimeAdmission::new(&signer, &*trust, timestamp)
         .record(
             &capability,

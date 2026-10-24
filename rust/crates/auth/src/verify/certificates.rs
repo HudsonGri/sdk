@@ -118,6 +118,52 @@ mod tests {
     use super::*;
     use crate::trust::Snapshot;
 
+    #[test]
+    fn a_certified_signer_owns_authentication_but_rechecks_every_mint() -> Result<(), VerifyError> {
+        let (certificates, trust) = fixture(1);
+        let make = || {
+            CertifiedSigner::new(
+                certificates.clone().try_into()?,
+                SigningKey::from_bytes(&[3; 32]),
+            )
+        };
+        let owner = make()?;
+        let mint = |owner: &CertifiedSigner, trust: &Snapshot, time| {
+            owner.mint(Vec::new(), SigningKey::from_bytes(&[4; 32]), trust, time)
+        };
+        let count = crate::crypto::signature_verifications;
+        let before = count();
+        mint(&owner, &trust, 100)?;
+        assert_eq!(count() - before, 3);
+        let before = count();
+        mint(&owner, &trust, 101)?;
+        assert_eq!(
+            count() - before,
+            1,
+            "only the new block needs authentication"
+        );
+        // Execute the former fresh-owner path as the physical-work control.
+        let before = count();
+        mint(&make()?, &trust, 101)?;
+        assert_eq!(count() - before, 3);
+        for field in 0..4 {
+            let mut changed = trust.clone();
+            match field {
+                0 => changed.environment_keys.clear(),
+                1 => changed.issuer_keys.clear(),
+                2 => changed.minimum_key_epoch = 2,
+                _ => {
+                    changed.revoked_key_ids.insert("key".into());
+                }
+            }
+            assert!(mint(&owner, &changed, 101).is_err());
+        }
+        assert!(mint(&owner, &trust, 0).is_err());
+        assert!(mint(&owner, &trust, 1000).is_err());
+        mint(&owner, &trust, 101)?;
+        Ok(())
+    }
+
     fn fixture(timestamp: u64) -> (CertificateChainProto, Snapshot) {
         let environment = SigningKey::from_bytes(&[1; 32]);
         let issuer = SigningKey::from_bytes(&[2; 32]);

@@ -95,6 +95,14 @@ pub(super) struct RuntimeKeys {
     environment: SigningKey,
     account: SigningKey,
     runtime: SigningKey,
+    receipt: std::sync::Mutex<Option<ReceiptSigner>>,
+}
+
+struct ReceiptSigner {
+    account: String,
+    born: u64,
+    expires: u64,
+    signer: std::sync::Arc<CertifiedSigner>,
 }
 
 impl RuntimeKeys {
@@ -104,7 +112,32 @@ impl RuntimeKeys {
             environment: key("acyclic.harness.environment.v1"),
             account: key("acyclic.harness.account.v1"),
             runtime: key("acyclic.harness.runtime.v1"),
+            receipt: Default::default(),
         }
+    }
+
+    // Runtime time attestations share one restricted certificate. Each receipt
+    // binds its exact audience/payload/time; workloads never receive this signer.
+    fn receipt_signer(&self, id: &str, timestamp: u64) -> Result<std::sync::Arc<CertifiedSigner>> {
+        let mut retained = self.receipt.lock().map_err(unauthorized)?;
+        if let Some(receipt) = retained.as_ref()
+            && receipt.account == id
+            && receipt.born <= timestamp
+            && timestamp < receipt.expires
+        {
+            return Ok(receipt.signer.clone());
+        }
+        let expires = timestamp
+            .checked_add(CERTIFICATE_SECONDS)
+            .ok_or_else(|| unauthorized("clock overflow"))?;
+        let signer = std::sync::Arc::new(signer(id, self, timestamp, None, None)?);
+        *retained = Some(ReceiptSigner {
+            account: id.into(),
+            born: timestamp,
+            expires,
+            signer: signer.clone(),
+        });
+        Ok(signer)
     }
 }
 fn entropy() -> [u8; 32] {
@@ -149,6 +182,8 @@ fn grant(resource: &str) -> GrantSet {
     }
 }
 fn signature(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u8> {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(CertificateSignature);
     let mut message = domain.to_vec();
     message.extend_from_slice(&claims.encode_to_vec());
     signer.sign(&message).to_bytes().to_vec()
@@ -157,7 +192,7 @@ fn signer(
     id: &str,
     keys: &RuntimeKeys,
     timestamp: u64,
-    name: &str,
+    name: Option<&str>,
     parent: Option<&VerifiedCapability>,
 ) -> Result<CertifiedSigner> {
     let environment = &keys.environment;
@@ -184,7 +219,7 @@ fn signer(
                 })),
         },
         grants: {
-            let mut grants = grant(name);
+            let mut grants = name.map_or(GrantSet { grants: Vec::new() }, grant);
             grants.grants.push(Grant {
                 kind: GrantKind::Resource(ResourceGrant {
                     resource: ResourcePattern {
@@ -275,7 +310,7 @@ pub(super) fn issue(
         &issuer.id,
         &issuer.runtime.workload,
         timestamp,
-        &name,
+        Some(&name),
         parent,
     )?
     .mint(
@@ -411,3 +446,10 @@ fn authorize_scope(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+struct CertificateSignature;
+
+#[cfg(test)]
+mod receipt_tests;
