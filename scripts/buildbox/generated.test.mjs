@@ -90,7 +90,39 @@ test('watched source directories retain content-derived times across fresh check
   assert.notEqual(normalize(),first,'changed directory inputs require a different content time');
   const prepare=source.indexOf("${cargoJob ? '' : NPM_ENSURE}");
   const clock=source.indexOf('# Shared target slot');
-  assert.ok(prepare>=0&&clock>prepare,'dependency preparation must precede directory normalization');
+  const verify=source.indexOf('# Tree identity (2026-10-16 treeid)');
+  assert.ok(prepare>=0&&verify>prepare&&clock>verify,'dependency preparation must precede identity verification and source normalization');
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('dependency preparation cannot change source under the original uploaded identity',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'preparation-identity-'));
+ try{
+  const module=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(module,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { launchScript, NPM_ENSURE };\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {launchScript,NPM_ENSURE}=await import(module);
+  const root=path.join(cwd,'input');fs.mkdirSync(root);
+  function git(...args){const r=spawnSync('git',args,{cwd:root,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout;}
+  git('init','-q');fs.writeFileSync(path.join(root,'source.rs'),'uploaded');git('add','source.rs');
+  const records=git('ls-files','-s','-z').replace(/^[0-7]* /,'');
+  const crypto=await import('node:crypto');
+  const id={commit:'none',tree:'none',content:crypto.createHash('sha256').update(records).digest('hex'),forced:[],autocrlf:'false',groups:'e30='};
+  const wrapper=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['bash','fixture.sh'],'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{});
+  const encoded=wrapper.match(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.sh\b/);assert.ok(encoded);
+  const inner=Buffer.from(encoded[1],'base64').toString();
+  const start=inner.indexOf(NPM_ENSURE),verify=inner.indexOf('# Tree identity (2026-10-16 treeid)'),end=inner.indexOf('# Shared target slot');
+  assert.ok(start>=0&&verify>start&&end>verify);
+  const segment=inner.slice(start,end),prepare="printf changed > source.rs\n";
+  for(const negative of [false,true]){
+   fs.writeFileSync(path.join(root,'source.rs'),'uploaded');
+   let body=negative?segment.replace(NPM_ENSURE,'')+NPM_ENSURE:segment;
+   body=body.replace(NPM_ENSURE,prepare).replaceAll('/work/src',root).replaceAll('/tmp/bbid.',cwd+'/bbid.');
+   const result=spawnSync('bash',['-c',body],{cwd:root,encoding:'utf8'});
+   assert.equal(result.status,negative?0:224,result.stdout+result.stderr);
+   assert.equal(fs.readFileSync(path.join(root,'source.rs'),'utf8'),'changed');
+   if(!negative)assert.match(result.stderr,/tree-mismatch/);
+  }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 

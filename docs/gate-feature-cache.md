@@ -21,6 +21,9 @@ blobs, after dependency preparation. This applies only to the exact private
 uploaded tree; subsequent job writes retain their real timestamps. The generated
 clock control demonstrates that the former files-only clock leaves a fresh
 watched directory, while changed directory inputs produce a different time.
+Dependency preparation precedes tree-identity verification too: a package
+script that changes source must fail that verification before any clock can
+qualify the changed bytes under the original uploaded identity.
 
 The adapter acquires the production hierarchical target lease only while
 cloning or publishing. It releases that parent lease before any Cargo worker

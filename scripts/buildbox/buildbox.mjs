@@ -662,6 +662,7 @@ elif [ -d .git ] && [ -d $BBM ]; then  # rsync tree: borrow the mirror's objects
 fi
 if [ ${repo} = cloud ] && ! { git rev-parse -q --verify refs/remotes/origin/main >/dev/null && git merge-base refs/remotes/origin/main HEAD >/dev/null 2>&1; }; then
   echo >&2 "[build-slot] remote failed: no-base-ref (origin/main missing or unrelated to HEAD in the synced checkout)"; exit 224; fi
+${cargoJob ? '' : NPM_ENSURE}
 # Tree identity (2026-10-16 treeid): the content this job runs on must be exactly the client's. Same digest as treeIdentity().
 # A throwaway index seeded from the client's commit without stat data, so every file is hashed again under the client's
 # core.autocrlf (an entry the commit block cached was hashed without it), while committed CRLF blobs stay as committed
@@ -676,7 +677,6 @@ if [ "\${bbid:-}" != ${id.content} ] || { [ -f .git ] && [ ${id.commit} != none 
   ! { [ "$(git rev-parse -q --verify "$bbpre^" 2>/dev/null)" = ${id.commit} ] && [ "$(git log -1 --format=%s "$bbpre" 2>/dev/null)" = buildbox ]; }; }; then
   echo >&2 "[build-slot] remote failed: tree-mismatch (client commit ${id.commit} content ${id.content}; VM checkout HEAD \${bbpre:-none} content \${bbid:-unknown})"
   [ ! -s "$bbI.recs" ] || node -e ${q(IDENT_DIFF)} "$bbI.recs" ${id.groups} || true; rm -f "$bbI.recs"; exit 224; fi
-${cargoJob ? '' : NPM_ENSURE}
 # Shared target slot (see sharedFlavor): source times from the slot's content map before cargo looks at them.
 if [ ${repo} = sdk ] && [ "$BB_HOST_TARGET" = ${TD} ]; then
   if ! node -e ${q(SOURCE_TIMES)} "$bbI.recs" /work/src ${J}.source-clock.json ${id.content}; then
