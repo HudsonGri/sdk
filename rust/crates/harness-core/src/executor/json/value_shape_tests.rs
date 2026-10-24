@@ -131,3 +131,33 @@ fn hidden_raw_values_are_bounded_before_decode() {
         expected
     );
 }
+
+/// A document whose shape its typed decode rejects is an input failure like
+/// any other malformed source, so every decode boundary classifies it as its
+/// own invalid input rather than as an internal boundary fault.
+#[test]
+fn typed_shape_refusals_are_input_failures() {
+    for code in [
+        crate::wire::ErrorCode::Invalid,
+        crate::wire::ErrorCode::Storage,
+    ] {
+        let error = admission::admit_json_layout(
+            br#"{"not":"a list"}"#,
+            JsonBounds {
+                maximum_bytes: 64,
+                maximum_items: 64,
+                maximum_depth: 8,
+            },
+            None,
+            <Vec<u64> as super::layout::HeapLayout>::LAYOUT,
+            Some(code),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::NativeJsonAdmission { code: actual, kind: JsonInputError::Shape }
+                if actual == code),
+            "{error:?}"
+        );
+    }
+}

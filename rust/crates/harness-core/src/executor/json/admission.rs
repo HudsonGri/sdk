@@ -549,7 +549,9 @@ pub(super) fn admit_typed(
             return Ok(Err((shape, syntax)));
         }
     }
-    typed_cost(shape, cost.into_inner(), boundary_code).map(Ok)
+    // A shape the layout refuses is the typed decode's own rejection, so it
+    // keeps the caller's code like the decode error it stands in for.
+    typed_cost(shape, cost.into_inner(), code).map(Ok)
 }
 /// What a typed decode of `bytes` into `T` reserves at its entry point, or
 /// `None` when admission refuses the document.
@@ -597,7 +599,9 @@ fn typed_cost(
     code: Option<crate::wire::ErrorCode>,
 ) -> Result<(JsonValueShape, LayoutCost)> {
     if shape.unresolved_raw() || cost.refused {
-        return Err(boundary("JSON shape is outside its typed layout", code));
+        // The typed decode would reject this document: an input failure,
+        // classified like every other malformed source.
+        return Err(input_error(JsonInputError::Shape, code));
     }
     shape.longest_string = cost.longest();
     Ok((shape, cost))

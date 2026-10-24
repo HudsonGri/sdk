@@ -66,6 +66,9 @@ pub enum JsonInputError {
     /// A value exceeds the fixed nesting limit.
     #[error("JSON nesting limit exceeded")]
     Depth,
+    /// The document has a shape its typed decode rejects.
+    #[error("JSON shape is outside its typed layout")]
+    Shape,
 }
 
 fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
