@@ -553,6 +553,32 @@ for (const r of fs.readFileSync(recsF, 'utf8').split('\\0')) { if (!r) continue;
   try { fs.lutimesSync(root + '/' + p, m, m); next[p] = [blob, m]; } catch (e) { if (e.code !== 'ENOENT') throw e; } }
 fs.writeFileSync(mapF + '.tmp', JSON.stringify(next)); fs.renameSync(mapF + '.tmp', mapF);
 console.error('[buildbox] shared target ' + mapF.replace(/\\/[^/]*$/, '') + ': ' + kept + ' files keep their times, ' + fresh + ' changed or new');`;
+// A private target is seeded only by the exact uploaded content key. Give that
+// immutable input stable, past times before any compiler runs, so a new source
+// checkout does not invalidate its completed target snapshot. This must never
+// apply to a mutable target shared across source trees: hash-derived times are
+// not monotonic. Later writes in this job retain their actual fresh mtimes.
+const SOURCE_TIMES = `const fs=require('fs'),crypto=require('crypto');const [records,root,clock,content]=process.argv.slice(1);
+const files=[],names=[];let cacheable=true;
+for(const record of fs.readFileSync(records,'utf8').split('\\0')){
+ if(!record)continue;
+ const blob=record.slice(0,record.indexOf(' ')),name=record.slice(record.indexOf('\\t')+1);
+ if(!/^[a-f0-9]{40,64}$/.test(blob)||!name||name.startsWith('/')||name.split('/').includes('..'))throw Error('invalid uploaded source record');
+ const seconds=946684800+parseInt(blob.slice(0,8),16)%(20*365*86400);
+ fs.lutimesSync(root+'/'+name,seconds,seconds);
+ names.push(name);
+}
+// Normalize every target before inspecting symlink aliases to those targets.
+for(const name of names){
+ try{
+  const real=fs.realpathSync(root+'/'+name);
+  if(!real.startsWith(root+'/')){cacheable=false;continue;}
+  const s=fs.statSync(root+'/'+name,{bigint:true});
+  files.push([name,...[s.mode,s.size,s.mtimeNs,s.ctimeNs].map(String),crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')]);
+ }catch{cacheable=false;}
+}
+fs.writeFileSync(clock+'.tmp',JSON.stringify({root,content_sha256:content,cacheable,files}));fs.renameSync(clock+'.tmp',clock);
+console.error('[buildbox] source clock: exact-content private targets');`;
 // node_modules for every job that is not cargo (2026-10-18 crit-bslot): remote trees often had none and JS gates died
 // rc 127 ("./node_modules/.bin/tsc: No such file or directory", #5338, #5341) when the lane forgot `npm ci`. Every tracked
 // package-lock.json (managed-agents excluded) gets `npm ci` through the bbnpm shim before the command: a no-op when the
@@ -567,34 +593,36 @@ const NPM_ENSURE = "if [ -z \"${BUILD_SLOT_NO_NPM:-}\" ]; then (cd /work/src && 
 const JOBS_ENV = "bbn=0; for w in /mnt/bb/jobs/*.wpid; do [ -e \"${w%.wpid}.rc\" ] || ! kill -0 \"$(cat \"$w\" 2>/dev/null)\" 2>/dev/null || bbn=$((bbn + 1)); done\nbbc=$(nproc); bbj=$(( bbc * 2 / (bbn > 0 ? bbn : 1) )); [ $bbj -ge 16 ] || bbj=16; [ $bbj -le $bbc ] || bbj=$bbc\nexport CARGO_BUILD_JOBS=$bbj; echo >&2 \"[buildbox] CARGO_BUILD_JOBS=$bbj ($bbn live jobs on $bbc CPUs)\"\n";
 let jobTdir = '';  // the target dir the job actually used (its wrapper writes $J.tdir), for copy-back
 function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', base = '', id, maxSec = jobMaxSec(), idleOk = process.env.BUILD_SLOT_IDLE_OK === '1', receipt) {
-  // Cargo jobs get the sccache wrapper + big-stack rustc. Node/bash jobs keep a plain toolchain env: tools they run set
+  // Cargo and explicit gate jobs get the owned compiler cache. Other Node/bash jobs keep a plain toolchain env: tools they run set
   // their own (the SDK's build:wasm puts a rustc capture wrapper on PATH with RUSTC_WORKSPACE_WRAPPER, which a global
   // RUSTC/RUSTC_WRAPPER breaks: "sccache: Compiler not supported ... spawnSync -E ENOENT").
   const cargoJob = path.basename(argv[0]) === 'cargo';
+  const compilerJob = cargoJob || Boolean(receipt?.gate_log);
   const flavor = ''; const TD = `${J}.targets`; const SH = '';
   const jobHostTarget = `${TD}/.host-targets/${path.basename(hostTarget(src))}`;
   const exportSpec = { prefix: J, cwd: `/work/src/${rel}`, paths: (process.env.BUILD_SLOT_REMOTE_FETCH || '').split(/\s+/).filter(Boolean), build: cargoJob,
     targetMapping: glibcPin ? { triple: GLIBC_TRIPLE, profiles: [...glibcPin.dirs] } : null };
   const leaseFile = `/mnt/bb/locks/wt-sdk/${path.basename(src).replace(/\.prep$/, '')}.lock`;
-  const rustEnv = cargoJob && COLD ? 'export RUSTC=/home/var/bin/bigstack/rustc; export RUSTC_WRAPPER=' : cargoJob ? `export RUSTC=/home/var/bin/bigstack/rustc
+  const rustEnv = compilerJob && COLD ? 'export RUSTC=/home/var/bin/bigstack/rustc; export RUSTC_WRAPPER=' : compilerJob ? `export RUSTC=/home/var/bin/bigstack/rustc
 if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RUSTC_WRAPPER=/home/var/bin/sccache-rustc; fi` : `unset RUSTC RUSTC_WRAPPER; export CARGO_TARGET_DIR="$BB_JOB_TARGET"`;
   // /home/var/bin/bbnpm/npm: \`npm ci\` is skipped when node_modules was installed from the same lockfile hash (node_modules
   // persists per copy and seeds new copies; rsync never carries it).
-  const inner = `set -u
-export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BUILD_SLOT_EXEC_IN_PAYLOAD=1
+  let inner = `set -u
+${COLD ? 'export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1\n' : ''}export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BUILD_SLOT_EXEC_IN_PAYLOAD=1
+export BB_JOB_GIT_SOURCE=/work/src BB_JOB_PRIVATE_MOUNT=1
 export BB_JOB_EXPORT_SPEC=${q(JSON.stringify(exportSpec))}
 if [ "\${BB_JOB_ACTIVE:-}" != 1 ]; then exec python3 /home/var/bin/bb-job.py bash ${J}.sh; fi
 # The host gates run under umask 022; bb1 logins default to 002, which made job-created dirs group-writable (custody checks
 # such as cloud-supervisor release_cache refuse those).
 umask 022
-export HOME="$BB_JOB_HOME" CARGO_HOME=/home/var/.cargo RUSTUP_HOME=/home/var/.rustup PATH=${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
+export HOME="$BB_JOB_HOME" CARGO_HOME=/mnt/bb/toolchains/cargo RUSTUP_HOME=/home/var/.rustup PATH=/home/var/bin/bb-cargo:${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
 # The job's delegated cgroup (see the launch below): BB_CGROUP is the job leaf; the bbcg systemd-run shim turns
 # "systemd-run --user --scope -p Delegate=yes -p MemoryMax=N CMD" into an exclusive child cgroup inside the job.
 case "$(cat /proc/self/cgroup)" in 0::/bbjobs.slice/run-*.scope/job) export BB_CGROUP=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup) PATH=/home/var/bin/bbcg:$PATH;; esac
 # Host paths behind this job's binds of /tmp, /work/src and /work/target (docker -v resolves on the host).
 export BB_HOST_TMP=${J}.tmp BB_HOST_SRC=${src} BB_HOST_TARGET=$(cat ${J}.tdir 2>/dev/null || echo ${TD})
-unset CARGO_INCREMENTAL  # the env var overrides the profile and sccache refuses it
-export TMPDIR="$BB_JOB_TMP" CARGO_TARGET_DIR="$BB_JOB_TARGET" CARGO_PROFILE_DEV_INCREMENTAL=true CARGO_PROFILE_TEST_INCREMENTAL=true CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \\
+export CARGO_INCREMENTAL=0  # job-owned targets are deleted; use shared sccache instead
+export TMPDIR="$BB_JOB_TMP" CARGO_TARGET_DIR="$BB_JOB_TARGET" CARGO_PROFILE_DEV_INCREMENTAL=false CARGO_PROFILE_TEST_INCREMENTAL=false CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \\
   SCCACHE_DIR=/mnt/bb/sccache SCCACHE_CACHE_SIZE=400G SCCACHE_IDLE_TIMEOUT=120 CARGO_NET_RETRY=5 CARGO_TERM_COLOR=\${CARGO_TERM_COLOR:-never}
 printf '[profile.default]\\nslow-timeout = { period = "60s", terminate-after = 10 }\\n' > /tmp/bb-nextest.toml  # = NEXTEST_TOOL, literal: bb-swap smokes this block verbatim
 ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)"
@@ -634,13 +662,22 @@ if [ "\${bbid:-}" != ${id.content} ] || { [ -f .git ] && [ ${id.commit} != none 
   echo >&2 "[build-slot] remote failed: tree-mismatch (client commit ${id.commit} content ${id.content}; VM checkout HEAD \${bbpre:-none} content \${bbid:-unknown})"
   [ ! -s "$bbI.recs" ] || node -e ${q(IDENT_DIFF)} "$bbI.recs" ${id.groups} || true; rm -f "$bbI.recs"; exit 224; fi
 # Shared target slot (see sharedFlavor): source times from the slot's content map before cargo looks at them.
+if [ ${repo} = sdk ] && [ "$BB_HOST_TARGET" = ${TD} ]; then
+  if ! node -e ${q(SOURCE_TIMES)} "$bbI.recs" /work/src ${J}.source-clock.json ${id.content}; then
+    echo >&2 '[build-slot] remote failed: private-source-times'; rm -f "$bbI.recs"; exit 224; fi
+  export BB_SOURCE_TIMES_POLICY=blob-past-private-v1 BB_SOURCE_TIMES_FILE=${J}.source-clock.json
+fi
 if [ "$BB_HOST_TARGET" != ${TD} ] && ! node -e ${q(MTIME_MAP)} "$bbI.recs" "$BB_HOST_TARGET/.bb-mtimes.json" /work/src; then
   echo >&2 "[build-slot] remote failed: shared-target-mtimes (could not set source times for $BB_HOST_TARGET; BUILD_SLOT_SHARED_TARGET=0 uses a per-copy dir)"; rm -f "$bbI.recs"; exit 224; fi
 rm -f "$bbI.recs"
 export BUILD_SLOT_TREE="${id.commit} ${id.tree} ${id.content}"
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json
 ${cargoJob ? '' : NPM_ENSURE}${passEnv()}
-cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map(q).join(' ')}`;
+cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map((a, i) => q(i === 0 && path.basename(a) === 'cargo' ? '/home/var/bin/bb-cargo/cargo' : a)).join(' ')}`;
+  // Hash the complete generated build environment/driver before adding the
+  // digest itself. Dispatch filenames are operational, not compiler inputs.
+  const targetRequestHash = crypto.createHash('sha256').update(inner.split(J).join('$JOBPREFIX')).digest('hex');
+  inner = `export BB_TARGET_REQUEST_SHA256=${targetRequestHash}\n` + inner;
   let wrapper = `J=${J}
 export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 node $J.receipt-tool.mjs recover /mnt/bb/jobs
@@ -828,6 +865,7 @@ const missingTools = () => HOST_TOOLS.filter((t) => spawnSync('sh', ['-c', `comm
 const VCACHE = process.env.BUILD_SLOT_VERDICT_DIR || '/home/var/.cache/buildbox/verdicts';
 const VC_TTL_MS = 7 * 86400e3; const VC_MAX_BYTES = 32 << 20;
 const cacheable = (argv) => jobClass(argv) === 'compile' && !COLD && !process.env.BUILD_SLOT_REMOTE_FETCH &&
+  !process.env.BUILD_SLOT_GATE_LOG &&
   process.env.BUILD_SLOT_VERDICT_CACHE !== '0' && process.env.BUILD_SLOT_STRESS !== '1' &&
   !/^proof-/.test(process.env.BUILD_SLOT_LABEL || '') && !/^proof-/.test(path.basename(process.cwd()));
 function verdictKey(repo, id, rel, argv, base = '') {  // base: the merge-base with main (affected-tests style scripts diff against it)
@@ -1214,7 +1252,11 @@ function mergeBase(co) {
   return /^[0-9a-f]{40}$/.test(b) ? b : '';
 }
 async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
-  const J = `/mnt/bb/jobs/${Date.now()}-${process.pid}`; const top = co.top; const R = REPOS[co.repo];
+  const J = `/mnt/bb/jobs/${Date.now()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`; const top = co.top; const R = REPOS[co.repo];
+  // A client-side flock vanishes on a WSL restart while the detached bb2 job
+  // remains alive. Every upload therefore owns a unique remote source copy;
+  // recovering a local claim can never reset/clean a running job's checkout.
+  key = sourceCopyKey(key, J);
   const logFile = ctx.logFile;
   Object.assign(ctx.meta, { key, tkey, job_id: J.slice(13), gate_log: process.env.BUILD_SLOT_GATE_LOG || null });
   atomic(ctx.metaFile, { ...JSON.parse(fs.readFileSync(ctx.metaFile, 'utf8')), ...ctx.meta });
@@ -1291,4 +1333,8 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   if (COLD) sshRun(`rm -rf /mnt/bb/targets/${tkey}`, { timeout: 120000 });
 
   return rc;
+}
+
+function sourceCopyKey(key, jobPrefix) {
+  return `${key}-${path.basename(jobPrefix)}`;
 }

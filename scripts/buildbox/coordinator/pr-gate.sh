@@ -9,6 +9,12 @@ prs="$*"; n=$(echo $prs | tr ' ' '+'); W=Q:/wt/pr-gate; L=Q:/lanes/pr-gate; mkdi
 # Local preparation failures have a separate held state, never a bb2 retry.
 python Q:/lanes/gate-prepare.py prepare $prs; preparation_rc=$?
 [ "$preparation_rc" = 0 ] || exit "$preparation_rc"
+pin_reason=$(python Q:/lanes/gate-merge.py record $prs 2>&1); pin_rc=$?
+if [ "$pin_rc" != 0 ]; then
+  printf '%s\n' "$pin_reason"
+  python Q:/lanes/gate-prepare.py hold $prs --reason "$pin_reason"
+  exit 6
+fi
 # Standing rule: rebase, never merge main. A PR whose own commits include a merge is refused (exit 3 like a conflict, so the
 # rest of the batch still gates); the author moves it to a rebased superseding PR.
 for p in $prs; do if [ -n "$(git -C Q:/sdk log --merges --format=%h origin/main..refs/pr-gate/$p)" ]; then echo "GATE FAIL #$n: #$p contains a merge commit"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_MERGECOMMIT #$p contains a merge commit; needs a rebased superseding PR" >> ~/.codex-fleet/alerts.log; echo $p > $L/.conflict; exit 3; fi; done
@@ -51,7 +57,14 @@ if [ ! -s "$W/.gate-tests-packages" ]; then
   printf '%s
 ' 'GATE_EMPTY no changed Cargo inputs' 'GATE_DONE rc=0' >> "$log"; rc=0
 else
-  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) >> "$log" 2>&1; rc=$?
+  # Windows native stdout/stderr can reopen a redirected file at separate
+  # positions. Give them a pipe; tee alone owns the append descriptor.
+  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) 2>&1 | tee -a "$log" >/dev/null
+  capture_status=("${PIPESTATUS[@]}"); rc=${capture_status[0]}
+  if [ "${capture_status[1]}" != 0 ]; then
+    echo 'error: GATE_RUNNER_INFRA coordinator log writer failed' >> "$log"
+    rc=224
+  fi
 fi
 echo "GATE_PR_WALL seconds=$((SECONDS-gate_started)) remote_rc=$rc" >> "$log"
 if grep -aq '^BB_DISK_LOW ' "$log"; then
@@ -60,14 +73,25 @@ if grep -aq '^BB_DISK_LOW ' "$log"; then
   exit 4
 fi
 # Executor isolation failures must not inherit PASS from a green Cargo footer.
-if grep -aq '^error: GATE_HOME_LEAK ' "$log"; then
-  v="INFRA #$n: $(grep -am1 '^error: GATE_HOME_LEAK ' "$log") log=$log"
+isolation_errors='^error: GATE_(HOME_LEAK|RUNNER_INFRA) |^\[buildbox\] (HOME guard|cleanup|export) INFRA:'
+if grep -aqE "$isolation_errors" "$log"; then
+  v="INFRA #$n: $(grep -am1 -E "$isolation_errors" "$log") log=$log"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 4
+fi
+# An ended client stream is not a completed payload. Check this before phase
+# verdicts so a lost executor is reported directly, not as a missing Windows
+# check or as a source test failure seen before the cutoff.
+if ! grep -aq '^GATE_DONE rc=' "$log"; then
+  v="INFRA #$n: executor/stream ended before payload completion (rc=$rc); remote job identity is in the build-slot receipt log=$log"
   echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 4
 fi
 # A successful payload cannot hide a failed executor/export/cleanup boundary.
-if [ "$rc" != 0 ] && grep -aq '^GATE_DONE rc=0$' "$log"; then
-  v="INFRA #$n: executor exited rc=$rc after successful payload; inspect wrapper stderr log=$log"
+payloads=$(grep -acE '^GATE_DONE rc=-?[0-9]+$' "$log")
+payload_rc=$(sed -nE 's/^GATE_DONE rc=(-?[0-9]+)$/\1/p' "$log")
+if [ "$rc" = 224 ] || [ "$payloads" != 1 ] || [ "$payload_rc" != "$rc" ]; then
+  v="INFRA #$n: executor exited rc=$rc with payload rc=${payload_rc:-absent}; inspect wrapper stderr log=$log"
   echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 4
 fi
@@ -108,7 +132,8 @@ if { [ "$rc" != 0 ] || grep -aqE '^GATE_CLIPPY rc=[1-9]' "$log"; } && [ "$rc" !=
   fi
   [ -z "$test_base_log" ] || echo "GATE_TEST_BASELINE log=$test_base_log" >> "$log"
 fi
-git -C $W checkout -q --detach -f origin/main
+# Keep the prepared tree until gate-drain verifies its head pins and merges.
+# The next preparation owns resetting this checkout.
 pr_fails=$(bash Q:/lanes/failed-tests.sh $log)
 base_fails=$( { bash Q:/lanes/failed-tests.sh "$base_log" 2>/dev/null; [ -z "$test_base_log" ] || bash Q:/lanes/failed-tests.sh "$test_base_log"; cat Q:/lanes/flakes.txt; } | sort -u)  # known flakes (owned, being fixed) never block a PR
 new=$(comm -23 <(printf '%s\n' "$pr_fails" | grep .) <(printf '%s\n' "$base_fails" | grep .))
