@@ -78,8 +78,16 @@ fn direct_unmount(destination: &CStr) -> std::io::Result<()> {
     }
 }
 
-// Like ordinary mount retirement, startup recovery must use Disk Arbitration
-// when the mount owner cannot issue the privileged unmount syscall directly.
+unsafe extern "C" {
+    fn acyclic_fs_darwin_retire_mount(
+        destination: *const c_char,
+        timeout: f64,
+        dissent: *mut c_int,
+    ) -> c_int;
+}
+
+// Startup recovery uses Disk Arbitration directly after a denied unmount.
+// diskutil's StorageKit path discovery opens the dead NFS root and can block.
 // The caller retains the authenticated destination fence throughout this call.
 pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
     let destination = field(&mount.f_mntonname)?;
@@ -97,35 +105,23 @@ pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMount
     {
         return Ok(());
     }
-    let mut command = std::process::Command::new("/usr/sbin/diskutil");
-    command
-        .args([
-            std::ffi::OsStr::new("unmount"),
-            std::ffi::OsStr::new("force"),
-        ])
-        .arg(std::ffi::OsStr::from_bytes(destination.to_bytes()))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-    let clock = crate::native_mount::clock::Clock::capture();
-    let deadline = clock.instant() + DISKUTIL_UNMOUNT_TIMEOUT;
-    let status = loop {
-        if let Some(status) = tree.try_wait(None)? {
-            break status;
-        }
-        if clock.instant() >= deadline {
-            tree.terminate(None)?;
-            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
-        }
-        std::thread::sleep(STOP_POLL_INTERVAL);
+    let mut dissent = 0;
+    // SAFETY: the cached mount record retains its terminated path. The bridge
+    // unschedules its private run-loop source before its callback storage dies.
+    let status = unsafe {
+        acyclic_fs_darwin_retire_mount(
+            destination.as_ptr(),
+            DISKUTIL_UNMOUNT_TIMEOUT.as_secs_f64(),
+            &raw mut dissent,
+        )
     };
-    tree.terminate(None)?;
-    if !status.success() {
-        return Err(NativeMountError::DriverExit {
-            operation: "Darwin stale mount retirement",
-            status,
-        });
+    if dissent != 0 {
+        return Err(NativeMountError::Driver(format!(
+            "Darwin stale mount retirement denied: {dissent:#x}"
+        )));
+    }
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status).into());
     }
     verify_detached(mount)
 }
