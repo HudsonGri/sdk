@@ -1,6 +1,15 @@
 use crate::{Attribute, OwnedBytes, StreamError};
 use std::sync::Arc;
 
+mod attributes;
+mod validation;
+use attributes::AttributeStorage;
+pub use attributes::{RecordAttribute, RecordAttributeIter, RecordAttributes};
+#[cfg(not(target_arch = "wasm32"))]
+mod prepared;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use prepared::{PreparedHeaderControls, PreparedHeaders};
+
 /// Maximum indexed keys in one record.
 pub const MAX_RECORD_KEYS: usize = 64;
 /// Maximum bytes in one indexed key.
@@ -10,7 +19,7 @@ pub const MAX_RECORD_ATTRIBUTES: usize = 16;
 
 struct HeaderData {
     keys: Vec<OwnedBytes>,
-    attributes: Vec<Attribute>,
+    attributes: AttributeStorage,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
@@ -25,7 +34,14 @@ impl RecordHeaders {
     /// Providers additionally fund the supplied vectors, names and byte owners.
     #[must_use]
     pub const fn control_bytes() -> usize {
-        std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            acyclic_native_runtime::arc_allocation_bytes::<HeaderData>()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>()
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_parts(
@@ -36,18 +52,18 @@ impl RecordHeaders {
     ) -> std::io::Result<Result<Self, StreamError>> {
         // A fallible control-header admission must not release the vector's
         // funding before destroying the values in that vector.
-        let mut data = HeaderData {
-            keys,
-            attributes,
-            _allocation: Some(allocation),
-        };
-        if let Err(error) = Self::validate_parts(&data.keys, &data.attributes) {
+        if let Err(error) = Self::validate_parts(&keys, &attributes) {
+            drop(keys);
+            drop(attributes);
             return Ok(Err(error));
         }
-        let mut control = acyclic_native_runtime::ReadAllocation::new(
-            meter,
-            std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>(),
-        )?;
+        let mut data = HeaderData {
+            keys,
+            attributes: AttributeStorage::Owned(attributes),
+            _allocation: Some(allocation),
+        };
+        let mut control =
+            acyclic_native_runtime::ReadAllocation::new(meter, Self::control_bytes())?;
         data._allocation
             .as_mut()
             .ok_or(std::io::ErrorKind::InvalidInput)?
@@ -64,35 +80,21 @@ impl RecordHeaders {
         }
         Ok(Self(Some(Arc::new(HeaderData {
             keys,
-            attributes,
+            attributes: AttributeStorage::Owned(attributes),
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
         }))))
     }
 
     fn validate_parts(keys: &[OwnedBytes], attributes: &[Attribute]) -> Result<(), StreamError> {
-        if keys.len() > MAX_RECORD_KEYS
-            || attributes.len() > MAX_RECORD_ATTRIBUTES
-            || keys.iter().any(|key| key.len() > MAX_RECORD_KEY_BYTES)
-        {
-            return Err(StreamError::LimitExceeded);
+        let mut validation = validation::Validation::default();
+        for key in keys {
+            validation.key(key)?;
         }
-        if keys
-            .windows(2)
-            .any(|pair| matches!(pair, [left, right] if left >= right))
-            || attributes
-                .windows(2)
-                .any(|pair| matches!(pair, [left, right] if left.name >= right.name))
-            || attributes.iter().any(|attribute| {
-                attribute.name.is_empty() || attribute.name.chars().any(char::is_control)
-            })
-        {
-            return Err(StreamError::InvalidArgument);
+        for attribute in attributes {
+            validation.attribute(&attribute.name, &attribute.value)?;
         }
-        if payload_bytes(keys, attributes) > crate::MAX_RECORD_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        Ok(())
+        validation.finish(crate::MAX_RECORD_BYTES)
     }
 
     /// Canonically sorted unique keys.
@@ -101,13 +103,18 @@ impl RecordHeaders {
     }
 
     /// Canonically sorted single-valued attributes.
-    pub fn attributes(&self) -> &[Attribute] {
-        self.0.as_ref().map_or(&[], |data| &data.attributes)
+    pub fn attributes(&self) -> RecordAttributes<'_> {
+        RecordAttributes(self.0.as_ref().map(|data| &data.attributes))
     }
 
     /// Bytes counted against the record's shared value-and-header bound.
     pub fn payload_bytes(&self) -> usize {
-        payload_bytes(self.keys(), self.attributes())
+        self.keys().iter().map(OwnedBytes::len).sum::<usize>()
+            + self
+                .attributes()
+                .iter()
+                .map(|attribute| attribute.name.len() + attribute.value.len())
+                .sum::<usize>()
     }
 
     pub(crate) fn hash_bytes(&self) -> u64 {
@@ -119,15 +126,9 @@ impl RecordHeaders {
     /// Memory retained by unmetered ingress, excluding shared byte owners.
     pub(crate) fn owned_bytes(&self) -> usize {
         self.0.as_ref().map_or(0, |data| {
-            std::mem::size_of::<HeaderData>()
-                + 2 * std::mem::size_of::<usize>()
+            Self::control_bytes()
                 + data.keys.capacity() * std::mem::size_of::<OwnedBytes>()
-                + data.attributes.capacity() * std::mem::size_of::<Attribute>()
-                + data
-                    .attributes
-                    .iter()
-                    .map(|attribute| attribute.name.capacity())
-                    .sum::<usize>()
+                + data.attributes.control_bytes()
         })
     }
 
@@ -136,7 +137,6 @@ impl RecordHeaders {
         &self,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Self> {
-        use acyclic_native_runtime::ReadAllocation;
         let Some(data) = &self.0 else {
             return Ok(self.clone());
         };
@@ -147,49 +147,16 @@ impl RecordHeaders {
         {
             return Ok(self.clone());
         }
-        meter.check()?;
-        let copied = data.keys.len() * std::mem::size_of::<OwnedBytes>()
-            + data.attributes.len() * std::mem::size_of::<Attribute>()
-            + data
-                .attributes
-                .iter()
-                .map(|attribute| attribute.name.len())
-                .sum::<usize>();
-        meter.admit_codec(0, copied as u64, 0)?;
-        let mut allocation = ReadAllocation::new(
+        let headers = PreparedHeaders::new_shape(
             meter,
-            std::mem::size_of::<HeaderData>() + 2 * std::mem::size_of::<usize>(),
-        )?;
-        let mut keys = crate::native::vector(data.keys.len(), meter, &mut allocation)?;
-        keys.extend(data.keys.iter().cloned());
-        let mut attributes = crate::native::vector(data.attributes.len(), meter, &mut allocation)?;
-        for attribute in &data.attributes {
-            let mut name = crate::native::vector(attribute.name.len(), meter, &mut allocation)?;
-            name.extend_from_slice(attribute.name.as_bytes());
-            attributes.push(Attribute {
-                name: String::from_utf8(name).map_err(|_| std::io::ErrorKind::InvalidData)?,
-                value: attribute.value.clone(),
-            });
-        }
-        let headers = Self(Some(Arc::new(HeaderData {
-            keys,
-            attributes,
-            _allocation: Some(allocation),
-        })));
-        meter.record_codec(0, copied as u64, 0)?;
+            self.payload_bytes(),
+            data.keys.len(),
+            data.attributes.len(),
+        )?
+        .finish(self)?;
         meter.check()?;
         Ok(headers)
     }
-}
-
-fn payload_bytes(keys: &[OwnedBytes], attributes: &[Attribute]) -> usize {
-    keys.iter()
-        .fold(0usize, |total, key| total.saturating_add(key.len()))
-        .saturating_add(attributes.iter().fold(0usize, |total, attribute| {
-            total
-                .saturating_add(attribute.name.len())
-                .saturating_add(attribute.value.len())
-        }))
 }
 
 impl PartialEq for RecordHeaders {
@@ -240,6 +207,40 @@ mod native_tests {
     use super::*;
     use crate::test_meter::Meter;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn native_header_control_funds_its_complete_shared_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let owner = Arc::new(Meter::default());
+        let meter = owner.original();
+        let keys = vec![OwnedBytes::from_static(b"key")];
+        let vector_bytes = keys.capacity() * std::mem::size_of::<OwnedBytes>();
+        let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, vector_bytes)?;
+        let baseline = owner.held.load(Ordering::SeqCst);
+        let mut headers = None;
+        let created = acyclic_test_support::measure(|| {
+            headers = Some(RecordHeaders::from_native_parts(
+                keys,
+                vec![],
+                allocation,
+                &meter,
+            ));
+        });
+        let headers = headers.ok_or("header construction was not called")???;
+        assert_eq!(created.count_current, 1);
+        assert_eq!(
+            owner.held.load(Ordering::SeqCst) - baseline,
+            u64::try_from(created.bytes_current)?,
+            "native header control omitted Arc counters"
+        );
+        assert_eq!(
+            headers.owned_bytes() as u64,
+            owner.held.load(Ordering::SeqCst)
+        );
+        drop(headers);
+        owner.assert_refunded();
+        Ok(())
+    }
 
     #[test]
     fn prepared_headers_retain_only_their_original_admission()

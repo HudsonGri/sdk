@@ -9,6 +9,7 @@ async fn maximum_request_includes_summary_dispatches_in_either_order() -> Result
         let provider = Provider {
             turns: 0,
             compact: true,
+            checkout_tools: false,
             timing: Arc::clone(&timing),
         };
         let mut expected = 0;
@@ -64,5 +65,35 @@ async fn maximum_request_includes_summary_dispatches_in_either_order() -> Result
             1
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkout_measurement_uses_the_stock_tool_and_requires_its_return_boundary()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::prelude::*;
+    let timing = Arc::new(Mutex::new(Timing::default()));
+    let subscriber = measurement_subscriber(timing.clone(), true, profile::Profile::default());
+    assert!(
+        timing.try_lock().is_ok(),
+        "measurement subscriber retained timing mutex"
+    );
+    subscriber.try_init()?;
+    let root = tempfile::tempdir()?;
+    run(2, false, true, root.path(), timing.clone()).await?;
+    timing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .journal_work
+        .require_stock_events()?;
+    assert_eq!(
+        timing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .intervals
+            .len(),
+        2,
+        "stock checkout return boundary was not measured"
+    );
     Ok(())
 }

@@ -96,13 +96,13 @@ fn encoded_len(envelope: &CommittedEnvelope) -> Result<usize, LocalStreamError> 
     Ok(length)
 }
 
-fn blob(bytes: &mut Vec<u8>, text: &str) -> Result<(), LocalStreamError> {
+fn blob(bytes: &mut page::BufferBytes, text: &str) -> Result<(), LocalStreamError> {
     bytes.extend_from_slice(
         &u32::try_from(text.len())
             .map_err(|_| LocalStreamError::InvalidLimits)?
             .to_le_bytes(),
-    );
-    bytes.extend_from_slice(text.as_bytes());
+    )?;
+    bytes.extend_from_slice(text.as_bytes())?;
     Ok(())
 }
 
@@ -115,30 +115,32 @@ pub(super) fn append(
     let mut bytes = Buffer::new(length, io.work())?;
     page::codec(io.work(), length as u64, 0, true)?;
     let encoded = (|| {
-        bytes.bytes.push(TAG);
-        bytes.bytes.extend_from_slice(envelope.commit_id.as_bytes());
+        bytes.bytes.push(TAG)?;
+        bytes
+            .bytes
+            .extend_from_slice(envelope.commit_id.as_bytes())?;
         bytes.bytes.extend_from_slice(
             &u32::try_from(envelope.mutations.len())
                 .map_err(|_| LocalStreamError::InvalidLimits)?
                 .to_le_bytes(),
-        );
+        )?;
         for (position, mutation) in envelope.mutations.iter().enumerate() {
             let parts = parts(mutation)?;
-            bytes.bytes.push(u8::from(parts.source.is_some()));
+            bytes.bytes.push(u8::from(parts.source.is_some()))?;
             blob(&mut bytes.bytes, parts.path.as_str())?;
             if let Some(source) = parts.source {
                 blob(&mut bytes.bytes, source.as_str())?;
             }
-            bytes.bytes.extend_from_slice(&parts.start.to_le_bytes());
+            bytes.bytes.extend_from_slice(&parts.start.to_le_bytes())?;
             bytes.bytes.extend_from_slice(
                 &u32::try_from(parts.records.len())
                     .map_err(|_| LocalStreamError::InvalidLimits)?
                     .to_le_bytes(),
-            );
+            )?;
             for offset in 0..parts.records.len() {
                 bytes
                     .bytes
-                    .extend_from_slice(&record_reference(position, offset)?.encoded());
+                    .extend_from_slice(&record_reference(position, offset)?.encoded())?;
             }
         }
         Ok::<(), LocalStreamError>(())

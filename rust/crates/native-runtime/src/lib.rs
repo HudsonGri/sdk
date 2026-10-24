@@ -19,10 +19,10 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
@@ -56,9 +56,9 @@ pub use file::read_declared_source_bytes;
 pub(crate) use file::write_all_batch_owned;
 pub use file::{
     AsyncRangeReader, Durability, NativeFile, NativeFileMeter, OwnedRead, OwnedWrite,
-    flush_file_all, flush_file_data, read_at, read_batch_async, rename_file, set_len, sync_data,
-    sync_file, sync_parent, truncate_file, write_all_at, write_file, write_file_all,
-    write_file_with,
+    PreparedFileAccess, PreparedFileOperation, flush_file_all, flush_file_data, read_at,
+    read_batch_async, rename_file, set_len, sync_data, sync_file, sync_parent, truncate_file,
+    write_all_at, write_file, write_file_all, write_file_with,
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use file::{FileIdentity, file_identity};
@@ -85,8 +85,9 @@ pub use service::{
 pub use shell::shell_command;
 mod meter;
 pub use meter::{
-    NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    ReadAllocation, ReadAllocationReservation,
+    NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
+    NativeOperationReservation, NativeReadMeter, ReadAllocation, ReadAllocationReservation,
+    arc_allocation_bytes,
 };
 mod blocking;
 mod task;

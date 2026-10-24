@@ -28,7 +28,7 @@ impl SharedFile {
                     Some(work),
                     ReadAllocation::new(
                         &work.meter,
-                        std::mem::size_of::<Handle>() + 2 * std::mem::size_of::<usize>(),
+                        acyclic_native_runtime::arc_allocation_bytes::<Handle>(),
                     ),
                 )
             })

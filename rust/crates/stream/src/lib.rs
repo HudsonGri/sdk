@@ -167,7 +167,8 @@ mod changes;
 mod record_headers;
 pub use changes::ChangeEntryRef;
 pub use record_headers::{
-    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordHeaders,
+    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordAttribute,
+    RecordAttributeIter, RecordAttributes, RecordHeaders,
 };
 
 include!("lib/provider.rs");
@@ -181,7 +182,9 @@ include!("lib/tests.rs");
 mod owned_bytes;
 pub use owned_bytes::{OwnedBytes, UniqueOwnedBytes};
 #[cfg(not(target_arch = "wasm32"))]
-pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
+pub use owned_bytes::{
+    PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure, ReusableOwnedBytes,
+};
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 

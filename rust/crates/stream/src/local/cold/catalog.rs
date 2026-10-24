@@ -60,24 +60,24 @@ impl Head {
         let length = FIXED + path.as_str().len();
         let mut bytes = Buffer::new(length, io.work())?;
         page::codec(io.work(), length as u64, 0, true)?;
-        bytes.bytes.push(TAG);
-        bytes.bytes.extend_from_slice(&self.tail.to_le_bytes());
+        bytes.bytes.push(TAG)?;
+        bytes.bytes.extend_from_slice(&self.tail.to_le_bytes())?;
         bytes
             .bytes
-            .extend_from_slice(&self.created_decision.to_le_bytes());
+            .extend_from_slice(&self.created_decision.to_le_bytes())?;
         match self.records {
             Some(reference) => {
-                bytes.bytes.push(1);
-                bytes.bytes.extend_from_slice(&reference.encoded());
+                bytes.bytes.push(1)?;
+                bytes.bytes.extend_from_slice(&reference.encoded())?;
             }
-            None => bytes.bytes.extend_from_slice(&[0; 53]),
+            None => bytes.bytes.extend_from_slice(&[0; 53])?,
         }
         bytes.bytes.extend_from_slice(
             &u32::try_from(path.as_str().len())
                 .map_err(|_| LocalStreamError::InvalidLimits)?
                 .to_le_bytes(),
-        );
-        bytes.bytes.extend_from_slice(path.as_str().as_bytes());
+        )?;
+        bytes.bytes.extend_from_slice(path.as_str().as_bytes())?;
         page::codec(io.work(), length as u64, 0, false)?;
         let reference = io.append(PageKind::Fact, &bytes.bytes)?;
         if self.records.is_some_and(|child| !child.precedes(reference)) {

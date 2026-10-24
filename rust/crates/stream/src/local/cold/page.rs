@@ -2,6 +2,11 @@
 use super::*;
 use acyclic_native_runtime::ReadAllocation;
 
+mod buffer;
+mod prepared;
+pub(super) use buffer::{Buffer, Bytes as BufferBytes};
+pub(super) use prepared::PreparedRead;
+
 const PAGE_MAGIC: &[u8; 8] = b"ACYCLPG1";
 const PAGE_HEADER_BYTES: usize = 13;
 pub(super) const HEADER_BYTES: usize = PAGE_HEADER_BYTES;
@@ -92,75 +97,20 @@ impl TryFrom<u8> for PageKind {
     }
 }
 
-/// Bytes are destroyed before the original allocation that funds them.
-pub(super) struct Buffer {
-    pub(super) bytes: Vec<u8>,
-    _allocation: Option<ReadAllocation>,
-}
-
-impl Buffer {
-    pub(super) fn new(
-        length: usize,
-        work: Option<&Arc<crate::memory::Work>>,
-    ) -> Result<Self, LocalStreamError> {
-        if let Some(work) = work {
-            let mut allocation = ReadAllocation::empty(&work.meter);
-            let bytes = observe(
-                Some(work),
-                crate::native::vector(length, &work.meter, &mut allocation),
-            )?;
-            return Ok(Self {
-                bytes,
-                _allocation: Some(allocation),
-            });
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|_| LocalStreamError::InvalidLimits)?;
-        Ok(Self {
-            bytes,
-            _allocation: None,
-        })
-    }
-
-    fn freeze(
-        mut self,
-        work: Option<&Arc<crate::memory::Work>>,
-    ) -> Result<crate::OwnedBytes, LocalStreamError> {
-        let Some(allocation) = self._allocation.as_ref() else {
-            return Ok(std::mem::take(&mut self.bytes).into());
-        };
-        let meter = Arc::clone(allocation.meter());
-        observe(
-            work,
-            crate::OwnedBytes::from_vec_with_guard_in_place(
-                &mut self.bytes,
-                &mut self._allocation,
-                &meter,
-            ),
-        )
-    }
-}
-
 pub(super) struct Page {
     pub(super) kind: PageKind,
-    encoded: Buffer,
+    encoded: crate::OwnedBytes,
 }
 
 impl Page {
     pub(super) fn body(&self) -> Result<&[u8], LocalStreamError> {
         self.encoded
-            .bytes
             .get(PAGE_HEADER_BYTES..)
             .ok_or(LocalStreamError::Corrupt)
     }
 
-    pub(super) fn into_body(
-        self,
-        work: Option<&Arc<crate::memory::Work>>,
-    ) -> Result<crate::OwnedBytes, LocalStreamError> {
-        let bytes = self.encoded.freeze(work)?;
+    pub(super) fn into_body(self) -> Result<crate::OwnedBytes, LocalStreamError> {
+        let bytes = self.encoded;
         if bytes.len() < PAGE_HEADER_BYTES {
             return Err(LocalStreamError::Corrupt);
         }
@@ -305,10 +255,10 @@ pub(super) fn prepare(
     let mut buffer = Buffer::new(length, work)?;
     let hash_bytes = length as u64 + PAGE_DOMAIN.len() as u64 + 16;
     codec(work, length as u64, hash_bytes, true)?;
-    buffer.bytes.extend_from_slice(PAGE_MAGIC);
-    buffer.bytes.push(kind as u8);
-    buffer.bytes.extend_from_slice(&bytes.to_le_bytes());
-    buffer.bytes.extend_from_slice(body);
+    buffer.bytes.extend_from_slice(PAGE_MAGIC)?;
+    buffer.bytes.push(kind as u8)?;
+    buffer.bytes.extend_from_slice(&bytes.to_le_bytes())?;
+    buffer.bytes.extend_from_slice(body)?;
     let hash = digest(segment, offset, &buffer.bytes);
     codec(work, length as u64, hash_bytes, false)?;
     let reference = PageRef {
@@ -342,20 +292,28 @@ pub(super) fn read(
 ) -> Result<Page, LocalStreamError> {
     let length = checked_length(reference.bytes)?;
     let mut encoded = Buffer::new(length, work)?;
-    encoded.bytes.resize(length, 0);
+    encoded.bytes.resize(length, 0)?;
     read_exact(file, reference.offset, &mut encoded.bytes, work)?;
     let hash_bytes = length as u64 + PAGE_DOMAIN.len() as u64 + 16;
     codec(work, 0, hash_bytes, true)?;
-    let found = digest(reference.segment, reference.offset, &encoded.bytes);
+    let verified = verify(reference, &encoded.bytes);
     codec(work, 0, hash_bytes, false)?;
+    let kind = verified?;
+    Ok(Page {
+        kind,
+        encoded: encoded.freeze()?,
+    })
+}
+
+fn verify(reference: PageRef, encoded: &[u8]) -> Result<PageKind, LocalStreamError> {
+    let found = digest(reference.segment, reference.offset, encoded);
     if found != reference.digest
-        || !encoded.bytes.starts_with(PAGE_MAGIC)
-        || encoded.bytes.get(9..13) != Some(reference.bytes.to_le_bytes().as_slice())
+        || !encoded.starts_with(PAGE_MAGIC)
+        || encoded.get(9..13) != Some(reference.bytes.to_le_bytes().as_slice())
     {
         return Err(LocalStreamError::Corrupt);
     }
-    let kind = PageKind::try_from(*encoded.bytes.get(8).ok_or(LocalStreamError::Corrupt)?)?;
-    Ok(Page { kind, encoded })
+    PageKind::try_from(*encoded.get(8).ok_or(LocalStreamError::Corrupt)?)
 }
 
 /// Preserve each physical prefix and original failure for fixed metadata and

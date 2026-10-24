@@ -6,6 +6,9 @@ pub(super) struct Span {
     end: usize,
 }
 impl Span {
+    pub(super) fn range(self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
     pub(super) fn slice(self, bytes: &OwnedBytes) -> OwnedBytes {
         bytes.slice(self.start..self.end)
     }

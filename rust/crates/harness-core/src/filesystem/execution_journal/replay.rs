@@ -93,6 +93,9 @@ where
             let mut work = history
                 .as_mut()
                 .map(|io| io as &mut dyn crate::store::HistoryIo);
+            #[cfg(feature = "test-support")]
+            tracing::trace!(target: "acyclic_harness::journal_work",
+                journal_reads = 1_u64, "execution journal page requested");
             let mut entries = match crate::store::operations::read_records(
                 &self.stream,
                 stream.path(),
@@ -134,6 +137,10 @@ where
                     }
                     break;
                 };
+                #[cfg(feature = "test-support")]
+                tracing::trace!(target: "acyclic_harness::journal_work",
+                    journal_records = 1_u64, journal_read_bytes = record.value.len() as u64,
+                    "execution journal record returned");
                 _record_hold = if let Some(io) = io.filter(|io| io.original_native_work().is_none())
                 {
                     io.charge(acyclic_fs::WorkCounters {

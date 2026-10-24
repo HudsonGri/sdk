@@ -487,6 +487,14 @@ impl StockExecution<'_> {
             )
             .await
         };
+        #[cfg(feature = "test-support")]
+        tracing::trace!(
+            target: "acyclic_harness::tool_return",
+            step,
+            executed = claimed,
+            succeeded = execution.as_ref().is_ok_and(|result| result.is_some()),
+            "tool executor returned"
+        );
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),

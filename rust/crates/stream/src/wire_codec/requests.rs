@@ -1,6 +1,6 @@
 use crate::{
-    AppendRecord, AppendRequest, Attribute, CommitCondition, CommitMutation, CommitRequest,
-    ForkRequest,
+    AppendRecord, AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest,
+    RecordAttribute,
 };
 
 pub(crate) fn block_len(bytes: usize) -> usize {
@@ -9,7 +9,7 @@ pub(crate) fn block_len(bytes: usize) -> usize {
 fn uint_len(value: Option<u64>) -> usize {
     value.map_or(0, |value| 1 + prost::encoding::encoded_len_varint(value))
 }
-fn attribute_len(attribute: &Attribute) -> usize {
+fn attribute_len(attribute: RecordAttribute<'_>) -> usize {
     block_len(attribute.name.len()).saturating_add(if attribute.value.is_empty() {
         0
     } else {
@@ -37,9 +37,12 @@ fn append_record_len(record: &AppendRecord) -> usize {
         .fold(value, usize::saturating_add)
 }
 fn records_len(records: &[AppendRecord]) -> usize {
+    records_len_with(records, &append_record_len)
+}
+fn records_len_with(records: &[AppendRecord], length: &impl Fn(&AppendRecord) -> usize) -> usize {
     records
         .iter()
-        .map(|record| block_len(append_record_len(record)))
+        .map(|record| block_len(length(record)))
         .fold(0_usize, usize::saturating_add)
 }
 
@@ -74,10 +77,14 @@ fn condition_len(condition: &CommitCondition) -> usize {
         CommitCondition::Absent { path } => block_len(path.as_str().len()),
     })
 }
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 fn mutation_len(mutation: &CommitMutation) -> usize {
+    mutation_len_with(mutation, &append_record_len)
+}
+fn mutation_len_with(mutation: &CommitMutation, length: &impl Fn(&AppendRecord) -> usize) -> usize {
     block_len(match mutation {
         CommitMutation::Append { path, records } => {
-            block_len(path.as_str().len()).saturating_add(records_len(records))
+            block_len(path.as_str().len()).saturating_add(records_len_with(records, length))
         }
         CommitMutation::Fork {
             source,
@@ -87,10 +94,13 @@ fn mutation_len(mutation: &CommitMutation) -> usize {
         } => block_len(source.as_str().len())
             .saturating_add(block_len(destination.as_str().len()))
             .saturating_add(uint_len((*at_tail != 0).then_some(*at_tail)))
-            .saturating_add(records_len(records)),
+            .saturating_add(records_len_with(records, length)),
     })
 }
 pub(crate) fn commit_len(request: &CommitRequest) -> usize {
+    commit_len_with(request, &append_record_len)
+}
+fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> usize) -> usize {
     request
         .conditions
         .iter()
@@ -100,10 +110,21 @@ pub(crate) fn commit_len(request: &CommitRequest) -> usize {
             request
                 .mutations
                 .iter()
-                .map(|mutation| block_len(mutation_len(mutation)))
+                .map(|mutation| block_len(mutation_len_with(mutation, length)))
                 .fold(0_usize, usize::saturating_add),
         )
         .saturating_add(block_len(request.idempotency_key.as_bytes().len()))
+}
+
+/// A prepared single-record command admits unknown value and header bytes.
+/// Count every possible field, then use the ordinary nesting calculation so
+/// length-delimiter growth is included at every protobuf boundary.
+#[cfg(feature = "local")]
+pub(crate) fn prepared_commit_command_len(request: &CommitRequest, maximum: usize) -> usize {
+    let fields = 1 + crate::MAX_RECORD_KEYS + 3 * crate::MAX_RECORD_ATTRIBUTES;
+    let field_overhead = 1 + prost::length_delimiter_len(crate::MAX_COMMAND_BYTES);
+    let record = maximum.saturating_add(fields.saturating_mul(field_overhead));
+    block_len(commit_len_with(request, &|_| record))
 }
 
 #[cfg(any(
@@ -153,7 +174,7 @@ fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
             header(out, 3, attribute_len(attribute));
             bytes(out, 1, attribute.name.as_bytes());
             if !attribute.value.is_empty() {
-                bytes(out, 2, &attribute.value);
+                bytes(out, 2, attribute.value);
             }
         }
     }
@@ -392,7 +413,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
     fn request_path_measure_append_encoding() -> Result<(), Box<dyn std::error::Error>> {
         let request = AppendRequest {
             path: crate::StreamPath::new("request/events")?,

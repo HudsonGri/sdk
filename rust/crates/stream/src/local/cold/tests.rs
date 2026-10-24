@@ -142,7 +142,9 @@ fn cold_page_address_hash_short_read_and_late_cancellation_preserve_custody()
     assert_eq!(page.body()?, b"body");
     assert_eq!(
         meter.held.load(Ordering::SeqCst),
-        baseline + u64::from(reference.bytes)
+        baseline
+            + u64::from(reference.bytes)
+            + crate::OwnedBytes::vec_guard_header_bytes::<acyclic_native_runtime::ReadAllocation>()
     );
     drop(page);
     assert_eq!(meter.held.load(Ordering::SeqCst), baseline);

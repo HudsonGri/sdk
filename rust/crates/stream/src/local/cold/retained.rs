@@ -123,15 +123,17 @@ pub(super) fn put(
     let mut bytes = Buffer::new(length, io.work())?;
     let key = key(0, identity.as_bytes(), io.work())?;
     page::codec(io.work(), length as u64, 0, true)?;
-    bytes.bytes.extend_from_slice(&[TAG, binding.family.byte()]);
+    bytes
+        .bytes
+        .extend_from_slice(&[TAG, binding.family.byte()])?;
     bytes.bytes.extend_from_slice(
         &u16::try_from(identity.as_bytes().len())
             .map_err(|_| LocalStreamError::InvalidLimits)?
             .to_le_bytes(),
-    );
-    bytes.bytes.extend_from_slice(identity.as_bytes());
-    bytes.bytes.extend_from_slice(&binding.request_digest);
-    bytes.bytes.extend_from_slice(&binding.outcome.encoded());
+    )?;
+    bytes.bytes.extend_from_slice(identity.as_bytes())?;
+    bytes.bytes.extend_from_slice(&binding.request_digest)?;
+    bytes.bytes.extend_from_slice(&binding.outcome.encoded())?;
     page::codec(io.work(), length as u64, 0, false)?;
     let reference = io.append(PageKind::Fact, &bytes.bytes)?;
     if !binding.outcome.precedes(reference) {

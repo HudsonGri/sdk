@@ -61,6 +61,9 @@ impl<'a, P: StreamProvider> Reader<'a, P> {
             let mut work = history
                 .as_mut()
                 .map(|io| io as &mut dyn crate::store::HistoryIo);
+            #[cfg(feature = "test-support")]
+            tracing::trace!(target: "acyclic_harness::journal_work",
+                journal_reads = 1_u64, "execution index record requested");
             let record = crate::store::operations::one_record(
                 self.provider,
                 self.path,
@@ -69,6 +72,10 @@ impl<'a, P: StreamProvider> Reader<'a, P> {
             )
             .await?
             .ok_or_else(|| invalid(self.io, "execution index node is missing"))?;
+            #[cfg(feature = "test-support")]
+            tracing::trace!(target: "acyclic_harness::journal_work",
+                journal_records = 1_u64, journal_read_bytes = record.value.len() as u64,
+                "execution index record returned");
             let held = crate::store::operations::sdk_record_retained_bytes(&record, &work);
             let hold = self.io.map(|io| io.guard_owned(held)).transpose()?;
             (Storage::Committed(record), hold)

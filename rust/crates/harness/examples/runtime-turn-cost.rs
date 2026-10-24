@@ -3,6 +3,8 @@
 //! --example runtime-turn-cost -- 1000
 #[path = "runtime_turn_cost/intervals.rs"]
 mod intervals;
+#[path = "runtime_turn_cost/journal_work.rs"]
+mod journal_work;
 #[path = "runtime_turn_cost/profile.rs"]
 mod profile;
 #[path = "runtime_turn_cost/resources.rs"]
@@ -10,6 +12,8 @@ mod resources;
 #[cfg(test)]
 #[path = "runtime_turn_cost/tests.rs"]
 mod tests;
+#[path = "runtime_turn_cost/tool_return.rs"]
+mod tool_return;
 use acyclic_harness::{
     Error, LocalHarness, Result,
     context::{CompactionPolicy, ModelContextCapacity, ModelTokenCount},
@@ -36,6 +40,8 @@ struct Timing {
     resources: resources::Samples,
     summaries: u32,
     maximum_request_bytes: usize,
+    measurement_error: Option<Error>,
+    journal_work: journal_work::Measurement,
 }
 
 struct FlushCounter(Arc<AtomicU64>);
@@ -53,6 +59,18 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FlushCounter {
     }
 }
 impl Timing {
+    fn tool_returned(&mut self) -> Result<()> {
+        if self.tool_finished.is_some() {
+            return Err(Error::Invalid("duplicate tool return measurement".into()));
+        }
+        let observed = self.intervals.len();
+        if observed == 0 || [90, 990, 9990, 99990, 999990].contains(&observed) {
+            self.resources.start(observed)?;
+        }
+        self.tool_finished = Some((Instant::now(), self.stream_flushes.load(Ordering::Relaxed)));
+        Ok(())
+    }
+
     fn report_checkpoint(&mut self) -> Result<()> {
         let end = self.intervals.len();
         if [1, 10, 14, 100, 1_000, 10_000, 100_000, 1_000_000].contains(&end) {
@@ -63,6 +81,7 @@ impl Timing {
             );
             self.profile.report(end);
             self.resources.report(end)?;
+            self.journal_work.report(end)?;
             println!(
                 "compaction summaries={}; maximum dispatched request={} bytes",
                 self.summaries, self.maximum_request_bytes
@@ -74,6 +93,7 @@ impl Timing {
 struct Provider {
     turns: u32,
     compact: bool,
+    checkout_tools: bool,
     timing: Arc<Mutex<Timing>>,
 }
 impl ModelProvider for Provider {
@@ -138,7 +158,7 @@ impl ModelProvider for Provider {
                 .summaries += 1;
             return Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {
-                    delta: "Continue the deterministic bench.noop tool sequence.".into(),
+                    delta: "Continue the deterministic tool sequence.".into(),
                 }),
                 Ok(ModelEvent::Completed {
                     metadata: Value::Null,
@@ -148,7 +168,13 @@ impl ModelProvider for Provider {
         // The executor owns the borrowed request throughout generation. This
         // fixture retains neither earlier requests nor their full messages.
         let mut timing = self.timing.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(error) = timing.measurement_error.take() {
+            return Box::pin(futures::stream::iter([Err(error)]));
+        }
         if let Some((finished, flushes)) = timing.tool_finished.take() {
+            if let Err(error) = timing.journal_work.complete() {
+                return Box::pin(futures::stream::iter([Err(error)]));
+            }
             let step_flushes = timing.stream_flushes.load(Ordering::Relaxed) - flushes;
             if let Err(error) = timing.intervals.push(finished.elapsed(), step_flushes) {
                 return Box::pin(futures::stream::iter([Err(error)]));
@@ -157,13 +183,40 @@ impl ModelProvider for Provider {
                 return Box::pin(futures::stream::iter([Err(error)]));
             }
         }
+        if let Err(error) = timing.journal_work.begin() {
+            return Box::pin(futures::stream::iter([Err(error)]));
+        }
         drop(timing);
+        if self.checkout_tools
+            && let Some(message) = request.request().messages.last()
+            && let Some(error) = message.content.parts().iter().find_map(|part| match part {
+                acyclic_harness::model::ModelContentPart::ToolResult {
+                    content: acyclic_harness::model::ToolResultContent::Error { message },
+                    ..
+                } => Some(message),
+                _ => None,
+            })
+        {
+            return Box::pin(futures::stream::iter([Err(Error::Invalid(format!(
+                "stock checkout tool failed: {error}"
+            )))]));
+        }
         let mut events = Vec::new();
         if dispatch.step < self.turns {
             events.push(Ok(ModelEvent::ToolCall(ToolCall::new(
                 format!("call-{}", dispatch.step),
-                "bench.noop".into(),
-                json!({}),
+                if self.checkout_tools {
+                    "write"
+                } else {
+                    "bench.noop"
+                }
+                .into(),
+                if self.checkout_tools {
+                    json!({"path":"turn-cost.txt", "text":format!("turn {}\n", dispatch.step),
+                        "media_type":"text/plain", "display_name":"turn-cost.txt"})
+                } else {
+                    json!({})
+                },
             ))));
         } else {
             events.push(Ok(ModelEvent::Content {
@@ -185,14 +238,7 @@ impl ToolExecutor for Noop {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut timing = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            let observed = timing.intervals.len();
-            if timing.intervals.is_empty() || [90, 990, 9990, 99990, 999990].contains(&observed) {
-                timing.resources.start(observed)?;
-            }
-            timing.tool_finished = Some((
-                Instant::now(),
-                timing.stream_flushes.load(Ordering::Relaxed),
-            ));
+            timing.tool_returned()?;
             Ok(ToolResult { value: json!({}) })
         })
     }
@@ -211,28 +257,55 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .map_or(Ok(1000), |arg| arg.parse::<u32>())?;
     let compact = std::env::args().any(|arg| arg == "--compact");
+    let checkout_tools = std::env::args().any(|arg| arg == "--checkout");
     let root = tempfile::tempdir()?;
-    let checkout = root.path().join("checkout");
-    std::fs::create_dir(&checkout)?;
     let profile = profile::Profile::from_arguments();
     let timing = Arc::new(Mutex::new(Timing {
         profile: profile.clone(),
         ..Default::default()
     }));
     use tracing_subscriber::prelude::*;
+    measurement_subscriber(timing.clone(), checkout_tools, profile).try_init()?;
+    run(turns, compact, checkout_tools, root.path(), timing).await
+}
+
+fn measurement_subscriber(
+    timing: Arc<Mutex<Timing>>,
+    checkout_tools: bool,
+    profile: profile::Profile,
+) -> impl tracing::Subscriber + Send + Sync {
+    use tracing_subscriber::prelude::*;
+    // All layers own cloned handles. No mutex guard can escape this scope or
+    // remain alive across another layer's construction or subscriber setup.
+    let (journal, flushes) = {
+        let timing_guard = timing.lock().unwrap_or_else(PoisonError::into_inner);
+        let layers = (
+            journal_work::Layer(timing_guard.journal_work.counters.clone()),
+            FlushCounter(timing_guard.stream_flushes.clone()),
+        );
+        drop(timing_guard);
+        layers
+    };
     tracing_subscriber::registry()
         .with(profile)
-        .with(FlushCounter(
-            timing
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .stream_flushes
-                .clone(),
-        ))
-        .try_init()?;
+        .with(journal)
+        .with(flushes)
+        .with(tool_return::ToolReturn::new(checkout_tools, timing))
+}
+
+async fn run(
+    turns: u32,
+    compact: bool,
+    checkout_tools: bool,
+    root: &std::path::Path,
+    timing: Arc<Mutex<Timing>>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let checkout = root.join("checkout");
+    std::fs::create_dir_all(&checkout)?;
     let provider = Arc::new(Provider {
         turns,
         compact,
+        checkout_tools,
         timing: timing.clone(),
     });
     let tool = Tool {
@@ -251,16 +324,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         projection: Arc::new(JsonToolProjection),
     };
     let config = acyclic_harness::test_support::local_harness_config(
-        checkout,
+        checkout.clone(),
         (
             Model::new("bench".into(), "noop".into(), "1".into(), Value::Null)?,
             provider,
         ),
     )?
-    .state_directory(root.path().join("state"))
-    .without_default_tools()
-    .tool(tool)
-    .compaction(if compact {
+    .state_directory(root.join("state"));
+    let config = if checkout_tools {
+        config
+    } else {
+        config.without_default_tools().tool(tool)
+    };
+    let config = config.compaction(if compact {
         CompactionPolicy::default()
     } else {
         CompactionPolicy::Disabled
@@ -282,13 +358,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let output = result?;
     assert_eq!(output.text, "done");
+    if checkout_tools && turns > 0 {
+        assert_eq!(
+            std::fs::read(checkout.join("turn-cost.txt"))?,
+            format!("turn {}\n", turns - 1).as_bytes(),
+            "stock checkout tool did not materialize the final write"
+        );
+    }
     assert_eq!(
         timing
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .intervals
             .len(),
-        usize::try_from(turns)?
+        usize::try_from(turns)?,
+        "stock tool return boundary was not measured"
     );
     harness.close().await?;
     Ok(())

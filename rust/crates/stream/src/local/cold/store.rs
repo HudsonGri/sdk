@@ -11,7 +11,9 @@ mod captured;
 mod cut;
 mod locator;
 mod spans;
+mod views;
 pub(in crate::local::cold) use cut::Cut;
+pub(in crate::local::cold) use views::Observer;
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +36,7 @@ pub(super) struct Store {
     maximum: u64,
     durability: super::super::LocalDurability,
     failed: bool,
+    views: views::Views,
     // Every file closes before the last directory/root gate is released.
     root: Arc<Directory>,
 }
@@ -162,6 +165,7 @@ impl Store {
             maximum,
             durability,
             failed: false,
+            views: views::Views::new(),
         };
         let state = Root::load(
             &mut Reader {
@@ -173,6 +177,7 @@ impl Store {
         store.active.discard_unpublished(None)?;
         store.state = state;
         store.durable = state;
+        store.publish_view();
         Ok(store)
     }
 
@@ -220,10 +225,34 @@ impl Store {
 
     pub(super) fn state(&self) -> Result<Root, LocalStreamError> {
         if self.failed {
+            self.views.poison();
             return Err(LocalStreamError::IncompleteFrame);
         }
-        self.active.published()?;
+        if let Err(error) = self.active.published() {
+            self.views.poison();
+            return Err(error);
+        }
         Ok(self.state)
+    }
+
+    fn check_publication<T>(
+        &self,
+        result: Result<T, LocalStreamError>,
+    ) -> Result<T, LocalStreamError> {
+        if result.is_err() {
+            // A preflight denial leaves the old publication valid. Only a
+            // poisoned segment or ambiguous locator invalidates readers.
+            let _ = self.state();
+        }
+        result
+    }
+
+    fn publish_view(&self) {
+        self.views.publish(self.cut(self.state), self.durable);
+    }
+
+    pub(in crate::local::cold) fn observe(&self) -> Observer {
+        self.views.observe()
     }
 
     pub(super) fn durable_state(&self) -> Result<Root, LocalStreamError> {
@@ -293,8 +322,9 @@ impl Store {
         // Once the locator write starts its result can be ambiguous. Fence
         // further use until a fresh open authenticates the selected root.
         self.failed = true;
-        locator::advance(&self.head, current, next, work)?;
-        physical::sync(&self.head, self.durability, work)?;
+        let advanced = locator::advance(&self.head, current, next, work)
+            .and_then(|()| physical::sync(&self.head, self.durability, work));
+        self.check_publication(advanced)?;
         self.active = segment;
         self.failed = false;
         Ok(())
@@ -371,7 +401,8 @@ impl PageIo for Transaction<'_> {
             return Err(LocalStreamError::InvalidLimits);
         }
         self.make_room(kind, length)?;
-        let reference = self.store.active.append(kind, body, self.work.as_ref())?;
+        let appended = self.store.active.append(kind, body, self.work.as_ref());
+        let reference = self.store.check_publication(appended)?;
         self.remaining = remaining;
         Ok(reference)
     }
@@ -384,6 +415,7 @@ impl Transaction<'_> {
         }
         self.store.state = self.state;
         self.store.pending = true;
+        self.store.publish_view();
         Ok(())
     }
 
@@ -401,12 +433,15 @@ impl Transaction<'_> {
             revision,
             root: reference,
         };
-        self.store
+        let published = self
+            .store
             .active
-            .publish(slot, self.store.durability, self.work.as_ref())?;
+            .publish(slot, self.store.durability, self.work.as_ref());
+        self.store.check_publication(published)?;
         self.store.state = state;
         self.store.durable = state;
         self.store.pending = false;
+        self.store.publish_view();
         Ok(slot)
     }
 }

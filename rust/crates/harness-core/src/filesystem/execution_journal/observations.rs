@@ -391,6 +391,10 @@ where
                 .publish_indexed_observation(summary, retry_key, event, &bytes, retained_io)
                 .await?;
             if let Some(recovery) = committed {
+                #[cfg(feature = "test-support")]
+                tracing::trace!(target: "acyclic_harness::journal_work",
+                    journal_appends = 1_u64, journal_append_bytes = bytes.len() as u64,
+                    "execution journal observation accepted");
                 summary.recovery = Some(recovery);
                 summary.pending_steps.clear();
                 edit.finish();

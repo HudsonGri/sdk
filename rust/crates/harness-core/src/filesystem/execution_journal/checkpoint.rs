@@ -114,7 +114,26 @@ where
         })
     }
 
-    fn verify_checkpoint(&self, checkpoint: &Checkpoint, io: Option<&PreparationIo>) -> Result<()> {
+    fn verify_checkpoint(
+        &self,
+        operation: OperationId,
+        checkpoint: &Checkpoint,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let state = checkpoint.state;
+        if state.operation != operation
+            || state.turn != self.turn_operation(operation)
+            || state.volume != self.index_volume_digest(io)?
+            || state.tail == 0
+            || state.roots[4].is_none()
+            || state
+                .roots
+                .iter()
+                .flatten()
+                .any(|root| root.sequence >= state.nodes_tail)
+        {
+            return Err(missing(io));
+        }
         crate::executor::with_history_io(io, |work| {
             let digest = crate::model::hash_bytes(&codec::state_bytes(&checkpoint.state, io)?, io)?;
             self.verifier
@@ -214,6 +233,9 @@ where
         let mut work = history
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            journal_reads = 1_u64, "execution checkpoint tail requested");
         let tail =
             crate::store::operations::tail_optional_with_work(&self.stream, &path, &mut work)
                 .await?
@@ -222,9 +244,16 @@ where
             return Ok(None);
         };
         let _record_hold;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            journal_reads = 1_u64, "execution checkpoint record requested");
         let record = crate::store::operations::one_record(&self.stream, &path, sequence, &mut work)
             .await?
             .ok_or_else(|| missing(io))?;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            journal_records = 1_u64, journal_read_bytes = record.value.len() as u64,
+            "execution checkpoint record returned");
         _record_hold = io
             .map(|io| {
                 io.guard_owned(crate::store::operations::sdk_record_retained_bytes(
@@ -234,20 +263,23 @@ where
             .transpose()?;
         let checkpoint = codec::decode(&record.value, io)?;
         let state = checkpoint.state;
-        if state.operation != operation
-            || state.turn != self.turn_operation(operation)
-            || state.volume != self.index_volume_digest(io)?
-            || state.tail == 0
-            || state.roots[4].is_none()
-            || state
-                .roots
-                .iter()
-                .flatten()
-                .any(|root| root.sequence >= state.nodes_tail)
-        {
-            return Err(missing(io));
-        }
-        self.verify_checkpoint(&checkpoint, io)?;
+        self.verify_checkpoint(operation, &checkpoint, io)?;
+        self.verify_checkpoint_anchor(operation, &state, record.commit_id, io)
+            .await?;
+        Ok(Some((state, tail)))
+    }
+
+    async fn verify_checkpoint_anchor(
+        &self,
+        operation: OperationId,
+        state: &IndexState,
+        commit: acyclic_stream::CommitId,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
         let _anchor_path_hold;
         let path = crate::executor::with_history_io(io, |work| {
             crate::distributed::execution_path(operation, work)
@@ -256,10 +288,17 @@ where
             .map(|io| io.guard_owned(path.as_str().len() as u64))
             .transpose()?;
         let _anchor_hold;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            journal_reads = 1_u64, "execution checkpoint anchor requested");
         let anchor =
             crate::store::operations::one_record(&self.stream, &path, state.tail - 1, &mut work)
                 .await?
                 .ok_or_else(|| missing(io))?;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            journal_records = 1_u64, journal_read_bytes = anchor.value.len() as u64,
+            "execution checkpoint anchor returned");
         _anchor_hold = io
             .map(|io| {
                 io.guard_owned(crate::store::operations::sdk_record_retained_bytes(
@@ -267,12 +306,12 @@ where
                 ))
             })
             .transpose()?;
-        if anchor.commit_id != record.commit_id
+        if anchor.commit_id != commit
             || crate::model::hash_bytes(&anchor.value, io)? != state.anchor
         {
             return Err(missing(io));
         }
-        Ok(Some((state, tail)))
+        Ok(())
     }
 
     pub(super) fn encode_index_checkpoint(

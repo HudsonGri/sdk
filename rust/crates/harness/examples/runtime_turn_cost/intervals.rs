@@ -28,9 +28,6 @@ impl Intervals {
     pub(super) const fn len(&self) -> usize {
         self.total
     }
-    pub(super) const fn is_empty(&self) -> bool {
-        self.total == 0
-    }
     pub(super) fn summary(&self) -> (Duration, u64, u32) {
         let (elapsed, flushes) = self
             .values

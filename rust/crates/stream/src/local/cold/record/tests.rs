@@ -3,7 +3,7 @@ use crate::local::cold::tests::Disk;
 use crate::test_meter::Meter;
 use std::sync::atomic::Ordering;
 
-fn sample(keys: usize, attributes: usize) -> Result<Record, crate::StreamError> {
+pub(super) fn sample(keys: usize, attributes: usize) -> Result<Record, crate::StreamError> {
     Ok(Record {
         sequence: 17,
         committed_at_micros: 73_000,

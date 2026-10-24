@@ -201,7 +201,7 @@ pub(crate) fn hash_records(hash: &mut Sha256, records: &[AppendRecord]) {
             hash.update((attribute.name.len() as u64).to_le_bytes());
             hash.update(attribute.name.as_bytes());
             hash.update((attribute.value.len() as u64).to_le_bytes());
-            hash.update(&attribute.value);
+            hash.update(attribute.value);
         }
     }
 }

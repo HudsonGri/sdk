@@ -157,6 +157,12 @@ where
                 io,
             )
             .await;
+        #[cfg(feature = "test-support")]
+        if result.is_ok() {
+            tracing::trace!(target: "acyclic_harness::journal_work",
+                payload_stages = 1_u64, payload_stage_bytes = bytes.len() as u64,
+                "execution payload published");
+        }
         drop(grant);
         drop(grant_hold);
         result
@@ -191,11 +197,17 @@ where
         if io.is_none() {
             reference.validate(&mut None)?;
         }
-        self.host
+        let bytes = self
+            .host
             .read_pinned_receipt_io(reference, self.maximum_payload_bytes, io)
             .await?
             .retain()
-            .await
+            .await?;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(target: "acyclic_harness::journal_work",
+            payload_loads = 1_u64, payload_load_bytes = bytes.len() as u64,
+            "execution payload loaded");
+        Ok(bytes)
     }
 
     pub(super) fn authorize_inline_event(

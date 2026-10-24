@@ -101,9 +101,9 @@ fn leaf(io: &mut impl PageIo, key: &[u8], value: PageRef) -> Result<PageRef, Loc
         &u32::try_from(key.len())
             .map_err(|_| LocalStreamError::InvalidLimits)?
             .to_le_bytes(),
-    );
-    body.bytes.extend_from_slice(key);
-    body.bytes.extend_from_slice(&value.encoded());
+    )?;
+    body.bytes.extend_from_slice(key)?;
+    body.bytes.extend_from_slice(&value.encoded())?;
     page::codec(io.work(), body.bytes.len() as u64, 0, false)?;
     io.append(PageKind::Leaf, &body.bytes)
 }

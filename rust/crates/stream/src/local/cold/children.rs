@@ -42,15 +42,15 @@ fn key(
     output.bytes.push(match order {
         Order::Creation => 0,
         Order::Alphabetical => 1,
-    });
-    output.bytes.extend_from_slice(parent.as_bytes());
-    output.bytes.push(0);
+    })?;
+    output.bytes.extend_from_slice(parent.as_bytes())?;
+    output.bytes.push(0)?;
     if matches!(order, Order::Creation) {
         output
             .bytes
-            .extend_from_slice(&child.map_or(0, |(_, decision)| decision).to_be_bytes());
+            .extend_from_slice(&child.map_or(0, |(_, decision)| decision).to_be_bytes())?;
     }
-    output.bytes.extend_from_slice(name.as_bytes());
+    output.bytes.extend_from_slice(name.as_bytes())?;
     page::codec(io.work(), length as u64, 0, false)?;
     Ok(output)
 }
@@ -66,9 +66,9 @@ fn fact(
     let length = 1 + 8 + path.as_str().len();
     let mut bytes = Buffer::new(length, io.work())?;
     page::codec(io.work(), length as u64, 0, true)?;
-    bytes.bytes.push(TAG);
-    bytes.bytes.extend_from_slice(&decision.to_le_bytes());
-    bytes.bytes.extend_from_slice(path.as_str().as_bytes());
+    bytes.bytes.push(TAG)?;
+    bytes.bytes.extend_from_slice(&decision.to_le_bytes())?;
+    bytes.bytes.extend_from_slice(path.as_str().as_bytes())?;
     page::codec(io.work(), length as u64, 0, false)?;
     io.append(PageKind::Fact, &bytes.bytes)
 }
@@ -153,7 +153,7 @@ pub(super) fn next(
         return Err(LocalStreamError::Corrupt);
     }
     let expected = key(io, parent, order, Some((&child.path, child.decision)))?;
-    if found != expected.bytes {
+    if found != &*expected.bytes {
         return Err(LocalStreamError::Corrupt);
     }
     Ok(Some(child))

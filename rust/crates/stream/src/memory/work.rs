@@ -30,7 +30,7 @@ impl Work {
     pub(crate) fn new(meter: Arc<dyn NativeReadMeter>) -> std::io::Result<Arc<Self>> {
         let allocation = ReadAllocation::new(
             &meter,
-            std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>(),
+            acyclic_native_runtime::arc_allocation_bytes::<Self>(),
         )?;
         Ok(Arc::new(Self {
             meter,

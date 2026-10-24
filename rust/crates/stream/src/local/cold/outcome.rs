@@ -97,43 +97,46 @@ fn encoded_len(
     Ok(length)
 }
 
-fn path(bytes: &mut Vec<u8>, path: &StreamPath) -> Result<(), LocalStreamError> {
+fn path(bytes: &mut page::BufferBytes, path: &StreamPath) -> Result<(), LocalStreamError> {
     bytes.extend_from_slice(
         &u32::try_from(path.as_str().len())
             .map_err(|_| LocalStreamError::InvalidLimits)?
             .to_le_bytes(),
-    );
-    bytes.extend_from_slice(path.as_str().as_bytes());
+    )?;
+    bytes.extend_from_slice(path.as_str().as_bytes())?;
     Ok(())
 }
 
-fn conflicts(bytes: &mut Vec<u8>, conflicts: &[CommitConflict]) -> Result<(), LocalStreamError> {
+fn conflicts(
+    bytes: &mut page::BufferBytes,
+    conflicts: &[CommitConflict],
+) -> Result<(), LocalStreamError> {
     bytes.extend_from_slice(
         &u32::try_from(conflicts.len())
             .map_err(|_| LocalStreamError::InvalidLimits)?
             .to_le_bytes(),
-    );
+    )?;
     for conflict in conflicts {
         bytes.push(match conflict {
             CommitConflict::Head { .. } => 0,
             CommitConflict::Tail { .. } => 1,
             CommitConflict::Exists { .. } => 2,
-        });
+        })?;
         path(bytes, conflict_path(conflict))?;
         match conflict {
             CommitConflict::Head {
                 expected, actual, ..
             } => {
-                bytes.extend_from_slice(expected.as_bytes());
-                bytes.extend_from_slice(actual.as_bytes());
+                bytes.extend_from_slice(expected.as_bytes())?;
+                bytes.extend_from_slice(actual.as_bytes())?;
             }
             CommitConflict::Tail {
                 expected, actual, ..
             } => {
-                bytes.extend_from_slice(&expected.to_le_bytes());
-                bytes.push(u8::from(actual.is_some()));
+                bytes.extend_from_slice(&expected.to_le_bytes())?;
+                bytes.push(u8::from(actual.is_some()))?;
                 if let Some(actual) = actual {
-                    bytes.extend_from_slice(&actual.to_le_bytes());
+                    bytes.extend_from_slice(&actual.to_le_bytes())?;
                 }
             }
             CommitConflict::Exists { .. } => {}
@@ -150,38 +153,44 @@ pub(super) fn append(
     let length = encoded_len(outcome, envelope)?;
     let mut bytes = Buffer::new(length, io.work())?;
     page::codec(io.work(), length as u64, 0, true)?;
-    bytes.bytes.push(TAG);
+    bytes.bytes.push(TAG)?;
     match outcome {
         IdempotencyOutcome::Append(AppendOutcome::Committed(receipt)) => {
-            bytes.bytes.push(0);
-            bytes.bytes.extend_from_slice(&receipt.start.to_le_bytes());
-            bytes.bytes.extend_from_slice(&receipt.end.to_le_bytes());
-            bytes.bytes.extend_from_slice(receipt.commit_id.as_bytes());
+            bytes.bytes.push(0)?;
+            bytes
+                .bytes
+                .extend_from_slice(&receipt.start.to_le_bytes())?;
+            bytes.bytes.extend_from_slice(&receipt.end.to_le_bytes())?;
+            bytes
+                .bytes
+                .extend_from_slice(receipt.commit_id.as_bytes())?;
         }
         IdempotencyOutcome::Append(AppendOutcome::TailConflict { actual_tail }) => {
-            bytes.bytes.push(1);
-            bytes.bytes.extend_from_slice(&actual_tail.to_le_bytes());
+            bytes.bytes.push(1)?;
+            bytes.bytes.extend_from_slice(&actual_tail.to_le_bytes())?;
         }
         IdempotencyOutcome::Fork(receipt) => {
-            bytes.bytes.push(2);
+            bytes.bytes.push(2)?;
             path(&mut bytes.bytes, &receipt.source)?;
             path(&mut bytes.bytes, &receipt.destination)?;
             bytes
                 .bytes
-                .extend_from_slice(&receipt.forked_at.to_le_bytes());
-            bytes.bytes.extend_from_slice(receipt.commit_id.as_bytes());
+                .extend_from_slice(&receipt.forked_at.to_le_bytes())?;
+            bytes
+                .bytes
+                .extend_from_slice(receipt.commit_id.as_bytes())?;
         }
         IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope_value)) => {
-            bytes.bytes.push(3);
+            bytes.bytes.push(3)?;
             bytes
                 .bytes
-                .extend_from_slice(envelope_value.commit_id.as_bytes());
+                .extend_from_slice(envelope_value.commit_id.as_bytes())?;
             bytes
                 .bytes
-                .extend_from_slice(&envelope.ok_or(LocalStreamError::Corrupt)?.encoded());
+                .extend_from_slice(&envelope.ok_or(LocalStreamError::Corrupt)?.encoded())?;
         }
         IdempotencyOutcome::Commit(CommitOutcome::Conflict(values)) => {
-            bytes.bytes.push(4);
+            bytes.bytes.push(4)?;
             conflicts(&mut bytes.bytes, values)?;
         }
     }

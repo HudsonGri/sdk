@@ -18,7 +18,7 @@ impl Cut {
 }
 
 impl Store {
-    fn cut(&self, state: Root) -> Cut {
+    pub(super) fn cut(&self, state: Root) -> Cut {
         Cut {
             state,
             file: self.active.file.clone(),
@@ -32,7 +32,8 @@ impl Store {
         &self,
         work: Option<Arc<crate::memory::Work>>,
     ) -> Result<Captured, LocalStreamError> {
-        Ok(self.cut(self.state()?).reader(work))
+        self.state()?;
+        self.views.capture(work)
     }
 }
 
