@@ -245,3 +245,43 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     assert_ne!(std::fs::metadata(&destination)?.dev(), original.dev());
     Ok(())
 }
+
+/// A crash can leave a binding linking to a view of the crashed process's
+/// reaped root. Recovery removes that link, and only that kind of link: a
+/// live view's link is its owner's, and one naming anything but a view is
+/// still refused, as
+/// `scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence` checks.
+#[test]
+fn recovery_removes_a_crashed_binding_link_to_a_shared_view() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let destination = root.path().join(SCRATCH_PATH);
+    std::fs::create_dir(root.path().join(".volumes"))?;
+    let roots = acyclic_fs::shared_view_root()?
+        .parent()
+        .ok_or("shared root has no parent")?
+        .to_path_buf();
+    let reaped = roots.join(format!("{:032x}", 0)).join("v0000000000000001");
+    std::os::unix::fs::symlink(&reaped, &destination)?;
+    recover(root.path())?;
+    assert!(
+        std::fs::symlink_metadata(&destination).is_err(),
+        "the crashed binding's link survived recovery"
+    );
+    // A live view's link survives recovery, and its projection keeps it.
+    let live = tempfile::tempdir_in(&roots)?;
+    std::os::unix::fs::symlink(live.path(), &destination)?;
+    recover(root.path())?;
+    unlink_binding(&destination, live.path())?;
+    assert!(
+        std::fs::symlink_metadata(&destination)?
+            .file_type()
+            .is_symlink(),
+        "a live view's link was removed"
+    );
+    assert!(matches!(
+        link_binding(&destination, &reaped),
+        Err(Error::NativeView { cause, .. }) if matches!(*cause,
+            acyclic_fs::MountLifecycleError::Native(acyclic_fs::NativeMountError::DestinationBusy))
+    ));
+    Ok(())
+}

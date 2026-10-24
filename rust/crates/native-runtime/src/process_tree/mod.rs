@@ -13,6 +13,8 @@ mod capture;
 mod custodian;
 mod events;
 mod pump;
+#[cfg(windows)]
+mod spawner;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInput};
 mod custody;
 pub use custody::ProcessCustody;

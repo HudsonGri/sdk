@@ -22,10 +22,12 @@ pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
     let (Some(parent), Some(leaf)) = (relative.parent(), relative.file_name()) else {
         return Err(Error::Invalid("scratch mount has no parent".into()));
     };
-    acyclic_fs::recover_disconnected_native_mount_destination_in(
-        &held_directories(root, parent)?,
-        leaf,
-    )?;
+    let parent = held_directories(root, parent)?;
+    // A live projection's link has nothing to recover.
+    if let Some(Link::Live) = unlink_crashed_binding(&root.path().join(relative))? {
+        return Ok(());
+    }
+    acyclic_fs::recover_disconnected_native_mount_destination_in(&parent, leaf)?;
     Ok(())
 }
 
@@ -142,10 +144,19 @@ pub(super) async fn attach(
             .await?
             .publication(MountPublication::Manual);
         #[cfg(windows)]
-        recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+        {
+            unlink_crashed_binding(&destination)?;
+            recover_volume_after_crash(root.path(), Path::new(relative), source.id().volume_id())?;
+        }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;
+        // The binding links to its projection's view, which a command's
+        // paths resolve into; its physical root is the binding, as an alias's is.
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            mount.native_root = Some(destination.clone());
+        }
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,
@@ -460,6 +471,137 @@ fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
 // the exclusive destination fence before probing or detaching the driver, so
 // a live owner is rejected and authored host residue is retained.
 pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+    prepare_binding(root, relative)?;
+    create_mount_directory(root, relative)
+}
+
+/// Whether volume projections are views of the process's shared instance.
+/// A scale run's negative control mounts an instance per projection.
+#[cfg(any(target_os = "linux", windows))]
+pub(super) fn shared_projections() -> bool {
+    #[cfg(test)]
+    return crate::native_environment::variable(crate::local::children::UNSHARED_TASK_VIEWS)
+        .is_none();
+    #[cfg(not(test))]
+    true
+}
+
+/// Points a binding at its projection's shared view, replacing only an
+/// empty directory or a link a crash left naming a view that no longer
+/// exists. A link naming a live view is another owner's projection, which
+/// the binding never shares; `remove_dir` refuses a directory holding
+/// content, so authored data is never displaced to install a binding.
+#[cfg(any(target_os = "linux", windows))]
+pub(super) fn link_binding(destination: &Path, view: &Path) -> Result<()> {
+    match binding_link(destination)? {
+        Some(Link::Live) => return Err(acyclic_fs::NativeMountError::DestinationBusy.into()),
+        Some(Link::Foreign) => {
+            return Err(Error::Conflict(
+                "volume binding replaces a project link".into(),
+            ));
+        }
+        Some(Link::Retired(_)) => remove_link(destination)?,
+        None => match std::fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.is_dir() => {
+                std::fs::remove_dir(destination).map_err(mount_io)?;
+            }
+            Ok(_) => {
+                return Err(Error::Conflict(
+                    "volume binding replaces a project file".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(mount_io(error)),
+        },
+    }
+    link_directory(view, destination).map_err(mount_io)
+}
+
+/// What a binding's link names.
+#[cfg(any(target_os = "linux", windows))]
+pub(super) enum Link {
+    /// A shared view that exists: a live owner's projection.
+    Live,
+    /// A shared view that no longer exists, named by the target here.
+    Retired(PathBuf),
+    /// Anything but a shared view: no link this SDK made.
+    Foreign,
+}
+
+/// The link at `destination`, or `None` where there is no link.
+#[cfg(any(target_os = "linux", windows))]
+fn binding_link(destination: &Path) -> Result<Option<Link>> {
+    match std::fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(mount_io(error)),
+    }
+    let target = plain(&std::fs::read_link(destination).map_err(mount_io)?);
+    let root = plain(&acyclic_fs::shared_view_root().map_err(storage)?);
+    if !root.parent().is_some_and(|roots| target.starts_with(roots)) {
+        return Ok(Some(Link::Foreign));
+    }
+    // Retirement removes a view's directory, and a view name is never
+    // reissued, so only a live view's link resolves.
+    Ok(Some(match std::fs::symlink_metadata(&target) {
+        Ok(_) => Link::Live,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Link::Retired(target),
+        Err(error) => return Err(mount_io(error)),
+    }))
+}
+
+/// Removes the binding's link to `view` once that view retired; a link
+/// naming any other view is left to its owner.
+#[cfg(any(target_os = "linux", windows))]
+pub(super) fn unlink_binding(destination: &Path, view: &Path) -> Result<()> {
+    if let Some(Link::Retired(target)) = binding_link(destination)?
+        && target == plain(view)
+    {
+        remove_link(destination)?;
+    }
+    Ok(())
+}
+
+/// Removes a link that a crash left naming a view that no longer exists.
+/// Whether any link remains is the caller's to judge.
+#[cfg(any(target_os = "linux", windows))]
+pub(super) fn unlink_crashed_binding(destination: &Path) -> Result<Option<Link>> {
+    match binding_link(destination)? {
+        Some(Link::Retired(_)) => {
+            remove_link(destination)?;
+            Ok(None)
+        }
+        link => Ok(link),
+    }
+}
+
+/// A path as a link stores it: Windows may or may not keep the verbatim
+/// `\\?\` prefix of the path a link was made with.
+#[cfg(any(target_os = "linux", windows))]
+fn plain(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(rest) = path.to_str().and_then(|path| path.strip_prefix(r"\\?\"))
+        && !rest.starts_with(r"UNC\")
+    {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn remove_link(destination: &Path) -> Result<()> {
+    // A Windows directory link is a directory entry; a Unix link is a file.
+    #[cfg(windows)]
+    std::fs::remove_dir(destination).map_err(mount_io)?;
+    #[cfg(unix)]
+    std::fs::remove_file(destination).map_err(mount_io)?;
+    Ok(())
+}
+
+/// Excludes a binding's paths from capture, creates its parent and detaches
+/// a crashed owner's mount at it, leaving the destination itself as found.
+pub(super) fn prepare_binding(root: &Path, relative: &Path) -> Result<()> {
     let destination = root.join(relative);
     let controls = acyclic_fs::native_mount_control_paths(&destination)?;
     let mut excluded = vec![destination.clone(), root.join(".volumes/recovery")];
@@ -479,7 +621,7 @@ pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(mount_io(error)),
     }
-    create_mount_directory(root, relative)
+    Ok(())
 }
 
 /// Each binding supplies its durable logical volume identity. The destination

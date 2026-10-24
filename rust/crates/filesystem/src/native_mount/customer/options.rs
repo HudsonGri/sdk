@@ -167,12 +167,13 @@ impl MountOptions {
 
     /// Serves the mount as one view of the process's shared native instance
     /// at the destination's parent, named by the destination's last
-    /// component, instead of mounting a native instance of its own. The
-    /// destination must not exist; the parent must be a directory reserved
-    /// for shared views. A view costs no mount, thread or descriptor of its
-    /// own. Linux only; elsewhere the mount fails as an unsupported target.
+    /// component, instead of mounting a native instance of its own. Only
+    /// [`Workspace::mount_view`](crate::Workspace::mount_view) sets it, at a
+    /// destination the process issued for a shared view.
+    /// Linux and Windows; elsewhere the mount fails as an
+    /// unsupported target.
     #[must_use]
-    pub const fn shared(mut self) -> Self {
+    pub(crate) const fn shared(mut self) -> Self {
         self.shared = true;
         self
     }

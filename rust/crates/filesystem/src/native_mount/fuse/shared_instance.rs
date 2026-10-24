@@ -1,22 +1,22 @@
-//! The process's shared FUSE instances, one per shared root directory.
+//! The FUSE adapter's instance: one session per shared root directory.
 //!
-//! An instance exists only while a view holds it: the registry keeps weak
-//! references, every view keeps a strong one, and dropping the last view
-//! unmounts the instance, stops its threads and releases its fence. A
-//! failed start unwinds through the same teardown. A process that dies with
-//! live views leaves its root fenced by a lock nobody holds; the next start
-//! for that root detaches the dead owner's mount before mounting again.
+//! The shared core's [`Instances`] registry starts it for a root's first
+//! view and drops it after the last; its drop unmounts the root, stops its
+//! threads and releases its fence. A failed start unwinds through the same
+//! teardown. A process that dies with live views leaves its root fenced by
+//! a lock nobody holds; the next start for that root detaches the dead
+//! owner's mount before mounting again.
 
 use super::shared::{SharedDispatch, SharedViewEntry, SharedViews, run_shared_invalidator};
 use super::*;
 use crate::NativeMaterializationWork;
+use crate::native_mount::shared::instances::{Instance, Instances};
 use crate::native_mount::{
     MountDestinationGuard, detach_native_mount_destination_after_crash, native_mount_control_paths,
 };
 use std::path::PathBuf;
-use std::sync::{Condvar, Weak};
 
-static INSTANCES: OnceLock<Mutex<HashMap<PathBuf, Slot>>> = OnceLock::new();
+static INSTANCES: Instances<SharedFuseInstance> = Instances::new();
 
 #[cfg(test)]
 thread_local! {
@@ -24,45 +24,11 @@ thread_local! {
     pub(super) static SKIP_REAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-struct Slot {
-    instance: Weak<SharedFuseInstance>,
-    retired: Arc<Retired>,
-}
-
-/// Signalled once an instance's teardown is complete.
-#[derive(Default)]
-struct Retired {
-    done: Mutex<bool>,
-    changed: Condvar,
-}
-
-impl Retired {
-    fn wait(&self) {
-        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
-        while !*done {
-            done = self
-                .changed
-                .wait(done)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
-    fn finish(&self) {
-        *self.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        self.changed.notify_all();
-    }
-}
-
-fn instances() -> &'static Mutex<HashMap<PathBuf, Slot>> {
-    INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 pub(in crate::native_mount) struct SharedFuseInstance {
     pub(super) views: Arc<SharedViews>,
     root: PathBuf,
     path: Vec<u8>,
     state: Mutex<InstanceState>,
-    retired: Arc<Retired>,
     // The instance's own meter: it outlives the view that started it.
     work: NativeMaterializationWork,
 }
@@ -81,47 +47,10 @@ struct InstanceState {
 pub(in crate::native_mount) struct SharedFuseView {
     // Field order: the view retires before its instance reference drops.
     pub(super) entry: SharedViewEntry,
-    pub(super) _instance: Arc<SharedFuseInstance>,
+    pub(super) _instance: Arc<Instance<SharedFuseInstance>>,
 }
 
 impl SharedFuseInstance {
-    /// Returns the live instance for `root`, starting one if none is live.
-    pub(super) fn acquire(root: &Path) -> Result<Arc<Self>, NativeMountError> {
-        // Canonicalize the parent only: a crash-left root is a dead mount
-        // whose own stat fails, and the reaper must still find it.
-        let (Some(parent), Some(name)) = (root.parent(), root.file_name()) else {
-            return Err(NativeMountError::InvalidDestination);
-        };
-        let root = parent
-            .canonicalize()
-            .map_err(|_| NativeMountError::InvalidDestination)?
-            .join(name);
-        loop {
-            let mut registry = instances().lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(slot) = registry.get(&root) {
-                if let Some(instance) = slot.instance.upgrade() {
-                    return Ok(instance);
-                }
-                // The last view dropped and teardown is running; a new start
-                // would race its unmount and fence release.
-                let retired = Arc::clone(&slot.retired);
-                drop(registry);
-                retired.wait();
-                continue;
-            }
-            // Starting under the registry lock serializes starts per root.
-            let instance = Arc::new(Self::start(&root)?);
-            registry.insert(
-                root,
-                Slot {
-                    instance: Arc::downgrade(&instance),
-                    retired: Arc::clone(&instance.retired),
-                },
-            );
-            return Ok(instance);
-        }
-    }
-
     fn start(root: &Path) -> Result<Self, NativeMountError> {
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
@@ -147,7 +76,6 @@ impl SharedFuseInstance {
             root: root.to_path_buf(),
             path,
             state: Mutex::new(InstanceState::default()),
-            retired: Arc::new(Retired::default()),
             work,
         };
         // Every failure below drops `instance`, whose teardown undoes the
@@ -264,16 +192,6 @@ impl SharedFuseInstance {
 impl Drop for SharedFuseInstance {
     fn drop(&mut self) {
         self.teardown();
-        {
-            let mut registry = instances().lock().unwrap_or_else(PoisonError::into_inner);
-            if registry
-                .get(&self.root)
-                .is_some_and(|slot| Arc::ptr_eq(&slot.retired, &self.retired))
-            {
-                registry.remove(&self.root);
-            }
-        }
-        self.retired.finish();
     }
 }
 
@@ -287,7 +205,7 @@ impl SharedFuseView {
         let (Some(root), Some(name)) = (destination.parent(), destination.file_name()) else {
             return Err(NativeMountError::InvalidDestination);
         };
-        let instance = SharedFuseInstance::acquire(root)?;
+        let instance = INSTANCES.acquire(root, SharedFuseInstance::start)?;
         let entry = instance.views.insert(name.as_bytes(), build)?;
         Ok(Self {
             entry,
