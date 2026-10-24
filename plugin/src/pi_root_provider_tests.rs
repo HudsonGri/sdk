@@ -519,7 +519,7 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     .await
     .unwrap();
     let digest = digest_pi_value(
-        &writeback_digest_value(&root, &generations, &prepared),
+        &writeback_digest_value(&root, &generations, &prepared).unwrap(),
         1_048_576,
         work,
     )
