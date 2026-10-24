@@ -1269,6 +1269,20 @@ function mergeBase(co) {
   let b = ''; try { const r = co.git(['merge-base', 'HEAD', 'refs/remotes/origin/main'], { encoding: 'utf8', timeout: 30000 }); if (r.status === 0) b = String(r.stdout).trim(); } catch {}
   return /^[0-9a-f]{40}$/.test(b) ? b : '';
 }
+async function maintainSourceCopies(repo, notes, run = sshRun) {
+  if (repo !== 'sdk') return;
+  try {
+    const prune = await run('/home/var/bin/prune-wt-sdk.sh', { timeout: 120000 });
+    if (prune.status === 0) return;
+    const reason = `BB_WT_PRUNE_FAILED rc=${prune.status}: ${String(prune.stderr).slice(-500)}`;
+    notes.push(reason); say(reason);
+  } catch (error) {
+    const reason = `BB_WT_PRUNE_FAILED ${error.message}`;
+    notes.push(reason); say(reason);
+  }
+  // Maintenance cannot deny another worktree. Its own preparation and the
+  // job's real filesystem free-space admission remain mandatory below.
+}
 async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   const J = `/mnt/bb/jobs/${Date.now()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`; const top = co.top; const R = REPOS[co.repo];
   // A client-side flock vanishes on a WSL restart while the detached bb2 job
@@ -1283,10 +1297,7 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   let src = `${R.wt}/${key}`; const notes = [];
   // id and base are the immutable inputs used by run() to own this verdict key.
   say(`BUILD_SLOT_TREE=${id.commit} ${id.tree} ${id.content} (client ${top})`);
-  if (co.repo === 'sdk') {
-    const prune = await sshRun('/home/var/bin/prune-wt-sdk.sh', { timeout: 120000 });
-    if (prune.status !== 0) return unavailable('sync-failed', 'worktree age/count admission refused: ' + prune.stderr.toString().slice(-200));
-  }
+  await maintainSourceCopies(co.repo, notes);
   const g = process.env.BUILD_SLOT_BUILDBOX_RSYNC === '1' && R.rsync ? 'fallback' : await gitPrepLaunch(co, src, launchScript(src, tkey, rel, argv, J, R.path, co.repo, base, id, jobMaxSec(), process.env.BUILD_SLOT_IDLE_OK === '1', receipt), notes, J, id);
   if (g === 'unreachable') { heal(notes.join('; ') || 'ssh failed'); return unavailable('vm-unreachable', notes.join('; ') || 'ssh failed'); }
   if (g === 'fallback' && !R.rsync) return unavailable('sync-failed', `${co.repo} git sync: ${notes.join('; ')}`);
