@@ -71,6 +71,15 @@ impl State {
     }
     fn cancel(&self) {
         self.abort.abort();
+        if let Some(reader) = self.reader.borrow_mut().take() {
+            // An injected fetch may own a body independently of its AbortSignal.
+            // Cancel the admitted reader too, including an outstanding read.
+            let cancelled = reader.cancel();
+            reader.release_lock();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = JsFuture::from(cancelled).await;
+            });
+        }
         self.finish();
     }
 }

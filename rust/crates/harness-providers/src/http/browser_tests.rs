@@ -8,14 +8,13 @@ use wasm_bindgen_test::wasm_bindgen_test;
 export function httpFixture(mode) {
   let ready;
   let controller;
-  const state = { calls: 0, aborted: false, ready: new Promise(resolve => { ready = resolve; }) };
+  const state = { calls: 0, aborted: false, cancelled: false, ready: new Promise(resolve => { ready = resolve; }) };
   state.fetch = (url, init) => {
     state.calls++;
     state.request = { url, body: Array.from(init.body), headers: Object.fromEntries(init.headers),
       credentials: init.credentials, redirect: init.redirect };
     init.signal.addEventListener('abort', () => {
       state.aborted = true;
-      if (controller) { controller.close(); controller = undefined; }
     }, { once: true });
     ready();
     if (mode === 'pending_head') {
@@ -27,7 +26,8 @@ export function httpFixture(mode) {
       controller = value;
       controller.enqueue(new TextEncoder().encode('first'));
       if (mode === 'complete') { controller.close(); controller = undefined; }
-    } });
+    }, cancel() { state.cancelled = true; controller = undefined; } });
+    state.stream = stream;
     return Promise.resolve(new Response(stream, { status: mode === 'error' ? 503 : 200 }));
   };
   return state;
@@ -210,6 +210,11 @@ async fn dropping_response_body_aborts_fetch_between_reads_and_during_a_pending_
         }
         drop(response);
         assert_eq!(field(&fixture, "aborted")?.as_bool(), Some(true));
+        assert_eq!(field(&fixture, "cancelled")?.as_bool(), Some(true));
+        assert_eq!(
+            field(&field(&fixture, "stream")?, "locked")?.as_bool(),
+            Some(false)
+        );
     }
     Ok(())
 }

@@ -9,10 +9,10 @@ pub(crate) mod transport;
 
 use transport::MAXIMUM_RESPONSE_BYTES;
 
-/// Exa's typed POST /search adapter.
+/// Exa's typed POST `/search` adapter.
 pub struct Exa(HttpSearch);
 
-/// TinyFish's typed GET / adapter.
+/// `TinyFish`'s typed GET `/` adapter.
 pub struct TinyFish(HttpSearch);
 
 struct HttpSearch {
