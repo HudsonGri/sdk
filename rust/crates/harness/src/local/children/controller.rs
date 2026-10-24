@@ -24,6 +24,7 @@ mod result_slot;
 mod results;
 mod stopping;
 
+#[derive(Clone)]
 pub(super) struct ChildSignals {
     inherited: Option<acyclic_fs::CancellationToken>,
     parent_done: acyclic_fs::CancellationToken,

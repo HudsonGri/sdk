@@ -610,16 +610,16 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     // Restoring the former direct native publication path cannot acknowledge
     // the retained completion after the shared owner retired its staging tree.
     let old = acyclic_fs::publish_native_generation_transition(
-        &generations.candidate,
-        &generations.candidate,
+        generations.candidate(),
+        generations.candidate(),
         &fixture.resources.store,
         acyclic_fs::NativeWorkspacePublication {
             root: root.publication.root(),
             source_root_identity: root.identity,
             operation_directory: root.publication.directory(),
             operation_id: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
-            from: generations.candidate.id(),
-            to: generations.candidate.id(),
+            from: generations.candidate().id(),
+            to: generations.candidate().id(),
             excluded_names: &[".git"],
             options: &options,
             budget: work.budget(),
