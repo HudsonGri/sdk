@@ -445,12 +445,21 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
             .unwrap()
     };
     for conditional in [false, true] {
-        let [expected, actual] =
-            differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, fixture), old| {
+        let [expected, actual] = differential::pair::<_, _, (&'static str, u64)>(
+            &initialize,
+            |(journal, fixture), old| {
                 runtime.block_on(async {
-                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(fixture.host.clone()), conditional)
-                        .await
-                        .unwrap();
+                    let artifacts = turn(
+                        &journal,
+                        old,
+                        "chunk",
+                        1,
+                        false,
+                        Some(fixture.host.clone()),
+                        conditional,
+                    )
+                    .await
+                    .unwrap();
                     let snapshot = journal
                         .task_files
                         .as_ref()
@@ -473,7 +482,8 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
                         .collect::<Vec<_>>();
                     (artifacts, chunks)
                 })
-            });
+            },
+        );
         assert_eq!(expected.0.0[0], actual.0.0[0]);
         assert_eq!(expected.0.0[2], actual.0.0[2]);
         assert_eq!(expected.0.0[1].len(), actual.0.0[1].len());
@@ -498,9 +508,17 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
     for omitted_publication in [true, false] {
         let (journal, fixture) = initialize();
         runtime.block_on(async {
-            turn(&journal, true, "chunk", 1, false, Some(fixture.host.clone()), false)
-                .await
-                .unwrap();
+            turn(
+                &journal,
+                true,
+                "chunk",
+                1,
+                false,
+                Some(fixture.host.clone()),
+                false,
+            )
+            .await
+            .unwrap();
             let files = journal.task_files.as_ref().unwrap();
             let empty = files
                 .snapshot(&crate::task_volume::Query::Root, 16)
