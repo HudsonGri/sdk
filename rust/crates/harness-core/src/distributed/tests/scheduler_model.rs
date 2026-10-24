@@ -51,7 +51,7 @@ impl ContentResidencyVerifier for Contents {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
-        _: Option<&'a crate::Capabilities>,
+        _ceiling: Option<&'a Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         let bytes = self
