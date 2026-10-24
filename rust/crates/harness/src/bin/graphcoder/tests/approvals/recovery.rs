@@ -83,7 +83,9 @@ async fn recovery(case: Case, cancel: bool) {
     });
     let files = Files::new(case, address);
     tokio::task::spawn_blocking(move || {
+        eprintln!("approval recovery {case:?}: detaching");
         let request = defer(files.command(case, operation), operation);
+        eprintln!("approval recovery {case:?}: detached");
         let decision = decision(&request, "human", true);
         assert_eq!(fixture.effects.load(Ordering::SeqCst), 0);
         if cancel {
@@ -105,12 +107,15 @@ async fn recovery(case: Case, cancel: bool) {
                 "cancelled decision dispatched"
             );
         } else {
+            eprintln!("approval recovery {case:?}: resuming decision");
             exchange(
                 files.command(case, operation),
                 &[decision.clone(), decision.clone()],
                 0,
             );
+            eprintln!("approval recovery {case:?}: retrying decision");
             exchange(files.command(case, operation), &[decision], 0);
+            eprintln!("approval recovery {case:?}: settled");
             assert_eq!(
                 fixture.effects.load(Ordering::SeqCst),
                 1,
