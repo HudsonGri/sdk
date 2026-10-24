@@ -70,13 +70,19 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn(before,source,'cleanup control must mutate the actual deletion site')
             source=source.replace(before,'raise OSError("cleanup control")')
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def receipt(self,gate=False):
-        fd,name=tempfile.mkstemp(prefix='fixture-',suffix='.receipt-meta.v2.json',dir=self.d)
-        os.close(fd)
-        meta=Path(name);meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
+    def receipt(self,gate=False,argv=(),path=None):
+        if path is None:
+            fd,name=tempfile.mkstemp(prefix='fixture-',suffix='.receipt-meta.v2.json',dir=self.d)
+            meta=Path(name)
+        else:
+            meta=Path(path)
+            fd=os.open(meta,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        value={'argv':list(argv)}
+        if gate:value['gate_log']='fixture.log'
+        with os.fdopen(fd,'w') as output:json.dump(value,output)
         return meta
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
-        meta=self.receipt(gate)
+        meta=self.receipt(gate,argv)
         env=fixture_environment({'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
@@ -703,10 +709,10 @@ fs.writeFileSync(prefix+'.setup',body+'\\nexit 7\\n');
                 self.assertNotEqual(source,mutant);custody.write_text(mutant)
             prefix=self.d/'jobs'/f'root-setup-{negative}'
             runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
-            meta=Path(str(prefix)+'.receipt-meta.v2.json');meta.write_text('{}')
+            code='import os;print("owned-payload",os.getuid())'
+            meta=self.receipt(argv=[sys.executable,'-c',code],path=str(prefix)+'.receipt-meta.v2.json')
             env={**fixture_environment(),'BUILD_SLOT_RECEIPT_META':str(meta),'BB_CACHE_DISABLED':'1','PYTHONDONTWRITEBYTECODE':'1'}
             env.pop('BB_JOB_ACTIVE',None)
-            code='import os;print("owned-payload",os.getuid())'
             try:
                 result=subprocess.run(['sudo','-n','--preserve-env',sys.executable,str(worker),'outer-setup',str(runtime),str(prefix),sys.executable,str(worker),sys.executable,'-c',code],env=env,capture_output=True)
                 self.assertEqual(result.returncode,0,result.stderr)
