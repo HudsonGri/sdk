@@ -10,7 +10,7 @@ impl CoreLog {
         }
         self.residents().adopt_native(work)?;
         let needed = self.dirty.len();
-        reserve_retained_slots(&mut self.dirty, needed, work, &mut self.slots)
+        reserve_retained_slots(&mut self.dirty, needed, Some(work), &mut self.slots)
     }
 
     pub(super) fn admit_lazy_slots(
@@ -22,7 +22,7 @@ impl CoreLog {
         let needed = self.dirty.len().checked_add(usize::from(dirty)).ok_or(
             crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
         )?;
-        reserve_retained_slots(&mut self.dirty, needed, work, &mut self.slots)?;
+        reserve_retained_slots(&mut self.dirty, needed, Some(work), &mut self.slots)?;
         Ok(work.reserve_work(Residents::installation_work(1)?)?)
     }
 }

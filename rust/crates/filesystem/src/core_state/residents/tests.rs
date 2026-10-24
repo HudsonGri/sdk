@@ -68,11 +68,11 @@ fn retained_backing_borrows_without_transfer_and_rejects_unfunded_growth() {
     let borrower = make_work(3);
     let mut values = Vec::new();
     let mut held = None;
-    reserve_retained_slots(&mut values, 2, &original, &mut held).unwrap();
+    reserve_retained_slots(&mut values, 2, Some(&original), &mut held).unwrap();
     values.extend([11_u64, 13]);
     let original_live = original.live_allocation_bytes();
     let borrowed_before = borrower.receipt();
-    reserve_retained_slots(&mut values, 2, &borrower, &mut held).unwrap();
+    reserve_retained_slots(&mut values, 2, Some(&borrower), &mut held).unwrap();
     assert_eq!(borrower.receipt(), borrowed_before);
     assert_eq!(original.live_allocation_bytes(), original_live);
     assert!(
@@ -81,7 +81,7 @@ fn retained_backing_borrows_without_transfer_and_rejects_unfunded_growth() {
             .work()
             .shares_allocation_context(&original)
     );
-    assert!(reserve_retained_slots(&mut values, 3, &borrower, &mut held).is_err());
+    assert!(reserve_retained_slots(&mut values, 3, Some(&borrower), &mut held).is_err());
     assert_eq!(values, [11, 13]);
     assert_eq!(values.capacity(), 2);
     assert_eq!(borrower.receipt(), borrowed_before);
@@ -252,4 +252,32 @@ proptest! {
             prop_assert_eq!(linked.len(), keys.len());
         }
     }
+}
+
+#[test]
+fn ordinary_cache_reservations_do_not_inherit_cancelled_native_work() {
+    let cancellation = crate::CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
+    let mut residents = Residents::default();
+    residents.reserve(4, Some(&original)).unwrap();
+    let retained = original.live_allocation_bytes();
+    let receipt = original.receipt();
+    cancellation.cancel();
+    residents.reserve(0, None).unwrap();
+    residents.reserve(1, None).unwrap();
+    assert_eq!(original.live_allocation_bytes(), retained);
+    assert_eq!(original.receipt(), receipt);
+    assert!(residents.reserve(0, Some(&original)).is_err());
+    residents.reserve(64, None).unwrap();
+    assert!(residents.allocation.is_none());
+    assert!(residents.index.allocation.is_none());
+    assert_eq!(
+        original.live_allocation_bytes(),
+        crate::NativeMaterializationWork::accounting_state_bytes()
+    );
+    let next_token = crate::CancellationToken::new();
+    let next = crate::NativeMaterializationWork::new(finite_budget(), &next_token).unwrap();
+    residents.adopt_native(&next).unwrap();
+    assert!(residents.allocation.is_some());
+    assert!(residents.index.allocation.is_some());
 }
