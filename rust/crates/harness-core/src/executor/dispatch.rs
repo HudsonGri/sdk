@@ -65,7 +65,6 @@ impl StockExecution<'_> {
         ),
     ) -> Result<Vec<ModelEvent>> {
         let (purpose, control, phase) = turn;
-        let io = self.io;
         self.require_model_producer().await?;
         let RetainedModelStep {
             request: retained_request,
@@ -90,8 +89,6 @@ impl StockExecution<'_> {
                 phase,
             )
             .await?;
-        let request_digest = request.request_digest();
-        let purpose_key = model_purpose_key(purpose);
         #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
@@ -99,9 +96,9 @@ impl StockExecution<'_> {
             return Ok(replayed);
         }
         let dispatch = crate::model::ModelDispatch {
-            operation_id: purpose.attempt_operation(input.operation_id, io)?,
+            operation_id: purpose.attempt_operation(input.operation_id, self.io)?,
             step,
-            request_digest,
+            request_digest: request.request_digest(),
         };
         #[cfg(feature = "filesystem")]
         let _continuation_hold;
@@ -128,7 +125,7 @@ impl StockExecution<'_> {
                 self.claim_model_dispatch(
                     journal,
                     input,
-                    (step, purpose, purpose_key),
+                    (step, purpose, model_purpose_key(purpose)),
                     &request,
                     dispatch,
                     phase,
@@ -157,7 +154,7 @@ impl StockExecution<'_> {
             .record_model_events(
                 journal,
                 input.operation_id,
-                (step, purpose, purpose_key, control),
+                (step, purpose, model_purpose_key(purpose), control),
                 replayed,
                 &mut admission,
                 stream,
