@@ -166,7 +166,12 @@ impl StockExecution<'_> {
         input: &TurnInput,
     ) -> Result<()> {
         self.stock.limits.validate(&mut None)?;
-        self.output_budget()?;
+        // A retained summary command resolves its summary member and validates
+        // that purpose's budget before dispatch. Its response member does not
+        // own this request, so response admission must not run first.
+        if self.stock.summary_source.is_none() {
+            self.output_budget()?;
+        }
         if input.max_steps == 0 || input.max_steps as usize > self.stock.limits.model_steps {
             return Err(stock_boundary(
                 self.io,

@@ -157,6 +157,7 @@ async fn compact_sequence_source(
     journal: &Journal,
     provider: Arc<ScriptedModelProvider>,
     text: String,
+    output_tokens: u32,
 ) -> Result<TurnOutput> {
     let operation = OperationId::new();
     let cursor = crate::task_volume::Cursor {
@@ -200,7 +201,7 @@ async fn compact_sequence_source(
         ToolRegistry::default(),
     )
     .with_tool_authority(scope, None)?
-    .with_max_output_tokens(1024)?
+    .with_max_output_tokens(output_tokens)?
     .with_summary_source(Some(Box::new(source)))
     .execute_progress(
         TurnInput {
@@ -213,6 +214,20 @@ async fn compact_sequence_source(
     )
     .await?
     .into_output()
+}
+
+#[tokio::test]
+async fn retained_summary_budget_is_admitted_by_its_purpose_before_dispatch() -> Result<()> {
+    let journal = Journal::default();
+    let (provider, _) = counted_model(65_536, None, [], []);
+    let result = compact_sequence_source(&journal, provider.clone(), "source".into(), 8192).await;
+    assert!(
+        matches!(result, Err(Error::Invalid(ref message)) if message.contains("summary output exceeds selected model capacity")),
+        "{result:?}"
+    );
+    assert!(provider.requests().is_empty());
+    assert!(journal.0.lock().unwrap().is_empty());
+    Ok(())
 }
 
 #[test]
@@ -268,8 +283,9 @@ fn summary_sequence_sends_summary_only_facts_and_new_turns_to_the_next_request()
                         }
                         source
                     };
-                    compact_sequence_source(&journal, provider.clone(), source(true)).await?;
-                    compact_sequence_source(&journal, provider.clone(), source(false)).await?;
+                    compact_sequence_source(&journal, provider.clone(), source(true), 1024).await?;
+                    compact_sequence_source(&journal, provider.clone(), source(false), 1024)
+                        .await?;
                     let requests = provider.requests();
                     let preserves = |index| {
                         let request = serde_json::to_string(&requests[index]).unwrap();
