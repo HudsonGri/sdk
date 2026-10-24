@@ -738,3 +738,25 @@ mod object_work {
         }
     }
 }
+
+// A name decoded through `try_from = "String"` is copied into an `Arc<str>`:
+// the reservation covers the shared copy and its header, not only the text.
+#[test]
+fn converted_names_reserve_their_shared_copies() {
+    let components: Vec<crate::task_volume::Component> = (0..256)
+        .map(|index| crate::task_volume::Component::new(format!("c{}", index % 10)).unwrap())
+        .collect();
+    let plans: Vec<crate::task_volume::PlanName> = (0..256)
+        .map(|index| crate::task_volume::PlanName::try_from(format!("p{}", index % 10)).unwrap())
+        .collect();
+    let (_, component_peak) = assert_layout_covers_decode(&components);
+    assert_layout_covers_decode(&plans);
+    // Negative control: charging each name as the `String` it decodes from
+    // reserves less than the converted decode really holds.
+    let bytes = serde_json::to_vec(&components).unwrap();
+    let as_strings = layout_reservation::<Vec<String>>(&bytes).unwrap();
+    assert!(
+        as_strings < component_peak,
+        "{as_strings} reserved as strings / {component_peak} decode peak"
+    );
+}
