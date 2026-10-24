@@ -202,7 +202,8 @@ fn executable() -> std::path::PathBuf {
         .unwrap()
         .join(compiled.file_name().unwrap());
     select_executable(
-        std::env::var_os("ACYCLIC_TEST_BINARY").map(std::path::PathBuf::from),
+        acyclic_harness::test_support::environment("ACYCLIC_TEST_BINARY")
+            .map(std::path::PathBuf::from),
         compiled,
         &exported,
     )
