@@ -11,8 +11,7 @@ impl LocalHarness {
         authority: (&AuthorityVerifier, &Scope),
         checkout: Option<&Path>,
     ) -> Result<Self> {
-        config.limits.validate(&mut None)?;
-        validate_policy_binding(&config, &runtime)?;
+        validate_binding(&config, &runtime)?;
         #[cfg(any(test, feature = "native-execution"))]
         if checkout.is_some() {
             config = config.prepare_state()?;
@@ -310,7 +309,8 @@ async fn checkout_runtime(
     })
 }
 
-fn validate_policy_binding(config: &LocalHarnessConfig, runtime: &LocalTaskRuntime) -> Result<()> {
+fn validate_binding(config: &LocalHarnessConfig, runtime: &LocalTaskRuntime) -> Result<()> {
+    config.limits.validate(&mut None)?;
     use crate::runtime::ToolPolicy as _;
     config.limits.validate(&mut None)?;
     if runtime.approval_policy_identity() != Some(config.approval_policy.bind()?.identity()) {
