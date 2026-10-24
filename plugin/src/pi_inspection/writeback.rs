@@ -9,7 +9,7 @@ pub(crate) async fn prepare_writeback(
 ) -> Result<acyclic_fs::MaterializationJournal> {
     root.verify(native_work).await?;
     let from = &generations.from;
-    let candidate = &generations.candidate;
+    let candidate = generations.candidate();
     if generations.original_snapshot.workspace_id != root.workspace {
         return Err(selected_unauthorized(
             "writeback candidate is not the original selected root workspace",
@@ -84,7 +84,7 @@ pub(crate) fn writeback_digest_value<'a>(
 ) -> Result<acyclic_harness::filesystem::CheckoutApproval<'a, impl Serialize + 'a>> {
     root.publication.approval_value(
         &generations.from,
-        &generations.candidate,
+        generations.candidate(),
         generations.paths,
         journal,
         writeback_context(root, generations),

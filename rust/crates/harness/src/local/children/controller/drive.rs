@@ -11,46 +11,48 @@ impl LocalHarness {
         control: Option<crate::local::approvals::Inbox>,
     ) -> BoxProviderFuture<'a, Result<DriveState>> {
         Box::pin(async move {
-            let mut completions = BTreeMap::new();
-            let inherited = commands.invocation_cancellation().cloned();
-            let mut inherited_stopped = false;
-            let approver_done = acyclic_fs::CancellationToken::new();
-            let approver_passive = acyclic_fs::CancellationToken::new();
             let signals = ChildSignals {
-                inherited: inherited.clone(),
-                parent_done: approver_done.clone(),
-                parent_passive: approver_passive.clone(),
+                inherited: commands.invocation_cancellation().cloned(),
+                parent_done: acyclic_fs::CancellationToken::new(),
+                parent_passive: acyclic_fs::CancellationToken::new(),
             };
-            let mut children = self.initial_child_drivers(&files, &signals).await?;
+            let children = self.initial_child_drivers(&files, &signals).await?;
             let scoped = draining::Commands::new(self, commands);
-            let cancellation = &scoped.cancellation;
-            let drained = &scoped.drained;
-            let parent = self.advance_parent(
-                task,
-                commands,
-                &scoped,
-                &control,
-                cancellation,
-                &approver_done,
-                &approver_passive,
-            );
-            futures::pin_mut!(parent);
-            let mut parent_done = false;
-            let mut detached_approval = false;
-            let mut pending = std::collections::VecDeque::new();
-            macro_rules! observed {
-                ($work:expr) => {
-                    during(
-                        coordination(|| $work),
-                        parent.as_mut(),
-                        &mut parent_done,
-                        &mut children.jobs,
-                        &mut pending,
-                    )
-                    .await
-                };
-            }
-            let result = coordination(|| async {
+            let parent = self.advance_parent(task, &scoped, &control, &signals);
+            coordination(|| self.drive_children(files, children, &scoped, &signals, parent)).await
+        })
+    }
+
+    async fn drive_children<'a>(
+        &'a self,
+        files: Arc<Files>,
+        mut children: ChildDrivers<'a>,
+        scoped: &draining::Commands<'_>,
+        signals: &ChildSignals,
+        parent: impl Future<Output = Result<DriveState>> + acyclic_stream::ProviderTask,
+    ) -> Result<DriveState> {
+        let mut completions = BTreeMap::new();
+        let inherited = &signals.inherited;
+        let mut inherited_stopped = false;
+        let cancellation = &scoped.cancellation;
+        let drained = &scoped.drained;
+        futures::pin_mut!(parent);
+        let mut parent_done = false;
+        let mut detached_approval = false;
+        let mut pending = std::collections::VecDeque::new();
+        macro_rules! observed {
+            ($work:expr) => {
+                during(
+                    coordination(|| $work),
+                    parent.as_mut(),
+                    &mut parent_done,
+                    &mut children.jobs,
+                    &mut pending,
+                )
+                .await
+            };
+        }
+        let result = coordination(|| async {
                 loop {
                     if !inherited_stopped && inherited.as_ref().is_some_and(|token| token.is_cancelled()) {
                         inherited_stopped = true;
@@ -59,7 +61,7 @@ impl LocalHarness {
                             if !children.active.contains(&reference) && !matches!(desired(&reference, &children.values)?, ChildState::Cancelled | ChildState::Archived) {
                                 children.active.insert(reference.clone());
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                children.jobs.push(self.service_child(files.clone(), reference, request, Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone(), parent_passive: approver_passive.clone() })));
+                                children.jobs.push(self.service_child(files.clone(), reference, request, Some(signals.clone())));
                             }
                         }
                     }
@@ -89,7 +91,7 @@ impl LocalHarness {
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? { continue; }
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
                                 children.active.insert(reference.clone());
-                                children.jobs.push(self.service_child(files.clone(), reference, request, Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone(), parent_passive: approver_passive.clone() })));
+                                children.jobs.push(self.service_child(files.clone(), reference, request, Some(signals.clone())));
                             }
                         }
                         Wake::Child(result) => {
@@ -103,7 +105,7 @@ impl LocalHarness {
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? {
                                     let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
                                     children.active.insert(reference.clone());
-                                    children.jobs.push(self.service_child(files.clone(), reference, request, Some(ChildSignals { inherited: inherited.clone(), parent_done: approver_done.clone(), parent_passive: approver_passive.clone() })));
+                                    children.jobs.push(self.service_child(files.clone(), reference, request, Some(signals.clone())));
                                 }
                             }
                         }
@@ -115,19 +117,15 @@ impl LocalHarness {
                     }
                 }
             }).await;
-            if result.is_err() {
-                approver_done.cancel();
-            }
-            drain_parent(
-                result,
-                parent.as_mut(),
-                parent_done,
-                &mut children.jobs,
-                cancellation,
-                drained,
-            )
-            .await
-        })
+        drain_parent(
+            result,
+            parent.as_mut(),
+            parent_done,
+            &mut children.jobs,
+            scoped,
+            signals,
+        )
+        .await
     }
     async fn initial_child_drivers<'a>(
         &'a self,
@@ -166,11 +164,7 @@ impl LocalHarness {
                     Arc::clone(files),
                     reference,
                     request,
-                    Some(ChildSignals {
-                        inherited: signals.inherited.clone(),
-                        parent_done: signals.parent_done.clone(),
-                        parent_passive: signals.parent_passive.clone(),
-                    }),
+                    Some(signals.clone()),
                 ));
             }
         }
@@ -186,12 +180,9 @@ impl LocalHarness {
     async fn advance_parent(
         &self,
         task: TaskId,
-        commands: &dyn TaskCommandHost,
-        scoped: &dyn TaskCommandHost,
+        scoped: &draining::Commands<'_>,
         control: &Option<crate::local::approvals::Inbox>,
-        cancellation: &acyclic_fs::CancellationToken,
-        approver_done: &acyclic_fs::CancellationToken,
-        approver_passive: &acyclic_fs::CancellationToken,
+        signals: &ChildSignals,
     ) -> Result<DriveState> {
         let state = crate::package::harness::worker::advance_while(
             self,
@@ -199,8 +190,9 @@ impl LocalHarness {
             scoped,
             control.as_ref(),
             || async {
-                if cancellation.is_cancelled()
-                    || commands
+                if scoped.cancellation.is_cancelled()
+                    || scoped
+                        .inner
                         .invocation_cancellation()
                         .is_some_and(|token| token.is_cancelled())
                 {
@@ -222,14 +214,14 @@ impl LocalHarness {
         )
         .await?;
         if state == DriveState::AwaitingApproval {
-            approver_passive.cancel();
+            signals.parent_passive.cancel();
         }
         match coordination(|| self.runtime.task_host().terminal_status(task)).await? {
             Some(crate::Outcome::Indeterminate {
                 operation_id,
                 cause,
             }) => return Err(cause.into_error(operation_id)),
-            Some(_) => approver_done.cancel(),
+            Some(_) => signals.parent_done.cancel(),
             None => {}
         }
         Ok(state)
@@ -321,12 +313,13 @@ async fn drain_parent(
     mut parent: Pin<&mut (impl Future<Output = Result<DriveState>> + acyclic_stream::ProviderTask)>,
     parent_done: bool,
     jobs: &mut FuturesUnordered<BoxProviderFuture<'_, Result<ChildCompletion>>>,
-    cancellation: &acyclic_fs::CancellationToken,
-    drained: &acyclic_fs::CancellationToken,
+    scoped: &draining::Commands<'_>,
+    signals: &ChildSignals,
 ) -> Result<DriveState> {
     if result.is_ok() {
         return result;
     }
+    signals.parent_done.cancel();
     coordination(|| {
         draining::finish(
             async {
@@ -337,8 +330,8 @@ async fn drain_parent(
                 }
             },
             jobs,
-            cancellation,
-            drained,
+            &scoped.cancellation,
+            &scoped.drained,
         )
     })
     .await;
