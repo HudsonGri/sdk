@@ -21,17 +21,16 @@ try {
   'negative control requires the real live host owner to be invisible or aliased');
  const meta=path.join(root,'hidden.receipt-meta.v2.json');
  const receipt=path.join(root,'terminal.json');
- fs.writeFileSync(meta,JSON.stringify({owner:parent.owner,receipt_file:receipt,argv:[],side:'proof'}));
+ fs.writeFileSync(meta,JSON.stringify({owner:parent.owner,receipt_file:receipt,argv:[],side:'proof',admission_start:new Date().toISOString()}));
  recover(root);
  assert.equal(fs.existsSync(receipt),false);
- assert.throws(()=>finish(meta,137,'interrupted'),/PID namespace/);
- await assert.rejects(watch(meta),/PID namespace/);
+ assert.equal(finish(meta,137,'interrupted'),null);
+ await watch(meta);
  assert.equal(fs.existsSync(receipt),false);
  // Remove the production namespace fence, retaining its actual former raw-PID
  // recovery condition. The hidden live owner's receipt is then made terminal.
  const source=fs.readFileSync(new URL('./buildbox-receipt.mjs',import.meta.url),'utf8');
- const broken=source.replace('  requireLocalOwner(m.owner);\n','')
-  .replace("processState(m.owner) === 'dead'",'processIdentity(m.owner.pid) !== m.owner.identity');
+ const broken=source.replace('return namespace !== null && owner?.pid_namespace === namespace;', 'return Boolean(owner);');
  assert.notEqual(broken,source);
  const module=path.join(root,'broken.mjs');fs.writeFileSync(module,broken);
  const old=await import(pathToFileURL(module));
