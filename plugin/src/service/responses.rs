@@ -87,9 +87,21 @@ pub(crate) fn control_response_for(
                 // failure is never replaced by the later reporting failure.
                 drop(payload);
                 drop(source_allocation);
-                let failure = failure.unwrap_or(encoding_error);
-                let refusal = RefusalFrame::new(Some(request_id), &failure);
-                return Ok((ControlFrame::refusal(refusal), None, Some(failure)));
+                return Ok(match failure {
+                    Some(failure) => {
+                        let refusal = RefusalFrame::new(Some(request_id), &failure);
+                        (ControlFrame::refusal(refusal), None, Some(failure))
+                    }
+                    // The operation succeeded; only its reply failed.
+                    None => {
+                        let refusal = RefusalFrame::new(Some(request_id), &encoding_error);
+                        (
+                            ControlFrame::reply_refusal(refusal),
+                            None,
+                            Some(encoding_error),
+                        )
+                    }
+                });
             }
         }
     } else {
