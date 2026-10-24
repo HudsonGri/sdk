@@ -22,8 +22,7 @@ fn authenticated_admission_transfers_the_single_verified_workload() -> TestResul
         .record(&workload, &request, [7; 32], &[8; 32])?;
     let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
     let identity = authenticated.workload().block_ids().as_ptr();
-    authenticated.authorize(&trust, &request, [7; 32])?;
-    let transferred = authenticated.into_workload();
+    let transferred = authenticated.authorize(&trust, &request, [7; 32])?;
     assert_eq!(identity, transferred.block_ids().as_ptr());
     // The former second verification creates a distinct authenticated chain,
     // and fails the same ownership oracle while the first remains alive.
@@ -42,7 +41,6 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
     let request = signed::request("fs:/volume/public/file", &attributes, &usage);
     let proof = RuntimeAdmission::new(&signer, &trust, signed::NOW)
         .record(&workload, &request, [7; 32], &[8; 32])?;
-    let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
     let revoked = signed::Snapshot {
         revoked_blocks: vec![*workload.block_ids().first().ok_or(VerifyError::Malformed)?],
         ..Default::default()
@@ -58,9 +56,9 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
         now_unix_seconds: signed::NOW - 1,
         ..request
     };
-    // The old shape's saved successful authorization is the negative control:
-    // every changed request must fail despite the unchanged immutable proof.
-    let saved_allow = authenticated.authorize(&trust, &request, [7; 32]).is_ok();
+    // Saving a successful authorization would admit these changed requests.
+    // Each newly authenticated proof must instead consume a fresh decision.
+    let saved_allow = proof.verify_history(&trust, &request, [7; 32]).is_ok();
     assert!(saved_allow);
     for (current, changed, payload) in [
         (&trust, &request, [6; 32]),
@@ -68,6 +66,7 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
         (&trust, &future, [7; 32]),
         (&revoked, &request, [7; 32]),
     ] {
+        let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
         assert!(authenticated.authorize(current, changed, payload).is_err());
         assert!(proof.verify_history(current, changed, payload).is_err());
         assert!(
@@ -80,10 +79,10 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
         now_unix_seconds: 1100,
         ..request
     };
-    authenticated.authorize(&trust, &expired, [7; 32])?;
+    let authenticated = proof.authenticate_history(&trust, signed::NOW)?;
+    let historical = authenticated.authorize(&trust, &expired, [7; 32])?;
     assert!(
-        authenticated
-            .workload()
+        historical
             .authorize(&trust, &expired, PolicyDecision::Allow)
             .is_err()
     );
