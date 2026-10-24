@@ -29,8 +29,8 @@ struct ModelExecutionInput {
     max_output_tokens: Option<u32>,
 }
 impl ModelExecutionInput {
-    fn new(command: ModelTaskCommand, task: TaskId) -> Self {
-        Self {
+    fn split_manifest(command: ModelTaskCommand, task: TaskId) -> (Self, FileRef) {
+        let input = Self {
             conversation_id: command
                 .conversation_id
                 .unwrap_or_else(|| crate::ConversationId::from_bytes(task.into_bytes())),
@@ -41,7 +41,8 @@ impl ModelExecutionInput {
             summary_source: command.summary_source,
             selected_output_volume: command.selected_output_volume,
             max_output_tokens: command.max_output_tokens,
-        }
+        };
+        (input, command.context_manifest)
     }
 }
 
@@ -149,15 +150,11 @@ where
             .await?;
         }
         reserve_model_input(io)?;
+        let (command, manifest) = ModelExecutionInput::split_manifest(command, admission.task_id());
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let manifest_digest = *command.context_manifest.descriptor().sha256();
+        let manifest_digest = *manifest.descriptor().sha256();
         let (pipeline, tools) = BoundedContentFuture::new(io, || {
-            self.prepared_model_context(
-                &context,
-                command.context_manifest,
-                command.summary_source.is_some(),
-                io,
-            )
+            self.prepared_model_context(&context, manifest, command.summary_source.is_some(), io)
         })?
         .await?;
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
@@ -192,7 +189,7 @@ where
             invocation,
             ModelExecution {
                 context,
-                command: ModelExecutionInput::new(command, admission.task_id()),
+                command,
                 pipeline,
                 tools,
                 journal,
