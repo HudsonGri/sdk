@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic bb2 execution, disk admission, and one owned sccache endpoint."""
 import ctypes
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import fcntl
@@ -42,6 +43,32 @@ def atomic(file,value):
     tmp=Path(str(file)+'.'+str(os.getpid())+'.tmp')
     with tmp.open('w') as f: json.dump(value,f); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,file)
+
+
+@contextlib.contextmanager
+def runtime_setup(file):
+    """Fence preparation against a terminal receipt, including before launch."""
+    fd=os.open(str(file)+'.setup-lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    if os.geteuid()==0:
+        owner=Path(file).parent.stat()
+        os.fchown(fd,owner.st_uid,owner.st_gid)
+    with os.fdopen(fd,'a') as lease:
+        fcntl.flock(lease,fcntl.LOCK_EX)
+        yield
+
+
+def start_outer(file,prefix,argv):
+    """Own all mount-adapter scratch before the first directory is created."""
+    outer_prefix(prefix)
+    if not argv:raise ValueError('outer setup requires a command')
+    with runtime_setup(file):
+        if Path(file).exists():
+            raise RuntimeError('outer setup is already admitted or closed')
+        custody=job_custody.prepare()
+        job_custody.enter(custody)
+        atomic(file,{'custody':custody,'outer_setup':str(prefix)})
+    os.execvp(argv[0],argv)
+
 
 def disk():
     readings=[]
@@ -416,8 +443,7 @@ def run(argv,namespace_ready=False):
         if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
-    job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
-    lease=home_lease(job)
+    job=JOBS/('job-'+uuid.uuid4().hex)
     env=dict(os.environ); real_home=Path('/home/var')
     # Export scope belongs to this receipt owner, never to nested commands.
     export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)
@@ -427,11 +453,24 @@ def run(argv,namespace_ready=False):
     admission_file=Path(meta+'.admission')
     admission=json.loads(admission_file.read_text()) if admission_file.exists() else {'tier':env.get('BB_ADMIT_TIER'),'tenant':env.get('BB_ADMIT_TENANT'),'wait_seconds':env.get('BB_ADMIT_WAIT_SECONDS'),'build_jobs':env.get('CARGO_BUILD_JOBS')}
     if admission.get('build_jobs'):env['CARGO_BUILD_JOBS']=str(admission['build_jobs'])
-    custody=job_custody.prepare()
-    runtime={'custody':custody,'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
-             'admission':admission, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
-    runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
-    job_custody.enter(custody)
+    runtimefile=Path(meta+'.runtime')
+    with runtime_setup(runtimefile):
+        previous=json.loads(runtimefile.read_text()) if runtimefile.exists() else {}
+        if previous.get('setup_closed'):raise RuntimeError('job setup is already closed')
+        if previous.get('outer_setup'):
+            custody=previous['custody']
+            if not job_custody.current_group().is_relative_to(Path(custody['path'])):
+                raise RuntimeError('job is outside its outer setup custody')
+        else:
+            custody=job_custody.prepare()
+            job_custody.enter(custody)
+        runtime={**previous,'custody':custody,'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
+                 'admission':admission, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
+        # Publish the future path before creating it. A killed initializer can
+        # leave no unrecorded home, and the writer is already inside custody.
+        atomic(runtimefile,runtime)
+    job.mkdir(mode=0o700)
+    lease=home_lease(job)
     server=None; child=None; rc=224; units=[]
     def interrupted(n,f):
         for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
@@ -536,34 +575,72 @@ def run(argv,namespace_ready=False):
 
 
 def cleanup_runtime(file, prefix=None):
-    runtime=json.loads(Path(file).read_text())
-    try:
-        job=Path(runtime['hermetic_home'])
-        if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
-            raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
-        with home_lease(job,exclusive=True):
-            stop_command(runtime.get('command'))
-            proof=job_custody.join(runtime['custody'])
-            stop_server(runtime.get('sccache_server'))
-            if job.exists(): remove_home(job)
-        runtime['home_removed']=True
-        if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
-        if prefix is not None:runtime.update(cleanup_outer(prefix,proof,runtime['custody']))
-        runtime['quiescence']=proof.reason
-        atomic(file,runtime)
-    except Exception as error:
-        runtime['cleanup_error']=str(error)
-        atomic(file,runtime)
-        raise
+    with runtime_setup(file):
+        runtime=json.loads(Path(file).read_text()) if Path(file).exists() else {}
+        try:
+            if not runtime:
+                if prefix is None:raise RuntimeError('missing runtime has no outer setup contract')
+                prefix=outer_prefix(prefix)
+                if any(Path(str(prefix)+suffix).exists() or Path(str(prefix)+suffix).is_symlink() for suffix in ['.targets','.tmp']):
+                    raise RuntimeError('unrecorded outer scratch has no custody proof')
+                # Absence proves no effects only under the same setup lease.
+                # Closing the constructor also excludes a late launcher.
+                runtime={'setup_closed':True,'outer_setup':str(prefix),
+                         'outer_targets_removed':True,'outer_tmp_removed':True}
+                atomic(file,runtime)
+                return
+            if runtime.get('outer_setup'):
+                bound=outer_prefix(runtime['outer_setup'])
+                if prefix is not None and bound!=outer_prefix(prefix):
+                    raise RuntimeError('outer scratch belongs to another setup generation')
+                prefix=bound
+            if runtime.get('setup_closed'):return
+            original_home=runtime_home(runtime)
+            with home_lease(original_home,exclusive=True) if original_home else contextlib.nullcontext():
+                stop_command(runtime.get('command'))
+                proof=job_custody.join(runtime['custody'])
+                # Joining stops every writer. Read again to include a home
+                # published while this cleaner was waiting for the kernel.
+                runtime=json.loads(Path(file).read_text())
+                home=runtime_home(runtime)
+                with home_lease(home,exclusive=True) if home and home!=original_home else contextlib.nullcontext():
+                    if home:
+                        stop_server(runtime.get('sccache_server'))
+                        if home.exists():remove_home(home)
+                        runtime['home_removed']=True
+            if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
+            if prefix is not None:runtime.update(cleanup_outer(prefix,proof,runtime['custody']))
+            runtime['quiescence']=proof.reason
+            runtime['setup_closed']=True
+            atomic(file,runtime)
+        except Exception as error:
+            runtime['cleanup_error']=str(error)
+            atomic(file,runtime)
+            raise
 
-def cleanup_outer(prefix, proof, custody):
-    proof.require(custody)
+
+def runtime_home(runtime):
+    home=runtime.get('hermetic_home')
+    if home is None:return None
+    job=Path(home)
+    if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
+        raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
+    return job
+
+
+def outer_prefix(prefix):
     prefix=Path(prefix)
     if prefix.parent.resolve()!=JOBS.resolve() or prefix.name in ['', '.', '..']:
         raise ValueError('refusing outer cleanup outside /mnt/bb/jobs')
-    import contextlib
+    return prefix
+
+def cleanup_outer(prefix, proof, custody):
+    proof.require(custody)
+    prefix=outer_prefix(prefix)
     runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
     metadata=json.loads(runtime.read_text()) if runtime.exists() else {}
+    if metadata.get('outer_setup') and metadata['outer_setup']!=str(prefix):
+        raise RuntimeError('outer scratch belongs to another setup generation')
     home=metadata.get('hermetic_home')
     with home_lease(Path(home),exclusive=True) if home else contextlib.nullcontext():
         for suffix in ['.targets','.tmp']:
@@ -605,7 +682,12 @@ def stop_job(file):
 
 
 if __name__=='__main__':
-    if sys.argv[1:2]==['home-namespace']:
+    if sys.argv[1:2]==['outer-setup']:
+        try:start_outer(sys.argv[2],sys.argv[3],sys.argv[4:])
+        except (OSError,RuntimeError,ValueError) as error:
+            print('[buildbox] outer setup INFRA: '+str(error),file=sys.stderr,flush=True)
+            raise SystemExit(224)
+    elif sys.argv[1:2]==['home-namespace']:
         try:mount_home_namespace();result=run(sys.argv[2:],namespace_ready=True)
         except (OSError,RuntimeError,subprocess.SubprocessError) as error:
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True);result=224

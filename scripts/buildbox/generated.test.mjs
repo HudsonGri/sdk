@@ -98,10 +98,11 @@ for(const gate of [false,true])for(const input of [['bash','-c','echo okay'],['c
 const argv=pinGlibc(input);
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
 const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv,gate_log:gate?'Q:/lanes/pr-gate/fixture.log':null});
-const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted)\b/g)].map(m=>Buffer.from(m[1],'base64').toString())];
-if(bodies.length!==4)throw Error('missing generated shell');
+const generated=Object.fromEntries([...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted|setup)\b/g)].map(m=>[m[2],Buffer.from(m[1],'base64').toString()]));
+const bodies=[script,...Object.values(generated)];
+if(bodies.length!==5)throw Error('missing generated shell');
 for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);}
-const inner=bodies[1];
+const inner=generated.sh;
 const cold=process.env.BUILD_SLOT_REMOTE_COLD==='1';
 const disable='export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1';
 if(inner.includes(disable)!==cold || (cold && inner.indexOf(disable)>inner.indexOf('exec python3 /home/var/bin/bb-job.py')))throw Error('cold jobs can restore or publish snapshots');
@@ -112,10 +113,13 @@ if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo byp
 if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
 if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
 if(inner.includes('ulimit -n'))throw Error('job overrides caller nofile limit');
-if(!bodies[2].includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
-if(!bodies[2].includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
-captureBeforeNode(bodies[3]);
-for(const broken of [bodies[3].replaceAll('capture-limits','missing-capture'),bodies[3].replaceAll('node $J.receipt-tool.mjs','missing-node')]){
+if(!generated.setup.includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
+if(!generated.admitted.includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
+if(!generated.admitted.includes('bb-job.py outer-setup /mnt/bb/jobs/fixture.receipt-meta.v2.json.runtime /mnt/bb/jobs/fixture bash /mnt/bb/jobs/fixture.setup'))throw Error('scratch bypasses custody constructor');
+if([script,generated.wrap,generated.admitted].some(body=>/mkdir -p[^\n]*(?:fixture\.targets|\$J\.tmp)/.test(body)))throw Error('scratch precedes custody publication');
+if(!generated.setup.includes('mkdir -p $J.tmp') || !generated.setup.includes('mkdir -p $T /mnt/bb/jobs/fixture.targets'))throw Error('scratch not owned by setup');
+captureBeforeNode(generated.wrap);
+for(const broken of [generated.wrap.replaceAll('capture-limits','missing-capture'),generated.wrap.replaceAll('node $J.receipt-tool.mjs','missing-node')]){
 let rejected=false;try{captureBeforeNode(broken);}catch{rejected=true;}if(!rejected)throw Error('missing capture/Node negative control passed');
 }
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
@@ -139,6 +143,9 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
   fs.writeFileSync(generator,original.replaceAll('BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1','BB_COLD_DISABLED_CONTROL=1'));
   const coldNegative=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:'1'}});
   assert.notEqual(coldNegative.status,0);assert.match(coldNegative.stderr,/cold jobs can restore or publish snapshots/);
+  fs.writeFileSync(generator,original.replace('bb-job.py outer-setup','bb-job.py missing-outer-setup'));
+  const custodyNegative=spawnSync(process.execPath,[file],{encoding:'utf8'});
+  assert.notEqual(custodyNegative.status,0);assert.match(custodyNegative.stderr,/scratch bypasses custody constructor/);
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 
