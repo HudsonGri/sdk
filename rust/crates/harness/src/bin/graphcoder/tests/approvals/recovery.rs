@@ -115,9 +115,23 @@ async fn recovery(case: Case, cancel: bool) {
                 &[decision.clone(), decision.clone()],
                 0,
             );
+            let settled_calls = (
+                fixture.root_calls.load(Ordering::SeqCst),
+                fixture.child_calls.load(Ordering::SeqCst),
+                fixture.reviews.load(Ordering::SeqCst),
+            );
             eprintln!("approval recovery {case:?}: retrying decision");
             exchange(files.command(case, operation), &[decision], 0);
             eprintln!("approval recovery {case:?}: settled");
+            assert_eq!(
+                (
+                    fixture.root_calls.load(Ordering::SeqCst),
+                    fixture.child_calls.load(Ordering::SeqCst),
+                    fixture.reviews.load(Ordering::SeqCst),
+                ),
+                settled_calls,
+                "exact decision retry dispatched another model request"
+            );
             assert_eq!(
                 fixture.effects.load(Ordering::SeqCst),
                 1,
@@ -137,7 +151,13 @@ async fn recovery(case: Case, cancel: bool) {
             if case.child_human() || matches!(case, Case::ParentHumanWait) {
                 assert_eq!(
                     fixture.child_calls.load(Ordering::SeqCst),
-                    2,
+                    // A parent decision is sent through the ordinary child
+                    // inbox; its retained envelope is also a new receive turn.
+                    if matches!(case, Case::ParentHumanWait) {
+                        3
+                    } else {
+                        2
+                    },
                     "reopen regenerated the child's tool request"
                 );
             }
