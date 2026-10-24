@@ -7,15 +7,13 @@ use futures::StreamExt as _;
 use std::time::Duration;
 
 /// Native network capability with explicit host credentials.
-pub struct NativeMcpHttpProvider(reqwest::Client);
+pub struct NativeMcpHttpProvider(crate::http::native::Client);
 
 impl NativeMcpHttpProvider {
     /// Creates a provider with redirects and retries disabled.
     pub fn new(headers: reqwest::header::HeaderMap) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = crate::http::native::client_builder()
             .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
             .build()
             .map_err(|e| Error::Invalid(e.to_string()))?;
         Ok(Self(client))
@@ -34,21 +32,21 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self
-                .0
-                .request(method, &request.endpoint)
-                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
-                .body(request.body);
-            for (key, value) in request.headers {
-                builder = builder.header(key, value);
-            }
-            let response = builder
-                .send()
-                .await
-                .map_err(|_| Error::Indeterminate(operation))?;
-            let status = response.status().as_u16();
+            let response = crate::http::native::exchange(
+                &self.0,
+                crate::http::native::Request {
+                    method,
+                    url: request.endpoint,
+                    headers: request.headers,
+                    body: request.body.into(),
+                    timeout: Some(Duration::from_millis(u64::from(request.timeout_ms))),
+                },
+            )
+            .await
+            .map_err(|failure| failure.into_mcp_error(operation))?;
+            let status = response.status;
             let headers = response
-                .headers()
+                .headers
                 .iter()
                 .map(|(key, value)| {
                     value
@@ -58,8 +56,8 @@ impl McpHttpProvider for NativeMcpHttpProvider {
                 })
                 .collect::<Result<_>>()?;
             let mut received = 0_usize;
-            let body = response.bytes_stream().map(move |chunk| {
-                let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
+            let body = response.body.map(move |chunk| {
+                let chunk = chunk.map_err(|failure| failure.into_mcp_error(operation))?;
                 received = received.saturating_add(chunk.len());
                 if received as u64 > u64::from(request.maximum_response_bytes) {
                     return Err(Error::Indeterminate(operation));
@@ -142,12 +140,7 @@ mod tests {
                 assert!(request.contains("tools/call"));
                 if mode == "lost" {
                     drop(socket);
-                    assert!(
-                        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                            .await
-                            .is_err()
-                    );
-                    return Ok(());
+                    return Ok(listener);
                 }
                 let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":"local"}],"isError":false}}).to_string();
                 let response = if mode == "redirect" {
@@ -178,13 +171,7 @@ mod tests {
                     .shutdown()
                     .await
                     .map_err(|e| Error::Storage(e.to_string()))?;
-                // A second connection would prove an implicit retry/redirect.
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                        .await
-                        .is_err()
-                );
-                Ok::<_, Error>(())
+                Ok::<_, Error>(listener)
             });
             let provider = Arc::new(NativeMcpHttpProvider::new(
                 reqwest::header::HeaderMap::new(),
@@ -199,13 +186,63 @@ mod tests {
             )?;
             let result = transport.call(operation, "echo", json!({}), None).await;
             assert!(transport.reconcile(operation, None).await?.is_none());
-            server.await.map_err(|e| Error::Storage(e.to_string()))??;
+            // The exchange future has finished and owns no detached dispatch task.
+            // Inspect the retained listener's backlog without a timer or a race with server shutdown.
+            let listener = server.await.map_err(|e| Error::Storage(e.to_string()))??;
+            assert!(
+                matches!(listener.into_std().map_err(|error| Error::Storage(error.to_string()))?.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
             if matches!(mode, "json" | "sse") {
                 assert_eq!(result?.content, [rmcp::model::ContentBlock::text("local")]);
             } else {
                 assert!(matches!(result, Err(Error::Indeterminate(_))));
             }
         }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn a_reserved_unlistening_endpoint_is_never_sent_not_indeterminate() -> Result<()> {
+        let socket =
+            tokio::net::TcpSocket::new_v4().map_err(|error| Error::Storage(error.to_string()))?;
+        socket
+            .bind("127.0.0.1:0".parse().unwrap())
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let address = socket
+            .local_addr()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let operation = OperationId::from_bytes([21; 16]);
+        let provider = Arc::new(NativeMcpHttpProvider::new(
+            reqwest::header::HeaderMap::new(),
+        )?);
+        let result = provider
+            .exchange(
+                operation,
+                McpHttpRequest {
+                    endpoint: format!("http://{address}/mcp"),
+                    method: "POST".into(),
+                    headers: Default::default(),
+                    body: b"{}".to_vec(),
+                    timeout_ms: 1000,
+                    maximum_response_bytes: 1024,
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(Error::HttpNotSent { operation: actual,
+            failure: crate::ModelTransportFailure::Connect }) if actual == operation));
+        let transport = HttpMcpTransport::new(
+            provider,
+            format!("http://{address}/mcp"),
+            Some("session".into()),
+            1024,
+            1000,
+            None,
+        )?;
+        assert!(
+            matches!(transport.call(operation, "echo", json!({}), None).await,
+            Err(Error::HttpNotSent { operation: actual, failure: crate::ModelTransportFailure::Connect })
+                if actual == operation)
+        );
+        drop(socket);
         Ok(())
     }
 }

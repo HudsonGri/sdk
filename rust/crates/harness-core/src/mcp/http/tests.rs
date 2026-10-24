@@ -184,3 +184,22 @@ async fn initialization_pins_negotiated_session_and_rejects_foreign_version() ->
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn truncated_sse_is_uncertain_and_never_publishes_a_partial_result() {
+    let operation = OperationId::from_bytes([7; 16]);
+    for ending in ["", "\n"] {
+        let wire = format!("data: {}{ending}", message(operation));
+        for width in 1..=wire.len() {
+            let chunks = wire
+                .as_bytes()
+                .chunks(width)
+                .map(Bytes::copy_from_slice)
+                .map(Ok)
+                .collect::<Vec<_>>();
+            assert!(
+                matches!(sse::response(Box::pin(futures::stream::iter(chunks)), operation, 4096, None).await, Err(Error::Indeterminate(id)) if id == operation)
+            );
+        }
+    }
+}

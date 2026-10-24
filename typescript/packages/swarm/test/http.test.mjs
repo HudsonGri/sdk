@@ -177,8 +177,8 @@ test("aborting between buffered SSE events prevents later delivery", async () =>
   assert.deepEqual(delivered, [events[0]]);
 });
 
-for (const ending of ["\n", "\r\n"]) {
-  test(`SSE wire limit counts ${ending === "\n" ? "LF" : "CRLF"} at exact boundaries`, async t => {
+for (const ending of ["\n", "\r", "\r\n"]) {
+  test(`SSE wire limit counts ${JSON.stringify(ending)} at exact boundaries`, async t => {
     const frame = `data: {}${ending}${ending}`;
     const size = Buffer.byteLength(frame);
     const { client, endpoint } = await fixture(t, (request, response) => {
@@ -243,7 +243,7 @@ test("bounded JSON and SSE reject oversize responses and incomplete events never
   await assert.rejects(async () => { for await (const frame of client.watch("large")) assert.fail(frame); }, RangeError);
   for (const id of ["partial", "partial-utf8"]) {
     const frames = [];
-    for await (const frame of client.watch(id)) frames.push(frame);
+    await assert.rejects(async () => { for await (const frame of client.watch(id)) frames.push(frame); });
     assert.deepEqual(frames, []);
   }
 });
