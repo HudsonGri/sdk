@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
+#[path = "tests/passive.rs"]
 mod passive;
 
 async fn framed_result<const EXACT: bool>(extra: usize, task_root: bool) {
