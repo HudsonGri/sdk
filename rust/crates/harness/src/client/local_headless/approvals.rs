@@ -12,6 +12,7 @@ use std::collections::{BTreeSet, VecDeque};
 pub(super) enum Event {
     Snapshot(Query, Snapshot),
     Change(Change),
+    Retire(TaskId, Arc<std::sync::Mutex<Vec<TaskId>>>),
 }
 impl Event {
     pub(super) fn publish(self, output: &mut impl Write) -> Result<()> {
@@ -21,6 +22,13 @@ impl Event {
                 super::super::jsonl::snapshot(&query, &snapshot.into_heads()?)?,
             ),
             Self::Change(change) => publish(output, &change),
+            Self::Retire(task, tasks) => {
+                tasks
+                    .lock()
+                    .map_err(|_| Error::Storage("approval discovery state poisoned".into()))?
+                    .retain(|active| *active != task);
+                Ok(())
+            }
         }
     }
 }
@@ -63,7 +71,30 @@ impl Events {
             .map_err(|_| Error::Storage("approval discovery state poisoned".into()))
     }
 }
-type Feed = BoxProviderStream<'static, Result<(TaskId, bool, Change)>>;
+struct Feed {
+    task: TaskId,
+    approval: bool,
+    position: u64,
+    changes: crate::task_volume::ChangeStream,
+}
+
+impl Stream for Feed {
+    type Item = Result<(TaskId, bool, Change)>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.changes.as_mut().poll_next(cx).map(|change| {
+            change.map(|change| {
+                change.map_err(Error::from).map(|change| {
+                    self.position = change.cursor.position;
+                    (self.task, self.approval, change)
+                })
+            })
+        })
+    }
+}
 
 struct Tree {
     local: Arc<LocalHarness>,
@@ -76,6 +107,23 @@ struct Tree {
     tasks: Arc<std::sync::Mutex<Vec<TaskId>>>,
 }
 impl Tree {
+    fn new(
+        local: Arc<LocalHarness>,
+        root: TaskId,
+        tasks: Arc<std::sync::Mutex<Vec<TaskId>>>,
+    ) -> Self {
+        Self {
+            local,
+            root,
+            initialized: false,
+            seen: BTreeSet::new(),
+            feeds: SelectAll::new(),
+            statuses: VecDeque::new(),
+            ready: VecDeque::new(),
+            tasks,
+        }
+    }
+
     async fn watch(
         &mut self,
         task: TaskId,
@@ -83,12 +131,16 @@ impl Tree {
         root: bool,
     ) -> Result<()> {
         let snapshot = files.inner.child_lifecycle(None).await?;
+        let position = snapshot.cursor.position;
         let changes = files.inner.follow(Query::Children, snapshot.cursor).await?;
         self.statuses
             .extend(snapshot.files.into_iter().map(|file| (task, file)));
-        self.feeds.push(Box::pin(
-            changes.map(move |change| Ok((task, false, change?))),
-        ));
+        self.feeds.push(Feed {
+            task,
+            approval: false,
+            position,
+            changes,
+        });
         if !root {
             let component = Component::new(task.to_string())?;
             let query = Query::Approvals(component.clone());
@@ -97,9 +149,12 @@ impl Tree {
                 .inner
                 .follow(query.clone(), snapshot.cursor.clone())
                 .await?;
-            self.feeds.push(Box::pin(
-                changes.map(move |change| Ok((task, true, change?))),
-            ));
+            self.feeds.push(Feed {
+                task,
+                approval: true,
+                position: snapshot.cursor.position,
+                changes,
+            });
             self.ready.push_back(Event::Snapshot(query, snapshot));
         }
         self.seen.insert(task);
@@ -111,6 +166,47 @@ impl Tree {
                 .map_err(|_| Error::Storage("approval discovery state poisoned".into()))?
                 .push(task);
         }
+        Ok(())
+    }
+
+    fn deliver(&mut self, task: TaskId, approval: bool, change: Change) {
+        if approval {
+            if !change.is_checkpoint() {
+                self.ready.push_back(Event::Change(change));
+            }
+        } else {
+            self.statuses.extend(
+                change
+                    .file
+                    .into_iter()
+                    .chain(change.files)
+                    .map(|file| (task, file)),
+            );
+        }
+    }
+
+    async fn retire(&mut self, task: TaskId, position: u64) -> Result<()> {
+        // Detach the exact child's owned follows. Drain the accepted cut before
+        // releasing them, so a status that wins the select cannot lose the
+        // preceding final decision. Parent status follows can admit a later turn.
+        let feeds = std::mem::take(&mut self.feeds).into_iter();
+        for mut feed in feeds {
+            if feed.task != task {
+                self.feeds.push(feed);
+                continue;
+            }
+            while feed.position < position {
+                let (task, approval, change) = feed.next().await.ok_or_else(|| {
+                    Error::Storage("settled approval follow ended before its cut".into())
+                })??;
+                self.deliver(task, approval, change);
+            }
+        }
+        self.seen.remove(&task);
+        // Disconnect observation releases this identity only after the caller
+        // has delivered every final event queued above.
+        self.ready
+            .push_back(Event::Retire(task, self.tasks.clone()));
         Ok(())
     }
     async fn next(&mut self) -> Result<Event> {
@@ -131,7 +227,18 @@ impl Tree {
                         ..
                     }
                 ) {
-                    let child = ChildStatus::parse(&file.bytes)?.task;
+                    let status = ChildStatus::parse(&file.bytes)?;
+                    let child = status.task;
+                    if status.settled {
+                        if self.seen.contains(&child)
+                            && let Some(files) =
+                                self.local.approval_child_files(parent, child).await?
+                        {
+                            self.retire(child, files.inner.head().await?.position)
+                                .await?;
+                        }
+                        continue;
+                    }
                     if !self.seen.contains(&child)
                         && let Some(files) = self.local.approval_child_files(parent, child).await?
                     {
@@ -144,35 +251,14 @@ impl Tree {
                 self.feeds.next().await.ok_or_else(|| {
                     Error::Storage("approval tree lost its owner follow".into())
                 })??;
-            if approval {
-                if !change.is_checkpoint() {
-                    return Ok(Event::Change(change));
-                }
-            } else {
-                self.statuses.extend(
-                    change
-                        .file
-                        .into_iter()
-                        .chain(change.files)
-                        .map(|file| (parent, file)),
-                );
-            }
+            self.deliver(parent, approval, change);
         }
     }
 }
 
 pub(super) fn follow(local: Arc<LocalHarness>, root: TaskId) -> Events {
     let tasks = Arc::new(std::sync::Mutex::new(vec![root]));
-    let tree = Tree {
-        local,
-        root,
-        initialized: false,
-        seen: BTreeSet::new(),
-        feeds: SelectAll::new(),
-        statuses: VecDeque::new(),
-        ready: VecDeque::new(),
-        tasks: tasks.clone(),
-    };
+    let tree = Tree::new(local, root, tasks.clone());
     let events = Box::pin(futures::stream::try_unfold(tree, |mut tree| async move {
         let event = tree.next().await?;
         Ok(Some((Box::new(event), tree)))
@@ -185,7 +271,7 @@ mod tests {
     use super::*;
     use crate::{Admission, runtime::RuntimeTask};
 
-    async fn discovery_releases_gate(host_done: bool, broken: bool) -> Result<bool> {
+    async fn fixture() -> Result<(tempfile::TempDir, Arc<LocalHarness>)> {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = Arc::new(
             crate::test_support::ScriptedModelProvider::new([]).with_context_capacity(
@@ -208,6 +294,94 @@ mod tests {
             )?)
             .await?,
         );
+        Ok((directory, local))
+    }
+
+    #[tokio::test]
+    async fn settled_child_follows_drain_final_decisions_and_reopen_for_a_new_turn() -> Result<()> {
+        let (_directory, local) = fixture().await?;
+        let root = TaskId::from_bytes([1; 16]);
+        let tasks = Arc::new(std::sync::Mutex::new(vec![root]));
+        let mut tree = Tree::new(local.clone(), root, tasks.clone());
+        let former_tasks = Arc::new(std::sync::Mutex::new(vec![root]));
+        let mut former = Tree::new(local.clone(), root, former_tasks.clone());
+        let files = local.task_files().clone();
+        // Execute the former shape: watch each child and omit retirement.
+        // Its two follows and disconnect identity survive every settlement.
+        for turn in 0..24 {
+            let child = TaskId::from_bytes([turn + 2; 16]);
+            tree.watch(child, files.clone(), false).await?;
+            former.watch(child, files.clone(), false).await?;
+            tree.ready.clear();
+            former.ready.clear();
+            let request = Component::new(format!("turn-{turn}"))?;
+            let key = |file| FileKey::Task {
+                task: Component::new(child.to_string()).unwrap(),
+                file,
+            };
+            let request_file = FileValue::new(
+                key(TaskFile::ApprovalRequest(request.clone())),
+                b"request".to_vec(),
+            );
+            let decision_file = FileValue::new(
+                key(TaskFile::ApprovalDecision {
+                    request: request.clone(),
+                    principal: Component::new("human")?,
+                }),
+                b"decision".to_vec(),
+            );
+            let generation = files.inner.head().await?;
+            let generation = files.inner.append(generation, &request_file).await?;
+            let cut = files.inner.append(generation, &decision_file).await?;
+            tree.retire(child, cut.position).await?;
+            assert_eq!(tree.feeds.len(), 0);
+            assert!(tree.seen.is_empty());
+            assert_eq!(*tasks.lock().unwrap(), vec![root, child]);
+            assert!(tree.ready.iter().any(|event| matches!(event,
+                Event::Change(change) if change.file.iter().chain(&change.files).any(|file| file == &decision_file)
+            )), "settlement lost the final decision before delivery");
+            assert_eq!(
+                files
+                    .inner
+                    .snapshot(
+                        &Query::Approval {
+                            task: Component::new(child.to_string())?,
+                            request,
+                        },
+                        8
+                    )
+                    .await?
+                    .files
+                    .len(),
+                2,
+                "retirement deleted canonical history"
+            );
+            let mut output = Vec::new();
+            while let Some(event) = tree.ready.pop_front() {
+                event.publish(&mut output)?;
+            }
+            assert_eq!(*tasks.lock().unwrap(), vec![root]);
+            // A later unsettled status for the same task must open fresh
+            // follows; no historical tombstone can suppress the new turn.
+            tree.watch(child, files.clone(), false).await?;
+            assert_eq!(tree.feeds.len(), 2);
+            assert_eq!(*tasks.lock().unwrap(), vec![root, child]);
+            tree.retire(child, cut.position).await?;
+            while let Some(event) = tree.ready.pop_front() {
+                event.publish(&mut output)?;
+            }
+        }
+        assert_eq!(former.feeds.len(), 48);
+        assert_eq!(former.seen.len(), 24);
+        assert_eq!(former_tasks.lock().unwrap().len(), 25);
+        drop(tree);
+        drop(former);
+        super::super::super::disconnect_local(local).await?;
+        Ok(())
+    }
+
+    async fn discovery_releases_gate(host_done: bool, broken: bool) -> Result<bool> {
+        let (_directory, local) = fixture().await?;
         let Admission::Accepted(RuntimeTask::Durable { task_id: task, .. }) =
             local.submit(OperationId::new(), "parent").await?
         else {
