@@ -368,7 +368,7 @@ async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
             &tools.workspace,
             (&tools.capture_options, &tools.capture_policy),
             &cancellation,
-        )
+        )?
         .await?
     );
     assert!(!checkout.has_pending_mutations());
@@ -419,7 +419,7 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
         (&tools.capture_options, &tools.capture_policy),
         true,
         &cancellation,
-    )
+    )?
     .await?;
     let outcome = checkout
         .commit(

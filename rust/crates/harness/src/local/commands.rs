@@ -50,7 +50,7 @@ impl LocalHarness {
             resolution @ CommandResolution::Prompt { .. } => {
                 BoundedContentFuture::new(None, || async move {
                     let text = self.retain_prompt_input(operation, resolution).await?;
-                    self.queue_prompt(operation, target, &text, settings).await
+                    self.queue_prompt(operation, target, &text, settings)?.await
                 })
             }
             CommandResolution::Submit { request } => {
@@ -74,7 +74,7 @@ impl LocalHarness {
                 BoundedContentFuture::new(None, || async move {
                     let original = crate::runtime::task_id_for_admission(message);
                     self.runtime.task_host().observe_admission(original).await?;
-                    let mut result = self.queue_prompt(operation, None, &text, settings).await?;
+                    let mut result = self.queue_prompt(operation, None, &text, settings)?.await?;
                     result["replaces"] = json!(message);
                     Ok(result)
                 })
@@ -316,74 +316,80 @@ impl LocalHarness {
             }
         }
     }
-    async fn queue_prompt(
-        &self,
+    #[inline(never)]
+    fn queue_prompt<'a>(
+        &'a self,
         operation: OperationId,
         target: Option<TaskId>,
-        prompt: &str,
-        settings: &Value,
-    ) -> Result<Value> {
-        self.retain_prompt_input(
-            operation,
-            CommandResolution::Prompt {
-                text: prompt.into(),
-                source: None,
-                mentions: Vec::new(),
-            },
-        )
-        .await?;
-        self.retain_settings(operation, settings).await?;
-        let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
-        self.refresh_command_task(task).await?;
-        Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        prompt: &'a str,
+        settings: &'a Value,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Value>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.retain_prompt_input(
+                operation,
+                CommandResolution::Prompt {
+                    text: prompt.into(),
+                    source: None,
+                    mentions: Vec::new(),
+                },
+            )
+            .await?;
+            self.retain_settings(operation, settings)?.await?;
+            let task = accepted(self.submit_to(operation, target, prompt)?.await?, operation)?;
+            self.refresh_command_task(task).await?;
+            Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        })
     }
-    pub(super) async fn retain_settings(
-        &self,
+    #[inline(never)]
+    pub(super) fn retain_settings<'a>(
+        &'a self,
         operation: OperationId,
-        settings: &Value,
-    ) -> Result<()> {
-        if !settings.is_object() {
-            return Err(Error::Invalid("settings must be an object".into()));
-        }
-        if settings.get("deleted").and_then(Value::as_bool) == Some(true) {
-            return Err(Error::Invalid("conversation was deleted".into()));
-        }
-        let bytes = serde_json::to_vec(settings).map_err(storage)?;
-        if bytes.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid("settings exceed file bound".into()));
-        }
-        let task = crate::runtime::task_id_for_admission(operation);
-        let key = FileKey::Ui {
-            directory: Component::new(format!("task-{task}")).map_err(storage)?,
-            name: Component::new("settings.json").map_err(storage)?,
-        };
-        // Publish the execution selection before admission can become runnable.
-        // Reconciliation keeps the first saved binding for this operation.
-        loop {
-            let snapshot = self
-                .task_files
-                .inner
-                .snapshot(&Query::File(key.clone()), 1)
-                .await
-                .map_err(storage)?;
-            if !snapshot.files.is_empty() {
-                break;
+        settings: &'a Value,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            if !settings.is_object() {
+                return Err(Error::Invalid("settings must be an object".into()));
             }
-            match self
-                .task_files
-                .inner
-                .create(
-                    snapshot.generation,
-                    &FileValue::new(key.clone(), bytes.clone()),
-                )
-                .await
-            {
-                Ok(_) => break,
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
-                Err(error) => return Err(storage(error)),
+            if settings.get("deleted").and_then(Value::as_bool) == Some(true) {
+                return Err(Error::Invalid("conversation was deleted".into()));
             }
-        }
-        Ok(())
+            let bytes = serde_json::to_vec(settings).map_err(storage)?;
+            if bytes.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid("settings exceed file bound".into()));
+            }
+            let task = crate::runtime::task_id_for_admission(operation);
+            let key = FileKey::Ui {
+                directory: Component::new(format!("task-{task}")).map_err(storage)?,
+                name: Component::new("settings.json").map_err(storage)?,
+            };
+            // Publish the execution selection before admission can become runnable.
+            // Reconciliation keeps the first saved binding for this operation.
+            loop {
+                let snapshot = self
+                    .task_files
+                    .inner
+                    .snapshot(&Query::File(key.clone()), 1)
+                    .await
+                    .map_err(storage)?;
+                if !snapshot.files.is_empty() {
+                    break;
+                }
+                match self
+                    .task_files
+                    .inner
+                    .create(
+                        snapshot.generation,
+                        &FileValue::new(key.clone(), bytes.clone()),
+                    )
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(crate::task_volume::Error::Conflict(_)) => continue,
+                    Err(error) => return Err(storage(error)),
+                }
+            }
+            Ok(())
+        })
     }
     async fn direct_tool(
         &self,
@@ -612,6 +618,48 @@ mod dispatch_storage_tests {
         assert!(
             bytes <= 256,
             "command selection retained every operation's future"
+        );
+    }
+}
+
+#[cfg(test)]
+mod polling_storage_tests {
+    use super::*;
+    fn retained<Args, T>(_: impl FnOnce(Args) -> T) -> usize {
+        std::mem::size_of::<T>()
+    }
+    #[test]
+    fn admission_boundaries_retain_only_owned_polling_handles() {
+        let measured = [
+            (
+                "queue_prompt",
+                retained(
+                    |(local, text, settings): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static Value,
+                    )| {
+                        local.queue_prompt(OperationId::from_bytes([1; 16]), None, text, settings)
+                    },
+                ),
+            ),
+            (
+                "retain_settings",
+                retained(
+                    |(local, _text, settings): (
+                        &'static LocalHarness,
+                        &'static str,
+                        &'static Value,
+                    )| {
+                        local.retain_settings(OperationId::from_bytes([1; 16]), settings)
+                    },
+                ),
+            ),
+        ];
+        eprintln!("admission retained bytes: {measured:?}");
+        assert!(
+            measured.into_iter().all(|(_, bytes)| bytes <= 512),
+            "admission embeds concrete child futures"
         );
     }
 }
