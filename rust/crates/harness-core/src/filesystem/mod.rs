@@ -823,6 +823,6 @@ mod checkout_publication;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use checkout_publication::CheckoutPublication;
+pub use checkout_publication::{CheckoutApproval, CheckoutPublication};
 
 pub use host::DirectoryOptions;
