@@ -17,6 +17,12 @@ struct Running {
     answer: String,
     session: Option<String>,
 }
+fn spawn_input(
+    mut input: impl io::Write + Send + 'static,
+    prompt: Vec<u8>,
+) -> io::Result<std::thread::JoinHandle<io::Result<()>>> {
+    std::thread::Builder::new().spawn(move || input.write_all(&prompt))
+}
 impl Running {
     fn finish_input(&mut self) -> Result<()> {
         if let Some(input) = self.input.take() {
@@ -153,7 +159,7 @@ impl Sessions {
                 .env("ACYCLIC_WORKSPACE", &cwd)
                 .env("ACYCLIC_TASK", task.to_string());
             let mut tree = ProcessTree::spawn_in_custody(&mut command, &self.custody)?;
-            let mut input = tree.take_stdin().ok_or("native stdin absent")?;
+            let input = tree.take_stdin().ok_or("native stdin absent")?;
             let prompt = turn
                 .get("prompt")
                 .and_then(Value::as_str)
@@ -161,7 +167,7 @@ impl Sessions {
                 .as_bytes()
                 .to_vec();
             // Native startup may not read stdin yet. Keep cancellation responsive.
-            let input = std::thread::Builder::new().spawn(move || input.write_all(&prompt))?;
+            let input = spawn_input(input, prompt)?;
             Ok((tree, input))
         })();
         match launched {
@@ -571,6 +577,33 @@ fn catalog() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_stdin_never_runs_on_the_supervisor_thread() -> io::Result<()> {
+        struct WorkerOnly(std::thread::ThreadId, mpsc::Sender<usize>);
+        impl io::Write for WorkerOnly {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if std::thread::current().id() == self.0 {
+                    return Err(io::Error::other(
+                        "native stdin ran on the supervisor thread",
+                    ));
+                }
+                self.1.send(bytes.len()).map_err(io::Error::other)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let (written, received) = mpsc::channel();
+        spawn_input(
+            WorkerOnly(std::thread::current().id(), written),
+            vec![b'x'; 32_768],
+        )?
+        .join()
+        .map_err(|_| io::Error::other("native input writer panicked"))??;
+        assert_eq!(received.try_recv().map_err(io::Error::other)?, 32_768);
+        Ok(())
+    }
     #[test]
     fn oversized_native_tool_output_does_not_kill_or_wedge_the_host() {
         let mut events = EventLines::default();
