@@ -123,9 +123,10 @@ mod payload;
 #[cfg(any(test, feature = "filesystem", feature = "wasm"))]
 #[doc(hidden)]
 pub use payload::decode_json;
+pub use payload::load_model_request;
 #[doc(hidden)]
 pub use payload::preparation_digest;
-pub(crate) use payload::{load_json, load_model_request, retain_preparation};
+pub(crate) use payload::{load_json, retain_preparation};
 mod admission;
 
 /// Internal replay batch size; callers may request any positive page allowance.

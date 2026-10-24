@@ -1,5 +1,20 @@
 use super::*;
 
+async fn initial_request(
+    journal: &dyn ExecutionJournal,
+    prepared: &crate::model::PreparedModelRequest,
+) -> Result<FileRef> {
+    let file = stage_request(journal, OperationId::new(), "seed", prepared, None, None).await?;
+    assert_eq!(file.descriptor().media_type(), "application/json");
+    assert_eq!(
+        load_model_request(journal, &file, Limits::default(), None)
+            .await?
+            .bytes(),
+        prepared.bytes()
+    );
+    Ok(file)
+}
+
 #[tokio::test]
 async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> Result<()> {
     let storage =
@@ -24,15 +39,17 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         Limits::default(),
         None,
     )?;
+    let seed = initial_request(journal, &prepared).await?;
     let file = stage_request(
         journal,
         OperationId::new(),
         "request",
         &prepared,
-        None,
+        Some(&seed),
         None,
     )
     .await?;
+    assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
     for native in [false, true] {
         for scoped in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
@@ -119,12 +136,13 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
         Limits::default(),
         None,
     )?;
+    let seed = initial_request(journal, &prepared).await?;
     let reference = stage_attested_request(
         journal,
         OperationId::new(),
         "proof",
         &prepared,
-        None,
+        Some(&seed),
         &verifier,
         None,
     )

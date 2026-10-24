@@ -334,6 +334,12 @@ async fn stage_request_inner(
         previous,
     } = staging;
     let request = prepared.request();
+    // Without an existing prefix there is nothing to share. One private file
+    // avoids three generations and their admission work for the initial call.
+    // Continuations install the segmented prefix once and then append deltas.
+    if previous.is_none() {
+        return stage_json(journal, operation, key, request, io).await;
+    }
     let header = HeaderView {
         model: &request.model,
         tools: &request.tools,

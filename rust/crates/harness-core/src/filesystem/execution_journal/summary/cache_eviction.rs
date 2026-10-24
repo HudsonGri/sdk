@@ -13,15 +13,18 @@ fn failure(step: u32, call_id: &str, reason: ToolFailureKind) -> ExecutionEvent 
     }
 }
 
-fn observed(event: &ModelEvent) -> Result<ExecutionEvent> {
-    Ok(ExecutionEvent::ModelInline {
+async fn observed(
+    journal: &impl ExecutionJournal,
+    operation: OperationId,
+    key: &str,
+    event: &ModelEvent,
+) -> Result<ExecutionEvent> {
+    Ok(ExecutionEvent::Model {
         step: 0,
         purpose: ModelPurpose::Response,
-        event: String::from_utf8(crate::contract::canonical_json_bytes(event)?)
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+        event: crate::executor::stage_json(journal, operation, key, event, None).await?,
     })
 }
-
 #[tokio::test]
 async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Result<()> {
     for native in [false, true] {
@@ -99,11 +102,17 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
                 Some(&io),
             )?
             .await?;
-        let call = observed(&ModelEvent::ToolCall(crate::model::ToolCall::new(
-            "seen".into(),
-            "fixture".into(),
-            serde_json::json!({}),
-        )))?;
+        let call = observed(
+            &journal,
+            operation,
+            "call",
+            &ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "seen".into(),
+                "fixture".into(),
+                serde_json::json!({}),
+            )),
+        )
+        .await?;
         journal.append(operation, "call", &call, Some(&io))?.await?;
         for step in 1..=100 {
             journal
@@ -158,9 +167,15 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
             .append(
                 operation,
                 "completed-model",
-                &observed(&ModelEvent::Completed {
-                    metadata: serde_json::Value::Null,
-                })?,
+                &observed(
+                    &journal,
+                    operation,
+                    "completed",
+                    &ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    },
+                )
+                .await?,
                 Some(&io),
             )?
             .await?;

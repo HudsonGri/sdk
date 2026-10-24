@@ -56,7 +56,7 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
         .await?;
         assert_eq!(
             journal.4.load(Ordering::SeqCst) - reads,
-            usize::from(step > 1)
+            usize::from(step > 2)
         );
         let prefix = format!("{operation}:{key}");
         let (files, bytes) = journal
@@ -68,7 +68,14 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
             .fold((0, 0), |(files, bytes), (_, (_, value))| {
                 (files + 1, bytes + value.len())
             });
-        assert_eq!(files, if step == 1 { 3 } else { 2 });
+        assert_eq!(
+            files,
+            match step {
+                1 => 1,
+                2 => 3,
+                _ => 2,
+            }
+        );
         assert!(bytes < 4096, "step {step} encoded {bytes} bytes");
         largest_delta = largest_delta.max(bytes);
         if [1, 100, 1000].contains(&step) {

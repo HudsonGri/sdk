@@ -91,7 +91,7 @@ fn events() -> Vec<ModelEvent> {
 }
 
 #[tokio::test]
-async fn inline_payloads_avoid_generations_and_match_the_file_replay_control() -> Result<()> {
+async fn private_payloads_match_the_pinned_file_replay_control() -> Result<()> {
     for native in [false, true] {
         for inline in [false, true] {
             let operation = OperationId::new();
@@ -129,7 +129,7 @@ async fn inline_payloads_avoid_generations_and_match_the_file_replay_control() -
                 }
             }
             assert_eq!(actual, expected);
-            assert_eq!(inlined, if inline { 5 } else { 0 });
+            assert_eq!(inlined, 0, "filesystem model bodies must remain private");
         }
     }
     Ok(())
@@ -165,8 +165,7 @@ async fn append_and_measure(
         )
         .await?;
     } else {
-        // Negative control: the former production path stages a file for
-        // every model event before appending its immutable reference.
+        // Independent control explicitly stages and appends a pinned file.
         let reference = crate::executor::stage_json(journal, operation, &key, event, io).await?;
         journal
             .append(
@@ -203,14 +202,32 @@ async fn append_and_measure(
 }
 
 #[tokio::test]
-async fn inline_payloads_require_original_read_and_write_grants_and_canonical_bounded_json()
--> Result<()> {
-    let (mut journal, _issuer) = test_support::journal().await?;
+async fn private_payloads_reject_inline_bodies_at_every_append_entry_point() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
     let valid = String::from_utf8(crate::contract::canonical_json_bytes(&events().remove(0))?)
         .map_err(|_| Error::Invalid("fixture JSON is not UTF-8".into()))?;
-    for value in ["{}".into(), format!(" {valid}"), "x".repeat(513)] {
+    assert_eq!(journal.inline_model_event_bytes(), 0);
+    // Negative control: even valid, fully authorized small model content must
+    // never be accepted as raw Stream data by either append entry point.
+    let inline = ExecutionEvent::ModelInline {
+        step: 0,
+        purpose: ModelPurpose::Response,
+        event: valid.clone(),
+    };
+    assert!(
+        journal
+            .append_if_tail(operation, 2, "model:0:0", &inline, None)?
+            .await
+            .is_err()
+    );
+    for value in [
+        valid.clone(),
+        "{}".into(),
+        format!(" {valid}"),
+        "x".repeat(513),
+    ] {
         assert!(
             journal
                 .append(
@@ -227,6 +244,15 @@ async fn inline_payloads_require_original_read_and_write_grants_and_canonical_bo
                 .is_err()
         );
     }
+    assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn private_payloads_require_original_read_and_write_grants() -> Result<()> {
+    let (mut journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    initialize(&journal, operation).await?;
     let original = journal.scope.clone();
     let issuer = crate::core::AuthorityIssuer::new(
         "append-cost",
@@ -242,19 +268,16 @@ async fn inline_payloads_require_original_read_and_write_grants_and_canonical_bo
             &mut None,
         )?;
         assert!(
-            journal
-                .append(
-                    operation,
-                    "model:0:0",
-                    &ExecutionEvent::ModelInline {
-                        step: 0,
-                        purpose: ModelPurpose::Response,
-                        event: valid.clone(),
-                    },
-                    None
-                )?
-                .await
-                .is_err(),
+            crate::executor::append_model_event(
+                &journal,
+                operation,
+                "model:0:0",
+                (0, ModelPurpose::Response),
+                &events().remove(0),
+                None
+            )
+            .await
+            .is_err(),
             "missing opposite grant for {grant:?}"
         );
     }
@@ -336,7 +359,7 @@ async fn owned_journal(
 }
 
 #[tokio::test]
-async fn inline_deltas_reach_existing_followers_before_completion_and_retries_heal_publication()
+async fn private_deltas_reach_existing_followers_before_completion_and_retries_heal_publication()
 -> Result<()> {
     use crate::task_volume::{Channel, FileKey, Query, TaskFile};
     use futures::{FutureExt, StreamExt};
@@ -349,22 +372,22 @@ async fn inline_deltas_reach_existing_followers_before_completion_and_retries_he
                 let mut observation = files.inner.observe(Query::Root, None, 16).await?;
                 assert!(observation.snapshot.as_ref().unwrap().files.is_empty());
                 assert!(observation.changes.next().now_or_never().is_none());
-                let event = ExecutionEvent::ModelInline {
+                let key = "model:0:0";
+                let model = match channel {
+                    Channel::Text => ModelEvent::Content {
+                        delta: "first delta".into(),
+                    },
+                    Channel::Reasoning => ModelEvent::Reasoning {
+                        delta: "first delta".into(),
+                    },
+                };
+                let reference =
+                    crate::executor::stage_json(&journal, operation, key, &model, None).await?;
+                let event = ExecutionEvent::Model {
                     step: 0,
                     purpose: ModelPurpose::Response,
-                    event: String::from_utf8(crate::contract::canonical_json_bytes(
-                        &match channel {
-                            Channel::Text => ModelEvent::Content {
-                                delta: "first delta".into(),
-                            },
-                            Channel::Reasoning => ModelEvent::Reasoning {
-                                delta: "first delta".into(),
-                            },
-                        },
-                    )?)
-                    .unwrap(),
+                    event: reference,
                 };
-                let key = "model:0:0";
                 if omit_publication {
                     // Negative control: canonical append without the task-volume projection.
                     assert!(

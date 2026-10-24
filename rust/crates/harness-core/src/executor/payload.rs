@@ -43,7 +43,8 @@ pub(super) async fn load_json_bytes(
     Ok(bytes)
 }
 
-pub(crate) async fn load_model_request(
+/// Reconstructs and validates a retained model request through its journal codec.
+pub async fn load_model_request(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     limits: Limits,

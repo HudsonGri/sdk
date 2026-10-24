@@ -37,10 +37,6 @@ where
         crate::conversation::BoundedContentFuture::new(io, || self.seal_phase(io))
     }
 
-    fn inline_model_event_bytes(&self) -> u64 {
-        self.maximum_payload_bytes.min(512)
-    }
-
     fn claim_execution<'a>(
         &'a self,
         operation: OperationId,

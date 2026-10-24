@@ -319,8 +319,8 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         )?
         .await?;
     let projection_bytes = serde_json::to_vec(&serde_json::json!({
-        "canonical": null, "checkpoint": null, "current_input_index": 0,
-        "metadata": {}, "request": request_ref,
+        "canonical": null, "checkpoint": null,
+        "context": {"current_input_index": 0, "metadata": {}, "messages": request.request().messages},
     }))
     .map_err(|error| Error::Invalid(error.to_string()))?;
     let context = journal

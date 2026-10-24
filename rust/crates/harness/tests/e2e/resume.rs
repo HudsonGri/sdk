@@ -96,6 +96,17 @@ impl Identity {
     }
 }
 
+struct Journal {
+    inner: Arc<dyn ExecutionJournal>,
+    _issuer: AuthorityIssuer,
+}
+
+impl AsRef<dyn ExecutionJournal> for Journal {
+    fn as_ref(&self) -> &(dyn ExecutionJournal + 'static) {
+        self.inner.as_ref()
+    }
+}
+
 /// Opens the journal of `identity` on `stream`, with its files under `files`.
 /// Only the first opening binds the conversation.
 async fn journal<P: StreamProvider + 'static>(
@@ -103,7 +114,7 @@ async fn journal<P: StreamProvider + 'static>(
     files: &Path,
     identity: &Identity,
     first: bool,
-) -> TestResult<Arc<dyn ExecutionJournal>> {
+) -> TestResult<Journal> {
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(files)).await?;
     let provider = ProviderRef::new("resume".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
@@ -177,7 +188,10 @@ async fn journal<P: StreamProvider + 'static>(
         },
     )?
     .with_input_verifier(input);
-    Ok(Arc::new(journal))
+    Ok(Journal {
+        inner: Arc::new(journal),
+        _issuer: issuer,
+    })
 }
 
 fn executor(provider: Arc<dyn ModelProvider>) -> TestResult<StockExecutor> {
@@ -322,7 +336,7 @@ async fn child() -> TestResult {
         let stream = config.remote.connect().await?;
         let journal = journal(stream, &config.files, &identity, true).await?;
         executor(Arc::new(PausedPrefix {
-            journal: journal.clone(),
+            journal: journal.inner.clone(),
             operation: identity.operation,
             accounting: ScriptedModelProvider::new([]),
         }))?
@@ -466,6 +480,7 @@ async fn journaled(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result
         if line == JOURNALED {
             return Ok(true);
         }
+        eprintln!("resume child: {line}");
     }
     Ok(false)
 }

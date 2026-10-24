@@ -153,7 +153,12 @@ where
         };
         let digest = publication_digest(&checkpoint, retry, &owner, io)?;
         let cut = pages::Cut {
-            operation,
+            // Recovery belongs to the admitted task, just as the original
+            // owner-fenced journal append did. The execution ID names storage.
+            operation: self
+                .owner
+                .as_ref()
+                .map_or(operation, |(owner, _)| owner.operation_id()),
             execution: &execution,
             head: &head,
             pages: &pages,

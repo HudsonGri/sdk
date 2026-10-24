@@ -47,6 +47,14 @@ async fn admitted_request_append_reads_only_the_manifest_at_every_history_length
             .stage_prepared_model_request(operation, &key, &prepared, previous.as_ref(), None)?
             .ok_or_else(|| Error::Invalid("missing request admission".into()))?
             .await?;
+        assert_eq!(
+            request.descriptor().media_type(),
+            if step == 1 {
+                "application/json"
+            } else {
+                crate::executor::transcript::REQUEST_MEDIA
+            }
+        );
         if [1, 100, 1000].contains(&step) {
             let io = PreparationIo::from_budget(
                 acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
