@@ -131,7 +131,8 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     require_leaf(name)?;
     #[cfg(windows)]
     return with_wide_path(name, work, |name, work| {
-        open_native_leaf(parent, name, options, work)
+        let name = windows_leaf_name(name, work)?;
+        open_native_leaf(parent, &name, options, work)
     });
     #[cfg(unix)]
     unix_name(name.as_os_str(), work, |name, work| {
@@ -141,7 +142,8 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
 
 fn open_native_leaf<W: NativeHostWork>(
     parent: &Dir,
-    name: &NativeLeaf,
+    #[cfg(windows)] name: &win::UNICODE_STRING,
+    #[cfg(unix)] name: &NativeLeaf,
     options: &NativeOpenOptions,
     work: &mut W,
 ) -> Result<File, W::Error> {
@@ -161,7 +163,7 @@ fn open_native_leaf<W: NativeHostWork>(
         } else {
             fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE
         };
-        open_windows_at_without_reparse(
+        open_windows_named_without_reparse(
             parent,
             name,
             access,
@@ -374,7 +376,9 @@ pub(crate) fn open_ascii_leaf<W: NativeHostWork, const N: usize>(
     let name =
         std::ffi::CStr::from_bytes_with_nul(&name.units).map_err(|_| W::invalid_request())?;
     #[cfg(windows)]
-    let name = &name.units[..N - 1];
+    let name = windows_counted_name::<W>(&name.units[..N - 1])?;
+    #[cfg(windows)]
+    let name = &name;
     open_native_leaf(parent, name, options, work)
 }
 
@@ -392,7 +396,10 @@ pub(crate) fn remove_ascii_leaf<W: NativeHostWork, const N: usize>(
         work,
     );
     #[cfg(windows)]
-    remove_windows_leaf(parent, &name.units[..N - 1], false, None, work)
+    {
+        let name = windows_counted_name::<W>(&name.units[..N - 1])?;
+        remove_windows_named_leaf(parent, &name, false, None, work)
+    }
 }
 
 pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
@@ -439,7 +446,7 @@ mod prepared_leaf_tests {
         let name = prepare_ascii_leaf(*b"literal & %.lock\0", &preparation)?;
         let mut work = DemandWork::new(
             WorkBudget {
-                items_examined: if cfg!(windows) { 15 } else { 0 },
+                items_examined: 0,
                 allocation_operations: 0,
                 peak_allocation_bytes: 0,
                 bytes_encoded: 0,
@@ -474,7 +481,10 @@ mod prepared_leaf_tests {
         assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
         assert_eq!(preparation.live_allocation_bytes(), live);
         drop(file);
-        remove_ascii_leaf(&root.directory, &name, &mut ordinary_work())?;
+        remove_ascii_leaf(&root.directory, &name, &mut work)?;
+        assert_eq!(work.work.items_examined, 0);
+        assert_eq!(work.work.bytes_encoded, 0);
+        assert_eq!(work.work.allocation_operations, 0);
         assert!(!temporary.path().join("literal & %.lock").exists());
         Ok(())
     }
