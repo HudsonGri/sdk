@@ -446,7 +446,7 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
     let verifier = issuer.verifier(&mut None)?;
     let mut measurements = Vec::new();
     let mut history_walk_control = Vec::new();
-    for phase in 0..3 {
+    for phase in 0u64..3 {
         if phase == 1 {
             // Grow the canonical history while keeping the replay-key index
             // fixed: valid checkpoints retain the running operation's fence.
@@ -544,7 +544,7 @@ async fn indexed_original_reservation_work_is_independent_of_coordinator_history
             }
         }
         assert!(started.is_some());
-        assert_eq!(next, 3 + phase as u64 * 128);
+        assert_eq!(next, 3 + phase * 128);
         drop((records, quota, source));
         drop(control.into_custody()?);
         let measured = native.receipt();

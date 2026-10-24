@@ -654,7 +654,7 @@ static SWEEP_EXECUTOR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    let _executor = SWEEP_EXECUTOR.lock().unwrap();
+    let _executor = SWEEP_EXECUTOR.lock().map_err(storage)?;
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -731,7 +731,10 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery, partition: Option<usize>) -
     let completed = AtomicUsize::new(0);
     let unadmitted = AtomicUsize::new(0);
     let interrupted = AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism().unwrap().get().min(64);
+    let workers = std::thread::available_parallelism()
+        .map_err(storage)?
+        .get()
+        .min(64);
     eprintln!("replay workers: {}", workers.max(1).min(cuts.len()));
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..workers.max(1).min(cuts.len()))

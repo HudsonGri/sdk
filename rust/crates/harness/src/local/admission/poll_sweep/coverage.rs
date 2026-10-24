@@ -190,7 +190,7 @@ proptest::proptest! {
         proptest::prop_assert!(check_cuts(total, owned).is_ok());
         // Removing or duplicating a registered test must fail before any replay.
         proptest::prop_assert!(partition_indices(total, &partitions[1..], 1, |_| false).is_err());
-        let mut duplicated = partitions.clone();
+        let mut duplicated = partitions;
         duplicated[count - 1] = 0;
         proptest::prop_assert!(partition_indices(total, &duplicated, 0, |_| false).is_err());
     }
