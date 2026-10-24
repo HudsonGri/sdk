@@ -39,9 +39,12 @@ async fn outcome_after_ready_child_io(broken: bool) -> Result<bool> {
     let (release, released) = oneshot::channel();
     let child = async {
         host.test_coordinator_barrier(entered, released).await;
-        Ok((Component::new("gate-holder").unwrap(), 0))
+        Ok(ChildCompletion::Settled(
+            Component::new("gate-holder").unwrap(),
+            0,
+        ))
     };
-    let mut child: BoxProviderFuture<'_, Result<(Component, u64)>> = Box::pin(child);
+    let mut child: BoxProviderFuture<'_, Result<ChildCompletion>> = Box::pin(child);
     assert!(futures::poll!(child.as_mut()).is_pending());
     locked.await.unwrap();
     // External IO has completed. Only polling the child can now release the
@@ -49,7 +52,7 @@ async fn outcome_after_ready_child_io(broken: bool) -> Result<bool> {
     release.send(()).unwrap();
     let mut jobs = FuturesUnordered::new();
     jobs.push(child);
-    let parent = std::future::pending::<Result<()>>();
+    let parent = std::future::pending::<Result<DriveState>>();
     futures::pin_mut!(parent);
     let mut parent_done = false;
     let mut pending = VecDeque::new();

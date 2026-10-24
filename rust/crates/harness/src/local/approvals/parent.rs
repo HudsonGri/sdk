@@ -15,12 +15,61 @@ async fn publish_attention(
     value: FileValue,
 ) -> Result<()> {
     let snapshot = files.snapshot(&Query::File(value.key.clone()), 1).await?;
+    if value.bytes.as_ref() == b"null" && snapshot.files.is_empty() {
+        return Ok(());
+    }
     crate::task_volume::publish(&files.inner, snapshot.generation, &value, || {
         std::future::ready(Ok::<_, Error>((Vec::new(), None)))
     })
     .await?;
     crate::task_volume::publish_durable(&files.inner, &value, None).await?;
     Ok(())
+}
+
+pub(super) async fn clear_attention(inbox: &Inbox) -> Result<()> {
+    publish_attention(
+        &inbox.files,
+        FileValue::new(
+            FileKey::Child {
+                reference: inbox.reference.clone(),
+                file: ChildFile::ApprovalAttention,
+            },
+            b"null".to_vec(),
+        ),
+    )
+    .await
+}
+
+pub(super) async fn attention(
+    task: TaskId,
+    request: &FileValue,
+    inbox: &Inbox,
+    principal: &str,
+) -> Result<()> {
+    let files = &inbox.files;
+    let reference = &inbox.reference;
+    let mirror = FileValue::new(
+        FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::ApprovalRequest(request_id(request)?.clone()),
+        },
+        request.bytes.clone(),
+    );
+    crate::task_volume::publish_durable(&files.inner, &mirror, None).await?;
+    let attention = serde_json::json!({"task":task,"request":request_id(request)?,
+        "request_sha256":fingerprint(request)?,"expected_version":1,"principal":principal,
+        "subject":serde_json::from_slice::<serde_json::Value>(&request.bytes).map_err(storage)?});
+    publish_attention(
+        files,
+        FileValue::new(
+            FileKey::Child {
+                reference: reference.clone(),
+                file: ChildFile::ApprovalAttention,
+            },
+            serde_json::to_vec(&attention).map_err(storage)?,
+        ),
+    )
+    .await
 }
 
 impl LocalHarness {
@@ -41,25 +90,7 @@ impl LocalHarness {
             reference: reference.clone(),
             file: ChildFile::ApprovalAttention,
         };
-        let mirror = FileValue::new(
-            FileKey::Child {
-                reference: reference.clone(),
-                file: ChildFile::ApprovalRequest(request_id(request)?.clone()),
-            },
-            request.bytes.clone(),
-        );
-        crate::task_volume::publish_durable(&files.inner, &mirror, None).await?;
-        let attention = serde_json::json!({"task":task,"request":request_id(request)?,
-            "request_sha256":fingerprint(request)?,"expected_version":1,
-            "subject":serde_json::from_slice::<serde_json::Value>(&request.bytes).map_err(storage)?});
-        publish_attention(
-            files,
-            FileValue::new(
-                attention_key.clone(),
-                serde_json::to_vec(&attention).map_err(storage)?,
-            ),
-        )
-        .await?;
+        attention(task, request, inbox, &format!("parent:{parent}")).await?;
         // Observing completion before taking the inbox snapshot fences the
         // denial behind every message the parent committed before completing.
         // If completion races this read, the next service pass takes a new
