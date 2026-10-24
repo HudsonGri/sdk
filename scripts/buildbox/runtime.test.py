@@ -28,21 +28,139 @@ class RuntimeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
     def tearDown(self):self.temp.cleanup()
-    def worker(self,negative=False,cleanup_failure=False):
+    def worker(self,negative=False,cleanup_failure=False,custody_negative=False,export_negative=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         source=(HERE/'bb-job.py').read_text()
         source=source.replace("real_home=Path('/home/var')",f'real_home=Path({str(self.d/"real-home")!r})')
         source=source.replace("'disk_free':disk()", "'disk_free':[{'path':'fixture','free_percent':50}]")
         if negative:source=source.replace("file=sys.stderr,flush=True", "flush=True")
         if cleanup_failure:source=source.replace('try:remove_home(job)','try:raise OSError("cleanup control")')
+        if custody_negative:source=source.replace('start_new_session=True)', 'start_new_session=False)')
+        if export_negative:
+            boundary="export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)"
+            self.assertEqual(source.count(boundary),1)
+            source=source.replace(boundary,"export_spec=env.get('BB_JOB_EXPORT_SPEC')")
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False):
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,export_negative=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text('{}')
         env={**os.environ,'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
+        env.pop('BB_JOB_EXPORT_SPEC',None)
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=self.d,env=env,capture_output=True)
+        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure,export_negative=export_negative)),*argv],cwd=self.d,env=env,capture_output=True)
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
+
+    def custody_case(self, interrupted, negative=False):
+        """A FIFO admits a side effect only after the wrapper has exited."""
+        import select
+        fifo=self.d/'custody-release';os.mkfifo(fifo)
+        marker=self.d/'late-effect'
+        meta=self.d/'custody.receipt-meta.v2.json';meta.write_text('{}')
+        code='''import json,os,select,sys
+from pathlib import Path
+ready_read,ready_write=os.pipe()
+child=os.fork()
+if child==0:
+ os.close(ready_read)
+ release=os.open(sys.argv[1],os.O_RDONLY|os.O_NONBLOCK)
+ print(json.dumps({'pid':os.getpid(),'root':os.getppid()}),flush=True)
+ os.write(ready_write,b'S');os.close(ready_write)
+ select.select([release],[],[])
+ if os.read(release,1):Path(sys.argv[2]).write_text('after cleanup')
+ os._exit(0)
+os.close(ready_write);os.read(ready_read,1);os.close(ready_read)
+if sys.argv[3]=='normal':sys.exit(0)
+os.waitpid(child,0)
+'''
+        env={**os.environ,'BUILD_SLOT_RECEIPT_META':str(meta),
+             'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'}
+        env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
+        env.pop('BB_JOB_EXPORT_SPEC',None)
+        worker=subprocess.Popen([sys.executable,str(self.worker(custody_negative=negative)),
+            sys.executable,'-c',code,str(fifo),str(marker),
+            'normal' if interrupted is None else 'signal'],
+            env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        descriptors=[]
+        runtimefile=Path(str(meta)+'.runtime')
+        try:
+            self.assertTrue(select.select([worker.stdout],[],[],2)[0], 'custody fixture did not start')
+            descendants=json.loads(worker.stdout.readline())
+            for pid in descendants.values():
+                try:descriptors.append(os.pidfd_open(pid))
+                except ProcessLookupError:pass
+            if interrupted is not None:worker.send_signal(interrupted)
+            worker.wait(timeout=2)
+            if interrupted==signal.SIGKILL:job.cleanup_runtime(runtimefile)
+            runtime=json.loads(runtimefile.read_text())
+            self.assertTrue(runtime['home_removed'])
+            self.assertFalse(Path(runtime['hermetic_home']).exists())
+            if negative:
+                # The old group shape permits live work after cleanup. Admit
+                # exactly that work, rather than inferring failure from time.
+                self.assertIsNotNone(job.identity(descendants['pid']))
+                release=os.open(fifo,os.O_WRONLY|os.O_NONBLOCK)
+                os.write(release,b'S');os.close(release)
+                worker.communicate(timeout=2)
+                self.assertEqual(marker.read_text(),'after cleanup')
+            else:
+                for descriptor in descriptors:
+                    self.assertTrue(select.select([descriptor],[],[],2)[0],
+                                    'descendant survived command custody')
+                worker.communicate(timeout=2)
+                self.assertFalse(marker.exists())
+        finally:
+            if worker.poll() is None:worker.kill();worker.wait()
+            for descriptor in descriptors:
+                try:signal.pidfd_send_signal(descriptor,signal.SIGKILL)
+                except ProcessLookupError:pass
+                os.close(descriptor)
+            if runtimefile.exists():job.cleanup_runtime(runtimefile)
+            fifo.unlink(missing_ok=True);marker.unlink(missing_ok=True)
+
+    def test_command_custody_drains_descendants_on_direct_signal_and_parent_death(self):
+        for interrupted in [signal.SIGTERM,signal.SIGKILL]:
+            with self.subTest(signal=interrupted):self.custody_case(interrupted)
+
+    def test_completed_shell_keeps_descendant_custody_until_cleanup(self):
+        self.custody_case(None)
+
+    def test_missing_owned_group_allows_side_effects_after_cleanup(self):
+        for interrupted in [None,signal.SIGTERM,signal.SIGKILL]:
+            with self.subTest(signal=interrupted):self.custody_case(interrupted,negative=True)
+
+    def test_command_cleanup_never_waits_for_a_reused_pid(self):
+        def probe(module, before, after):
+            with (patch.object(module,'identity',side_effect=[before,after]),
+                  patch.object(module.os,'pidfd_open',return_value=71) as opened,
+                  patch.object(module.os,'close') as closed,
+                  patch.object(module.signal,'pidfd_send_signal') as sent,
+                  patch.object(module.select,'select') as waited):
+                module.stop_command({'pid':123,'identity':'owned'})
+                if before!='owned':
+                    opened.assert_not_called();closed.assert_not_called()
+                else:
+                    closed.assert_called_once_with(71)
+                if before==after=='owned':
+                    sent.assert_called_once_with(71,signal.SIGTERM)
+                    waited.assert_called_once_with([71],[],[])
+                else:
+                    sent.assert_not_called();waited.assert_not_called()
+        for before in ['owned','replacement',None]:
+            for after in ['owned','replacement',None]:
+                with self.subTest(before=before,after=after):probe(job,before,after)
+        source=(HERE/'bb-job.py').read_text()
+        fixed='''        if identity(command['pid']) != command['identity']: return
+        try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        except ProcessLookupError: pass'''
+        former='''        if identity(command['pid']) == command['identity']:
+            try: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            except ProcessLookupError: pass'''
+        self.assertEqual(source.count(fixed),1)
+        path=self.d/'reused-pid-negative.py';path.write_text(source.replace(fixed,former))
+        spec=importlib.util.spec_from_file_location('reused_pid_negative',path)
+        negative=importlib.util.module_from_spec(spec);spec.loader.exec_module(negative)
+        with self.assertRaises(AssertionError):probe(negative,'owned','replacement')
+
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -112,6 +230,44 @@ sys.stdout.buffer.write(bytes(range(256)))
         self.assertEqual(result.stdout,b'child output')
         self.assertIn(b'[buildbox] export INFRA:',result.stderr)
         self.assertIn('export_error',runtime);self.assertTrue(runtime['targets_removed'])
+
+    def test_export_plan_never_crosses_into_a_nested_job(self):
+        import tarfile
+        for negative in [False,True]:
+            with self.subTest(negative=negative):
+                prefix=Path('/mnt/bb/jobs')/f'r19-export-owner-{os.getpid()}-{negative}'
+                start=Path(str(prefix)+'.t0');start.touch()
+                output=self.d/f'parent-{negative}.txt'
+                meta=self.d/f'nested-{negative}'
+                code='''import os,subprocess,sys
+from pathlib import Path
+env=dict(os.environ,BB_JOB_ACTIVE='0',BUILD_SLOT_RECEIPT_META=sys.argv[2])
+result=subprocess.run([sys.executable,sys.argv[1],sys.executable,'-c','print("nested output")'],env=env,capture_output=True)
+sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr)
+if result.returncode:sys.exit(result.returncode)
+Path(sys.argv[3]).write_text('parent output after nested cleanup')
+'''
+                spec={'prefix':str(prefix),'cwd':str(self.d),'paths':[output.name],'build':False}
+                try:
+                    result,runtime=self.run_job([sys.executable,'-c',code,str(self.d/'worker.py'),str(meta),str(output)],
+                        extra={'BB_CACHE_DISABLED':'1','BB_JOB_EXPORT_SPEC':json.dumps(spec)},export_negative=negative)
+                    self.assertEqual(result.returncode,224 if negative else 0,result.stderr.decode())
+                    self.assertEqual(result.stdout,b'nested output\n')
+                    self.assertTrue(runtime['home_removed'])
+                    inner=json.loads(Path(str(meta)+'.runtime').read_text())
+                    self.assertTrue(inner['home_removed'])
+                    if negative:
+                        self.assertIn('missing declared output',inner['export_error'])
+                        self.assertFalse(output.exists())
+                    else:
+                        self.assertNotIn('export_error',inner)
+                        rows=json.loads(Path(str(prefix)+'.exports/manifest.json').read_text())
+                        self.assertEqual(len(rows),1)
+                        with tarfile.open(rows[0]['archive']) as archive:
+                            self.assertEqual(archive.extractfile(output.name).read(),b'parent output after nested cleanup')
+                finally:
+                    start.unlink()
+                    shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
 
     def test_glibc_pinned_export_keeps_the_requested_local_path(self):
         prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
