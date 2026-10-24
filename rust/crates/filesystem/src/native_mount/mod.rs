@@ -52,6 +52,8 @@ mod view_gate;
 pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
+// Only the Linux shared FUSE instance serves views today.
+#[cfg(target_os = "linux")]
 mod view_table;
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
