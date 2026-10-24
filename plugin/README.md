@@ -31,7 +31,8 @@ the coordination mailbox; this adds no path outside the parent's workspace.
 Launch Claude with its native plugin directory enabled:
 
 ```sh
-acyclic host claude-code -- --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude
+acyclic host claude-code -- --model claude-haiku-5-5 \
+  --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude
 acyclic host pi --
 ```
 
@@ -74,6 +75,36 @@ All sandboxed coordination and custody writes stay within the existing workspace
 Install declares workspace access without adding sandbox roots. Commands never
 start a service or write state-directory identities or lifecycle locks. Keep the
 host sandbox and permissions enabled. GraphCoder must already be running.
+
+Codex exports [`PLUGIN_DATA`](https://developers.openai.com/plugins/build/plugins)
+to plugin hooks, and Claude exports
+[`CLAUDE_PLUGIN_DATA`](https://code.claude.com/docs/en/plugins-reference)
+to hooks and MCP servers. These are persistent plugin
+directories, not a grant for commands run by the model's sandboxed shell. The
+coordination client derives every mutable path from the admitted workspace,
+regardless of either variable or `XDG_STATE_HOME`. External or symlinked mailbox
+directories are rejected before publishing a request. Installation changes native
+configuration outside the sandbox; ordinary coordination commands never do.
+
+Pi 1.1 has [no built-in sandbox or permission layer](https://github.com/agentic-labs/pi-mono).
+It inherits the launching
+process's restrictions. The plugin preserves those restrictions; outside-write
+denial for Pi must be verified under the user's external sandbox.
+
+The no-model command contract uses fixture profiles and the real native tool:
+
+```sh
+python3 plugin/tests/hosts/sandbox-commands.py --host codex \
+  --binary /path/to/package/plugin/bin/acyclic --graphcoder /path/to/graphcoder \
+  --native /path/to/codex --package /path/to/package/plugin --scratch /path/to/scratch
+```
+
+Select `claude-code` for the real sandboxed Bash tool with a local scripted
+provider (`--model claude-haiku-5-5`); the fixture fails closed if the native
+sandbox is unavailable. Select `pi` for native RPC Bash and extension capture;
+that case explicitly reports Pi's unrestricted default. Each case checks agents,
+log, capture, merge, discard and the hook command, with an external-data mailbox
+negative control. These probes do not replace the independent live matrix.
 
 The separate [identity package](identity-mcp.md) retains its command surface.
 The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in

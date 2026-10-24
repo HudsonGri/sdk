@@ -184,13 +184,9 @@ fn read_json(input: impl io::Read) -> Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn hook(host: &str, event: &str, mut input: Value) -> Value {
-    if let Some(task) = env::var_os("ACYCLIC_TASK")
-        && let Some(object) = input.as_object_mut()
-    {
-        object.insert("task".into(), json!(task));
-    }
+fn hook(host: &str, event: &str, input: Value) -> Value {
     let result = (|| -> Result<Value> {
+        let input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
         let cwd = PathBuf::from(
             input
                 .get("cwd")
@@ -207,6 +203,17 @@ fn hook(host: &str, event: &str, mut input: Value) -> Value {
         )?)
     })();
     result.unwrap_or_else(|error| hook_failure(event, &error.to_string()))
+}
+
+fn hook_input(mut input: Value, task: Option<&std::ffi::OsStr>) -> Result<Value> {
+    if let Some(task) = task {
+        let task = parse_task(task.to_str().ok_or("native task identity is not UTF-8")?)?;
+        input
+            .as_object_mut()
+            .ok_or("native hook input must be an object")?
+            .insert("task".into(), json!(task));
+    }
+    Ok(input)
 }
 
 fn hook_failure(_event: &str, error: &str) -> Value {

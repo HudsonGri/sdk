@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn native_hook_context_encodes_only_valid_task_ids() -> Result<()> {
+    let identity = "18aa58bb-16c0-440c-9367-fc0230a95dd5";
+    let task = parse_task(identity)?;
+    let input = json!({"cwd":"fixture"});
+    let encoded = hook_input(input.clone(), Some(std::ffi::OsStr::new(identity)))?;
+    assert_eq!(
+        serde_json::from_value::<TaskId>(encoded["task"].clone())?,
+        task
+    );
+    assert_eq!(hook_input(input.clone(), None)?, input);
+    assert!(hook_input(input.clone(), Some(std::ffi::OsStr::new("invalid"))).is_err());
+    assert!(hook_input(Value::Null, Some(std::ffi::OsStr::new(identity))).is_err());
+    // Negative control: serializing the OS environment value directly is the
+    // old hook failure, on both Unix and Windows. It cannot decode as a task.
+    let legacy = json!(std::ffi::OsString::from(identity));
+    assert!(serde_json::from_value::<TaskId>(legacy).is_err());
+    Ok(())
+}
+
+#[test]
 fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     let workspace = fixture.path().join("workspace");
