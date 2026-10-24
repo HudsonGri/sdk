@@ -26,10 +26,11 @@ pub use wire_service::{
     HostedSourceState,
 };
 
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
-    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex().to_string()
+    blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET)
+        .to_hex()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -284,8 +285,8 @@ pub use multi_root::{
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, HeldRoot, SearchRoot,
     WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
-    capture_root_identity, capture_subtree, capture_watch_batch, file_identity, hold_root,
-    hold_search_root, host_path_to_namespace, namespace_to_host_path,
+    capture_recorded_metadata, capture_root_identity, capture_subtree, capture_watch_batch,
+    file_identity, hold_root, hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{

@@ -63,6 +63,9 @@ mod transaction;
 use transaction::*;
 mod stage;
 use stage::*;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod held_root_tests;
 mod metadata;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
@@ -73,9 +76,6 @@ mod rescan_probe_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-mod held_root_tests;
 use metadata::*;
 #[cfg(test)]
 #[cfg(feature = "memory")]
@@ -111,7 +111,8 @@ pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
 pub use entry::{
     HeldRoot, SearchRoot, capture_baseline, capture_held_paths, capture_paths,
-    capture_root_identity, capture_subtree, file_identity, hold_root, hold_search_root,
+    capture_recorded_metadata, capture_root_identity, capture_subtree, file_identity, hold_root,
+    hold_search_root,
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
