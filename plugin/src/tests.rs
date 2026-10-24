@@ -6,12 +6,10 @@ fn native_hook_context_encodes_only_valid_task_ids() -> Result<()> {
     let task = parse_task(identity)?;
     let input = json!({"cwd":"fixture"});
     let encoded = hook_input(input.clone(), Some(std::ffi::OsStr::new(identity)))?;
-    assert_eq!(
-        serde_json::from_value::<TaskId>(encoded["task"].clone())?,
-        task
-    );
+    let encoded_task = encoded.get("task").cloned().ok_or("hook omitted task")?;
+    assert_eq!(serde_json::from_value::<TaskId>(encoded_task)?, task);
     assert_eq!(hook_input(input.clone(), None)?, input);
-    assert!(hook_input(input.clone(), Some(std::ffi::OsStr::new("invalid"))).is_err());
+    assert!(hook_input(input, Some(std::ffi::OsStr::new("invalid"))).is_err());
     assert!(hook_input(Value::Null, Some(std::ffi::OsStr::new(identity))).is_err());
     // Negative control: serializing the OS environment value directly is the
     // old hook failure, on both Unix and Windows. It cannot decode as a task.
