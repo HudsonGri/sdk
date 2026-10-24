@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "filesystem")]
 use std::mem::size_of;
 
+mod admission;
 mod continuation;
 mod encoding;
 
@@ -250,7 +251,7 @@ impl ModelRequest {
 type PendingCall<'a> = (&'a String, &'a Value);
 
 /// Admitted values, exact canonical request bytes and their digest.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
@@ -258,16 +259,60 @@ pub struct PreparedModelRequest {
     admitted_limits: Limits,
     instruction_remaining: u64,
     encoding: Vec<encoding::EncodingPrefix>,
+    content_admission: Option<admission::ContentAdmission>,
+    #[cfg(feature = "filesystem")]
+    resident_payload: Option<u64>,
 }
+
+impl Clone for PreparedModelRequest {
+    fn clone(&self) -> Self {
+        Self {
+            request: self.request.clone(),
+            bytes: self.bytes.clone(),
+            request_digest: self.request_digest,
+            admitted_limits: self.admitted_limits,
+            instruction_remaining: self.instruction_remaining,
+            encoding: self.encoding.clone(),
+            content_admission: None,
+            // Vec and String clones need not retain the producer's capacity.
+            // The next continuation inventories its new storage once.
+            #[cfg(feature = "filesystem")]
+            resident_payload: None,
+        }
+    }
+}
+
 impl PreparedModelRequest {
+    pub(crate) fn take_content_admission(
+        &mut self,
+        executor: crate::executor::ExecutionJournalCacheId,
+        journal: crate::executor::ExecutionJournalCacheId,
+    ) -> admission::ContentAdmission {
+        let mut admission = self
+            .content_admission
+            .take()
+            .unwrap_or_else(|| admission::ContentAdmission::new(executor, journal));
+        admission.reset_binding(executor, journal);
+        admission
+    }
+
+    pub(crate) fn retain_content_admission(&mut self, admission: admission::ContentAdmission) {
+        self.content_admission = Some(admission);
+    }
+
     pub(crate) const fn admitted_limits(&self) -> Limits {
         self.admitted_limits
     }
     #[cfg(feature = "filesystem")]
     pub(super) fn encoding_owned_bytes(&self) -> Result<u64> {
-        slots(
-            self.encoding.capacity(),
-            size_of::<encoding::EncodingPrefix>(),
+        add(
+            slots(
+                self.encoding.capacity(),
+                size_of::<encoding::EncodingPrefix>(),
+            )?,
+            self.content_admission
+                .as_ref()
+                .map_or(Ok(0), admission::ContentAdmission::owned_bytes)?,
         )
     }
 
@@ -281,12 +326,16 @@ impl PreparedModelRequest {
             .map_or(Ok(None), |state| state.digests(prefix, io))
     }
     #[cfg(feature = "filesystem")]
+    pub(super) fn resident_payload_bytes(&self) -> Result<u64> {
+        match self.resident_payload {
+            Some(bytes) => Ok(bytes),
+            None => self.request.retained_payload_bytes(),
+        }
+    }
+    #[cfg(feature = "filesystem")]
     pub(crate) fn preparation_owned_bytes(&self, io: &PreparationIo) -> Result<u64> {
         let bytes = add(
-            add(
-                size_of::<Self>() as u64,
-                self.request.retained_payload_bytes()?,
-            )?,
+            add(size_of::<Self>() as u64, self.resident_payload_bytes()?)?,
             self.encoding_owned_bytes()?,
         )?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -336,8 +385,8 @@ impl PreparedModelRequest {
             // Bound JSON depth before the recursive capacity inventory.
             let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
             bytes_hold = io.guard_bytes(&bytes)?;
-            request_hold =
-                io.reserve_decode(add(size_of::<Self>() as u64, request.payload_bytes()?)?)?;
+            let retained_payload = request.retained_payload_bytes()?;
+            request_hold = io.reserve_decode(add(size_of::<Self>() as u64, retained_payload)?)?;
             let instruction_remaining =
                 request.validate_with_instruction_budget(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
@@ -345,6 +394,7 @@ impl PreparedModelRequest {
                 hold.into_retained()?;
             }
             request_hold.into_retained()?;
+            let resident_payload = Some(retained_payload);
             return Ok(Self {
                 request,
                 bytes,
@@ -352,6 +402,8 @@ impl PreparedModelRequest {
                 admitted_limits: limits,
                 instruction_remaining,
                 encoding: Vec::new(),
+                content_admission: None,
+                resident_payload,
             });
         }
         Self::encode_admitted(request, limits, io)
@@ -368,13 +420,17 @@ impl PreparedModelRequest {
         Self::encode_validated(request, limits, instruction_remaining, io)
     }
 
-    fn begin_preparation(io: Option<&PreparationIo>) -> Result<()> {
+    fn record_preparation() {
         #[cfg(all(
             any(test, feature = "test-support"),
             feature = "filesystem",
             not(target_arch = "wasm32")
         ))]
         acyclic_differential::record(("prepare request", 1u64));
+    }
+
+    fn begin_preparation(io: Option<&PreparationIo>) -> Result<()> {
+        Self::record_preparation();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned((size_of::<Self>() - size_of::<ModelRequest>()) as u64)?;
@@ -405,6 +461,8 @@ impl PreparedModelRequest {
         if let Some(hold) = bytes_hold {
             hold.into_retained()?;
         }
+        #[cfg(feature = "filesystem")]
+        let resident_payload = Some(request.retained_payload_bytes()?);
         Ok(Self {
             request,
             bytes,
@@ -412,6 +470,9 @@ impl PreparedModelRequest {
             admitted_limits: limits,
             instruction_remaining,
             encoding: Vec::new(),
+            content_admission: None,
+            #[cfg(feature = "filesystem")]
+            resident_payload,
         })
     }
     /// Admitted values for provider-specific encoding.
@@ -504,3 +565,6 @@ impl PreparedModelRequest {
 #[cfg(test)]
 #[path = "request_tokens_tests.rs"]
 mod tokens_tests;
+
+#[cfg(all(test, feature = "filesystem"))]
+mod inventory_tests;

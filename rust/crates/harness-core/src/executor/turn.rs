@@ -18,6 +18,7 @@ impl StockExecution<'_> {
         }
         self.ensure_started(journal, input).await?;
         self.begin_working_history().await;
+        self.begin_request_continuation().await;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         let mut text = String::new();
@@ -68,7 +69,7 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
-            for (invocation, invocation_index) in calls {
+            for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
                 match self
                     .resolve_tool_call(
                         journal,
@@ -112,7 +113,7 @@ impl StockExecution<'_> {
     ) -> Result<(Vec<(ToolInvocation, usize)>, Value)> {
         let mut calls = Vec::new();
         let mut completed = Value::Null;
-        for event in model_events {
+        for event in stock_into_iter(model_events, self.io)? {
             match event {
                 ModelEvent::Content { delta } => {
                     stock_string_push(

@@ -46,7 +46,7 @@ async fn maximum_request_includes_summary_dispatches_in_either_order() -> Result
                 request_digest: request.request_digest(),
             };
             let events = provider
-                .generate(request, dispatch)
+                .generate(&request, dispatch)
                 .collect::<Vec<_>>()
                 .await;
             assert!(events.iter().all(Result::is_ok));

@@ -188,6 +188,10 @@ impl<T> Funded<Vec<T>> {
 }
 
 impl<T> Funded<T> {
+    pub(super) fn into_parts(self) -> (T, Option<ReadAllocation>) {
+        (self.value, self.allocation)
+    }
+
     pub(super) fn scalar(value: T, work: Option<&Arc<crate::memory::Work>>) -> Self {
         Self {
             value,

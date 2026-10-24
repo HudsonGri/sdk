@@ -30,8 +30,8 @@ mod native_stock;
 pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
 pub(crate) use native_stock::{
-    stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
-    stock_vec_reserve,
+    stage_json, stock_boundary, stock_into_iter, stock_string_copy, stock_string_push,
+    stock_vec_push, stock_vec_reserve,
 };
 
 pub(crate) mod execution_claim;
@@ -61,6 +61,7 @@ mod record_index;
 mod records;
 mod request;
 mod response;
+mod retained_request;
 pub(crate) mod transcript;
 mod working_context;
 mod working_tail;

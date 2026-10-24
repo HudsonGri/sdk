@@ -390,7 +390,9 @@ impl NativeReadMeter for Meter {
         self.recorded()
     }
     fn admit_write(&self, _: usize) -> std::io::Result<()> {
-        self.check()
+        self.check()?;
+        self.write_operations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> {
         self.write_bytes.fetch_add(bytes as u64, Ordering::SeqCst);

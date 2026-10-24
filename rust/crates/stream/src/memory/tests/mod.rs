@@ -17,4 +17,7 @@ mod history_index;
 mod native;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod work_custody;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod commit_index;

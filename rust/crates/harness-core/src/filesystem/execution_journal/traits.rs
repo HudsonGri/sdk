@@ -416,6 +416,10 @@ where
         })
     }
 
+    fn has_file_bound_model_verification(&self) -> bool {
+        true
+    }
+
     fn verify_model_content<'a>(
         &'a self,
         content: &'a ModelContent,

@@ -3,18 +3,19 @@ use super::*;
 mod compaction_source;
 
 impl StockExecution<'_> {
-    pub(super) async fn capture_response(
+    async fn prepare_response_context(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        tail: u64,
-    ) -> Result<(
-        ResponseProjection,
-        Option<ContextAccounting>,
-        crate::model::PreparedModelRequest,
-    )> {
+    ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
+        if let Some(continued) = self
+            .continue_response_request(journal, input, step, prior_messages)
+            .await?
+        {
+            return Ok(continued);
+        }
         let (context_input, base, working) = self
             .response_base(journal, input, step, prior_messages)
             .await?;
@@ -32,8 +33,34 @@ impl StockExecution<'_> {
         } else {
             None
         };
-        let (projection, prepared) = self
+        let (context, prepared) = self
             .prepare_transformed_request(&context_input, base)
+            .await?;
+        Ok((
+            ResponseProjection {
+                context,
+                canonical,
+                checkpoint: None,
+                working,
+            },
+            prepared,
+        ))
+    }
+
+    pub(super) async fn capture_response(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        tail: u64,
+    ) -> Result<(
+        ResponseProjection,
+        Option<ContextAccounting>,
+        crate::model::PreparedModelRequest,
+    )> {
+        let (projection, prepared) = self
+            .prepare_response_context(journal, input, step, prior_messages)
             .await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
             let count =
@@ -42,12 +69,6 @@ impl StockExecution<'_> {
             Some(ContextAccounting { capacity, count })
         } else {
             None
-        };
-        let projection = ResponseProjection {
-            context: projection,
-            canonical,
-            checkpoint: None,
-            working,
         };
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)

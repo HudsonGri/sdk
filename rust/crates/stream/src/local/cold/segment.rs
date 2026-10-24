@@ -11,7 +11,7 @@ use header::{HEADER_BYTES, PREFIX_BYTES, SLOT_BYTES};
 pub(super) const DATA_START: u64 = HEADER_BYTES as u64;
 
 pub(super) struct Segment {
-    pub(super) file: File,
+    pub(super) file: super::handle::SharedFile,
     pub(super) number: u64,
     pub(super) end: u64,
     maximum: u64,
@@ -35,6 +35,7 @@ impl Segment {
         {
             return Err(LocalStreamError::InvalidLimits);
         }
+        let file = super::handle::SharedFile::new(file, work)?;
         let hash_bytes = header::hash_bytes(u64::from(inherited.is_some()));
         page::codec(work, HEADER_BYTES as u64, hash_bytes, true)?;
         let bytes = header::encode(number, inherited)?;
@@ -67,6 +68,7 @@ impl Segment {
         maximum: u64,
         work: Option<&Arc<crate::memory::Work>>,
     ) -> Result<Self, LocalStreamError> {
+        let file = super::handle::SharedFile::new(file, work)?;
         let mut bytes = [0; HEADER_BYTES];
         page::read_exact(&file, 0, &mut bytes, work)?;
         page::codec(work, 0, header::hash_bytes(2), true)?;
