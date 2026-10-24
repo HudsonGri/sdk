@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { recordedRequests, requests } from "./assertions.mjs";
+import { recordedRequests, requests, requestStep } from "./assertions.mjs";
 
 test("only flushed acknowledged records survive interruption, with all case assertions retained", () => {
   const record = { sequence: 1, case: "a", step: 0, path: "responses", status: 200, body: {} };
@@ -18,4 +18,14 @@ test("acknowledged corruption and missing records always fail", () => {
   assert.throws(() => recordedRequests("{", [event]), /complete JSONL/);
   assert.throws(() => recordedRequests("{\n", [event]), SyntaxError);
   assert.throws(() => recordedRequests('{"sequence":2}\n', [event]), /sequence/);
+});
+
+
+test("consumed steps reject route drift immediately for terminal and kill gates", () => {
+  for (const path of ["messages", "responses", "chat/completions", "models/tiny:streamGenerateContent"]) {
+    const gate = { path, step: 1 };
+    assert.equal(requestStep([{ path: "count", step: null }, { path, step: 0 }], gate), false);
+    assert.equal(requestStep([{ path, step: 1 }], gate), true);
+    assert.throws(() => requestStep([{ path: "wrong-provider", step: 1 }], gate), /provider route for script step 1/);
+  }
 });

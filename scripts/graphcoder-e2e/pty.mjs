@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { requestStep } from "./assertions.mjs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
@@ -69,7 +70,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       if (raw.includes("has overflowed its stack") || failures.unexpected(visible, action.when)) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
-      if (action.after_request && !fixture.requests.some(event => event.path === action.after_request.path && event.step === action.after_request.step)) return;
+      if (action.after_request && !requestStep(fixture.requests, action.after_request)) return;
       if (!matches(screen, raw, action.when)) return;
       failures.accept(visible, action.when);
       snapshots.push({ action: index, visible });
