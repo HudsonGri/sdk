@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 mod llm;
 mod owner;
 mod parent;
+#[cfg(test)]
+mod settlement_tests;
 pub(super) use owner::bind_owner;
 
 pub(crate) struct Inbox {
@@ -24,11 +26,7 @@ pub(crate) struct Inbox {
 
 #[derive(Clone, Debug)]
 enum Stage {
-    Automatic {
-        principal: String,
-        verdict: RuleVerdict,
-        reason: Option<String>,
-    },
+    Automatic(ApprovalReviewFile),
     Human(String),
     Parent(TaskId),
 }
@@ -283,29 +281,17 @@ impl LocalHarness {
                     .await?
             };
             if review.verdict != RuleVerdict::Ask {
-                return Ok(Some(Stage::Automatic {
-                    principal,
-                    verdict: review.verdict,
-                    reason: review.reason,
-                }));
+                return Ok(Some(Stage::Automatic(review)));
             }
         }
-        if evaluate {
-            let review = ApprovalReviewFile {
-                principal: "policy:exhausted".into(),
-                request_sha256: hash,
-                policy_digest: digest,
-                stage: self.approval_policy.approvers.len(),
-                verdict: RuleVerdict::Deny,
-                reason: Some("approval chain exhausted without permission".into()),
-            };
-            publish_review(task_files, review_key(request, &review.principal)?, &review).await?;
-        }
-        Ok(Some(Stage::Automatic {
+        Ok(Some(Stage::Automatic(ApprovalReviewFile {
             principal: "policy:exhausted".into(),
+            request_sha256: hash,
+            policy_digest: digest,
+            stage: self.approval_policy.approvers.len(),
             verdict: RuleVerdict::Deny,
             reason: Some("approval chain exhausted without permission".into()),
-        }))
+        })))
     }
 
     async fn automatic_review(
@@ -352,8 +338,57 @@ impl LocalHarness {
             reason,
             ..expected
         };
-        publish_review(task_files, review_key(request, &review.principal)?, &review).await?;
+        if review.verdict == RuleVerdict::Ask {
+            // Escalation may dispatch another model or external approver, so
+            // its audit must already be durable. A decisive review instead
+            // travels with settlement and shares its canonical receipt.
+            publish_review(task_files, review_key(request, &review.principal)?, &review).await?;
+        }
         Ok(review)
+    }
+
+    async fn settle_automatic_review(
+        &self,
+        task: TaskId,
+        request: &FileValue,
+        files: &crate::task_volume::TaskFiles<LocalStream>,
+        review: ApprovalReviewFile,
+    ) -> Result<()> {
+        if review.verdict == RuleVerdict::Ask {
+            return Err(Error::Invalid(
+                "escalation is not a settled approval".into(),
+            ));
+        }
+        let stream = self.runtime.task_host().workflow_stream();
+        if !files.inner.shares_provider(&stream) {
+            return Err(Error::Invalid(
+                "approval review uses another provider".into(),
+            ));
+        }
+        let value = FileValue::new(
+            review_key(request, &review.principal)?,
+            serde_json::to_vec(&review).map_err(storage)?,
+        );
+        acyclic_stream::deferring_provider_durability(&*stream, async {
+            crate::task_volume::publish(&files.inner, files.inner.head().await?, &value, || {
+                std::future::ready(Ok::<_, Error>((Vec::new(), None)))
+            })
+            .await
+        })
+        .await?;
+        // End the deferral before settlement: its mandatory canonical receipt
+        // covers the earlier review, and its decision-file publisher remains
+        // eager. A different filesystem authority also retains its own fence.
+        self.settle_approval(
+            task,
+            request,
+            &review.principal,
+            review.verdict == RuleVerdict::Allow,
+            review.reason,
+        )
+        .await?;
+        crate::task_volume::publish_durable(&files.inner, &value, None).await?;
+        Ok(())
     }
 
     async fn settle_approval(
@@ -472,19 +507,9 @@ impl LocalHarness {
                 .approval_stage(task, request, task_files, files, true)
                 .await?
             {
-                Some(Stage::Automatic {
-                    principal,
-                    verdict,
-                    reason,
-                }) => {
-                    self.settle_approval(
-                        task,
-                        request,
-                        &principal,
-                        verdict == RuleVerdict::Allow,
-                        reason,
-                    )
-                    .await?;
+                Some(Stage::Automatic(review)) => {
+                    self.settle_automatic_review(task, request, task_files, review)
+                        .await?;
                     settled = true;
                 }
                 Some(Stage::Human(principal)) => {
