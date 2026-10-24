@@ -83,10 +83,15 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                 | Case::Accounting
                 | Case::Policy
         ) {
+            let mut retention = crate::context::CompactionRetention::default();
+            if matches!(case, Case::MandatorySource) {
+                // Conventions are late User messages; this case explicitly retains them.
+                retention.roles.push(ModelRole::User);
+            }
             harness.compaction = CompactionPolicy::Threshold(ThresholdCompaction {
                 response_reserve_tokens: 16_384,
                 recent_tokens: if matches!(case, Case::Policy) { 0 } else { 100 },
-                ..Default::default()
+                retention,
             });
         }
         let operation = OperationId::new();
@@ -209,7 +214,10 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                         &serde_json::to_vec(&source).map_err(crate::local::storage)?,
                         "application/json",
                         "summary source",
-                        crate::conversation::ContentAccess { ceiling: None, io: None },
+                        crate::conversation::ContentAccess {
+                            ceiling: None,
+                            io: None,
+                        },
                     )?
                     .await?
                     .0,
@@ -228,7 +236,10 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                 &bytes,
                 "application/json",
                 "model input",
-                crate::conversation::ContentAccess { ceiling: None, io: None },
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: None,
+                },
             )?
             .await?
             .0;

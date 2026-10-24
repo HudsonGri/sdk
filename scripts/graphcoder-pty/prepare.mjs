@@ -11,7 +11,14 @@ export function prepare(directory = dirname(fileURLToPath(import.meta.url))) {
   const original = readFileSync(lock);
   const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
   assert.equal(manifest.name, "graphcoder-pty-qualification");
-  const installed = spawnSync(process.env.BUN_BINARY ?? "bun", ["install", "--frozen-lockfile", "--ignore-scripts"], {
+  const required = /^bun@([0-9]+\.[0-9]+\.[0-9]+)$/.exec(manifest.packageManager);
+  assert.ok(required, "terminal runtime needs an exact Bun packageManager");
+  const binary = process.env.BUN_BINARY ?? "bun";
+  const version = spawnSync(binary, ["--version"], { encoding: "utf8" });
+  if (version.error) throw version.error;
+  assert.equal(version.status, 0, "terminal package manager version probe failed");
+  assert.equal(version.stdout.trim(), required[1], "terminal package manager version mismatch");
+  const installed = spawnSync(binary, ["install", "--frozen-lockfile", "--ignore-scripts"], {
     cwd: directory, stdio: "inherit",
   });
   if (installed.error) throw installed.error;

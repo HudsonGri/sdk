@@ -561,23 +561,15 @@ mod build_metadata {
     pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
 
     pub(super) fn executable() -> std::path::PathBuf {
-        if acyclic_harness::native_environment::variable("ACYCLIC_TEST_SOURCE_ROOT").is_some() {
-            // win-test exports the normal Cargo JSON executable beside the test.
-            // Its original Linux build path is not a Windows runtime fixture.
-            let path = std::env::current_exe()
-                .map(|path| {
-                    path.with_file_name(format!("graphcoder{}", std::env::consts::EXE_SUFFIX))
-                })
-                .unwrap_or_default();
-            assert!(
-                path.is_absolute() && path.is_file(),
-                "missing exported GraphCoder executable: {}",
-                path.display()
-            );
-            path
-        } else {
-            EXECUTABLE.into()
-        }
+        let path = acyclic_harness::native_environment::variable("ACYCLIC_TEST_BINARY")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| EXECUTABLE.into());
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "missing admitted GraphCoder executable: {}",
+            path.display()
+        );
+        path
     }
 }
 
