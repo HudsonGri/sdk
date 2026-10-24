@@ -5,11 +5,7 @@ use futures::stream;
 impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Follows verified events from an already observed coordinator cut.
     /// Notification consumers recheck authority before acting on a wakeup.
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub(crate) async fn event_changes(
         client: &Arc<P>,
         after: u64,

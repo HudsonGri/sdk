@@ -518,47 +518,51 @@ async fn bound_volume_inspection_does_not_publish_native_changes() -> Result<()>
         Ok(((), claims))
     })
     .await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let previous = source
-        .workspace
-        .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map_err(storage)?
-        .value
-        .id();
-    write_native_inspection_file(
-        &source.destination.join("inspected"),
-        "unpublished native bytes\n",
-    )?;
-    let before = durable_files(case.state.path())?;
-    let acyclic_fs::GitCommandOutput::Status(status) =
-        decode(&case.command(310, "git --volume scratch status").await?)?
-    else {
-        return Err(Error::Invalid("expected bound-volume status".into()));
-    };
-    let after = source
-        .workspace
-        .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map_err(storage)?
-        .value
-        .id();
-    let unchanged = durable_files(case.state.path())? == before;
-    eprintln!(
-        "BOUND_INSPECTION head_unchanged={} durable_unchanged={unchanged}",
-        previous == after
-    );
-    assert!(
-        unchanged && previous == after,
-        "read-only bound volume inspection must not capture or publish native changes"
-    );
-    assert_ne!(
-        status.workspace,
-        acyclic_fs::GitTreeRef::exact(source.workspace.workspace().id(), previous),
-        "bound-volume status must still inspect unpublished native content"
-    );
+    workspace::volumes::native_scope(mounts, async |claims| {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let previous = source
+            .workspace
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id();
+        write_native_inspection_file(
+            &source.destination.join("inspected"),
+            "unpublished native bytes\n",
+        )?;
+        let before = durable_files(case.state.path())?;
+        let acyclic_fs::GitCommandOutput::Status(status) =
+            decode(&case.command(310, "git --volume scratch status").await?)?
+        else {
+            return Err(Error::Invalid("expected bound-volume status".into()));
+        };
+        let after = source
+            .workspace
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id();
+        let unchanged = durable_files(case.state.path())? == before;
+        eprintln!(
+            "BOUND_INSPECTION head_unchanged={} durable_unchanged={unchanged}",
+            previous == after
+        );
+        assert!(
+            unchanged && previous == after,
+            "read-only bound volume inspection must not capture or publish native changes"
+        );
+        assert_ne!(
+            status.workspace,
+            acyclic_fs::GitTreeRef::exact(source.workspace.workspace().id(), previous),
+            "bound-volume status must still inspect unpublished native content"
+        );
+        Ok(((), claims))
+    })
+    .await?;
     case.harness.disconnect_unfinished().await?;
     Ok(())
 }

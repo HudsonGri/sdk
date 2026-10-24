@@ -178,7 +178,9 @@ where
         tracked_paths: &BTreeSet<String>,
     ) -> Result<GitFilesystemResult, Error> {
         if self.read_only {
-            return self.diff_read_only(from, to, tracked_paths).await;
+            return self
+                .diff_read_only(from, to, tracked_paths, readonly::DiffBefore::Committed)
+                .await;
         }
         let to = self.generation(*to).await?;
         let value = if let Some(from) = from {

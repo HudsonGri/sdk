@@ -2,6 +2,12 @@
 use super::*;
 use acyclic_fs::{NativeMaterializationWork, ReadOnlyGeneration};
 
+#[derive(Clone, Copy)]
+pub(super) enum DiffBefore {
+    Committed,
+    Working,
+}
+
 type InspectedTree<'a> = ReadOnlyGeneration<'a, LocalAuthorityBackend, LocalObjectBackend>;
 
 pub(super) fn work(cancellation: &CancellationToken) -> crate::Result<NativeMaterializationWork> {
@@ -137,6 +143,7 @@ where
         from: Option<&GitTreeRef>,
         to: &GitTreeRef,
         tracked: &BTreeSet<String>,
+        kind: DiffBefore,
     ) -> crate::Result<GitFilesystemResult> {
         let cancellation = CancellationToken::new();
         let work = work(&cancellation)?;
@@ -146,12 +153,22 @@ where
         {
             after = after.capture_native(view, &work, &cancellation).await?;
         }
-        let value = if let Some(from) = from {
-            // The committed side stays immutable even when its reference equals
-            // the workspace generation. Only the working side captures native edits.
-            let before = self
+        let value = if matches!(kind, DiffBefore::Working) && from == Some(to) {
+            // One working view has one captured cut, including a self-agent diff.
+            json!({ "from": hex::encode(after.id().digest().as_bytes()),
+                "to": hex::encode(after.id().digest().as_bytes()), "fileChanges": 0, "bindingChanges": 0 })
+        } else if let Some(from) = from {
+            let mut before = self
                 .inspected_tree(*from, &work, &cancellation, Some(&after))
                 .await?;
+            // Commit diffs compare against an immutable tree. Agent diffs compare
+            // working views and must include this agent's physical changes.
+            if matches!(kind, DiffBefore::Working)
+                && let Some((working, view)) = self.inspection
+                && working == *from
+            {
+                before = before.capture_native(view, &work, &cancellation).await?;
+            }
             let changes = before
                 .diff_to(&after, &self.repository, tracked, &cancellation)
                 .await?;
