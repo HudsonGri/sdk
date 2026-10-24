@@ -271,3 +271,53 @@ fn holder_signed_backdating_and_revoked_ancestors_cannot_authenticate_history() 
     assert!(proof.verify_history(&trust, &request, [7; 32]).is_ok());
     Ok(())
 }
+
+#[test]
+fn retained_certifications_recheck_new_blocks_current_trust_and_request_bindings() -> TestResult {
+    use acyclic_auth::admission::HistoryVerifier;
+    let (signer, workload) = fixture()?;
+    let trust = signed::Snapshot::default();
+    let attributes = RecordAttributes::try_new(vec![])?;
+    let usage = signed::limits(None);
+    let request = signed::request("fs:/volume/public/file", &attributes, &usage);
+    let first = RuntimeAdmission::new(&signer, &trust, signed::NOW)
+        .record(&workload, &request, [7; 32], &[8; 32])?;
+    let next = RuntimeAdmission::new(&signer, &trust, signed::NOW)
+        .record(&workload, &request, [9; 32], &[10; 32])?;
+    let mut owner = HistoryVerifier::default();
+    let authenticated = owner.authenticate(&first, &trust, signed::NOW)?;
+    authenticated.check_request(&trust, &request, [7; 32])?;
+    let different = owner.authenticate(&next, &trust, signed::NOW)?;
+    different.check_request(&trust, &request, [9; 32])?;
+    assert_ne!(
+        authenticated.workload().block_ids(),
+        different.workload().block_ids()
+    );
+    assert!(different.check_request(&trust, &request, [7; 32]).is_err());
+    let mut changed = next.clone();
+    *changed.workload.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
+    assert!(owner.authenticate(&changed, &trust, signed::NOW).is_err());
+    changed = next.clone();
+    *changed.receipt.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
+    assert!(owner.authenticate(&changed, &trust, signed::NOW).is_err());
+    for field in 0..7 {
+        let mut current = signed::Snapshot::default();
+        match field {
+            0 => current.environments.clear(),
+            1 => current.issuers.clear(),
+            2 => current.minimum_epoch = 2,
+            3 => current
+                .revoked_blocks
+                .push(*workload.block_ids().first().ok_or(VerifyError::Malformed)?),
+            4 => current.revoked_keys.push("key".into()),
+            5 => current.available = false,
+            _ => current
+                .issuers
+                .push(signed::key(4).verifying_key().to_bytes()),
+        }
+        assert!(owner.authenticate(&next, &current, signed::NOW).is_err());
+        assert!(next.authenticate_history(&current, signed::NOW).is_err());
+    }
+    assert!(owner.authenticate(&next, &trust, signed::NOW - 1).is_err());
+    Ok(())
+}
