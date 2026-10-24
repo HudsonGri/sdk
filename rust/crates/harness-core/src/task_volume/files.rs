@@ -192,8 +192,8 @@ mod fixtures;
 #[cfg(acyclic_harness_loom)]
 mod models;
 
-/// Opens the real task-file model for actors in dependent crates.
 #[cfg(acyclic_harness_loom)]
+#[doc(hidden)]
 pub async fn model_files(
     provider: Arc<dyn StreamProvider>,
     path: StreamPath,

@@ -645,7 +645,10 @@ fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
 #[test]
 fn competing_writers_cannot_tear_the_shared_projection() {
     competing_writers(Fault::None, Some(4));
-    assert_negative_control(2, 4, "competing publication escaped its fence", |bound| {
+    // One preemption between validating the original generation and resampling
+    // the tail lets the other writer commit. Certify that first witness as well
+    // as the unchanged suite bound; zero preemptions must still pass.
+    assert_negative_control(1, 4, "competing publication escaped its fence", |bound| {
         competing_writers(Fault::ResamplePublicationFence, bound)
     });
 }
@@ -674,4 +677,63 @@ fn lease_expiry_and_authority_changes_fence_the_atomic_publication() {
             fenced_publication(expiry, true, bound)
         });
     }
+}
+
+// Executor bookkeeping must not multiply the provider schedules being proved.
+// Both drivers explore the same mutex/wake protocol; only the former driver
+// makes Waker reference counts part of that protocol's schedule graph.
+fn executor_schedules(clones: usize, former_driver: bool) -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Poll, Waker};
+    let executions = Arc::new(AtomicUsize::new(0));
+    let counted = executions.clone();
+    model(move || {
+        counted.fetch_add(1, Ordering::Relaxed);
+        let state = Arc::new(loom::sync::Mutex::new((false, None::<Waker>)));
+        let writer = thread::spawn({
+            let state = state.clone();
+            move || {
+                let waker = {
+                    let mut state = state.lock().unwrap();
+                    state.0 = true;
+                    state.1.take()
+                };
+                if let Some(waker) = waker {
+                    waker.wake_by_ref();
+                    thread::yield_now();
+                    drop(waker);
+                }
+            }
+        });
+        let wait = std::future::poll_fn(|cx| {
+            for _ in 0..clones {
+                drop(cx.waker().clone());
+            }
+            let mut state = state.lock().unwrap();
+            if state.0 {
+                Poll::Ready(())
+            } else {
+                state.1 = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        });
+        if former_driver {
+            loom::future::block_on(Box::pin(wait));
+        } else {
+            block_on(wait);
+        }
+        writer.join().unwrap();
+        Ok(())
+    });
+    executions.load(Ordering::Relaxed)
+}
+
+#[test]
+fn executor_waker_clones_do_not_expand_provider_schedules() {
+    assert_eq!(executor_schedules(0, false), executor_schedules(2, false));
+    assert_ne!(
+        executor_schedules(0, true),
+        executor_schedules(2, true),
+        "former executor no longer reproduces reference-count schedule noise"
+    );
 }

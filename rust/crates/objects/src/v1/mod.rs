@@ -10,6 +10,15 @@ mod memory;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use memory::persistence::Publication;
 pub mod request;
+impl wire::BucketRef {
+    /// Account and exact logical bucket id.
+    pub fn identity(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
+        crate::addressing::ResourceIdentity::new(account, self.name.as_bytes())
+    }
+}
 pub mod response;
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod upload;
@@ -61,6 +70,8 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
 ];
 pub use memory::{MemoryObjects, MemoryOptions};
 
+#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+mod addressing_tls_tests;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(test)]

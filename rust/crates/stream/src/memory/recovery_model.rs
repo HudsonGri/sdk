@@ -49,15 +49,16 @@ impl UnixMillisClock for loom::sync::atomic::AtomicU64 {
     }
 }
 
-/// Owns the real async state machine on the heap, outside Loom's coroutine stack.
+/// Drives the real state machine with the same executor as snapshot workers.
 pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
+    // Waker reference counting belongs to the executor, not the provider model.
+    // A single driver keeps every lock, registration and wake scheduled by Loom
+    // without multiplying schedules by modeled Arc clones of its own waker.
+    crate::snapshot::park(Box::pin(future))
 }
 
 /// Drives adapter models with the same parked-thread waker as snapshot workers.
-pub fn park<F: std::future::Future>(future: F) -> F::Output {
-    crate::snapshot::park(future)
-}
+pub use block_on as park;
 
 /// Applies the production recovery path to the existing provider object.
 pub async fn recover(
@@ -339,12 +340,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                     .follow(path, cursor.next, crate::FollowFilter::default())
                     .await
             } else {
-                wire_codec::session::follow_records(
-                    &provider,
-                    &follow,
-                    &cursor,
-                )
-                .await
+                wire_codec::session::follow_records(&provider, &follow, &cursor).await
             };
             let error = match registered {
                 Err(error) => error,

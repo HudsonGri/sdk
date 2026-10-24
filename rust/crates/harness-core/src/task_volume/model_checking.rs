@@ -2,9 +2,6 @@
 use super::*;
 use std::cell::Cell;
 
-mod journal;
-pub(crate) use journal::Journal;
-
 /// Mutations present only in the dedicated harness model build.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub enum Fault {
@@ -63,7 +60,7 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-/// Reports the selected mutation to actors in crates using the production model.
+/// Whether the selected fault is enabled on the current modeled actor.
 pub fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
@@ -90,4 +87,7 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
     );
 }
 
+// The local controller models live in the facade crate. Its dependency is
+// compiled without cfg(test), even when the facade's unit tests are built.
+#[doc(hidden)]
 pub use super::files::model_files as files;

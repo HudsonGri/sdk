@@ -135,6 +135,15 @@ impl fmt::Display for WorkspaceName {
 pub struct WorkspaceId([u8; 16]);
 
 impl WorkspaceId {
+    /// Global view of the existing persisted 16-byte workspace id.
+    pub fn identity(
+        self,
+        account: &[u8],
+    ) -> Result<acyclic_auth::addressing::ResourceIdentity, acyclic_auth::addressing::IdentityError>
+    {
+        acyclic_auth::addressing::ResourceIdentity::new(account, &self.0)
+    }
+
     /// Restores a stable workspace identity from canonical bytes.
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
