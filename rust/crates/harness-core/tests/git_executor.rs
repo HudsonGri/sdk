@@ -802,6 +802,13 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
         .map_err(|(cause, _)| cause)?;
     let generation = main.workspace().head(&work, &stop).await?;
+    write_text(
+        &main,
+        "/guard-probe",
+        b"must not reach the replaced checkout",
+    )
+    .await?;
+    let candidate = main.workspace().head(&work, &stop).await?;
     let identity = work.root_identity(&root)?;
     let publication = acyclic_harness_core::filesystem::CheckoutPublication::new(
         &root,
@@ -820,14 +827,14 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let prepared = publication
         .prepare_selected(
             &generation,
-            &generation,
+            &candidate,
             &store,
             &options,
             &work,
             (&paths, ()),
         )
         .await?;
-    let approved = publication.approval_value(&generation, &generation, &paths, &prepared, ())?;
+    let approved = publication.approval_value(&generation, &candidate, &paths, &prepared, ())?;
     let confirmation = approved.digest(&work)?;
     let mut guards = 0;
     let error = approved
@@ -842,6 +849,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         .await
         .expect_err("the checkout identity changed after authorization");
     assert_eq!(guards, 1);
+    assert!(!root.join("guard-probe").exists());
     assert_eq!(
         error.code(),
         acyclic_harness_core::wire::ErrorCode::Conflict
