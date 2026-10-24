@@ -651,6 +651,7 @@ impl AuthorityVerifier {
             public: std::sync::Arc::new(runtime_signing::PublicAuthority {
                 trust: std::sync::RwLock::new(trust),
                 metadata_key: checkpoint_key,
+                workload: Default::default(),
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })
