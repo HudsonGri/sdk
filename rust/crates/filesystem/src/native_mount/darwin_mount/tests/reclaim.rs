@@ -27,18 +27,23 @@ fn crashed_owner() -> TestResult {
     let (source, _, work) = checkout_context(MountPublication::Manual)?;
     let _owned = crate::mount_native(request(&root.join("owned"), &source)?, source.clone())?;
     phase(began, "child-owned-mounted");
-    // Another user of the same NFS transport is not an SDK-owned destination.
-    let (foreign, _, _) = checkout_context(MountPublication::Manual)?;
-    let mut session = None;
-    DarwinMountSession::start_into(
-        &request(&root.join("foreign"), &foreign)?,
-        foreign,
-        &work,
-        &mut session,
-        &mut None,
-        |_| Ok(()),
-    )?;
-    phase(began, "child-foreign-mounted");
+    // The ordinary case leaves a dead foreign transport too. The forced
+    // retirement case keeps that independent transport alive in the parent,
+    // so its separate dead-server teardown does not serialize after the
+    // Disk Arbitration callback being proved here.
+    let mut foreign_session = None;
+    if std::env::var_os("ACYCLIC_RECLAIM_LIVE_FOREIGN").is_none() {
+        let (foreign, _, _) = checkout_context(MountPublication::Manual)?;
+        DarwinMountSession::start_into(
+            &request(&root.join("foreign"), &foreign)?,
+            foreign,
+            &work,
+            &mut foreign_session,
+            &mut None,
+            |_| Ok(()),
+        )?;
+    }
+    phase(began, "child-foreign-ready");
     println!("RECLAIM_READY");
     std::io::stdout().flush()?;
     let mut command = String::new();
@@ -127,12 +132,21 @@ fn check_startup_recovery(
     let (live_root, _live_source, mut live, _) = live_mount()?;
     let live_socket = mount_socket(live_root.path())?;
     phase(began, "live-mounted");
-    let mut child = Command::new(std::env::current_exe()?)
+    let mut foreign = if deny_direct_unmount {
+        Some(ForeignMount::start(&canonical.join("foreign"))?)
+    } else {
+        None
+    };
+    let mut command = Command::new(std::env::current_exe()?);
+    command
         .args(["--exact", CHILD, "--ignored", "--nocapture"])
         .env("ACYCLIC_RECLAIM_TEST_ROOT", &canonical)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
+        .stdout(Stdio::piped());
+    if deny_direct_unmount {
+        command.env("ACYCLIC_RECLAIM_LIVE_FOREIGN", "1");
+    }
+    let mut child = command.spawn()?;
     let output = child.stdout.take().ok_or("missing child stdout")?;
     let ready = std::io::BufReader::new(output)
         .lines()
@@ -194,6 +208,10 @@ fn check_startup_recovery(
     phase(began, "replacement-stopped");
     live.stop()?;
     phase(began, "live-stopped");
+    if let Some(foreign) = &mut foreign {
+        foreign.stop()?;
+    }
+    phase(began, "foreign-stopped");
     println!(
         "RECLAIM_RECOVERY_VERIFIED owned=retired live=preserved foreign=preserved replacement=writable"
     );
@@ -201,5 +219,49 @@ fn check_startup_recovery(
 }
 
 fn phase(began: Instant, name: &str) {
-    eprintln!("RECLAIM_PHASE name={name} seconds={:.6}", began.elapsed().as_secs_f64());
+    eprintln!(
+        "RECLAIM_PHASE name={name} seconds={:.6}",
+        began.elapsed().as_secs_f64()
+    );
+}
+
+// The intentionally unfenced provider stays alive until its namespace has
+// retired, including the expected-error negative-control path. The ordinary
+// fixture still covers a crashed, unfenced transport with a historical fence.
+struct ForeignMount {
+    session: DarwinMountSession,
+    work: Work,
+}
+
+impl ForeignMount {
+    fn start(destination: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let (source, _, work) = checkout_context(MountPublication::Manual)?;
+        let mut session = None;
+        DarwinMountSession::start_into(
+            &request(destination, &source)?,
+            source,
+            &work,
+            &mut session,
+            &mut None,
+            |_| Ok(()),
+        )?;
+        Ok(Self {
+            session: session.ok_or("missing foreign session")?,
+            work,
+        })
+    }
+
+    fn stop(&mut self) -> Result<(), NativeMountError> {
+        self.session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&self.work))
+    }
+}
+
+impl Drop for ForeignMount {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            eprintln!("foreign fixture retirement failed: {error}");
+            assert!(std::thread::panicking(), "foreign fixture retirement failed");
+        }
+    }
 }
