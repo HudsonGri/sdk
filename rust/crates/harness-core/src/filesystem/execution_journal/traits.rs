@@ -280,13 +280,14 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         if io.is_none() {
-            return crate::conversation::BoundedContentFuture::new(None, || async move {
-                let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-                crate::obs::traced_future(
-                    span,
+            return crate::conversation::BoundedContentFuture::new(None, || {
+                // Construct one storage payload, but acquire its tracing
+                // parent only when polling begins. No forwarding coroutine
+                // duplicates that payload or needs a second allocation.
+                crate::obs::traced_on_poll(
+                    move || obs_span!("acyclic.harness.journal.stage", bytes = bytes.len()),
                     self.stage_with_io(operation, key, bytes, media, None),
                 )
-                .await
             });
         }
         #[cfg(not(target_arch = "wasm32"))]

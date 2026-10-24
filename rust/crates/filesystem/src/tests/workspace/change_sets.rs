@@ -19,6 +19,17 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
+    raw_endpoint_paths_mode(changes, maximum_entries, original, cancellation, false).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn raw_endpoint_paths_mode<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    changes: &ChangeSet<A, O>,
+    maximum_entries: u32,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+    full_scan: bool,
+) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
     let mut accounting = KernelAccounting::native(original, cancellation);
     let from = changes
         .from
@@ -52,7 +63,15 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             root: to.value.root(),
         },
     ];
-    let result = {
+    let result = if full_scan {
+        crate::workspace::diff::collect_all_paths(
+            endpoints.map(Some),
+            maximum_entries,
+            &mut accounting,
+            cancellation,
+        )
+        .await
+    } else {
         crate::workspace::complete_changed_paths(
             endpoints.map(Some),
             maximum_entries,
@@ -64,6 +83,71 @@ async fn raw_endpoint_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     to.retire(&mut accounting)?;
     from.retire(&mut accounting)?;
     result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn small_directory_move_does_not_materialize_unrelated_file_records()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("small-move-bounded"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/src/deep"))?;
+    unbounded!(seed, create_dir_all("/unrelated"))?;
+    seed.write_text("/src/deep/file", "retained").await?;
+    for index in 0..32 {
+        seed.write_text(&format!("/unrelated/file-{index:03}"), "unchanged")
+            .await?;
+    }
+    let TransactionCommit::Committed(before) = commit(&mut seed).await? else {
+        return Err("seed did not commit".into());
+    };
+    let mut moved = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(moved, rename("/src", "/lib", false))?;
+    let TransactionCommit::Committed(after) = commit(&mut moved).await? else {
+        return Err("move did not commit".into());
+    };
+    let changes = unbounded!(before, diff_to(&after, 64))?.0;
+    let cancellation = CancellationToken::new();
+    let mut observed = Vec::new();
+    for full_scan in [false, true] {
+        let original =
+            crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+                .map_err(|(error, _)| error)?;
+        let (paths, guard) =
+            raw_endpoint_paths_mode(&changes, u32::MAX, &original, &cancellation, full_scan)
+                .await?;
+        assert_eq!(paths.len(), 6);
+        let names = paths
+            .iter()
+            .map(|entry| namespace_path_text(&entry.path))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(names.iter().all(|path| !path.starts_with("/unrelated")));
+        observed.push(original.journal_work()?);
+        drop((paths, guard));
+    }
+    // Actual former full-namespace production path is the independent control.
+    // Replacing subtree expansion with it makes both strict inequalities fail.
+    let [expanded, full_scan]: [crate::WorkCounters; 2] = observed
+        .try_into()
+        .map_err(|_| "missing expanded and full-scan work controls")?;
+    assert!(
+        expanded.items_examined < full_scan.items_examined,
+        "{expanded:?} {full_scan:?}"
+    );
+    assert!(
+        expanded.peak_allocation_bytes < full_scan.peak_allocation_bytes,
+        "{expanded:?} {full_scan:?}"
+    );
+    let original =
+        crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
+            .map_err(|(error, _)| error)?;
+    let (retained, guard) = raw_changed_paths(&changes, 6, &original, &cancellation).await?;
+    assert_eq!(retained.len(), 6);
+    assert!(original.journal_work()?.items_examined < full_scan.items_examined);
+    drop((retained, guard));
+    println!("SMALL_DIRECTORY_MOVE_WORK {expanded:?} {full_scan:?}");
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,20 +251,70 @@ async fn complete_publication_delta_includes_unchanged_descendants_of_a_rename()
             .iter()
             .all(|change| change.before.is_some() != change.after.is_some())
     );
-    drop(paths);
     drop(guard);
-    // Selecting only changed file IDs loses descendants whose records did not
-    // change. Such a producer would miss both narrow-prefix watch notifications.
-    let (incomplete, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
-    assert!(!incomplete.iter().any(|change| {
-        super::namespace_path_text(&change.path).is_ok_and(|path| path.ends_with("/nested/file"))
-    }));
-    drop(incomplete);
+    // The public retained delta and live publication must expose the same
+    // unchanged descendants, including narrow-prefix watch notifications.
+    let (retained, guard) = raw_changed_paths(&changes, 64, &original, &cancellation).await?;
+    assert_eq!(retained, paths);
+    drop(paths);
+    drop(retained);
     drop(guard);
     assert!(matches!(
         raw_endpoint_paths(&changes, 1, &original, &cancellation).await,
         Err(WorkspaceError::ChangedPathLimit)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_directory_bindings_expand_only_their_descendants() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("directory-move"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/src/deep"))?;
+    seed.write_text("/src/deep/file", "unchanged").await?;
+    unbounded!(seed, hard_link("/src/deep/file", "/outside"))?;
+    let TransactionCommit::Committed(base) = commit(&mut seed).await? else {
+        return Err("seed did not commit".into());
+    };
+    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(transaction, rename("/src", "/lib", false))?;
+    let TransactionCommit::Committed(current) = commit(&mut transaction).await? else {
+        return Err("rename did not commit".into());
+    };
+    let (diff, _) = unbounded!(base, diff_to(&current, 64))?;
+    let names = |paths: Vec<ChangedPath>| {
+        paths
+            .iter()
+            .map(|change| namespace_path_text(&change.path))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let expected = [
+        "/lib",
+        "/lib/deep",
+        "/lib/deep/file",
+        "/src",
+        "/src/deep",
+        "/src/deep/file",
+    ];
+    for _ in 0..2 {
+        assert_eq!(names(unbounded!(diff, changed_paths(6))?.0)?, expected);
+    }
+    assert!(matches!(
+        unbounded!(diff, changed_paths(5)),
+        Err(WorkspaceError::ChangedPathLimit)
+    ));
+    // Negative control: deleting the changed binding identities recreates the
+    // former selection which sees no unchanged descendants of the moved folder.
+    let mut changes = diff.changes.clone();
+    changes.bindings.clear();
+    let broken = ChangeSet {
+        from: base,
+        to: current,
+        changes,
+        work: diff.work,
+    };
+    assert_ne!(names(unbounded!(broken, changed_paths(64))?.0)?, expected);
     Ok(())
 }
 

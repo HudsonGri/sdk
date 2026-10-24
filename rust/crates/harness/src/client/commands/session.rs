@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
 #[path = "session_activity.rs"]
 mod activity;
+#[path = "session_approval.rs"]
+mod approval;
 #[path = "session_archive.rs"]
 mod archive;
 #[path = "session_confirmation.rs"]
@@ -24,6 +26,9 @@ mod init_models;
 mod input;
 #[path = "session_publish.rs"]
 mod publication;
+#[cfg(all(test, acyclic_harness_loom, feature = "tui"))]
+#[path = "session_scroll_models.rs"]
+mod scroll_models;
 #[path = "session_view.rs"]
 mod view;
 
@@ -48,6 +53,7 @@ pub struct CommandSession<P: ?Sized> {
     pending_session: usize,
     pending_tasks: BTreeMap<String, usize>,
     outputs: BTreeMap<u64, files::FileKey>,
+    cleared_output: u64,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
     composer: Option<Arc<dyn ComposerResolver>>,
@@ -148,6 +154,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             next_change: None,
             generation: snapshot.generation,
             files: BTreeMap::new(),
+            cleared_output: 0,
             pending: VecDeque::new(),
             pending_session: 0,
             pending_tasks: BTreeMap::new(),
@@ -249,10 +256,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// One archive page from immutable outcome files, newest first. Selection
     /// lives in layout.json; the index is reconstructed from file-query snapshots.
     pub fn output_page(&self, back: usize) -> Result<Option<Value>> {
-        let after = self
-            .state(CommandFileRoot::Session, "layout.json")?
-            .and_then(|value| value.get("history_after").and_then(Value::as_u64))
-            .unwrap_or(0);
+        let after = self.history_after()?;
         self.outputs
             .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
             .rev()
@@ -263,9 +267,36 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .transpose()
     }
 
+    /// Shared archive boundary for clients and renderers, including the
+    /// immutable clear outcome itself even after independent reopen.
+    pub fn history_after(&self) -> Result<u64> {
+        Ok(self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("history_after").and_then(Value::as_u64))
+            .unwrap_or(0)
+            .max(self.cleared_output))
+    }
+
     /// Latest immutable outcome ordinal at the observed query cut.
     pub fn output_sequence(&self) -> u64 {
         self.outputs.keys().next_back().copied().unwrap_or(0)
+    }
+
+    /// Process outcome of the latest settled command in this session. Reopening
+    /// derives the same status from immutable results, including blocked goals.
+    pub fn exit_outcome(&self) -> Result<crate::client::HeadlessOutcome> {
+        self.outputs
+            .values()
+            .next_back()
+            .map(|key| {
+                let file = self
+                    .files
+                    .get(key)
+                    .ok_or_else(|| Error::Conflict("output file missing".into()))?;
+                crate::client::command_output::completion(&file.bytes)
+            })
+            .transpose()
+            .map(|outcome| outcome.unwrap_or(crate::client::HeadlessOutcome::Completed))
     }
 
     /// Every retained result after the renderer's own cursor, oldest first.
@@ -379,12 +410,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         name: &str,
         value: &Value,
     ) -> Result<()> {
-        self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
-            false,
-        )
-        .await?;
+        self.publish_state(root, name, value).await?;
         if root == CommandFileRoot::Session && name == "layout.json" {
             self.load_task_settings().await?;
         }
@@ -494,48 +520,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(operation)
     }
 
-    fn fold(&mut self, file: files::FileValue) -> Result<bool> {
-        if matches!(&file.key, files::FileKey::Task { .. })
-            && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
-        {
-            return Ok(false);
-        }
-        if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
-        {
-            return Ok(false);
-        }
-        if let files::FileKey::Ui { directory, .. } = &file.key {
-            if directory.as_str().starts_with("task-")
-                && self
-                    .selected_task()?
-                    .is_none_or(|task| directory.as_str() != format!("task-{task}"))
-            {
-                return Ok(false);
-            }
-        }
-        if file.bytes.len() as u64 > self.maximum_bytes {
-            return Err(Error::Invalid("command file exceeds byte bound".into()));
-        }
-        let previous = match &file.key {
-            files::FileKey::Ui { directory, name }
-                if name.as_str() == "layout.json"
-                    && directory.as_str() == format!("session-{}", self.session) =>
-            {
-                Some(self.selected_task()?)
-            }
-            _ => None,
-        };
-        self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
-        self.fold_activity_file(&file)?;
-        if file.key == ui("config", "commands.json")? {
-            let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
-            catalog.set_themes(self.catalog.themes.clone())?;
-            self.catalog = catalog;
-        }
-        if file.key == ui("config", "themes.json")? {
-            self.catalog
-                .set_themes(serde_json::from_slice::<Vec<String>>(&file.bytes).map_err(codec)?)?;
-        }
+    fn fold_outcome(&mut self, file: &files::FileValue) -> Result<()> {
         if matches!(
             file.key,
             files::FileKey::Task {
@@ -561,6 +546,19 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             let order: Order<'_> = serde_json::from_slice(&file.bytes).map_err(codec)?;
             if order.sequence == 0 {
                 return Err(Error::Invalid("zero command output sequence".into()));
+            }
+            #[derive(Deserialize)]
+            struct Clear {
+                #[serde(default)]
+                cleared: bool,
+            }
+            if order.ok.is_some_and(|raw| {
+                serde_json::from_str::<Clear>(raw.get()).is_ok_and(|value| value.cleared)
+            }) {
+                // The immutable clear outcome owns its own boundary. Layout
+                // selection is published before completion and cannot know
+                // that outcome's ordinal in the presence of other writers.
+                self.cleared_output = self.cleared_output.max(order.sequence);
             }
             if self
                 .outputs
@@ -609,6 +607,52 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn fold(&mut self, file: files::FileValue) -> Result<bool> {
+        if matches!(&file.key, files::FileKey::Task { .. })
+            && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
+        {
+            return Ok(false);
+        }
+        if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
+        {
+            return Ok(false);
+        }
+        if let files::FileKey::Ui { directory, .. } = &file.key {
+            if directory.as_str().starts_with("task-")
+                && self
+                    .selected_task()?
+                    .is_none_or(|task| directory.as_str() != format!("task-{task}"))
+            {
+                return Ok(false);
+            }
+        }
+        if file.bytes.len() as u64 > self.maximum_bytes {
+            return Err(Error::Invalid("command file exceeds byte bound".into()));
+        }
+        let previous = match &file.key {
+            files::FileKey::Ui { directory, name }
+                if name.as_str() == "layout.json"
+                    && directory.as_str() == format!("session-{}", self.session) =>
+            {
+                Some(self.selected_task()?)
+            }
+            _ => None,
+        };
+        self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
+        self.fold_activity_file(&file)?;
+        if file.key == ui("config", "commands.json")? {
+            let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
+            catalog.set_themes(self.catalog.themes.clone())?;
+            self.catalog = catalog;
+        }
+        if file.key == ui("config", "themes.json")? {
+            self.catalog
+                .set_themes(serde_json::from_slice::<Vec<String>>(&file.bytes).map_err(codec)?)?;
+        }
+        self.fold_outcome(&file)?;
         if matches!(
             file.key,
             files::FileKey::Task {

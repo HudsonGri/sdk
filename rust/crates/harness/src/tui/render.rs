@@ -8,6 +8,7 @@ use super::{
 use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
 
+mod approvals;
 mod archive;
 mod selection;
 mod stream_text;
@@ -56,11 +57,21 @@ pub struct ClientRenderer {
     file_notices: Vec<Line<'static>>,
     outcome_cut: Option<(u64, u64)>,
     outcome_notice: Option<Line<'static>>,
+    confirmation_notice: Option<&'static str>,
     composed_notices: Vec<Line<'static>>,
     diff: Vec<Line<'static>>,
 }
 
 impl ClientRenderer {
+    /// Keep optional diff failures inside the pane without ending the session.
+    pub fn update_diff(&mut self, rows: crate::Result<Vec<Line<'static>>>) {
+        self.diff = rows.unwrap_or_else(|error| {
+            vec![Line::styled(
+                super::display_text(&format!("Diff unavailable: {error}")).into_owned(),
+                Style::default().fg(Color::Red),
+            )]
+        });
+    }
     #[cfg(test)]
     pub(crate) fn text_work(&self) -> usize {
         self.task.work() + self.archive.work()
@@ -87,20 +98,7 @@ impl ClientRenderer {
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
     pub fn update(&mut self, views: &ClientViews, authority: &wire::Authority) {
-        let key = authority.id.clone();
-        if self.key != key {
-            *self = Self {
-                key,
-                tool_details: self.tool_details,
-                ..Self::default()
-            };
-        }
-        #[cfg(test)]
-        {
-            self.folded_views += 1;
-        }
-        self.wrapped = false;
-        self.side_wrapped = false;
+        self.select_authority(authority);
         let selected = selection::selected::<true>(views, authority);
         let archive = views
             .selections()
@@ -175,7 +173,28 @@ impl ClientRenderer {
         ]);
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
+        if self.busy {
+            self.notices
+                .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
+        }
         self.compose_notices();
+    }
+
+    fn select_authority(&mut self, authority: &wire::Authority) {
+        let key = authority.id.clone();
+        if self.key != key {
+            *self = Self {
+                key,
+                tool_details: self.tool_details,
+                ..Self::default()
+            };
+        }
+        #[cfg(test)]
+        {
+            self.folded_views += 1;
+        }
+        self.wrapped = false;
+        self.side_wrapped = false;
     }
 
     fn documents(&mut self, views: &ClientViews) {
@@ -238,10 +257,7 @@ impl ClientRenderer {
             .transpose()?
             .unwrap_or(false);
         // Layout is followed by CommandSession, outside the answer selection.
-        let after = files
-            .state(crate::client::CommandFileRoot::Session, "layout.json")?
-            .and_then(|layout| layout["history_after"].as_u64())
-            .unwrap_or(0);
+        let after = files.history_after()?;
         if self.tool_details != details || self.archive.after() != after {
             self.tool_details = details;
             self.task = task::TaskRows::default();
@@ -254,6 +270,7 @@ impl ClientRenderer {
         if let Some(marker) = self.header.spans.first_mut() {
             marker.content = std::borrow::Cow::Borrowed(if self.busy { "● " } else { "○ " });
         }
+        self.compose_notices();
         Ok(())
     }
 
@@ -339,7 +356,11 @@ impl ClientRenderer {
         self.composed_notices.clone_from(&self.notices);
         self.composed_notices.extend_from_slice(&self.file_notices);
         self.composed_notices
-            .extend(self.outcome_notice.iter().cloned());
+            .extend(self.confirmation_notice.map(Line::raw));
+        if !self.busy {
+            self.composed_notices
+                .extend(self.outcome_notice.iter().cloned());
+        }
     }
 
     /// Current followed lifecycle, used by the shared prompt's queue indicator.
@@ -347,26 +368,24 @@ impl ClientRenderer {
         self.busy
     }
 
-    /// Compose the panel selected by the followed command layout file.
-    /// Unknown views retain the document overview until their widget is available.
-    pub fn screen_for<P: acyclic_stream::StreamProvider + ?Sized>(
+    fn refresh_notices<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         files: &crate::client::CommandSession<P>,
-    ) -> crate::Result<Screen<'_>> {
+        history_after: u64,
+    ) -> crate::Result<()> {
         use crate::client::CommandFileRoot;
-        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
-        let cut = (
-            files.output_sequence(),
-            layout
-                .as_ref()
-                .and_then(|value| value["history_after"].as_u64())
-                .unwrap_or(0),
-        );
+        let cut = (files.output_sequence(), history_after);
         if self.outcome_cut != Some(cut) {
             let output = files.output_page(0)?;
             self.outcome_notice = output
                 .as_ref()
-                .and_then(|value| value["error"].as_str())
+                .and_then(|value| {
+                    value["error"].as_str().or_else(|| {
+                        value["ok"]
+                            .get("compacted")
+                            .map(|_| "Compacted conversation")
+                    })
+                })
                 .map(|message| Line::raw(message.escape_debug().to_string()));
             self.outcome_cut = Some(cut);
             self.compose_notices();
@@ -385,6 +404,31 @@ impl ClientRenderer {
             self.notice_file = feedback.cloned();
             self.compose_notices();
         }
+        Ok(())
+    }
+
+    /// Compose the panel selected by the followed command layout file.
+    /// Unknown views retain the document overview until their widget is available.
+    pub fn screen_for<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        files: &crate::client::CommandSession<P>,
+    ) -> crate::Result<Screen<'_>> {
+        use crate::client::CommandFileRoot;
+        let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let confirmation = layout
+            .as_ref()
+            .and_then(|layout| layout.get("confirmation"))
+            .and_then(|confirmation| confirmation["request"]["kind"].as_str())
+            .and_then(|kind| match kind {
+                "clear_all" => Some("Clear all conversations? Enter yes or no."),
+                "delete" => Some("Delete this conversation? Enter yes or no."),
+                _ => None,
+            });
+        if self.confirmation_notice != confirmation {
+            self.confirmation_notice = confirmation;
+            self.compose_notices();
+        }
+        self.refresh_notices(files, files.history_after()?)?;
         let view = layout
             .as_ref()
             .and_then(|value| value.get("open_view"))
@@ -404,6 +448,9 @@ impl ClientRenderer {
             .transpose()?
             .unwrap_or(false);
         let mut screen = self.screen();
+        if view != Some("diff") {
+            screen.diff = &[];
+        }
         if reasoning {
             screen.reasoning = if self.wrapped {
                 self.wrapped_reasoning.rows()
@@ -458,7 +505,6 @@ impl ClientRenderer {
 
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
-        // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),

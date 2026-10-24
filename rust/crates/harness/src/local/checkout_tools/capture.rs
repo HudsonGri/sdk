@@ -23,6 +23,7 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
+    unreadable_diff_source: bool,
     #[cfg(target_os = "macos")]
     work: acyclic_fs::NativeMaterializationWork,
     #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -64,6 +65,7 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
+            unreadable_diff_source: false,
             #[cfg(target_os = "macos")]
             work,
             #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -93,7 +95,7 @@ impl CheckoutTools {
             bool,
         )>,
     ) -> Result<()> {
-        let (physical, _) = selected;
+        let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
             mount
                 .sync_with_permit(permit, &mount.native_work()?, move |_| {
@@ -107,6 +109,9 @@ impl CheckoutTools {
                 })
                 .await
                 .map_err(|failure| failure.cause)?;
+            if phase == 0 {
+                self.retain_diff_base(view.workspace(), false).await?;
+            }
             return Ok(());
         }
         // A file publication's physical write is owed a capture of its own.
@@ -185,7 +190,12 @@ impl CheckoutTools {
         let policy = &self.capture_policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
-        let baseline = slot.is_none();
+        // Registration alone has not imported a new native checkout. An SDK
+        // volume, however, was materialized from its authored generation: a
+        // redundant import would invalidate references pinned to that head.
+        let baseline = slot
+            .as_ref()
+            .is_none_or(|cursor| physical.import_source && cursor.initial.is_some());
         let mut cursor = match slot.take() {
             Some(cursor) => cursor,
             None => Cursor::open(physical, &self.capture_policy)?,
@@ -246,6 +256,10 @@ impl CheckoutTools {
                     "checkout capture publication raced with another writer".into(),
                 ));
             }
+        }
+        if phase == 0 {
+            self.retain_diff_base(view.workspace(), cursor.unreadable_diff_source)
+                .await?;
         }
         *slot = Some(cursor);
         Ok(())

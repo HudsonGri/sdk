@@ -462,32 +462,15 @@ impl StockExecution<'_> {
                 started,
             )
             .await?;
-        let execution = if claimed {
-            stock_tool_call(
-                context,
-                self.io,
-                |context| tool.executor.execute(invocation.clone(), context),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                |context, work| {
-                    tool.executor
-                        .execute_with_native_context(context, invocation, work)
-                },
+        let execution = self
+            .observe_tool_cancellation(
+                journal,
+                identity,
+                &invocation.call_id,
+                tool.executor.cancellable_on_drop(),
+                self.call_tool_executor(tool, context, invocation, claimed),
             )
-            .await
-            .map(Some)
-        } else {
-            stock_tool_call(
-                context,
-                self.io,
-                |context| tool.executor.reconcile(invocation.clone(), context),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                |context, work| {
-                    tool.executor
-                        .reconcile_with_native_context(context, invocation, work)
-                },
-            )
-            .await
-        };
+            .await?;
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
@@ -530,8 +513,21 @@ impl StockExecution<'_> {
                     .map(ToolInvocationOutcome::Settled);
             }
         };
+        self.finish_tool_result(journal, identity, invocation, tool, &result, _hook_context)
+            .await
+    }
+
+    async fn finish_tool_result(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        invocation: &ToolInvocation,
+        tool: &crate::tool::Tool,
+        result: &ToolResult,
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<ToolInvocationOutcome> {
         let (projection, content) = match self
-            .project_tool_output(journal, (operation_id, step), invocation, tool, &result)
+            .project_tool_output(journal, identity, invocation, tool, result)
             .await?
         {
             Ok(projected) => projected,
@@ -540,13 +536,7 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
             match self
-                .complete_with_post_hook::<true>(
-                    journal,
-                    (operation_id, step),
-                    invocation,
-                    &result,
-                    &projection,
-                )
+                .complete_with_post_hook::<true>(journal, identity, invocation, result, &projection)
                 .await?
             {
                 Ok(feedback) => self.append_hook_context(_hook_context, feedback)?,
@@ -559,9 +549,9 @@ impl StockExecution<'_> {
             let publication = self
                 .publish_tool_completion(
                     journal,
-                    (operation_id, step),
+                    identity,
                     &invocation.call_id,
-                    &result,
+                    result,
                     &projection,
                 )
                 .await?;
@@ -570,6 +560,69 @@ impl StockExecution<'_> {
                 Err(content) => content,
             }))
         }
+    }
+
+    async fn call_tool_executor(
+        &self,
+        tool: &crate::tool::Tool,
+        context: &mut Option<crate::runtime::ToolContext>,
+        invocation: &ToolInvocation,
+        claimed: bool,
+    ) -> Result<Option<ToolResult>> {
+        if claimed {
+            stock_tool_call(
+                context,
+                self.io,
+                |context| tool.executor.execute(invocation.clone(), context),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                |context, work| {
+                    tool.executor
+                        .execute_with_native_context(context, invocation, work)
+                },
+            )
+            .await
+            .map(Some)
+        } else {
+            stock_tool_call(
+                context,
+                self.io,
+                |context| tool.executor.reconcile(invocation.clone(), context),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                |context, work| {
+                    tool.executor
+                        .reconcile_with_native_context(context, invocation, work)
+                },
+            )
+            .await
+        }
+    }
+
+    async fn observe_tool_cancellation<T>(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        call_id: &str,
+        cancellable: bool,
+        execution: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        if !cancellable {
+            return Ok(execution.await);
+        }
+        if let Some(result) = cancel_safe_call(execution, journal.model_cancellation()).await? {
+            return Ok(result);
+        }
+        self.reject_tool_call(
+            journal,
+            identity.0,
+            identity.1,
+            call_id,
+            ToolFailureKind::Interrupted,
+            Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+        )
+        .await?;
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled,
+        ))
     }
 
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -895,6 +948,22 @@ pub(super) fn metadata_for_call<'a>(
     Ok(&call.metadata)
 }
 
+// This scope retires the invocation future before the caller publishes either
+// interruption or a terminal turn. It covers ordinary and native dispatch.
+async fn cancel_safe_call<T>(
+    execution: impl std::future::Future<Output = T>,
+    cancellation: impl std::future::Future<Output = Result<()>>,
+) -> Result<Option<T>> {
+    futures::pin_mut!(execution, cancellation);
+    match futures::future::select(cancellation, execution).await {
+        futures::future::Either::Left((cancelled, _)) => {
+            cancelled?;
+            Ok(None)
+        }
+        futures::future::Either::Right((result, _)) => Ok(Some(result)),
+    }
+}
+
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod refusal_admission_tests {
@@ -925,5 +994,70 @@ mod refusal_admission_tests {
         assert!(portable.count_total > 0);
         assert_eq!(work.live_allocation_bytes(), before);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Held(Arc<AtomicBool>);
+    impl std::future::Future for Held {
+        type Output = u8;
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<u8> {
+            std::task::Poll::Pending
+        }
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn cancellation_retires_owned_io_before_the_caller_can_settle() {
+        for failed_follow in [false, true] {
+            let retired = Arc::new(AtomicBool::new(false));
+            let cancellation = if failed_follow {
+                Err(Error::Storage("follow ended".into()))
+            } else {
+                Ok(())
+            };
+            let result: Result<Option<u8>> = futures::executor::block_on(async {
+                match cancel_safe_call(Held(retired.clone()), futures::future::ready(cancellation))
+                    .await
+                {
+                    Ok(None) => {
+                        // Match the dispatcher's await scrutinee: retirement
+                        // must precede settlement inside this very match arm,
+                        // while the outer caller future is still being polled.
+                        assert!(retired.load(Ordering::SeqCst));
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        assert!(retired.load(Ordering::SeqCst));
+                        Err(error)
+                    }
+                    Ok(Some(_)) => panic!("held invocation unexpectedly completed"),
+                }
+            });
+            if failed_follow {
+                assert!(matches!(result, Err(Error::Storage(_))));
+            } else {
+                assert!(matches!(result, Ok(None)));
+            }
+        }
+        assert!(matches!(
+            futures::executor::block_on(cancel_safe_call(
+                futures::future::ready(7),
+                futures::future::pending()
+            )),
+            Ok(Some(7))
+        ));
     }
 }

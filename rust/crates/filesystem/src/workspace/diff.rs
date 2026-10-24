@@ -1,6 +1,8 @@
 use super::*;
 
 mod created;
+mod moved;
+mod paths;
 
 /// Immutable semantic delta between two exact generations.
 pub struct ChangeSet<A, O> {
@@ -167,7 +169,7 @@ pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     collect_all_paths(endpoints, maximum_entries, accounting, cancellation).await
 }
 
-async fn collect_all_paths<O: AsyncObjectStore>(
+pub(super) async fn collect_all_paths<O: AsyncObjectStore>(
     endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
@@ -187,7 +189,7 @@ async fn collect_all_paths<O: AsyncObjectStore>(
         for (_, records) in &search.0.records {
             for (path, record) in records {
                 accounting.charge_items(1)?;
-                merge_changed_record(
+                paths::append(
                     &mut paths,
                     path,
                     Some(*record),
@@ -200,6 +202,7 @@ async fn collect_all_paths<O: AsyncObjectStore>(
         let bytes = namespace_records_bytes(&search.0.records);
         reverse_drop(search, bytes, accounting)?;
     }
+    paths::sort_and_coalesce(&mut paths, accounting)?;
     retain_changed_paths(paths, accounting)
 }
 
@@ -227,9 +230,9 @@ async fn complete_between<O: AsyncObjectStore>(
     // directories have all of their records in the Merkle delta already.
     let moves_directory = moves_existing_directory(&changes.0, accounting)?;
     let result = if moves_directory {
-        let [from, to] = endpoints;
-        collect_all_paths(
-            [Some(from), Some(to)],
+        moved::expand(
+            &endpoints,
+            &changes.0,
             maximum_entries,
             accounting,
             cancellation,
@@ -441,14 +444,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-        resolve_changed_paths(
-            self,
-            &self.changes,
-            maximum_entries,
-            accounting,
-            cancellation,
-        )
-        .await
+        if self.changes.truncated {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
+        // The output bound includes unchanged descendants of moved directories;
+        // only those changed bindings are expanded on the original ledger.
+        let result = if moves_existing_directory(&self.changes, accounting)? {
+            let from = self
+                .from
+                .workspace
+                .open_checkout(
+                    GenerationSelector::Exact(self.from.id),
+                    CheckoutMode::read_only_pinned(),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let to = self
+                .to
+                .workspace
+                .open_checkout(
+                    GenerationSelector::Exact(self.to.id),
+                    CheckoutMode::read_only_pinned(),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let view = |root| super::namespace_view::NamespaceView {
+                objects: self.from.workspace.volume.fs.objects(),
+                config: self.from.workspace.volume.config(),
+                root,
+            };
+            let result = moved::expand(
+                &[view(from.value.root()), view(to.value.root())],
+                &self.changes,
+                u32::MAX,
+                accounting,
+                cancellation,
+            )
+            .await;
+            to.retire(accounting)?;
+            from.retire(accounting)?;
+            result?
+        } else {
+            resolve_changed_paths(self, &self.changes, u32::MAX, accounting, cancellation).await?
+        };
+        if result.0.len() > maximum_entries as usize {
+            return Err(WorkspaceError::ChangedPathLimit);
+        }
+        Ok(result)
     }
 
     /// Computes the bounded net delta of two contiguous change sets.
