@@ -1795,6 +1795,35 @@ describe("typed agent runtime", () => {
     ]);
   });
 
+  test("completed output stays opaque and mismatched calls never execute", async () => {
+    for (const mismatch of [false, true]) {
+      let step = 0, executions = 0;
+      let observed: readonly ModelMessage[] = [];
+      const block = { origin: { provider: "fixture", model: "model", credential_scope: Array(32).fill(7) },
+        text: "commentary", continuity: [0, 1, 127, 255],
+        calls: [{ call_id: mismatch ? "wrong" : "call", name: "echo", arguments: 1 }] };
+      const tool = defineTool<number, number>({ name: "echo", revision: "1", description: "echo", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (_context, input) => { executions++; return input; });
+      const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
+        async *generate(request) {
+          if (step++ === 0) {
+            yield { kind: "content" as const, delta: "commentary" };
+            yield { kind: "output_block" as const, block };
+            yield { kind: "tool_call" as const, callId: "call", name: "echo", arguments: 1 };
+          } else { observed = request.messages; yield { kind: "content" as const, delta: "done" }; }
+          yield { kind: "completed" as const, metadata: {} };
+        }, async reconcile() { return undefined; },
+      }).build();
+      if (mismatch) {
+        await expect(runtime.run("go")).rejects.toThrow("do not match");
+        expect(executions).toBe(0);
+      } else {
+        expect((await runtime.run("go")).text).toBe("commentarydone");
+        expect(executions).toBe(1);
+        expect(observed[1]?.content).toEqual([{ kind: "output", block }, { kind: "tool_call", callId: "call", name: "echo", arguments: 1 }]);
+      }
+    }
+  });
+
   test("typed run input carries attachment refs into the model context", async () => {
     let observed: readonly ModelMessage[] = [];
     const file = {

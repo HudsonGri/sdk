@@ -547,6 +547,47 @@ impl StockExecutor {
             }
             observed
         };
+        if let Some(ModelEvent::Failed { message, .. }) = model_events
+            .iter()
+            .find(|event| matches!(event, ModelEvent::Failed { .. }))
+        {
+            return Err(Error::Invalid(message.clone()));
+        }
+        let mut advertised = None;
+        let mut operational = Vec::new();
+        for event in &model_events {
+            match event {
+                ModelEvent::OutputBlock { block } => {
+                    if advertised.replace(&block.calls).is_some() {
+                        return Err(Error::Invalid("multiple canonical output blocks".into()));
+                    }
+                }
+                ModelEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => operational.push(crate::model::ModelToolCall {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                }),
+                _ => {}
+            }
+        }
+        if advertised.is_some_and(|calls| calls != &operational) {
+            return Err(Error::Invalid(
+                "canonical output tool calls do not match operational calls".into(),
+            ));
+        }
+        if advertised.is_some()
+            && model_events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::ReasoningBlock { .. }))
+        {
+            return Err(Error::Invalid(
+                "canonical output cannot be combined with detached reasoning".into(),
+            ));
+        }
         Ok(model_events)
     }
 
@@ -1073,6 +1114,9 @@ impl Executor for StockExecutor {
                         ModelEvent::ReasoningBlock { block } => {
                             assistant_parts.push(ModelContentPart::Reasoning { block });
                         }
+                        ModelEvent::OutputBlock { block } => {
+                            assistant_parts.push(ModelContentPart::Output { block });
+                        }
                         ModelEvent::Reasoning { .. } => {}
                     }
                 }
@@ -1253,6 +1297,7 @@ impl ModelEventAdmission {
                 self.completed = true;
             }
             ModelEvent::ReasoningBlock { block } => block.validate_limits(limits)?,
+            ModelEvent::OutputBlock { block } => block.validate_limits(limits)?,
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
         }
         self.count += 1;
@@ -1689,6 +1734,108 @@ mod tests {
             base.with_limits(changed).execute(input, &journal).await,
             Err(Error::Conflict(_))
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_output_preserves_opaque_order_and_rejects_mismatched_calls_before_tools()
+    -> Result<()> {
+        use crate::model::{ModelToolCall, OutputBlock, ReasoningOrigin};
+        use futures::StreamExt as _;
+        struct OutputModel(FakeModel, bool);
+        impl ModelProvider for OutputModel {
+            fn generate(
+                &self,
+                request: ModelRequest,
+            ) -> futures::stream::BoxStream<'_, Result<ModelEvent>> {
+                self.0.generate(request).flat_map(|event| {
+                    let events = if let Ok(ModelEvent::ToolCall { call_id, name, arguments }) = event {
+                        let call = ModelToolCall { call_id: if self.1 { "wrong".into() } else { call_id.clone() }, name: name.clone(), arguments: arguments.clone() };
+                        vec![Ok(ModelEvent::Content { delta: "commentary".into() }),
+                            Ok(ModelEvent::OutputBlock { block: OutputBlock {
+                                origin: ReasoningOrigin { provider: "fixture".into(), model: "model".into(), credential_scope: Some([7;32]) },
+                                text: Some("commentary".into()), continuity: br#"[{"type":"reasoning","opaque":"unchanged"},{"type":"message","phase":"commentary","content":[{"type":"output_text","text":"commentary"}]},{"type":"function_call","id":"provider-item","arguments":" { } "}]"#.to_vec(), calls: vec![call],
+                            } }), Ok(ModelEvent::ToolCall { call_id, name, arguments })]
+                    } else { vec![event] };
+                    stream::iter(events)
+                }).boxed()
+            }
+            fn reconcile(
+                &self,
+                attempt: ModelAttempt,
+            ) -> BoxFuture<'_, Result<Option<Vec<ModelEvent>>>> {
+                self.0.reconcile(attempt)
+            }
+        }
+        let make = |mismatch| -> Result<_> {
+            let model = Arc::new(OutputModel(
+                FakeModel {
+                    calls: AtomicUsize::new(0),
+                    requests: Mutex::new(Vec::new()),
+                },
+                mismatch,
+            ));
+            let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+            let mut tools = ToolRegistry::new();
+            tools.register(crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(),
+                    revision: "1".into(),
+                    description: "echo".into(),
+                    input_schema: json!({"type":"object"}),
+                    output_schema: json!({"type":"object"}),
+                },
+                executor: tool.clone(),
+                projection: Arc::new(Projection),
+            })?;
+            let executor = StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                None,
+            )?;
+            Ok((executor, model, tool))
+        };
+        for mismatch in [false, true] {
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("go".into()),
+                selected_context: None,
+                max_steps: 4,
+            };
+            let (executor, model, tool) = make(mismatch)?;
+            let result = executor.execute(input.clone(), &journal).await;
+            if mismatch {
+                assert!(
+                    matches!(result, Err(Error::Invalid(message)) if message.contains("do not match"))
+                );
+                assert_eq!(tool.0.load(Ordering::SeqCst), 0);
+            } else {
+                assert_eq!(result?.text.matches("commentary").count(), 1);
+                let requests = model
+                    .0
+                    .requests
+                    .lock()
+                    .map_err(|_| Error::Storage("lock".into()))?;
+                assert!(
+                    matches!(&requests[1].messages[1].content, ModelContent::Part(ModelContentPart::Output { block })
+                    if block.continuity.windows(b"commentary".len()).any(|part|part == b"commentary"))
+                );
+            }
+            drop(executor);
+            let (cold, cold_model, cold_tool) = make(mismatch)?;
+            assert_eq!(cold.execute(input, &journal).await.is_err(), mismatch);
+            assert_eq!(cold_model.0.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(cold_tool.0.load(Ordering::SeqCst), 0);
+        }
         Ok(())
     }
 

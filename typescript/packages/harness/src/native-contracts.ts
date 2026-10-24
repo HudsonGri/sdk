@@ -519,6 +519,7 @@ function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
       return event;
     case "reasoning":
     case "reasoning_block":
+    case "output_block":
       return event;
   }
 }

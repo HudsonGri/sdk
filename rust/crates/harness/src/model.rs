@@ -7,6 +7,8 @@ use serde_json::Value;
 
 mod reasoning;
 pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
+mod output;
+pub use output::{ModelToolCall, OutputBlock};
 
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -156,6 +158,7 @@ impl ModelContent {
                     }
                 }
                 ModelContentPart::Reasoning { block } => block.validate_limits(limits)?,
+                ModelContentPart::Output { block } => block.validate_limits(limits)?,
                 ModelContentPart::Text { .. } => {}
             }
         }
@@ -211,6 +214,11 @@ impl ModelContent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelContentPart {
+    /// Ordered native assistant output, including non-text phases and tool declarations.
+    Output {
+        /// Canonical provider-owned output.
+        block: OutputBlock,
+    },
     /// Plain text.
     Text {
         /// Model-visible text.
@@ -279,6 +287,11 @@ pub struct ModelRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelEvent {
+    /// Canonical completed output before its operational tool calls.
+    OutputBlock {
+        /// Exact ordered continuation and advertised calls.
+        block: OutputBlock,
+    },
     /// User-visible content fragment.
     Content {
         /// Incremental content.

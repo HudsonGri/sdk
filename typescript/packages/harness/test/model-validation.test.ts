@@ -96,6 +96,13 @@ test("terminal failure preserves metadata and forbids further events", () => {
   expect(() => contracts.admitModelEvent({ ...event, message: "é".repeat(2049) }, DEFAULT_LIMITS)).toThrow("4096");
 });
 
+test("completed opaque output is bounded and cannot be human input", () => {
+  const block = { origin: { provider: "fixture", model: "model", credential_scope: Array(32).fill(7) }, text: null, continuity: [0, 127, 255], calls: [] };
+  expect(contracts.admitModelEvent({ kind: "output_block", block }, DEFAULT_LIMITS).event).toEqual({ kind: "output_block", block });
+  expect(() => validateUserInput({ kind: "output", block } as never)).toThrow();
+  expect(() => contracts.admitModelEvent({ kind: "output_block", block }, { ...DEFAULT_LIMITS, render_bytes: 4 })).toThrow("continuation");
+});
+
 test("canonical opaque reasoning survives WASM admission and remains bounded private context", () => {
   const block = { kind: "encrypted" as const, text: null,
     origin: { provider: "openai-responses", model: "gpt-6.1-sol", credential_scope: Array(32).fill(7) },
