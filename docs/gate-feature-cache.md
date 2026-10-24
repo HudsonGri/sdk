@@ -13,6 +13,15 @@ adapter does not change those keys, compiler flags or package/feature sets.
 Changed source or toolchain requires a new request. Cargo still validates all
 fingerprints in a restored target.
 
+The private source clock normalizes directory times as well as file times.
+Cargo build scripts can watch entire `proto` or `data` directories: identical
+files in a newly created directory otherwise rerun those scripts and rebuild
+their consumers. Directory times derive from the uploaded descendant paths and
+blobs, after dependency preparation. This applies only to the exact private
+uploaded tree; subsequent job writes retain their real timestamps. The generated
+clock control demonstrates that the former files-only clock leaves a fresh
+watched directory, while changed directory inputs produce a different time.
+
 The adapter acquires the production hierarchical target lease only while
 cloning or publishing. It releases that parent lease before any Cargo worker
 starts, so descendant workers can acquire their own leases and siblings can

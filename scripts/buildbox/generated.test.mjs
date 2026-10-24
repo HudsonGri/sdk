@@ -62,6 +62,38 @@ test('exact private inputs preserve source times across fresh checkouts',async()
   assert.ok(source.indexOf('remote failed: tree-mismatch')<source.indexOf(privateBlock));
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
+test('watched source directories retain content-derived times across fresh checkouts',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'source-directory-clock-'));
+ try{
+  const generator=path.join(cwd,'generator.mjs');
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.writeFileSync(generator,source+'\nexport { SOURCE_TIMES };\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {SOURCE_TIMES}=await import(generator);
+  const root=path.join(cwd,'src'),proto=path.join(root,'proto'),records=path.join(cwd,'records');
+  fs.mkdirSync(proto,{recursive:true});fs.writeFileSync(path.join(proto,'schema.proto'),'schema');
+  fs.writeFileSync(records,'a'.repeat(40)+' 0\tproto/schema.proto\0');
+  function normalize(program=SOURCE_TIMES){
+   const result=spawnSync(process.execPath,['-e',program,records,root,path.join(cwd,'clock.json'),'c'.repeat(64)],{encoding:'utf8'});
+   assert.equal(result.status,0,result.stderr);return fs.statSync(proto).mtimeMs;
+  }
+  const first=normalize();
+  fs.rmSync(proto,{recursive:true});fs.mkdirSync(proto);fs.writeFileSync(path.join(proto,'schema.proto'),'schema');
+  const fresh=fs.statSync(proto).mtimeMs;assert.notEqual(fresh,first);
+  const start=SOURCE_TIMES.indexOf('for(const [name,hash] of directories){');
+  const end=SOURCE_TIMES.indexOf('// Normalize every target',start);
+  assert.ok(start>=0&&end>start);
+  const filesOnly=SOURCE_TIMES.slice(0,start)+SOURCE_TIMES.slice(end);
+  assert.equal(normalize(filesOnly),fresh,'old files-only normalization leaves watched directories fresh');
+  assert.equal(normalize(),first);
+  fs.writeFileSync(records,'b'.repeat(40)+' 0\tproto/schema.proto\0');
+  assert.notEqual(normalize(),first,'changed directory inputs require a different content time');
+  const prepare=source.indexOf("${cargoJob ? '' : NPM_ENSURE}");
+  const clock=source.indexOf('# Shared target slot');
+  assert.ok(prepare>=0&&clock>prepare,'dependency preparation must precede directory normalization');
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
 test('remote wrappers parse, retain isolation and archive outputs before cleanup',()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'job-shell-'));
  try{
