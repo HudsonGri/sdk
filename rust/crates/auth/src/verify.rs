@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 mod certificates;
 mod current;
 mod effective;
-pub(crate) use certificates::CertificateVerifier;
+pub use certificates::CertificateVerifier;
 mod signer;
 mod wire;
 pub use current::{TrustEvidence, TrustEvidenceStorage};

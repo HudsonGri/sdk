@@ -44,9 +44,10 @@ impl RuntimeSigner {
 pub(super) struct PublicAuthority {
     pub(super) trust: std::sync::RwLock<acyclic_auth::trust::Snapshot>,
     pub(super) metadata_key: [u8; 32],
-    // One retained immutable authentication, owned by this authority. Replacing
-    // it drops the previous chain; admission decisions are never retained.
-    pub(super) workload: std::sync::Mutex<Option<Arc<workload::AuthenticatedWorkload>>>,
+    // One immutable workload and the canonical certificate verifier. Switching
+    // scopes retires the old workload without reauthenticating identical roots.
+    // Admission decisions are never retained.
+    pub(super) workload: std::sync::Mutex<workload::WorkloadOwner>,
     pub(super) historical: std::sync::Mutex<workload::HistoricalOwner>,
 }
 

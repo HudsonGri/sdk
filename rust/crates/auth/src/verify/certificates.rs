@@ -3,8 +3,10 @@ use super::*;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+/// One owner's latest immutable certificate authentication. Every verification
+/// still checks all workload signatures, current trust, revocations and time.
 #[derive(Default)]
-pub(crate) struct CertificateVerifier {
+pub struct CertificateVerifier {
     latest: Option<Arc<CertifiedRoots>>,
 }
 
@@ -15,7 +17,12 @@ pub(super) struct CertifiedRoots {
 }
 
 impl CertificateVerifier {
-    pub(crate) fn verify(
+    /// Verifies a workload while retaining its exact public certificate evidence.
+    /// No authorization decision or workload append key is retained here.
+    ///
+    /// # Errors
+    /// Rejects malformed, forged, revoked, expired or wrong-trust capabilities.
+    pub fn verify(
         &mut self,
         bytes: &[u8],
         trust: &(impl Trust + ?Sized),
