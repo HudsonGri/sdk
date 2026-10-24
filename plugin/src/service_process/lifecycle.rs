@@ -36,8 +36,8 @@ fn service_cleanup_outcome(
 }
 
 /// Runs the service. `ready`, when its starter waits on it, is signalled once
-/// the service answers requests, and closes unsignalled if it exits first,
-/// for instance because another service holds the lock.
+/// the service answers requests. A concurrent starter waits for the same
+/// publication gate before acknowledging the already running service.
 pub(crate) async fn run_service_with_identity(
     data: PathBuf,
     identity_override: Option<String>,
@@ -58,7 +58,18 @@ async fn run_service_starting(
     identity_override: Option<String>,
     ready: &mut Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> acyclic_harness::Result<SessionCloseState> {
+    let startup = service_startup_lock(data.clone())
+        .await
+        .map_err(acyclic_harness::Error::Storage)?;
     let Some(lock) = acquire_service_lock(&data).map_err(acyclic_harness::Error::Storage)? else {
+        if ServiceMarker::read(&data).is_none() {
+            return Err(acyclic_harness::Error::Storage(
+                "service owner has no published endpoint".to_owned(),
+            ));
+        }
+        if let Some(ready) = ready.take() {
+            let _ = ready.signal();
+        }
         return Ok(SessionCloseState::Closed);
     };
     let configured = crate::service::ServiceResources::configure(&data).await?;
@@ -76,6 +87,7 @@ async fn run_service_starting(
         configured,
         private_root,
         &original_bootstrap_work,
+        startup,
     )
     .await;
     drop(lock);
@@ -89,6 +101,7 @@ async fn run_locked_service(
     configured: crate::service::ServiceConfiguredInfrastructure,
     private_root: PathBuf,
     original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
+    startup: acyclic_native_runtime::FileLock,
 ) -> acyclic_harness::Result<SessionCloseState> {
     let mut service = ConcurrentServiceControl::open(
         data.clone(),
@@ -129,6 +142,9 @@ async fn run_locked_service(
             return service_cleanup_outcome(cleanup, Err(marker_error));
         }
     };
+    // A competing starter or installer can now authenticate this endpoint.
+    // Releasing this gate does not release the service's lifetime lock.
+    drop(startup);
     if let Some(ready) = ready.take() {
         // A starter that stopped waiting has nothing to be told.
         let _ = ready.signal();
@@ -202,27 +218,14 @@ pub(crate) async fn ensure_service(data: &Path) -> Result<(), String> {
     }
     let ping = ping_request()?;
     let readiness = spawn_service_process(&current_executable()?)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    // The service signals once it answers requests. A channel that closes
-    // unsignalled means it exited, typically because another service holds
-    // the lock and is starting; only then does this poll for that one.
-    wait_for_service_readiness(readiness, deadline).await?;
-    let last = loop {
-        let last = match send_control_request_once(data, &ping).await {
-            Ok(active)
-                if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) =>
-            {
-                return Ok(());
-            }
-            Ok(_) => "the previous Acyclic service is still draining".to_owned(),
-            Err(error) => error.to_string(),
-        };
-        if std::time::Instant::now() >= deadline {
-            break last;
+    wait_for_service_readiness(readiness).await?;
+    match send_control_request_once(data, &ping).await {
+        Ok(active) if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) => {
+            Ok(())
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    };
-    Err(format!("Acyclic service did not become ready: {last}"))
+        Ok(_) => Err("ready Acyclic service has a different binary identity".to_owned()),
+        Err(error) => Err(format!("ready Acyclic service is unavailable: {error}")),
+    }
 }
 
 pub(crate) fn spawn_service_process(
@@ -231,27 +234,15 @@ pub(crate) fn spawn_service_process(
     acyclic_native_runtime::spawn_service_process(executable).map_err(display)
 }
 
-/// Waits, until `deadline`, for a started service to signal readiness or
-/// exit. The blocking read runs on its own thread, which the process may
-/// leave behind when it exits.
+/// Waits for the owned readiness channel. EOF, IO failure and worker failure
+/// are failures, never permission to poll an unrelated service into success.
 pub(crate) async fn wait_for_service_readiness(
     readiness: acyclic_native_runtime::ServiceReadiness,
-    deadline: std::time::Instant,
 ) -> Result<(), String> {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("acyclic-service-readiness".to_owned())
-        .spawn(move || {
-            let _ = sender.send(readiness.wait());
-        })
-        .map_err(display)?;
-    let wait = deadline.saturating_duration_since(std::time::Instant::now());
-    match tokio::time::timeout(wait, receiver).await {
-        Ok(Ok(Ok(acyclic_native_runtime::ServiceStartOutcome::Failed(reason)))) => {
-            Err(format!("Acyclic service could not start: {reason}"))
-        }
-        _ => Ok(()),
-    }
+    tokio::task::spawn_blocking(move || readiness.require_ready())
+        .await
+        .map_err(display)?
+        .map_err(|error| format!("Acyclic service could not start: {error}"))
 }
 
 pub(crate) fn ping_request() -> Result<ControlRequest, String> {

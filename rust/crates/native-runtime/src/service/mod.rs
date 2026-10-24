@@ -15,8 +15,7 @@ pub struct ServiceReadiness(File);
 pub enum ServiceStartOutcome {
     /// The service answers requests.
     Ready,
-    /// The service exited without starting, as it does when another service
-    /// holds the lock; that service answers instead.
+    /// The service exited without acknowledging any ready endpoint.
     Exited,
     /// The service could not start, for the reason it reported.
     Failed(String),
@@ -28,6 +27,19 @@ const READY_FRAME: u8 = b'\n';
 const FAILURE_FRAME: u8 = b'!';
 
 impl ServiceReadiness {
+    /// Waits for an explicit readiness acknowledgement. A closed channel is
+    /// not an acknowledgement, even when some other service may be starting.
+    pub fn require_ready(self) -> io::Result<()> {
+        match self.wait()? {
+            ServiceStartOutcome::Ready => Ok(()),
+            ServiceStartOutcome::Exited => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "service exited before publishing readiness",
+            )),
+            ServiceStartOutcome::Failed(reason) => Err(io::Error::other(reason)),
+        }
+    }
+
     /// Blocks until the service signals that it answers requests, reports why
     /// it could not start, or exits without either.
     pub fn wait(mut self) -> io::Result<ServiceStartOutcome> {
@@ -58,7 +70,13 @@ impl ServiceReadiness {
                             String::from_utf8_lossy(&reason).into_owned(),
                         ));
                     }
-                    Ok(_) => break Ok(ServiceStartOutcome::Ready),
+                    Ok(_) if frame[0] == READY_FRAME => break Ok(ServiceStartOutcome::Ready),
+                    Ok(_) => {
+                        break Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid service readiness frame",
+                        ));
+                    }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
                         break Ok(ServiceStartOutcome::Exited);

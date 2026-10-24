@@ -252,6 +252,49 @@ pub(crate) fn verify_service_drain_completion(data: &Path, identity: &str) -> Re
 }
 
 pub(crate) fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, String> {
+    service_lock(data, false)
+}
+
+/// Waits for physical service teardown, rather than sampling its lock on a timer.
+/// The startup gate is held by the requester until this handoff is complete.
+pub(crate) async fn wait_service_lock(data: PathBuf) -> Result<ServiceLock, String> {
+    tokio::task::spawn_blocking(move || {
+        service_lock(&data, true)?
+            .ok_or_else(|| "blocking service lock was not acquired".to_owned())
+    })
+    .await
+    .map_err(display)?
+}
+
+/// Serializes publication of a service endpoint with startup and drain callers.
+/// The file lives outside the replaceable data directory, like the lifecycle lock.
+/// All platforms use the canonical explicitly released FileLock implementation.
+pub(crate) async fn service_startup_lock(
+    data: PathBuf,
+) -> Result<acyclic_native_runtime::FileLock, String> {
+    tokio::task::spawn_blocking(move || {
+        let parent = data
+            .parent()
+            .ok_or_else(|| "service data path has no parent".to_owned())?;
+        fs::create_dir_all(parent).map_err(display)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(parent.join(".acyclic-service-startup.lock"))
+            .map_err(display)?;
+        acyclic_native_runtime::FileLock::acquire(
+            file,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(display)
+    })
+    .await
+    .map_err(display)?
+}
+
+fn service_lock(data: &Path, wait: bool) -> Result<Option<ServiceLock>, String> {
     let parent = data
         .parent()
         .ok_or_else(|| "service data path has no parent".to_owned())?;
@@ -263,12 +306,22 @@ pub(crate) fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, S
         .truncate(false)
         .open(parent.join(".acyclic-service-lifecycle.lock"))
         .map_err(display)?;
-    let lifecycle_file = match acyclic_native_runtime::FileLock::try_acquire(
-        lifecycle_file,
-        acyclic_native_runtime::FileLockMode::Exclusive,
-    ) {
+    let acquire = |file| {
+        if wait {
+            acyclic_native_runtime::FileLock::acquire(
+                file,
+                acyclic_native_runtime::FileLockMode::Exclusive,
+            )
+        } else {
+            acyclic_native_runtime::FileLock::try_acquire(
+                file,
+                acyclic_native_runtime::FileLockMode::Exclusive,
+            )
+        }
+    };
+    let lifecycle_file = match acquire(lifecycle_file) {
         Ok(lock) => lock,
-        Err(error) if service_lock_is_contended(&error) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
         Err(error) => return Err(display(error)),
     };
     fs::create_dir_all(data).map_err(display)?;
@@ -284,19 +337,12 @@ pub(crate) fn acquire_service_lock(data: &Path) -> Result<Option<ServiceLock>, S
         .truncate(false)
         .open(data.join("service.lock"))
         .map_err(display)?;
-    match acyclic_native_runtime::FileLock::try_acquire(
-        file,
-        acyclic_native_runtime::FileLockMode::Exclusive,
-    ) {
+    match acquire(file) {
         Ok(file) => Ok(Some(ServiceLock {
             data_file: Some(file),
             _lifecycle_file: lifecycle_file,
         })),
-        Err(error) if service_lock_is_contended(&error) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
         Err(error) => Err(display(error)),
     }
-}
-
-pub(crate) fn service_lock_is_contended(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::WouldBlock || cfg!(windows) && error.raw_os_error() == Some(33)
 }

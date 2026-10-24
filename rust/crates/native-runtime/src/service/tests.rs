@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write as _;
 
 #[cfg(unix)]
 use std::os::fd::OwnedFd as PipeHandle;
@@ -73,5 +74,42 @@ fn the_starter_distinguishes_readiness_failure_and_exit() -> io::Result<()> {
         return Err(io::Error::other("an oversized failure was not reported"));
     };
     assert_eq!(reason.len(), 4096);
+    Ok(())
+}
+
+#[test]
+fn only_an_explicit_readiness_frame_authorizes_the_starter() -> io::Result<()> {
+    let (starter, service) = readiness_channel()?;
+    service.signal()?;
+    starter.require_ready()?;
+
+    let (starter, service) = readiness_channel()?;
+    drop(service);
+    assert_eq!(
+        starter.require_ready().unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+
+    let (starter, service) = readiness_channel()?;
+    service.fail("owner construction failed")?;
+    assert!(
+        starter
+            .require_ready()
+            .unwrap_err()
+            .to_string()
+            .contains("owner construction failed")
+    );
+
+    let (starter, mut service) = readiness_channel()?;
+    service.0.write_all(b"?")?;
+    drop(service);
+    assert_eq!(
+        starter.require_ready().unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let file = tempfile::NamedTempFile::new()?;
+    let starter = ServiceReadiness(File::options().write(true).open(file.path())?);
+    assert!(starter.require_ready().is_err());
     Ok(())
 }

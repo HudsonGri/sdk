@@ -90,11 +90,15 @@ pub(crate) fn claim_stopped_service(
         return Ok(None);
     };
     if let Some(expected) = expected_identity {
-        let marker = ServiceMarker::read(data).ok_or_else(|| {
-            "cannot authenticate stale service: it published no identity".to_owned()
-        })?;
-        if marker.instance_id != expected {
-            return Err("refusing to clean a replacement Acyclic service".to_owned());
+        match ServiceMarker::read(data) {
+            Some(marker) if marker.instance_id != expected => {
+                return Err("refusing to clean a replacement Acyclic service".to_owned());
+            }
+            Some(_) => {}
+            // A concurrent requester may already have completed this exact
+            // drain. The durable completion, under the lifetime lock, is the
+            // authority; absence of a marker alone is never sufficient.
+            None => verify_service_drain_completion(data, expected)?,
         }
     }
     match fs::remove_file(ServiceMarker::path(data)) {
@@ -112,45 +116,26 @@ pub(crate) async fn drain_service(
     data: &Path,
     expected_identity: Option<&str>,
 ) -> Result<ServiceLock, String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    // A service publishes its marker once its endpoint opens, moments after
-    // it takes the lock.
-    let marker = loop {
-        if let Some(lock) = claim_stopped_service(data, expected_identity)? {
-            return Ok(lock);
-        }
-        if let Some(marker) = ServiceMarker::read(data) {
-            break marker;
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(
-                "Acyclic service lock is held without a published identity; state was preserved"
-                    .to_owned(),
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    };
+    // Start, marker publication and drain handoff share one gate. Therefore
+    // an owner observed here has finished startup, or has failed without
+    // publishing; there is no sampling window to wait out with a timer.
+    let _startup = service_startup_lock(data.to_path_buf()).await?;
+    if let Some(lock) = claim_stopped_service(data, expected_identity)? {
+        return Ok(lock);
+    }
+    let marker = ServiceMarker::read(data).ok_or_else(|| {
+        "Acyclic service lock is held without a published identity; state was preserved".to_owned()
+    })?;
     if expected_identity.is_some_and(|expected| expected != marker.instance_id) {
         return Err("refusing to drain a replacement Acyclic service".to_owned());
     }
     let drain_id = uuid::Uuid::new_v4().to_string();
     request_service_stop(data, &marker.instance_id, &drain_id)?;
-    for _ in 0..250 {
-        if let Some(lock) = acquire_service_lock(data)? {
-            verify_service_drain_completion(data, &marker.instance_id)?;
-            return Ok(lock);
-        }
-        // A replacement that took the lock first holds what this drain was
-        // for; waiting would only time out.
-        if ServiceMarker::read(data).is_some_and(|next| next.instance_id != marker.instance_id) {
-            return Err(
-                "a replacement Acyclic service started before this drain could take its place"
-                    .to_owned(),
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Err("Acyclic service did not drain; durable state and executable were preserved".to_owned())
+    // The gate excludes replacement starters while the original owner
+    // physically retires and releases its lifetime lock.
+    let lock = wait_service_lock(data.to_path_buf()).await?;
+    verify_service_drain_completion(data, &marker.instance_id)?;
+    Ok(lock)
 }
 
 /// What is running now, from one probe of the endpoint: a running service

@@ -1,5 +1,133 @@
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn service_transition_handoff_waits_for_publication_and_release_without_a_timer() {
+    let fixture = Fixture::new();
+    let startup = service_startup_lock(fixture.data.clone()).await.unwrap();
+    let owner = acquire_service_lock(&fixture.data).unwrap().unwrap();
+    let marker = ServiceMarker {
+        instance_id: "transition-owner".to_owned(),
+        binary_identity: "test-binary".to_owned(),
+    };
+    let stops = StopRequests::open(&fixture.data, &marker.instance_id).unwrap();
+    let before = tokio::time::Instant::now();
+    let mut draining = std::pin::pin!(drain_service(&fixture.data, Some(&marker.instance_id)));
+    // Poll the actual drain before publication. It must wait on the gate;
+    // the former implementation instead armed its 20ms sampling timer.
+    assert!(futures::poll!(draining.as_mut()).is_pending());
+    let published = PublishedServiceMarker::create(&fixture.data, &marker).unwrap();
+    drop(startup);
+    let retire = async {
+        let request = stops.next().await;
+        write_service_drain_completion(
+            &fixture.data,
+            &marker.instance_id,
+            &request,
+            &Ok(SessionCloseState::Closed),
+        )
+        .unwrap();
+        drop(published);
+        drop(owner);
+    };
+    let (handoff, ()) = tokio::join!(draining, retire);
+    let handoff = handoff.unwrap();
+    assert_eq!(
+        tokio::time::Instant::now() - before,
+        std::time::Duration::ZERO
+    );
+    assert!(acquire_service_lock(&fixture.data).unwrap().is_none());
+    drop(handoff);
+    // A second requester is authenticated by the original durable drain,
+    // even though the stopped service has withdrawn its marker.
+    drop(
+        drain_service(&fixture.data, Some(&marker.instance_id))
+            .await
+            .unwrap(),
+    );
+    assert!(
+        drain_service(&fixture.data, Some("another-owner"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn service_transition_missing_publication_is_an_error_not_a_polling_window() {
+    let fixture = Fixture::new();
+    let _owner = acquire_service_lock(&fixture.data).unwrap().unwrap();
+    let before = tokio::time::Instant::now();
+    let error = drain_service(&fixture.data, None).await.err().unwrap();
+    assert!(error.contains("without a published identity"));
+    assert_eq!(
+        tokio::time::Instant::now() - before,
+        std::time::Duration::ZERO
+    );
+}
+
+#[tokio::test]
+async fn service_transition_does_not_accept_a_failed_or_foreign_drain_receipt() {
+    let fixture = Fixture::new();
+    assert!(claim_stopped_service(&fixture.data, Some("owner")).is_err());
+    write_service_drain_completion(
+        &fixture.data,
+        "owner",
+        "drain",
+        &Ok(SessionCloseState::Failed),
+    )
+    .unwrap();
+    assert!(claim_stopped_service(&fixture.data, Some("owner")).is_err());
+    write_service_drain_completion(
+        &fixture.data,
+        "owner",
+        "drain",
+        &Ok(SessionCloseState::Closed),
+    )
+    .unwrap();
+    fs::copy(
+        service_drain_completion_path(&fixture.data, "owner"),
+        service_drain_completion_path(&fixture.data, "foreign"),
+    )
+    .unwrap();
+    assert!(claim_stopped_service(&fixture.data, Some("foreign")).is_err());
+    assert!(
+        claim_stopped_service(&fixture.data, Some("owner"))
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn service_transition_gate_holds_the_canonical_os_lock_until_release() {
+    let fixture = Fixture::new();
+    let gate = service_startup_lock(fixture.data.clone()).await.unwrap();
+    let open = || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(
+                fixture
+                    .data
+                    .parent()
+                    .unwrap()
+                    .join(".acyclic-service-startup.lock"),
+            )
+            .unwrap()
+    };
+    let contender = acyclic_native_runtime::FileLock::try_acquire(
+        open(),
+        acyclic_native_runtime::FileLockMode::Exclusive,
+    );
+    assert!(contender.is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock));
+    drop(gate);
+    drop(
+        acyclic_native_runtime::FileLock::try_acquire(
+            open(),
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .unwrap(),
+    );
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn binary_handoff_drains_live_sessions_before_reopen() {
