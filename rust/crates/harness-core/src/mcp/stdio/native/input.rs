@@ -35,7 +35,10 @@ impl<R: Read> JsonLineReader<R> {
                 return Ok(Some(value));
             }
             let mut chunk = [0; 8192];
-            let admitted = self.maximum.saturating_sub(self.buffer.len()).saturating_add(1);
+            let admitted = self
+                .maximum
+                .saturating_sub(self.buffer.len())
+                .saturating_add(1);
             let length = admitted.min(chunk.len());
             let chunk = chunk.get_mut(..length).ok_or(io::ErrorKind::InvalidInput)?;
             match self.input.read(chunk) {
@@ -43,9 +46,9 @@ impl<R: Read> JsonLineReader<R> {
                     self.ended = true;
                     return self.codec.decode_eof(&mut self.buffer);
                 }
-                Ok(count) => self.buffer.extend_from_slice(
-                    chunk.get(..count).ok_or(io::ErrorKind::InvalidData)?,
-                ),
+                Ok(count) => self
+                    .buffer
+                    .extend_from_slice(chunk.get(..count).ok_or(io::ErrorKind::InvalidData)?),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
@@ -85,7 +88,10 @@ mod tests {
                 return Err(io::Error::new(io::ErrorKind::WouldBlock, "peer stays open"));
             }
             let count = bytes.len().min(self.remaining);
-            bytes.get_mut(..count).ok_or(io::ErrorKind::InvalidInput)?.fill(b'x');
+            bytes
+                .get_mut(..count)
+                .ok_or(io::ErrorKind::InvalidInput)?
+                .fill(b'x');
             self.remaining -= count;
             Ok(count)
         }
@@ -94,7 +100,10 @@ mod tests {
     #[test]
     fn newline_less_open_peer_is_rejected_before_another_read() {
         let mut reader = JsonLineReader::new(OpenPeer { remaining: 65_537 }, 65_536);
-        let error = reader.next().expect("frame result").expect_err("oversized frame");
+        let error = reader
+            .next()
+            .expect("frame result")
+            .expect_err("oversized frame");
         assert_ne!(error.kind(), io::ErrorKind::WouldBlock);
         assert_eq!(reader.input.remaining, 0);
         assert!(reader.buffer.len() <= 65_537);
@@ -103,7 +112,10 @@ mod tests {
         // Negative control: the same still-open peer with the bound removed
         // asks for more input instead of rejecting the oversized frame.
         let mut unbounded = JsonLineReader::new(OpenPeer { remaining: 65_537 }, u32::MAX);
-        let error = unbounded.next().expect("frame result").expect_err("open peer");
+        let error = unbounded
+            .next()
+            .expect("frame result")
+            .expect_err("open peer");
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     }
 

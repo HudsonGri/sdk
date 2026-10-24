@@ -189,7 +189,13 @@ async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
             .is_err()
     );
     let child: TaskId = serde_json::from_value(first["task"].clone()).map_err(storage)?;
-    let admission = fixture.owner.local.runtime.task_host().observe_admission(child).await?;
+    let admission = fixture
+        .owner
+        .local
+        .runtime
+        .task_host()
+        .observe_admission(child)
+        .await?;
     assert_eq!(admission.parent, Some(fixture.parent));
     assert_eq!(admission.input.get("host"), Some(&json!(host)));
     let cwd = PathBuf::from(
