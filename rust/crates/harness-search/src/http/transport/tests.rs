@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture_error(error: std::io::Error) -> crate::Error {
+fn fixture_error(error: impl std::fmt::Display) -> crate::Error {
     crate::Error::Storage(error.to_string())
 }
 
@@ -10,7 +10,7 @@ async fn validated_addresses_keep_connection_fallback() -> Result<()> {
     // connection and cannot be reused by the real source listener.
     let refused = tokio::net::TcpSocket::new_v4().map_err(fixture_error)?;
     refused
-        .bind("127.0.0.1:0".parse().unwrap())
+        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .map_err(fixture_error)?;
     let source = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -28,8 +28,8 @@ async fn validated_addresses_keep_connection_fallback() -> Result<()> {
 #[test]
 fn every_redirect_address_is_checked_before_connecting() -> Result<()> {
     let addresses = [
-        "8.8.8.8:80".parse().unwrap(),
-        "127.0.0.1:9".parse().unwrap(),
+        std::net::SocketAddr::from(([8, 8, 8, 8], 80)),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 9)),
     ];
     assert!(matches!(
         validated_addresses(addresses.into_iter(), true, None),
