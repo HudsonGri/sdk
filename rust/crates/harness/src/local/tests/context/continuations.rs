@@ -26,13 +26,34 @@ fn prompt(goal: bool, plans: bool) -> &'static str {
 async fn new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection()
 -> Result<()> {
     let bootstrap = Arc::new(super::super::bootstrap::Bootstrap::new().await?);
-    // Each case owns an independent disk fixture. Polling them on this test's
-    // current thread serializes their synchronous storage and signing work.
-    // Reuse the fixture workers, with at most four cases alive at once.
+    // Six distinct durable predecessors cover all sixteen admissions. Copy only
+    // closed immutable bytes; each branch owns its host, provider and ledgers.
+    let keys = (0..16)
+        .map(predecessor_key)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(keys.len(), 6);
+    let mut predecessors = std::collections::BTreeMap::new();
+    let keys = keys.into_iter().collect::<Vec<_>>();
+    for batch in keys.chunks(4) {
+        for result in futures::future::try_join_all(batch.iter().map(|&key| {
+            let bootstrap = Arc::clone(&bootstrap);
+            WORKERS.spawn(async move {
+                predecessor(key, &bootstrap)
+                    .await
+                    .map(|value| (key, Arc::new(value)))
+            })
+        }))
+        .await
+        .map_err(super::super::super::storage)?
+        {
+            let (key, predecessor) = result?;
+            assert!(predecessors.insert(key, predecessor).is_none());
+        }
+    }
     for first in (0..16).step_by(4) {
         for result in futures::future::try_join_all((first..first + 4).map(|bits| {
-            let bootstrap = Arc::clone(&bootstrap);
-            WORKERS.spawn(async move { case(bits, &bootstrap).await })
+            let predecessor = Arc::clone(&predecessors[&predecessor_key(bits)]);
+            WORKERS.spawn(async move { case(bits, &predecessor).await })
         }))
         .await
         .map_err(super::super::super::storage)?
@@ -43,12 +64,56 @@ async fn new_conversation_admissions_refresh_guidance_but_retries_keep_their_sel
     Ok(())
 }
 
-async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<()> {
+fn predecessor_key(bits: u8) -> u8 {
     let requested = (bits & 1 != 0, bits & 2 != 0);
     let present = (bits & 4 != 0, bits & 8 != 0);
     let expected = (requested.0 || present.0, requested.1 || present.1);
+    u8::from(expected.0) | (u8::from(expected.1) << 1) | (u8::from(bits & 1 == 0) << 2)
+}
+
+struct Predecessor {
+    bootstrap: super::super::bootstrap::Bootstrap,
+    parent: crate::TaskId,
+    old_manifest: ContextManifest,
+}
+
+async fn predecessor(key: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<Predecessor> {
     let directory = bootstrap.restore()?;
-    let provider = scripted((0..4).map(|_| ScriptedTurn::Text("answer".into())));
+    let provider = scripted((0..2).map(|_| ScriptedTurn::Text("answer".into())));
+    let harness = LocalHarness::open(
+        bootstrap
+            .config(directory.path(), provider)?
+            .goal_continuations(None),
+    )
+    .await?;
+    let first = OperationId::new();
+    let parent = admitted(
+        harness
+            .submit(first, prompt(key & 1 == 0, key & 2 == 0))
+            .await?,
+    )?;
+    harness.resume(parent).await?;
+    let old_manifest = manifest(&harness, first).await?.0;
+    // Cover both an ordinary completed conversation and an explicit compaction.
+    if key & 4 != 0 {
+        harness
+            .compact(OperationId::new(), parent, "retain history")
+            .await?;
+    }
+    Ok(Predecessor {
+        bootstrap: bootstrap.checkpoint(directory, harness).await?,
+        parent,
+        old_manifest,
+    })
+}
+
+async fn case(bits: u8, predecessor: &Predecessor) -> Result<()> {
+    let requested = (bits & 1 != 0, bits & 2 != 0);
+    let present = (bits & 4 != 0, bits & 8 != 0);
+    let expected = (requested.0 || present.0, requested.1 || present.1);
+    let bootstrap = &predecessor.bootstrap;
+    let directory = bootstrap.restore()?;
+    let provider = scripted((0..2).map(|_| ScriptedTurn::Text("answer".into())));
     let config = || {
         Ok::<_, Error>(
             bootstrap
@@ -58,24 +123,8 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     };
     let harness = LocalHarness::open(config()?).await?;
     assert_eq!(harness.signed.agent(), bootstrap.agent);
-    assert!(provider.request_count() == 0);
-    let first = OperationId::new();
-    let parent = admitted(
-        harness
-            .submit(first, prompt(!expected.0, !expected.1))
-            .await?,
-    )?;
-    harness.resume(parent).await?;
-    let old_manifest = manifest(&harness, first).await?.0;
-    // Cover both an ordinary completed conversation and an explicit compaction.
-    let index = if bits & 1 == 0 {
-        harness
-            .compact(OperationId::new(), parent, "retain history")
-            .await?;
-        2
-    } else {
-        1
-    };
+    assert_eq!(provider.request_count(), 0);
+    let parent = predecessor.parent;
     let publisher = FilesystemContentPublisher::new(
         harness.files.clone(),
         harness.scratch(),
@@ -110,7 +159,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     )?;
     harness.resume(task).await?;
     assert_eq!(
-        guidance(&provider.request(index).unwrap()),
+        guidance(&provider.request(0).unwrap()),
         expected,
         "case {bits}"
     );
@@ -126,7 +175,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
         task
     );
     harness.resume(task).await?;
-    assert_eq!(provider.request_count(), index + 1);
+    assert_eq!(provider.request_count(), 1);
     // Negative control executes the old checkpoint-manifest staging path through
     // the same stock executor. Its model request must fail the same detector.
     let broken = OperationId::new();
@@ -136,7 +185,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
         .stage_bound_turn(
             broken,
             prompt(requested.0, requested.1),
-            old_manifest,
+            predecessor.old_manifest.clone(),
             harness.input_publisher()?.as_ref(),
         )
         .await?;
