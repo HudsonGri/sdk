@@ -24,6 +24,15 @@ impl<A, O> Clone for Workspace<A, O> {
 }
 
 impl<A, O> Workspace<A, O> {
+    /// Global view retaining the existing persisted workspace id.
+    pub fn identity(
+        &self,
+        account: &[u8],
+    ) -> Result<acyclic_auth::addressing::ResourceIdentity, acyclic_auth::addressing::IdentityError>
+    {
+        self.id.identity(account)
+    }
+
     /// Authenticated immutable volume configuration.
     pub const fn volume_config(&self) -> crate::model::VolumeConfig {
         self.volume.config

@@ -49,6 +49,14 @@ impl<'de> serde::Deserialize<'de> for StreamPath {
 }
 
 impl StreamPath {
+    /// Account and complete path, independent of commits or resource incarnation.
+    pub fn identity(
+        &self,
+        account: &[u8],
+    ) -> Result<crate::addressing::ResourceIdentity, crate::addressing::IdentityError> {
+        crate::addressing::ResourceIdentity::new(account, self.as_str().as_bytes())
+    }
+
     /// Validates and owns one path.
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();

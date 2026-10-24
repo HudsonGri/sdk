@@ -96,11 +96,14 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
  "syn 3.0.6",
  "tempfile",
  "thiserror 2.0.21",
  "ts-rs",
+ "url",
  "zeroize",
 ]
 
@@ -1034,6 +1037,7 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-manifest",
  "acyclic-objects",
  "axum",

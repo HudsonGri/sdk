@@ -32,6 +32,13 @@ bench = false
 [workspace]
 
 [[bin]]
+name = "addressing"
+path = "fuzz_targets/addressing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "verifier"
 path = "fuzz_targets/verifier.rs"
 test = false
