@@ -127,3 +127,64 @@ fn borrowing_a_funded_cache_does_not_reallocate_its_original_backing() {
     original.receipt().verify(budget).unwrap();
     borrower.receipt().verify(budget).unwrap();
 }
+
+#[test]
+fn ordinary_log_reads_and_writes_do_not_inherit_cancelled_cache_funding() {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let cancellation = crate::CancellationToken::new();
+    let work =
+        crate::NativeMaterializationWork::new(super::super::native::finite_budget(), &cancellation)
+            .unwrap();
+    let native = LocalCoreStateStore::new(directory.path())
+        .materialization(work.clone())
+        .namespace()
+        .unwrap();
+    let ordinary = LocalCoreStateStore::new(directory.path())
+        .namespace()
+        .unwrap();
+    let mut log = CoreLog::open(&native, Arc::default()).unwrap();
+    let mut change = Change::new(&work).unwrap();
+    change
+        .put(
+            (
+                RecordKey::Lineage(WorkspaceId::from_bytes([0xa1; 16])),
+                None,
+            )
+                .into(),
+        )
+        .unwrap();
+    log.commit(&native, change).unwrap();
+    cancellation.cancel();
+    assert!(
+        log.get::<WorkspaceLineageRecord>(
+            &ordinary,
+            WorkspaceId::from_bytes([0xa2; 16]),
+            None,
+            None
+        )
+        .unwrap()
+        .is_none()
+    );
+    let mut change = Change::default();
+    change
+        .put(
+            (
+                RecordKey::Lineage(WorkspaceId::from_bytes([0xa3; 16])),
+                None,
+            )
+                .into(),
+        )
+        .unwrap();
+    log.commit(&ordinary, change).unwrap();
+    assert!(
+        log.get::<WorkspaceLineageRecord>(
+            &ordinary,
+            WorkspaceId::from_bytes([0xa3; 16]),
+            None,
+            None
+        )
+        .unwrap()
+        .is_none()
+    );
+}

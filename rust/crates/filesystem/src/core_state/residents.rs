@@ -65,20 +65,7 @@ impl RecordIndex {
             .ok_or(crate::NativeTreeMaterializationError::Work(
                 crate::WorkError::Overflow,
             ))?;
-        if let Some(work) = work {
-            reserve_retained_slots(&mut self.nodes, needed, work, &mut self.allocation)?;
-        } else {
-            // Ordinary callers cannot silently outgrow native backing custody.
-            if let Some(allocation) = &self.allocation {
-                let original = allocation.work().clone();
-                reserve_retained_slots(&mut self.nodes, needed, &original, &mut self.allocation)?;
-            } else {
-                self.nodes
-                    .try_reserve(needed.saturating_sub(self.nodes.len()))
-                    .map_err(std::io::Error::other)?;
-            }
-        }
-        Ok(())
+        reserve_retained_slots(&mut self.nodes, needed, work, &mut self.allocation)
     }
 
     fn leaf(
@@ -231,24 +218,50 @@ impl RecordIndex {
 pub(super) fn reserve_retained_slots<T>(
     values: &mut Vec<T>,
     needed: usize,
-    work: &crate::NativeMaterializationWork,
+    work: Option<&crate::NativeMaterializationWork>,
     allocation: &mut Option<crate::NativeAllocation>,
 ) -> Result<(), LocalCoreStateStoreError> {
-    work.charge(crate::WorkCounters::UNCHARGED)?;
-    let backing = values
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::NativeTreeMaterializationError::Work(
-            crate::WorkError::Overflow,
-        ))? as u64;
-    if needed <= values.capacity()
-        && allocation
-            .as_ref()
-            .is_some_and(|held| held.bytes() >= backing)
-    {
+    if let Some(work) = work {
+        work.charge(crate::WorkCounters::UNCHARGED)?;
+        let backing = values
+            .capacity()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(crate::NativeTreeMaterializationError::Work(
+                crate::WorkError::Overflow,
+            ))? as u64;
+        if needed <= values.capacity()
+            && allocation
+                .as_ref()
+                .is_some_and(|held| held.bytes() >= backing)
+        {
+            return Ok(());
+        }
+        return reserve_slots(values, needed, work, allocation);
+    }
+    // A retained allocation owns backing, not admission for a later call.
+    // Ordinary callers never consult its invocation's cancellation or budget.
+    if needed <= values.capacity() {
         return Ok(());
     }
-    reserve_slots(values, needed, work, allocation)
+    if allocation.is_none() {
+        values
+            .try_reserve(needed.saturating_sub(values.len()))
+            .map_err(std::io::Error::other)?;
+        return Ok(());
+    }
+    let capacity = needed.max(values.capacity().checked_mul(2).ok_or(
+        crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
+    )?);
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(capacity)
+        .map_err(std::io::Error::other)?;
+    replacement.append(values);
+    // Destroy funded backing before retiring its ticket. The replacement is
+    // ordinary backing; the next native caller must fund it at this boundary.
+    drop(std::mem::replace(values, replacement));
+    *allocation = None;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -499,16 +512,7 @@ impl Residents {
         let needed = self.entries.len().checked_add(additions).ok_or(
             crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
         )?;
-        if let Some(work) = work {
-            reserve_retained_slots(&mut self.entries, needed, work, &mut self.allocation)?;
-        } else if let Some(allocation) = &self.allocation {
-            let original = allocation.work().clone();
-            reserve_retained_slots(&mut self.entries, needed, &original, &mut self.allocation)?;
-        } else {
-            self.entries
-                .try_reserve(additions)
-                .map_err(std::io::Error::other)?;
-        }
+        reserve_retained_slots(&mut self.entries, needed, work, &mut self.allocation)?;
         self.index.reserve(additions, work)
     }
 

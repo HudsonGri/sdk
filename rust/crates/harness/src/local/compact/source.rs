@@ -279,8 +279,92 @@ fn append_bytes(
                     ..
                 },
             ..
-        } => append_source(text, std::str::from_utf8(bytes).map_err(storage)?, limits)?,
+        } => {
+            let value: serde_json::Value = serde_json::from_slice(bytes).map_err(storage)?;
+            let metadata = match &value {
+                serde_json::Value::Object(fields) => {
+                    std::borrow::Cow::Owned(crate::local::tool_metadata::encode(fields)?)
+                }
+                _ => std::borrow::Cow::Borrowed(bytes),
+            };
+            append_source(
+                text,
+                std::str::from_utf8(&metadata).map_err(storage)?,
+                limits,
+            )?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_process_results_render_canonical_streams_once() {
+        let limits = Limits {
+            file_bytes: 256,
+            ..Limits::default()
+        };
+        let task = Component::new("t").unwrap();
+        let call = Component::new("x").unwrap();
+        let key = |file| FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Tool {
+                turn: 1,
+                call: call.clone(),
+                file,
+            },
+        };
+        let stdout = "O".repeat(64);
+        let stderr = "E".repeat(64);
+        let result = serde_json::to_vec(&serde_json::json!({"success":true,"exit_code":0,"stdout":stdout,"stderr":stderr,"stop":null})).unwrap();
+        let mut text = String::new();
+        append_bytes(
+            &mut text,
+            &key(ToolFile::Result),
+            Some(Channel::Text),
+            &result,
+            limits,
+        )
+        .unwrap();
+        let mut output = OutputStreams::default();
+        output
+            .observe(&key(ToolFile::Stdout(0)), stdout.as_bytes(), limits)
+            .unwrap();
+        output
+            .observe(&key(ToolFile::Stderr(0)), stderr.as_bytes(), limits)
+            .unwrap();
+        output
+            .append(&mut text, limits)
+            .expect("canonical stream projection must fit the unchanged file bound");
+        assert_eq!(text.matches(stdout.as_str()).count(), 1);
+        assert_eq!(text.matches(stderr.as_str()).count(), 1);
+        assert!(text.contains("success"));
+        assert!(text.contains("exit_code"));
+    }
+
+    #[test]
+    fn non_object_terminal_results_keep_their_original_summary() {
+        let key = FileKey::Task {
+            task: Component::new("t").unwrap(),
+            file: TaskFile::Tool {
+                turn: 1,
+                call: Component::new("x").unwrap(),
+                file: ToolFile::Result,
+            },
+        };
+        let mut text = String::new();
+        append_bytes(
+            &mut text,
+            &key,
+            Some(Channel::Text),
+            br#""opaque stdout and stderr""#,
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(text.contains("opaque stdout and stderr"));
+    }
 }
