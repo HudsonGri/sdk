@@ -40,59 +40,68 @@ mod scenario_data;
 mod stall;
 
 mod provider_scenarios {
-    use super::{TestResult, provider_case::Protocol};
+    // Each fixture has private durable state. Giving libtest each independent
+    // case avoids a serial protocol tail after its other workers become idle.
+    // The inventory oracle below makes an omitted or newly added case fail.
+    macro_rules! cases {
+        ($($protocol:ident { $($case:ident),* $(,)? })*) => {
+            const INVENTORY: &[&str] = &[$($(concat!(stringify!($protocol), "/", stringify!($case))),*),*];
+            $(mod $protocol {
+                $(#[tokio::test]
+                async fn $case() -> super::super::TestResult {
+                    super::super::run_provider_scenario(concat!(stringify!($protocol), "/", stringify!($case))).await
+                })*
+            })*
+        };
+    }
+    cases! {
+        anthropic { bytewise, exhausted_500, mcp_name, reasoning, refused_400,
+            retry_429, stall_after_output, stall_retry, text, unreachable_exhausted,
+            unreachable_retry, utf8_cut, write }
+        responses { bytewise, mcp_name, reasoning, text, utf8_cut, write }
+        chat { bytewise, reasoning, text, utf8_cut, write }
+        gemini { bytewise, reasoning, text, utf8_cut, write }
+    }
 
-    #[tokio::test]
-    async fn anthropic() -> TestResult {
-        super::run_provider_scenarios(Protocol::Anthropic).await
-    }
-    #[tokio::test]
-    async fn responses() -> TestResult {
-        super::run_provider_scenarios(Protocol::Responses).await
-    }
-    #[tokio::test]
-    async fn chat() -> TestResult {
-        super::run_provider_scenarios(Protocol::Chat).await
-    }
-    #[tokio::test]
-    async fn gemini() -> TestResult {
-        super::run_provider_scenarios(Protocol::Gemini).await
+    #[test]
+    fn inventory_contains_every_provider_fixture() -> super::TestResult {
+        let root = super::scenario_root();
+        let mut paths = Vec::new();
+        super::scenario_data::discover(&root, &mut paths)?;
+        let actual = paths
+            .iter()
+            .map(|path| {
+                path.strip_prefix(root.join("providers")).map(|relative| {
+                    relative
+                        .with_extension("")
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+            })
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
+        let declared = INVENTORY
+            .iter()
+            .map(|name| name.replace('_', "-"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, declared);
+        Ok(())
     }
 }
 
-// Each protocol is an independent libtest suite with private filesystem state.
-// The standard four-thread runner can drive these without one serial test
-// paying for every protocol's cold durable-store lifecycle.
-async fn run_provider_scenarios(protocol: provider_case::Protocol) -> TestResult {
+async fn run_provider_scenario(name: &str) -> TestResult {
     let root = scenario_root();
-    let mut paths = Vec::new();
-    scenario_data::discover(&root, &mut paths)?;
-    paths.sort();
-    if let Some(filter) = std::env::var_os("E2E_FILTER") {
-        let filter = filter.to_string_lossy();
-        paths.retain(|path| {
-            path.to_string_lossy()
-                .replace('\\', "/")
-                .contains(filter.as_ref())
-        });
-    }
-    assert!(!paths.is_empty());
-    let mut admitted = 0;
-    for path in paths {
-        let mut value = scenario_data::load_value(&root, &path)?;
-        assert_eq!(
-            value.as_object_mut().ok_or("scenario")?.remove("driver"),
-            Some("provider".into())
-        );
-        let case: provider_case::ProviderCase = serde_json::from_value(value)?;
-        if case.protocol != protocol {
-            continue;
-        }
-        admitted += 1;
-        stall::guarded(&path, providers::run(case)).await??;
-        println!("PASS {}", path.strip_prefix(&root)?.display());
-    }
-    assert!(admitted > 0, "protocol suite has no cases: {protocol:?}");
+    let path = root
+        .join("providers")
+        .join(name.replace('_', "-"))
+        .with_extension("json");
+    let mut value = scenario_data::load_value(&root, &path)?;
+    assert_eq!(
+        value.as_object_mut().ok_or("scenario")?.remove("driver"),
+        Some("provider".into())
+    );
+    let case: provider_case::ProviderCase = serde_json::from_value(value)?;
+    stall::guarded(&path, providers::run(case)).await??;
+    println!("PASS {}", path.strip_prefix(&root)?.display());
     Ok(())
 }
 
