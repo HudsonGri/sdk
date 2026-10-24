@@ -124,7 +124,11 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
     };
     let mut policy = json!({"approvers":stages});
     if matches!(case, Case::ParentHumanWait) {
-        policy["approvers"][0]["rules"]
+        policy["approvers"]
+            .as_array_mut()
+            .unwrap()
+            .first_mut()
+            .unwrap()["rules"]
             .as_array_mut()
             .unwrap()
             .push(json!({"tool":"wait","arguments":null,"verdict":"ask"}));
