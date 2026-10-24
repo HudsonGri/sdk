@@ -225,6 +225,9 @@ enum Record<'a> {
         operation: OperationId,
         response: &'a [u8],
     },
+    /// A started operation finished without a recorded response: its
+    /// outcome is indeterminate and ages out like any other.
+    Interrupt(OperationId),
     /// The oldest response still held is released.
     Release(OperationId),
     /// The oldest remembered outcome is forgotten.
@@ -267,6 +270,10 @@ impl<'a> Record<'a> {
                 record.push(2);
                 record.extend_from_slice(operation.0.as_bytes());
                 record.extend_from_slice(response);
+            }
+            Self::Interrupt(operation) => {
+                record.push(6);
+                record.extend_from_slice(operation.0.as_bytes());
             }
             Self::Release(operation) => {
                 record.push(3);
@@ -317,6 +324,7 @@ impl<'a> Record<'a> {
             }),
             (3, Some(operation), Some([])) => Some(Self::Release(operation)),
             (4, Some(operation), Some([])) => Some(Self::Expire(operation)),
+            (6, Some(operation), Some([])) => Some(Self::Interrupt(operation)),
             (5, Some(operation), Some(rest)) => {
                 let (request_digest, rest) = rest.split_first_chunk::<32>()?;
                 let outcome = match rest.split_first()? {
@@ -446,6 +454,7 @@ impl LedgerState {
                 self.started.contains_key(operation)
                     && response.len() < crate::MAXIMUM_CONTROL_MESSAGE_BYTES
             }
+            Record::Interrupt(operation) => self.started.contains_key(operation),
             Record::Release(operation) => self.responses.front() == Some(operation),
             Record::Expire(operation) => {
                 self.retained.front().map(|(_, oldest)| oldest) == Some(operation)
@@ -485,6 +494,11 @@ impl LedgerState {
                         },
                         now,
                     );
+                }
+            }
+            Record::Interrupt(operation) => {
+                if let Some(request_digest) = self.started.remove(&operation) {
+                    self.retain(operation, Outcome::Interrupted { request_digest }, now);
                 }
             }
             Record::Release(operation) => {
@@ -845,6 +859,24 @@ impl ControlLedger {
             let _ = journal.rewrite(state);
         }
         Ok(())
+    }
+
+    /// Records that a started operation finished without a response it can
+    /// replay: its outcome stays indeterminate, so a retry is refused rather
+    /// than re-executed, and it ages out within the normal retention window.
+    pub(crate) fn interrupt<T>(&self, envelope: &ControlEnvelope<T>) -> Result<(), String> {
+        let now = Instant::now();
+        let mut ledger = self.lock()?;
+        ledger.commit(Record::Interrupt(envelope.operation), now)?;
+        ledger.maintain(now);
+        Ok(())
+    }
+
+    /// Operations started and not yet finished.
+    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> usize {
+        self.lock()
+            .map_or(usize::MAX, |ledger| ledger.state.started.len())
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Ledger>, String> {

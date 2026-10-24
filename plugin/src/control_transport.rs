@@ -933,8 +933,11 @@ pub(crate) async fn dispatch_control_envelope(
             let response = encoded.0;
             if response.reply_failed() {
                 // The operation took effect but its reply was never funded.
-                // It stays started, so a retry is refused as indeterminate and
-                // a restart records it interrupted; never a replayed failure.
+                // Its outcome is recorded indeterminate, so a retry is refused
+                // rather than replayed as a failure, and it ages out with the
+                // normal retention window. Should that record fail, the
+                // operation stays started and a restart records it the same.
+                let _ = ledger.interrupt(&envelope);
                 return Ok((response, allocation, failure));
             }
             match ledger.complete(&envelope, &response) {
