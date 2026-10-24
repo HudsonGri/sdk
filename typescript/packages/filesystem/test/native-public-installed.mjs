@@ -38,6 +38,8 @@ try {
   if (changes.changes().files.length === 0) {
     throw new Error("public openNativeFs change set omitted the authored file");
   }
+  const { exerciseWorkspaceGraph } = await import("./workspace-composition.mjs");
+  await exerciseWorkspaceGraph(await native.openNativeWorkspaceGraph(join(engineRoot, "lineage")), workspace);
   console.log(`public openNativeFs installed loader passed on ${process.platform}-${process.arch}`);
 } finally {
   engine.cancel();

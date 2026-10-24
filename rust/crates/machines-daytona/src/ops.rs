@@ -13,7 +13,6 @@
 use std::{
     collections::BTreeMap,
     sync::{Mutex, PoisonError},
-    time::Duration,
 };
 
 pub use acyclic_machines::intent_digest;
@@ -47,6 +46,7 @@ pub struct OperationRecord {
     pub phase: OperationPhase,
     /// Terminal outcome when `phase` is `Succeeded`.
     pub outcome: Option<MutationOutcome>,
+    changes: tokio::sync::watch::Sender<OperationObservation>,
 }
 
 impl OperationRecord {
@@ -153,6 +153,11 @@ impl OperationRegistry {
                 targets: Vec::new(),
                 phase: OperationPhase::Pending,
                 outcome: None,
+                changes: tokio::sync::watch::channel(OperationObservation {
+                    id,
+                    phase: OperationPhase::Pending,
+                })
+                .0,
             },
         );
         inner.by_key.insert(key, id);
@@ -203,6 +208,7 @@ impl OperationRegistry {
         {
             record.phase = OperationPhase::Succeeded;
             record.outcome = Some(outcome);
+            record.changes.send_replace(record.observation());
         }
     }
 
@@ -219,6 +225,7 @@ impl OperationRegistry {
             && record.phase == OperationPhase::Pending
         {
             record.phase = phase;
+            record.changes.send_replace(record.observation());
         }
     }
 
@@ -227,6 +234,10 @@ impl OperationRegistry {
     pub fn forget(&self, operation: OperationId) {
         let mut inner = self.lock();
         if let Some(record) = inner.operations.remove(&operation) {
+            record.changes.send_replace(OperationObservation {
+                id: operation,
+                phase: OperationPhase::Cancelled,
+            });
             inner.by_key.remove(&record.key);
         }
     }
@@ -271,6 +282,7 @@ impl OperationRegistry {
         match record.phase {
             OperationPhase::Pending | OperationPhase::Indeterminate => {
                 record.phase = OperationPhase::Cancelled;
+                record.changes.send_replace(record.observation());
                 Some((record.observation(), std::mem::take(&mut record.created)))
             }
             OperationPhase::Failed | OperationPhase::Cancelled => {
@@ -297,32 +309,29 @@ impl OperationRegistry {
         }
     }
 
-    /// Polls `inspect` until the operation leaves `Pending` or `timeout` elapses.
-    ///
-    /// Mutations in this provider complete inline, so the loop normally returns on the first
-    /// iteration; it exists for callers that hold an operation id from another task.
-    ///
-    /// # Errors
-    /// Returns [`ProviderError::NotFound`] for an unknown operation and
-    /// [`ProviderError::Indeterminate`] with the operation's key when the timeout elapses.
+    /// Subscribes to this exact operation's transitions without a polling clock.
+    /// Snapshot and subscription share the registry lock, so completion cannot
+    /// fall between them. Unrelated operations never wake this receiver.
     pub async fn watch(
         &self,
         operation: OperationId,
-        poll: Duration,
-        timeout: Duration,
     ) -> Result<OperationObservation, ProviderError> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let mut changes = self
+            .lock()
+            .operations
+            .get(&operation)
+            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?
+            .changes
+            .subscribe();
         loop {
-            let record = self
-                .record(operation)
-                .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-            if record.phase != OperationPhase::Pending {
-                return Ok(record.observation());
+            let current = changes.borrow_and_update().clone();
+            if current.phase != OperationPhase::Pending {
+                return Ok(current);
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ProviderError::Indeterminate(record.key));
-            }
-            tokio::time::sleep(poll).await;
+            changes
+                .changed()
+                .await
+                .map_err(|_| ProviderError::Unavailable)?;
         }
     }
 
@@ -428,6 +437,51 @@ mod tests {
 
     fn key(suffix: u8) -> IdempotencyKey {
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn watch_is_push_driven_and_cannot_miss_completion_or_forgetting() {
+        use futures::{FutureExt as _, poll};
+        let registry = OperationRegistry::default();
+        for action in 0..4 {
+            let Admission::Fresh(id) = registry.admit(key(20 + action), &"watch").unwrap() else {
+                panic!("expected a fresh operation");
+            };
+            let waiting = registry.watch(id);
+            futures::pin_mut!(waiting);
+            assert!(poll!(waiting.as_mut()).is_pending());
+            let expected = match action {
+                0 => {
+                    registry.complete(id, MutationOutcome::Suspended(MachineId::new()));
+                    OperationPhase::Succeeded
+                }
+                1 => {
+                    registry.fail(id, &ProviderError::Unavailable);
+                    OperationPhase::Indeterminate
+                }
+                2 => {
+                    assert!(registry.cancel(id).is_some());
+                    OperationPhase::Cancelled
+                }
+                _ => {
+                    registry.forget(id);
+                    OperationPhase::Cancelled
+                }
+            };
+            // Negative control: the former timer remains pending here, since
+            // neither wall time nor the executor's clock has advanced.
+            assert_eq!(
+                waiting
+                    .now_or_never()
+                    .expect("transition must wake without a timer")
+                    .unwrap()
+                    .phase,
+                expected
+            );
+            if action != 3 {
+                assert_eq!(registry.watch(id).await.unwrap().phase, expected);
+            }
+        }
     }
 
     #[test]

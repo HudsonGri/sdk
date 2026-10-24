@@ -1,14 +1,15 @@
 use super::*;
 
 /// Captures eligible paths changed since the preceding live generation.
-pub async fn capture_git_compatible_generation_incremental<A, O>(
+pub async fn capture_git_compatible_generation_incremental<A, O, S: crate::WorkspaceLineageStore>(
+    graph: &crate::WorkspaceGraph<S>,
     workspace: &Workspace<A, O>,
     previous_live: &Generation<A, O>,
     previous_capture: &Generation<A, O>,
     policy: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
     operation_id: OperationId,
-) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
+) -> Result<GitCapturedGeneration<A, O>, GitCaptureAuthenticationError<S::Error>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -21,8 +22,14 @@ where
     // A capture that still holds host-owned paths is rebuilt from the live
     // tree, so no later commit inherits them.
     if policy.tracks_reserved(already_tracked) {
-        return capture_git_compatible_generation(workspace, policy, already_tracked, operation_id)
-            .await;
+        return capture_git_compatible_generation(
+            graph,
+            workspace,
+            policy,
+            already_tracked,
+            operation_id,
+        )
+        .await;
     }
     let changes = previous_live
         .diff_to(
@@ -44,6 +51,7 @@ where
         let path = portable_changed_path(&change.path)?;
         if path.rsplit('/').next() == Some(".gitignore") {
             return capture_git_compatible_generation(
+                graph,
                 workspace,
                 policy,
                 already_tracked,
@@ -100,6 +108,7 @@ where
     }
 
     apply_git_capture(
+        graph,
         previous_capture,
         Some(previous_live),
         Some(&live),

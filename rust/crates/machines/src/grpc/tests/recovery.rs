@@ -210,7 +210,7 @@ async fn silent_accepted_mutation_reconciles_the_same_operation()
     let _ = shutdown.send(());
     server.await??;
     outcome?;
-    assert!(before.elapsed() >= WATCH_RECONCILE_INTERVAL + OBSERVATION_RETRY_DELAY);
+    assert!(before.elapsed() >= WATCH_RECONCILE_INTERVAL + Duration::from_millis(5));
     let script = script.lock().expect("observation script");
     assert_eq!(script.calls, ["watch", "watch"]);
     assert!(script.inspections.is_empty());

@@ -38,6 +38,8 @@ async fn persisted_foreign_commit_tree_needs_capture_provenance() {
 
 #[tokio::test]
 async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-capture-policy").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
     transaction
@@ -58,6 +60,7 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
         .expect("tracked file");
     publish_fixture(transaction).await;
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::parse("target/\n"),
         &BTreeSet::from(["target/nested/keep.txt".to_owned()]),
@@ -96,6 +99,7 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
         BTreeSet::from(["target/nested/keep.txt".to_owned()])
     );
     let recovered = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::parse("target/\n"),
         &BTreeSet::from(["target/nested/keep.txt".to_owned()]),
@@ -108,6 +112,8 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
 
 #[tokio::test]
 async fn capture_at_generation_excludes_later_workspace_updates() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-capture-pinned-generation").await;
     let mut initial = workspace
         .begin_transaction(
@@ -139,6 +145,7 @@ async fn capture_at_generation_excludes_later_workspace_updates() {
     publish_fixture(later).await;
 
     let captured = capture_git_compatible_generation_at(
+        &graph,
         &workspace,
         published.id(),
         &GitIgnorePolicy::default(),
@@ -177,6 +184,8 @@ async fn capture_at_generation_excludes_later_workspace_updates() {
 
 #[tokio::test]
 async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitives() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-capture-records").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x41; 16])).await;
     transaction
@@ -215,6 +224,7 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
     publish_fixture(transaction).await;
 
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::parse("ignored/\n"),
         &BTreeSet::new(),
@@ -258,6 +268,8 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
 
 #[tokio::test]
 async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-capture-nested-policy").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x49; 16])).await;
     transaction
@@ -283,6 +295,7 @@ async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
     publish_fixture(transaction).await;
 
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::default(),
         &BTreeSet::new(),
@@ -466,6 +479,8 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
 
 #[tokio::test]
 async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-ignored-parent").await;
     let before = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -509,6 +524,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     assert_eq!(counts.file_changes, 1, "only root .gitignore is eligible");
     assert_eq!(counts.binding_changes, 1);
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::parse("build/\n"),
         &BTreeSet::new(),
@@ -533,6 +549,8 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
 
 #[tokio::test]
 async fn filtered_capture_retry_keeps_original_fork_generation() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-capture-retry").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x69; 16])).await;
     transaction
@@ -546,16 +564,25 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
     publish_fixture(transaction).await;
     let operation_id = OperationId::from_bytes([0x6a; 16]);
     let policy = GitIgnorePolicy::parse("*.tmp\n");
-    let first =
-        capture_git_compatible_generation(&workspace, &policy, &BTreeSet::new(), operation_id)
-            .await
-            .expect("first capture");
-    let retry =
-        capture_git_compatible_generation(&workspace, &policy, &BTreeSet::new(), operation_id)
-            .await
-            .expect("retry");
+    let first = capture_git_compatible_generation(
+        &graph,
+        &workspace,
+        &policy,
+        &BTreeSet::new(),
+        operation_id,
+    )
+    .await
+    .expect("first capture");
+    let retry = capture_git_compatible_generation(
+        &graph,
+        &workspace,
+        &policy,
+        &BTreeSet::new(),
+        operation_id,
+    )
+    .await
+    .expect("retry");
     assert_eq!(first.generation.id(), retry.generation.id());
-    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
     let proof = first
         .authenticated_proof(operation_id, &graph)
         .await
@@ -800,9 +827,12 @@ async fn tracked_paths_after_a_join_admit_new_eligible_files_only() {
 
 #[tokio::test]
 async fn capture_never_commits_reserved_host_paths() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let (workspace, _before, _after) = reserved_alias_fixture().await;
     let tracked = BTreeSet::from([".volumes/scratch".to_owned()]);
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::default().reserving([".volumes/scratch"]),
         &tracked,
@@ -825,6 +855,7 @@ async fn capture_never_commits_reserved_host_paths() {
     );
     // Negative control: an unreserved capture commits the alias.
     let unreserved = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::default(),
         &tracked,

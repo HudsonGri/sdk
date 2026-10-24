@@ -1,4 +1,6 @@
 struct PreparedFrame {
+    paths: Vec<PreparedPath>,
+    _paths_allocation: Option<acyclic_native_runtime::ReadAllocation>,
     encoded: Vec<u8>,
     work: Option<Arc<crate::memory::Work>>,
     operation: Option<
@@ -17,6 +19,12 @@ struct PreparedFrame {
         >,
     >,
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+struct PreparedPath {
+    path: StreamPath,
+    initial: Option<PathDurability>,
+    pending: Box<PendingCut>,
 }
 
 impl PreparedFrame {
@@ -72,6 +80,8 @@ impl PreparedFrame {
             })
             .transpose()?;
         Ok(Self {
+            paths: Vec::new(),
+            _paths_allocation: None,
             encoded,
             work,
             operation,

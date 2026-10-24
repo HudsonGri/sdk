@@ -193,13 +193,14 @@ pub(super) fn rewrite_intact_frame(
 
 pub(super) fn crash_lineage() -> WorkspaceLineageRecord {
     WorkspaceLineageRecord {
-        version: 1,
+        version: 2,
         revision: 1,
         ready: true,
         workspace_id: CRASH_WORKSPACE,
         workspace_name: "crash-child".to_owned(),
         parent_workspace_id: Some(workspace()),
         parent_workspace_name: Some("durable".to_owned()),
+        creation_operation: Some(OperationId::from_bytes([4; 16])),
         fork_generation: crate::GenerationId::new(Digest::from_bytes([5; 32])),
         initial_generation: crate::GenerationId::new(Digest::from_bytes([6; 32])),
     }

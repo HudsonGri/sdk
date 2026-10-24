@@ -698,6 +698,7 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-stream",
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-proto-build",
@@ -727,6 +728,7 @@ dependencies = [
 name = "acyclic-machines-daytona"
 version = "0.2.0"
 dependencies = [
+ "acyclic-stream",
  "acyclic-conformance",
  "acyclic-machines",
  "acyclic-native-runtime",

@@ -3,6 +3,8 @@ mod cancellation;
 mod child;
 pub use cancellation::{cancellation_key, is_cancellation};
 mod child_queries;
+mod child_turn;
+pub use child_turn::{ChildTurn, ChildTurnClaim, ChildTurnPublication};
 mod child_result;
 #[doc(hidden)]
 pub use child::child_scope;
@@ -176,17 +178,17 @@ impl FileValue {
     }
 
     /// Decodes a platform inbox/event record for an actor handler. The initial
-    /// schema/volume declaration has no file event and returns `None`.
-    pub fn from_record(record: &acyclic_stream::Record) -> Result<Option<Self>> {
+    /// schema/volume declaration has no file event and returns no files.
+    pub fn from_record(record: &acyclic_stream::Record) -> Result<Vec<Self>> {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
             if !matches!(header.schema, 2 | 3 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
-            Ok(None)
+            Ok(Vec::new())
         } else {
-            segment::decode(&record.value).map(Some)
+            Ok(segment::decode_files(&record.value)?.into_iter().collect())
         }
     }
 
@@ -269,7 +271,9 @@ struct Index {
     commands: command_query::Commands,
     views: recent::Views,
     approvals: approval_query::Pending,
+    child_requests: std::collections::BTreeSet<Component>,
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
+    child_claims: BTreeMap<crate::OperationId, ChildTurnClaim>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -495,7 +499,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         mut conditions: Vec<CommitCondition>,
         create_only: bool,
         work: NativeWork<'_>,
-    ) -> Result<Option<(CommitRequest, FileValue, u64)>> {
+    ) -> Result<Option<(CommitRequest, Vec<FileValue>, u64)>> {
         self.refresh().await?;
         let index = self.index.lock().await;
         if expected != self.generation(&index) {
@@ -549,14 +553,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
-        Ok(Some((request, files, next)))
+        Ok(Some((request, vec![files], next)))
     }
 
     async fn commit_append(
         &self,
         expected: Generation,
         request: CommitRequest,
-        files: FileValue,
+        files: Vec<FileValue>,
         next: u64,
         deadline_unix_millis: Option<u64>,
     ) -> Result<Generation> {
@@ -582,7 +586,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 let unchanged = unchanged
                     || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
                 if unchanged {
-                    apply(&mut index, files, next);
+                    for file in files {
+                        apply(&mut index, file, next);
+                    }
                     index.next = next;
                     index.commit = envelope.commit_id;
                 }
@@ -741,6 +747,30 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 // The only mutation of the file index; derived views and command indexes
 // fold the same replacement, never a separately maintained copy of it.
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    if let FileKey::Child {
+        reference,
+        file: ChildFile::Request,
+    } = &file.key
+    {
+        index.child_requests.insert(reference.clone());
+    }
+    if let FileKey::Child {
+        reference,
+        file: ChildFile::Delivered,
+    } = &file.key
+        && let Some(operation) = file.publication
+        && let Ok((task, turn)) = serde_json::from_slice::<(crate::TaskId, u64)>(&file.bytes)
+    {
+        index
+            .child_claims
+            .entry(operation)
+            .or_insert_with(|| ChildTurnClaim {
+                reference: reference.clone(),
+                task,
+                turn,
+                operation,
+            });
+    }
     if let FileKey::Child {
         reference,
         file: ChildFile::Request | ChildFile::Inbox(_),

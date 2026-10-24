@@ -1,6 +1,9 @@
 //! Scheduling for owned provider and actor work, independent of transports.
 use crate::{BoxProviderFuture, ProviderPlatform};
 
+mod backoff;
+pub use backoff::{Backoff, BackoffPolicy};
+
 /// Scheduling supplied by the caller; the pool has no runtime dependency.
 pub trait Executor: ProviderPlatform {
     /// Runs one owned pool operation until completion or cancellation.

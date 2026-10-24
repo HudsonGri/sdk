@@ -23,9 +23,84 @@ struct LocalInner {
     #[cfg(acyclic_loom)]
     retain_pending_read: bool,
     // Lock order: publication -> durable_tails, after releasing provider state and journal.
-    durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
+    durable_tails: Mutex<std::collections::BTreeMap<StreamPath, PathDurability>>,
     #[cfg(feature = "test-support")]
     persistence_cut: std::sync::OnceLock<Arc<dyn PersistenceCut>>,
+}
+
+#[derive(Default)]
+struct PathDurability {
+    durable: u64,
+    // Only cuts for this path are visited. Completed cuts are discarded on
+    // the next publication or observation of this path.
+    pending: PendingCuts,
+    _entry_allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+impl PathDurability {
+    fn through(&mut self, synced: u64) -> u64 {
+        while let Some(tail) = self.pending.pop_through(synced) {
+            self.durable = tail;
+        }
+        self.durable
+    }
+}
+
+// Two owned stacks form a FIFO without allocating during publication. Each
+// node is funded and constructed before issuance; reversal moves links only.
+#[derive(Default)]
+struct PendingCuts {
+    front: Option<Box<PendingCut>>,
+    back: Option<Box<PendingCut>>,
+}
+
+struct PendingCut {
+    sequence: u64,
+    tail: u64,
+    next: Option<Box<Self>>,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+}
+
+impl PendingCut {
+    fn prepare(work: Option<&crate::memory::Work>) -> Result<Box<Self>, StreamError> {
+        let allocation = work.map(|work| work.record(
+            acyclic_native_runtime::ReadAllocation::new(&work.meter, std::mem::size_of::<Self>())
+        )).transpose()?;
+        Ok(Box::new(Self { sequence: 0, tail: 0, next: None, _allocation: allocation }))
+    }
+}
+
+impl PendingCuts {
+    fn push(&mut self, mut node: Box<PendingCut>) {
+        node.next = self.back.take();
+        self.back = Some(node);
+    }
+
+    fn pop_through(&mut self, synced: u64) -> Option<u64> {
+        if self.front.is_none() {
+            while let Some(mut node) = self.back.take() {
+                self.back = node.next.take();
+                node.next = self.front.take();
+                self.front = Some(node);
+            }
+        }
+        if self.front.as_ref().is_none_or(|node| node.sequence > synced) {
+            return None;
+        }
+        let mut node = self.front.take()?;
+        self.front = node.next.take();
+        Some(node.tail)
+    }
+}
+
+impl Drop for PendingCuts {
+    fn drop(&mut self) {
+        for chain in [&mut self.front, &mut self.back] {
+            while let Some(mut node) = chain.take() {
+                *chain = node.next.take();
+            }
+        }
+    }
 }
 
 impl LocalInner {

@@ -283,7 +283,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
         filter,
         None::<crate::FollowStream>,
         false,
-        0_u8,
+        follow_backoff(),
     );
     Box::pin(
         stream::try_unfold(
@@ -297,7 +297,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
                 filter,
                 mut records,
                 mut opened,
-                mut ended,
+                mut backoff,
             )| async move {
                 loop {
                     if records.is_none() {
@@ -312,7 +312,7 @@ fn follow_source<P: StreamProvider + ?Sized>(
                                 Event::Opened(preceding),
                                 (
                                     provider, executor, path, next, preceding, filter, records,
-                                    opened, ended,
+                                    opened, backoff,
                                 ),
                             )));
                         }
@@ -347,30 +347,39 @@ fn follow_source<P: StreamProvider + ?Sized>(
                                 })
                             }
                         };
-                        ended = 0;
+                        backoff = follow_backoff();
                         return Ok(Some((
                             event,
                             (
                                 provider, executor, path, next, preceding, filter, records, opened,
-                                ended,
+                                backoff,
                             ),
                         )));
                     } else {
                         // EOF is transport recovery, never an idle record wakeup.
                         // Keep already queued records on this generation intact.
                         records = None;
-                        ended += 1;
-                        if ended >= 3 {
-                            return Err(StreamError::Unavailable);
-                        }
-                        if ended > 1 {
-                            executor.sleep(10).await;
-                        }
+                        let delay = backoff
+                            .next(true, None, false)
+                            .ok_or(StreamError::Unavailable)?;
+                        executor
+                            .sleep(u32::try_from(delay.as_millis()).unwrap_or(u32::MAX))
+                            .await;
                     }
                 }
             },
         )
         .map(move |event| (identity, event)),
+    )
+}
+
+fn follow_backoff() -> crate::runtime::Backoff {
+    crate::runtime::Backoff::new(
+        crate::runtime::BackoffPolicy {
+            attempts: 2,
+            ..crate::runtime::BackoffPolicy::CONNECTION
+        },
+        &crate::new_identity_bytes(),
     )
 }
 

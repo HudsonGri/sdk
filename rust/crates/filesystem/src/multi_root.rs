@@ -183,6 +183,14 @@ pub trait MultiRootPublicationStore: Send + Sync {
         operation_id: OperationId,
     ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
+    /// Reads the exact parent slot without enumerating unrelated publications.
+    /// A claim may precede its journal after an interrupted first publication;
+    /// callers must retain that ownership until recovery resolves it.
+    fn parent_operation(
+        &self,
+        parent_context_id: WorkspaceContextId,
+    ) -> impl Future<Output = Result<Option<OperationId>, Self::Error>> + ProviderTask;
+
     /// Releases the exact parent claim after terminal cleanup.
     fn release_parent(
         &self,
@@ -746,6 +754,16 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
         }
         parents.remove(&parent_context_id);
         Ok(true)
+    }
+
+    async fn parent_operation(
+        &self,
+        parent_context_id: WorkspaceContextId,
+    ) -> Result<Option<OperationId>, Self::Error> {
+        self.parents
+            .lock()
+            .map(|parents| parents.get(&parent_context_id).copied())
+            .map_err(|_| MemoryMultiRootPublicationStoreError)
     }
 }
 

@@ -47,6 +47,7 @@ where
                 let previous_live = self.generation(*previous_live).await?;
                 let previous_capture = self.generation(*previous_capture).await?;
                 capture_git_compatible_generation_incremental(
+                    &WorkspaceGraph::new(self.store.clone()),
                     &self.current,
                     &previous_live,
                     &previous_capture,
@@ -58,6 +59,7 @@ where
             }
             _ => {
                 capture_git_compatible_generation(
+                    &WorkspaceGraph::new(self.store.clone()),
                     &self.current,
                     &self.ignore,
                     tracked_paths,
@@ -116,30 +118,10 @@ where
             "git-branch-{}",
             hex::encode(&hasher.finalize().as_bytes()[..12])
         );
-        let fork_generation = self
-            .lazy_current
-            .workspace()
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(Error::from)?
-            .id();
         let workspace = self
             .lazy_current
-            .fork(&destination, operation_id, self.permit)
+            .fork(&destination, operation_id, self.permit, self.store)
             .await?;
-        WorkspaceGraph::new(self.store.clone())
-            .register_existing_child(
-                self.lazy_current.workspace(),
-                workspace.workspace(),
-                fork_generation,
-            )
-            .await
-            .map_err(Error::from)?;
         let workspace_id = workspace.workspace().id();
         if switch {
             *self

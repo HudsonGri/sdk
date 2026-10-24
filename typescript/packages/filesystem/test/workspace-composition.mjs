@@ -254,3 +254,25 @@ export async function exerciseWorkspace(engine) {
     throw new Error("workspace deletion did not become durable");
   }
 }
+
+export async function exerciseWorkspaceGraph(graph, workspace) {
+  const root = await graph.registerRoot(workspace);
+  if (root.version !== 2 || root.creationOperation !== undefined) {
+    throw new Error("root lineage has an invalid creation identity");
+  }
+  const operation = new Uint8Array(16).fill(73);
+  const child = await graph.fork(workspace, "public-child", operation);
+  const lineage = await graph.authorizeJoin(child.id, workspace.id);
+  if (lineage.creationOperation === undefined ||
+      Buffer.compare(Buffer.from(lineage.creationOperation), Buffer.from(operation)) !== 0) {
+    throw new Error("public graph adapter lost the original creation operation");
+  }
+  await workspace.write("/later.txt", new TextEncoder().encode("later parent"));
+  await child.write("/later-child.txt", new TextEncoder().encode("later child"));
+  const replay = await graph.fork(workspace, "public-child", operation);
+  const recovered = await graph.authorizeJoin(replay.id, workspace.id);
+  if (Buffer.compare(Buffer.from(recovered.forkGeneration), Buffer.from(lineage.forkGeneration)) !== 0 ||
+      Buffer.compare(Buffer.from(recovered.initialGeneration), Buffer.from(lineage.initialGeneration)) !== 0) {
+    throw new Error("graph replay replaced the original cut with a current head");
+  }
+}

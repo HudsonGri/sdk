@@ -36,25 +36,36 @@ where
                 let destination = format!("git-exact-{}", hex::encode(&snapshot_bytes[..12]));
                 let mut identity = [0; 16];
                 identity.copy_from_slice(&snapshot_bytes[..16]);
-                let (child, initial) = lazy
-                    .fork_snapshot(
+                let snapshot = lazy
+                    .prepare_fork_snapshot(
                         &destination,
                         snapshot,
-                        IdempotencyKey::from_bytes(identity),
-                        PublicationPermit::Unrestricted,
+                        acyclic_fs::OperationId::from_bytes(identity),
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
                     .map_err(Error::from)?;
-                WorkspaceGraph::new(self.store.clone())
-                    .register_existing_child_at_generation(
+                let graph = WorkspaceGraph::new(self.store.clone());
+                let (child, _) = graph
+                    .fork(
                         lazy.workspace(),
-                        child.workspace(),
-                        snapshot.authored_generation,
-                        initial.authored_generation,
+                        &destination,
+                        IdempotencyKey::from_bytes(identity),
+                        Some(snapshot.authored_generation),
+                        |_generation| async {
+                            lazy.fork_snapshot(
+                                &destination,
+                                snapshot,
+                                IdempotencyKey::from_bytes(identity),
+                                PublicationPermit::Unrestricted,
+                                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                            )
+                            .await
+                            .map_err(Error::from)
+                        },
+                        |result| result.0.workspace(),
                     )
-                    .await
-                    .map_err(Error::from)?;
+                    .await?;
                 child
                     .exactify(
                         "/",

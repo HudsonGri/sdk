@@ -169,6 +169,8 @@ export interface WorkspaceLineageRecord {
   readonly workspaceName: string;
   readonly parentWorkspaceId: WorkspaceIdentity | undefined;
   readonly parentWorkspaceName: string | undefined;
+  /** Original SDK creation operation; absent only for root registrations. */
+  readonly creationOperation: OperationIdentity | undefined;
   readonly forkGeneration: GenerationIdentity;
   readonly initialGeneration: GenerationIdentity;
 }

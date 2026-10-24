@@ -51,50 +51,56 @@ impl LocalWorkspace {
             .await;
         let selected = io.sdk(io.finish(selected, &accounting))?;
         drop(accounting);
-        let report = preparer
-            .prepare_for_task(request, preparation, Some(io))
-            .await?;
-        preparation.verify(false, Some(io))?.await?;
-        let child = io.sdk(
-            self.filesystem
-                .open_workspace(&destination, io, io.cancellation())
-                .await,
-        )?;
-        let original = io
-            .sdk(
-                self.filesystem
-                    .workspace_for_creation_operation(
-                        &destination,
-                        child.volume_config(),
-                        operation,
-                        io,
-                        io.cancellation(),
-                    )
-                    .await,
-            )?
-            .ok_or_else(|| Error::Conflict("child fork has no original creation".into()))?;
-        let original_generation = original.id();
-        drop(original);
-        let mut accounting = io.accounting(io.cancellation());
-        let bound = source
-            .bind_prepared_fork(
-                selected,
-                child,
-                original_generation,
-                operation,
-                &mut accounting,
-            )
-            .await;
-        let (view, _) = io.sdk(io.finish(bound, &accounting))?;
-        acyclic_fs::WorkspaceGraph::new(self.store.clone())
-            .register_existing_child_at_generation(
+        let graph = acyclic_fs::WorkspaceGraph::new(self.store.clone());
+        let result = graph
+            .fork(
                 source.workspace(),
-                view.workspace(),
-                cut.authored_generation,
-                original_generation,
+                &destination,
+                acyclic_fs::IdempotencyKey::from_bytes(operation.into_bytes()),
+                Some(cut.authored_generation),
+                |_generation| async {
+                    let report = preparer
+                        .prepare_for_task(request, preparation, Some(io))
+                        .await?;
+                    preparation.verify(false, Some(io))?.await?;
+                    let child = io.sdk(
+                        self.filesystem
+                            .open_workspace(&destination, io, io.cancellation())
+                            .await,
+                    )?;
+                    let original = io
+                        .sdk(
+                            self.filesystem
+                                .workspace_for_creation_operation(
+                                    &destination,
+                                    child.volume_config(),
+                                    operation,
+                                    io,
+                                    io.cancellation(),
+                                )
+                                .await,
+                        )?
+                        .ok_or_else(|| {
+                            Error::Conflict("child fork has no original creation".into())
+                        })?;
+                    let original_generation = original.id();
+                    drop(original);
+                    let mut accounting = io.accounting(io.cancellation());
+                    let bound = source
+                        .bind_prepared_fork(
+                            selected,
+                            child,
+                            original_generation,
+                            operation,
+                            &mut accounting,
+                        )
+                        .await;
+                    let (view, _) = io.sdk(io.finish(bound, &accounting))?;
+                    Ok::<_, Error>((report, view))
+                },
+                |result| result.1.workspace(),
             )
-            .await
-            .map_err(storage)?;
-        Ok((report, view))
+            .await?;
+        Ok(result)
     }
 }

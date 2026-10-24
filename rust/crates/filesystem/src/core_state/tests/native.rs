@@ -17,6 +17,7 @@ fn lineage(id: WorkspaceId) -> WorkspaceLineageRecord {
         workspace_name: "native-original".into(),
         parent_workspace_id: None,
         parent_workspace_name: None,
+        creation_operation: None,
         ..crash_lineage()
     }
 }

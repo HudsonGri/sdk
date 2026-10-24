@@ -224,7 +224,11 @@ impl Run<'_, '_> {
         let op = id(input.task + 2);
         match fault {
             Some(Fault::ForgetSibling) if refusal == Some("shared model budget exceeded") => {
-                scheduler.model_claims.remove(&id(3 - input.task));
+                let forgotten = scheduler.model_claims.remove(&id(3 - input.task)).unwrap();
+                // Emulate the old recomputed sum, which lost the removed
+                // sibling's charges too. Leaving the new root counter intact
+                // would correctly keep refusing the attempted overspend.
+                scheduler.tree.get_mut(&id(1)).unwrap().model_steps -= forgotten.used();
             }
             Some(Fault::ChangeRequest) if refusal == Some("changed claim request was accepted") => {
                 let claims = scheduler.model_claims.get_mut(&op).unwrap();
@@ -263,6 +267,7 @@ impl Run<'_, '_> {
             && refusal.is_none();
         if duplicate {
             let claims = scheduler.model_claims.get_mut(&op).unwrap();
+            claims.used += 1;
             claims
                 .attempts
                 .entry(id(250))

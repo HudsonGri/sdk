@@ -3,6 +3,17 @@ use acyclic_stream::BoxProviderStream;
 use futures::stream;
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
+    /// Registers an ordinary push observer at this projection's exact cut.
+    /// The caller installs it before reading state and releases its coordinator
+    /// lock before waiting, so a completion can neither be missed nor blocked.
+    pub(crate) async fn changes(&self) -> Result<acyclic_stream::RecordStream> {
+        Ok(self
+            .stream
+            .0
+            .follow(self.revision, acyclic_stream::FollowFilter::default())
+            .await?)
+    }
+
     /// Snapshots an operation and follows scheduler changes without a replay/subscription gap.
     pub async fn operation_changes(
         self,
@@ -14,12 +25,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .ok_or_else(|| Error::NotFound("operation".into()))?,
         );
         let revision = initial.revision;
-        let source = Some(operations::ObservedRecords::Ordinary(
-            self.stream
-                .0
-                .follow(self.revision, acyclic_stream::FollowFilter::default())
-                .await?,
-        ));
+        let source = Some(operations::ObservedRecords::Ordinary(self.changes().await?));
         Ok(Box::pin(stream::try_unfold(
             (self, source, Some(initial), revision),
             move |(mut coordinator, mut source, initial, mut revision)| async move {

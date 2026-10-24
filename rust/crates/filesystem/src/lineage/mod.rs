@@ -2,15 +2,15 @@
 
 use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, GenerationId,
-    IdempotencyKey, WorkBudget, Workspace, WorkspaceError, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, GenerationId, IdempotencyKey,
+    WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::future::Future;
 use thiserror::Error;
 
-const LINEAGE_VERSION: u32 = 1;
+const LINEAGE_VERSION: u32 = 2;
 
 /// Durable identity and direct parent of one SDK workspace.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -30,6 +30,8 @@ pub struct WorkspaceLineageRecord {
     pub parent_workspace_id: Option<WorkspaceId>,
     /// Canonical direct-parent name needed for restart recovery.
     pub parent_workspace_name: Option<String>,
+    /// Immutable SDK creation operation; absent only for root registrations.
+    pub creation_operation: Option<crate::OperationId>,
     /// Exact parent generation from which the child was created.
     pub fork_generation: GenerationId,
     /// Exact first generation in the child workspace, used for local diffs.
@@ -41,9 +43,13 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
         record.parent_workspace_id,
         record.parent_workspace_name.as_deref(),
     ) {
-        (None, None) => record.fork_generation == record.initial_generation,
+        (None, None) => {
+            record.creation_operation.is_none()
+                && record.fork_generation == record.initial_generation
+        }
         (Some(parent_id), Some(parent_name)) => {
-            parent_id != record.workspace_id
+            record.creation_operation.is_some()
+                && parent_id != record.workspace_id
                 && crate::WorkspaceName::new(
                     parent_name,
                     &WorkBudget::UNBOUNDED,
@@ -165,46 +171,97 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             workspace_name: workspace.name().as_str().to_owned(),
             parent_workspace_id: None,
             parent_workspace_name: None,
+            creation_operation: None,
             fork_generation: generation.id(),
             initial_generation: generation.id(),
         })
         .await
     }
 
-    /// Forks a real SDK workspace and durably records its direct parent.
-    pub async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    /// Executes an SDK-owned creator between durable intent and lineage publication.
+    /// The creator receives the original authenticated parent generation on every
+    /// recovery. Its result is not returned until the child has been authenticated
+    /// against that intent and registered as ready.
+    pub async fn fork<A, O, T, E, F, Fut>(
         &self,
         parent: &Workspace<A, O>,
-        destination: impl AsRef<str>,
+        destination: &str,
         idempotency_key: IdempotencyKey,
-    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.lineage.fork",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty
-        );
-        crate::obs::outcome_on(
-            &span,
-            crate::obs::in_span(&span, async move {
-                let destination = crate::WorkspaceName::new(
-                    destination.as_ref(),
-                    &WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+        selected: Option<GenerationId>,
+        create: F,
+        workspace: for<'a> fn(&'a T) -> &'a Workspace<A, O>,
+    ) -> Result<T, E>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        E: From<WorkspaceLineageError<S::Error>>,
+        F: FnOnce(crate::Generation<A, O>) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let planned = self
+            .prepare_fork(parent, destination, idempotency_key, selected)
+            .await
+            .map_err(E::from)?;
+        let generation = parent
+            .generation(
+                planned.fork_generation,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| E::from(WorkspaceLineageError::Workspace(failure.error)))?
+            .value;
+        let output = create(generation).await?;
+        self.finish_fork(parent, workspace(&output), planned, idempotency_key)
+            .await
+            .map_err(E::from)?;
+        Ok(output)
+    }
+
+    async fn prepare_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self,
+        parent: &Workspace<A, O>,
+        destination: &str,
+        idempotency_key: IdempotencyKey,
+        selected: Option<GenerationId>,
+    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        let destination = crate::WorkspaceName::new(
+            destination,
+            &WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|failure| failure.error)?
+        .value;
+        let child_id = parent
+            .volume
+            .fs
+            .workspace_id(destination.as_str())
+            .map_err(WorkspaceError::from)?;
+        // First durable intent wins. Recovery uses that immutable cut,
+        // even if the parent has advanced since this operation began.
+        let planned = match self
+            .store
+            .load(child_id)
+            .await
+            .map_err(WorkspaceLineageError::Store)?
+        {
+            Some(record) => record,
+            None => {
+                let generation = match selected {
+                    Some(id) => {
+                        parent
+                            .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                    }
+                    None => {
+                        parent
+                            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                    }
+                }
                 .map_err(|failure| failure.error)?
                 .value;
-                let generation = parent
-                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                let child_id = parent
-                    .volume
-                    .fs
-                    .workspace_id(destination.as_str())
-                    .map_err(WorkspaceError::from)?;
-                let planned = WorkspaceLineageRecord {
+                let record = WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
                     revision: 1,
                     ready: false,
@@ -212,131 +269,85 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     workspace_name: destination.as_str().to_owned(),
                     parent_workspace_id: Some(parent.id()),
                     parent_workspace_name: Some(parent.name().as_str().to_owned()),
+                    creation_operation: Some(idempotency_key.operation_id()),
                     fork_generation: generation.id(),
                     initial_generation: generation.id(),
                 };
-                let planned = self.register(planned).await?;
-                let child = parent
-                    .fork::<_, _, WorkspaceError>(
-                        destination.as_str(),
-                        ForkOptions::from_generation(generation.clone(), idempotency_key),
-                        crate::PublicationPermit::Unrestricted,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                        &mut |_| {
-                            std::future::ready(Ok(crate::OperationReceipt {
-                                value: (),
-                                work: crate::WorkCounters::UNCHARGED,
-                            }))
-                        },
-                    )
+                if self
+                    .store
+                    .compare_and_swap(child_id, 0, record.clone())
                     .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                let initial_generation = child
-                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                if child.id() != child_id {
-                    return Err(WorkspaceLineageError::ConflictingRegistration);
+                    .map_err(WorkspaceLineageError::Store)?
+                {
+                    record
+                } else {
+                    self.store
+                        .load(child_id)
+                        .await
+                        .map_err(WorkspaceLineageError::Store)?
+                        .ok_or(WorkspaceLineageError::IncompatibleState)?
                 }
-                if planned.ready && planned.initial_generation != initial_generation.id() {
-                    return Err(WorkspaceLineageError::ConflictingRegistration);
-                }
-                let mut ready = planned;
-                ready.ready = true;
-                ready.initial_generation = initial_generation.id();
-                self.promote_ready(ready).await?;
-                Ok(child)
-            })
-            .await,
-        )
+            }
+        };
+        if !lineage_shape_is_valid(&planned)
+            || planned.workspace_id != child_id
+            || planned.workspace_name != destination.as_str()
+            || planned.parent_workspace_id != Some(parent.id())
+            || planned.parent_workspace_name.as_deref() != Some(parent.name().as_str())
+            || planned.creation_operation != Some(idempotency_key.operation_id())
+            || selected.is_some_and(|cut| cut != planned.fork_generation)
+        {
+            return Err(WorkspaceLineageError::ConflictingRegistration);
+        }
+        Ok(planned)
     }
 
-    /// Registers a child created by another SDK-owned fork façade.
-    pub async fn register_existing_child<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    async fn finish_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
-        fork_generation: crate::GenerationId,
+        planned: WorkspaceLineageRecord,
+        idempotency_key: IdempotencyKey,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let initial_generation = child
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-            .id();
-        self.register_existing_child_at_generation(
-            parent,
-            child,
-            fork_generation,
-            initial_generation,
-        )
-        .await
-    }
-
-    /// Registers an existing child after it has advanced beyond its initial
-    pub async fn register_existing_child_at_generation<
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    >(
-        &self,
-        parent: &Workspace<A, O>,
-        child: &Workspace<A, O>,
-        fork_generation: crate::GenerationId,
-        initial_generation: crate::GenerationId,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        // Do not let a metadata adapter manufacture publication authority.
-        // The child's authenticated initial generation must be the generation
-        // root produced by an SDK fork from the claimed parent generation.
-        parent
-            .generation(
-                fork_generation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?;
-        let initial = child
-            .generation(
-                initial_generation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let expected_child = parent
+        if !parent.volume.fs.same_deployment(&child.volume.fs)
+            || child.volume.config != parent.volume.config
+            || child.name().as_str() != planned.workspace_name
+            || child.id() != planned.workspace_id
+        {
+            return Err(WorkspaceLineageError::ConflictingRegistration);
+        }
+        // The current child head is not its creation identity. A
+        // recovered child can already contain subsequent commits.
+        let initial_generation = parent
             .volume
             .fs
-            .workspace_id(child.name().as_str())
-            .map_err(WorkspaceError::from)?;
-        if child.id() != expected_child {
-            return Err(WorkspaceLineageError::UnauthorizedJoin);
-        }
-        if initial
-            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .workspace_for_creation_operation(
+                planned.workspace_name.as_str(),
+                child.volume.config,
+                idempotency_key.operation_id(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map_err(|failure| failure.error)?
             .value
-            .as_slice()
-            != [fork_generation]
+            .ok_or(WorkspaceLineageError::ConflictingRegistration)?;
+        if initial_generation.workspace_id() != planned.workspace_id
+            || initial_generation
+                .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+                .as_slice()
+                != [planned.fork_generation]
+            || (planned.ready && planned.initial_generation != initial_generation.id())
         {
-            return Err(WorkspaceLineageError::UnauthorizedJoin);
+            return Err(WorkspaceLineageError::ConflictingRegistration);
         }
-        self.register(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: child.id(),
-            workspace_name: child.name().as_str().to_owned(),
-            parent_workspace_id: Some(parent.id()),
-            parent_workspace_name: Some(parent.name().as_str().to_owned()),
-            fork_generation,
-            initial_generation,
-        })
-        .await
+        let mut ready = planned;
+        ready.ready = true;
+        ready.initial_generation = initial_generation.id();
+        self.promote_ready(ready).await
     }
 
     /// Verifies that `parent` is the child's exact direct publication target.
@@ -496,6 +507,7 @@ fn same_lineage(left: &WorkspaceLineageRecord, right: &WorkspaceLineageRecord) -
         && left.workspace_name == right.workspace_name
         && left.parent_workspace_id == right.parent_workspace_id
         && left.parent_workspace_name == right.parent_workspace_name
+        && left.creation_operation == right.creation_operation
         && left.fork_generation == right.fork_generation
         && (!left.ready || !right.ready || left.initial_generation == right.initial_generation)
 }

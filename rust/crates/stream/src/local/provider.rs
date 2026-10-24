@@ -72,21 +72,18 @@ impl StreamProvider for LocalStream {
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         self.accepted(async {
             let accepted = self.inner.provider.tail(path.clone()).await?;
-            // Both frame counters are published before publication is released.
+            // Only this path's frame positions determine its durable prefix.
             // Do not borrow the journal: compaction may hold it during device I/O.
-            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let synced = *self.inner.synced.borrow();
             let mut tails = self
                 .inner
                 .durable_tails
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            let durable = tails.entry(path).or_default();
-            if synced {
-                *durable = (*durable).max(accepted);
-            }
+            let durable = tails.get_mut(&path).map_or(accepted, |cuts| cuts.through(synced));
             Ok(crate::StreamWatermarks {
                 accepted,
-                durable: *durable,
+                durable,
             })
         })
         .await?
@@ -113,7 +110,7 @@ impl StreamProvider for LocalStream {
             let operation = span.clone();
             self.exclusive(&span, move |stream| async move {
                 let command = Command::Append(request.clone());
-                let frame = stream.prepare(&command)?;
+                let frame = stream.prepare(&command).await?;
                 let retain_conflict = request.idempotency_key.is_some();
                 let outcome = stream.inner.provider.append(request).await?;
                 if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
@@ -137,7 +134,7 @@ impl StreamProvider for LocalStream {
         ));
         span.scope(async {
             self.exclusive(&span, |stream| async move {
-                let frame = stream.prepare(&Command::Fork(request.clone()))?;
+                let frame = stream.prepare(&Command::Fork(request.clone())).await?;
                 let outcome = stream.inner.provider.fork(request).await?;
                 stream.persist(frame).await?;
                 Ok(outcome)
@@ -341,7 +338,7 @@ async fn commit<const ELIDE_REPLAY: bool>(
                 let frame = if replay {
                     None
                 } else {
-                    Some(stream.prepare(&Command::Commit(request.clone()))?)
+                    Some(stream.prepare(&Command::Commit(request.clone())).await?)
                 };
                 let (outcome, _claim) = stream
                     .inner

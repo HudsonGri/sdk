@@ -2,6 +2,8 @@ use super::*;
 
 #[tokio::test]
 async fn incremental_capture_honors_unchanged_nested_ignore() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-incremental-nested").await;
     let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x65; 16])).await;
     initial
@@ -18,6 +20,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
         .expect("kept");
     let previous_live = publish_fixture(initial).await;
     let previous_capture = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::default(),
         &BTreeSet::new(),
@@ -36,6 +39,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
         .expect("edit");
     publish_fixture(changed).await;
     let captured = capture_git_compatible_generation_incremental(
+        &graph,
         &workspace,
         &previous_live,
         &previous_capture.generation,
@@ -176,6 +180,10 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
 #[cfg(feature = "local")]
 #[tokio::test]
 async fn incremental_capture_applies_only_changed_eligible_paths() {
+    let state_root = tempfile::tempdir().expect("lineage state root");
+    let state_store = crate::LocalCoreStateStore::new(state_root.path());
+    let graph = crate::WorkspaceGraph::new(state_store.clone());
+
     let workspace = memory_workspace("git-capture-incremental").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x51; 16])).await;
     transaction
@@ -193,6 +201,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
     let previous_live = publish_fixture(transaction).await;
     let policy = GitIgnorePolicy::parse("*.tmp\n");
     let previous_capture = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &policy,
         &BTreeSet::new(),
@@ -200,9 +209,6 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
     )
     .await
     .expect("base capture");
-    let state_root = tempfile::tempdir().expect("lineage state root");
-    let state_store = crate::LocalCoreStateStore::new(state_root.path());
-    let graph = crate::WorkspaceGraph::new(state_store.clone());
     previous_capture
         .authenticated_proof(OperationId::from_bytes([0x52; 16]), &graph)
         .await
@@ -221,6 +227,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
     publish_fixture(transaction).await;
 
     let captured = capture_git_compatible_generation_incremental(
+        &graph,
         &workspace,
         &previous_live,
         &previous_capture.generation,
@@ -304,6 +311,8 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
 
 #[tokio::test]
 async fn nested_gitignore_change_forces_exact_capture() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-capture-nested-ignore").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x61; 16])).await;
     transaction
@@ -316,6 +325,7 @@ async fn nested_gitignore_change_forces_exact_capture() {
         .expect("file");
     let previous_live = publish_fixture(transaction).await;
     let previous_capture = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::default(),
         &BTreeSet::new(),
@@ -332,6 +342,7 @@ async fn nested_gitignore_change_forces_exact_capture() {
     publish_fixture(transaction).await;
 
     let captured = capture_git_compatible_generation_incremental(
+        &graph,
         &workspace,
         &previous_live,
         &previous_capture.generation,

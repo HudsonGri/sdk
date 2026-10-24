@@ -1,12 +1,13 @@
 use super::*;
 
 /// Captures an ignore-aware tree without changing the live workspace.
-pub async fn capture_git_compatible_generation<A, O>(
+pub async fn capture_git_compatible_generation<A, O, S: crate::WorkspaceLineageStore>(
+    graph: &crate::WorkspaceGraph<S>,
     workspace: &Workspace<A, O>,
     policy: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
     operation_id: OperationId,
-) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
+) -> Result<GitCapturedGeneration<A, O>, GitCaptureAuthenticationError<S::Error>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -16,17 +17,18 @@ where
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
+    capture_git_compatible_generation_from(graph, live, policy, already_tracked, operation_id).await
 }
 
 /// Captures an ignore-aware tree from one exact immutable generation.
-pub async fn capture_git_compatible_generation_at<A, O>(
+pub async fn capture_git_compatible_generation_at<A, O, S: crate::WorkspaceLineageStore>(
+    graph: &crate::WorkspaceGraph<S>,
     workspace: &Workspace<A, O>,
     generation: GenerationId,
     policy: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
     operation_id: OperationId,
-) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
+) -> Result<GitCapturedGeneration<A, O>, GitCaptureAuthenticationError<S::Error>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -36,7 +38,7 @@ where
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
+    capture_git_compatible_generation_from(graph, live, policy, already_tracked, operation_id).await
 }
 
 /// Forks `source` with each of `paths` restored to its state in `target`.
@@ -45,12 +47,13 @@ where
 /// paths, so the host-reserved entries of a child projection, such as its
 /// volume aliases, never enter the target's tree. The fork is keyed by
 /// `operation_id`, so a retried operation reuses it.
-pub async fn git_generation_with_paths_from<A, O>(
+pub async fn git_generation_with_paths_from<A, O, S: crate::WorkspaceLineageStore>(
+    graph: &crate::WorkspaceGraph<S>,
     source: &Generation<A, O>,
     target: &Generation<A, O>,
     paths: &[String],
     operation_id: OperationId,
-) -> Result<Generation<A, O>, GitCaptureError>
+) -> Result<Generation<A, O>, GitCaptureAuthenticationError<S::Error>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -59,6 +62,7 @@ where
         return Ok(source.clone());
     }
     apply_git_capture(
+        graph,
         source,
         Some(source),
         Some(target),

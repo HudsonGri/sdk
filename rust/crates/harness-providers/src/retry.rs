@@ -5,10 +5,7 @@ use std::time::Duration;
 /// One exchange's redelivery budget. Only a request the endpoint refused before any output is
 /// redelivered, so no caller-visible event can repeat.
 pub(crate) struct Redelivery {
-    spec: RetrySpec,
-    /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.
-    seed: [u8; 32],
-    attempt: u8,
+    schedule: acyclic_stream::runtime::Backoff,
 }
 
 impl Redelivery {
@@ -21,54 +18,37 @@ impl Redelivery {
         Self::seeded(spec, *hasher.finalize().as_bytes())
     }
 
-    /// The budget of one exchange without a dispatch, such as a token count, keyed by its body.
+    /// The budget of one exchange without a dispatch, such as a token count, with its own exchange identity.
     pub(crate) fn for_request(spec: RetrySpec, body: &[u8]) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness-providers:redelivery:request:v1");
+        hasher.update(uuid::Uuid::new_v4().as_bytes());
         hasher.update(body);
         Self::seeded(spec, *hasher.finalize().as_bytes())
     }
 
-    const fn seeded(spec: RetrySpec, seed: [u8; 32]) -> Self {
+    fn seeded(spec: RetrySpec, seed: [u8; 32]) -> Self {
         Self {
-            spec,
-            seed,
-            attempt: 0,
+            schedule: acyclic_stream::runtime::Backoff::new(
+                acyclic_stream::runtime::BackoffPolicy {
+                    attempts: u32::from(spec.attempts),
+                    base_delay_ms: spec.base_delay_ms,
+                    max_delay_ms: spec.max_delay_ms,
+                },
+                &seed,
+            ),
         }
     }
 
-    /// The wait before redelivering after `error`, or `None` when `error` is final.
+    /// Only classified pre-output refusals may redeliver a model exchange.
     pub(crate) fn next(
         &mut self,
         error: &Error,
         retry_after: Option<Duration>,
         output: bool,
     ) -> Option<Duration> {
-        if output || error.code() != ErrorCode::Unavailable || self.attempt >= self.spec.attempts {
-            return None;
-        }
-        let maximum = Duration::from_millis(self.spec.max_delay_ms.into());
-        let wait = match retry_after {
-            Some(wait) if wait > maximum => return None,
-            Some(wait) => wait,
-            None => {
-                let ceiling = u64::from(self.spec.base_delay_ms)
-                    .saturating_mul(1 << self.attempt.min(16))
-                    .min(u64::from(self.spec.max_delay_ms));
-                // Equal jitter from the exchange's seed.
-                let mut hasher = blake3::Hasher::new_keyed(&self.seed);
-                hasher.update(&[self.attempt]);
-                let sample = hasher
-                    .finalize()
-                    .as_bytes()
-                    .split_first_chunk::<8>()
-                    .map_or(0, |(sample, _)| u64::from_le_bytes(*sample));
-                let half = ceiling / 2;
-                Duration::from_millis(half + sample % (ceiling - half + 1))
-            }
-        };
-        self.attempt += 1;
-        Some(wait)
+        self.schedule
+            .next(error.code() == ErrorCode::Unavailable, retry_after, output)
     }
 }
 
@@ -182,6 +162,20 @@ mod tests {
         assert_eq!(none.next(&unavailable(), None, false), None);
         assert_eq!(retry_after(" 7 "), Some(Duration::from_secs(7)));
         assert_eq!(retry_after("not a date"), None);
+    }
+
+    #[test]
+    fn identical_bodies_on_independent_exchanges_do_not_reconnect_in_lockstep() {
+        let schedules = (0..128)
+            .map(|_| {
+                let mut exchange = Redelivery::for_request(RetrySpec::DEFAULT, b"same body");
+                (0..3)
+                    .map(|_| exchange.next(&unavailable(), None, false))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        // The old body-only identity admits only one schedule (negative control).
+        assert!(schedules.len() > 1);
     }
 
     proptest::proptest! {

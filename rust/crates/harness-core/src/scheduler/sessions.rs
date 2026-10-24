@@ -254,32 +254,14 @@ impl Scheduler {
     }
     pub(crate) fn session_root(
         &self,
-        mut id: OperationId,
+        id: OperationId,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(OperationId, u32)> {
-        let mut depth = 0u32;
-        let mut traversed = 0usize;
-        loop {
-            observe(work)?;
-            let state = self
-                .operation(id)
-                .ok_or_else(|| diagnostic(work, NotFound, "session task"))?;
-            traversed += 1;
-            if traversed > self.operations.len() {
-                return Err(diagnostic(
-                    work,
-                    Invalid,
-                    "session task lineage contains a cycle",
-                ));
-            }
-            let Some(parent) = &state.spec.parent else {
-                return Ok((id, depth));
-            };
-            id = parent.operation_id;
-            depth = depth
-                .checked_add(1)
-                .ok_or_else(|| diagnostic(work, Invalid, "task depth overflow"))?;
-        }
+        observe(work)?;
+        self.tree
+            .get(&id)
+            .map(|entry| (entry.root, entry.depth))
+            .ok_or_else(|| diagnostic(work, NotFound, "session task"))
     }
     pub(super) fn require_session_capacity(
         &self,
@@ -296,13 +278,8 @@ impl Scheduler {
         {
             return Ok(());
         }
-        let mut held = 0u64;
-        for (candidate, state) in &self.operations {
-            observe(work)?;
-            if state.reservation.is_some() && self.session_root(*candidate, work)?.0 == root {
-                held += 1;
-            }
-        }
+        observe(work)?;
+        let held = self.tree.get(&root).map_or(0, |entry| entry.active);
         if held >= limits.active_tasks {
             return Err(diagnostic(
                 work,
@@ -386,21 +363,13 @@ impl Scheduler {
                     "structured child requires an existing parent and slot",
                 )
             })?;
-            for ((id, slot), _) in self
-                .child_slots
-                .range((parent.operation_id, String::new())..)
-            {
-                observe(work)?;
-                if *id != parent.operation_id || slot > &parent.slot {
-                    break;
-                }
-                if slot == &parent.slot {
-                    return Err(diagnostic(
-                        work,
-                        Conflict,
-                        "parent child slot is already bound",
-                    ));
-                }
+            observe(work)?;
+            if self.child(parent.operation_id, &parent.slot).is_some() {
+                return Err(diagnostic(
+                    work,
+                    Conflict,
+                    "parent child slot is already bound",
+                ));
             }
             if state.phase == OperationPhase::Terminal || state.cancellation_requested {
                 return Err(diagnostic(
@@ -410,13 +379,12 @@ impl Scheduler {
                 ));
             }
             let (root, depth) = self.session_root(parent.operation_id, work)?;
+            if depth == u32::MAX {
+                return Err(diagnostic(work, Invalid, "task depth overflow"));
+            }
             if let Some(limits) = self.sessions.get(&root) {
-                let mut count = 0u64;
-                for id in self.operations.keys() {
-                    if self.session_root(*id, work)?.0 == root {
-                        count += 1;
-                    }
-                }
+                observe(work)?;
+                let count = self.tree.get(&root).map_or(0, |entry| entry.total);
                 if depth >= limits.depth || count >= limits.total_tasks {
                     return Err(diagnostic(
                         work,

@@ -3,7 +3,7 @@ use super::{
     file_client::{admission_error, error},
     query::WasmTaskVolume,
 };
-use crate::client::mailbox;
+use crate::client::{mailbox, publication_recovery::PublicationRecovery};
 use crate::{
     client::{FileClient, FileClientError},
     task_volume::{Cursor, FileKey, Query},
@@ -47,15 +47,12 @@ impl State {
     }
 }
 fn retry_after(
-    error: Option<&FileClientError>,
+    error: &FileClientError,
     remote: bool,
-    failures: &mut u32,
+    recovery: &mut PublicationRecovery,
 ) -> Option<BoxProviderFuture<'static, ()>> {
-    if !remote {
-        return None;
-    }
-    let delay = crate::client::submission_retry(error, failures)?;
-    Some(PlatformExecutor.sleep(delay))
+    let delay = recovery.failed(error, remote)?;
+    Some(PlatformExecutor.sleep(u32::try_from(delay.as_millis()).ok()?))
 }
 
 // Subscribe from the captured cut before the worker can admit more commands.
@@ -127,7 +124,7 @@ pub(super) async fn start(
     let (commands, mut receiver) = mailbox::channel();
     let current = state.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let mut failures = 0_u32;
+        let mut recovery = PublicationRecovery::new();
         let mut retry: Option<BoxProviderFuture<'static, ()>> = None;
         let mut idle: Option<mailbox::Sender<Result<(), JsValue>>> = None;
         loop {
@@ -159,22 +156,27 @@ pub(super) async fn start(
                                     Ok(bytes.into())
                                 })
                                 .await;
-                            if let Some(deadline) =
-                                retry_after(result.as_ref().err(), remote, &mut failures)
-                            {
-                                retry = Some(deadline);
+                            if let Err(failure @ FileClientError::Unavailable { .. }) = &result {
+                                retry = retry_after(failure, remote, &mut recovery);
+                                *current.error.borrow_mut() = error(failure);
                             }
                             current.refresh(&inner);
                             let admitted = result.is_ok();
                             let _ = reply.reply(result.map_err(admission_error));
-                            admitted && remote
+                            admitted && remote && recovery.on_publication()
                         }
                         Command::Flush(reply) => {
                             let result = inner.flush().await;
-                            if let Some(deadline) =
-                                retry_after(result.as_ref().err(), remote, &mut failures)
-                            {
-                                retry = Some(deadline);
+                            match &result {
+                                Ok(_) => {
+                                    retry = None;
+                                    recovery.succeeded();
+                                    *current.error.borrow_mut() = JsValue::UNDEFINED;
+                                }
+                                Err(failure) => {
+                                    retry = retry_after(failure, remote, &mut recovery);
+                                    *current.error.borrow_mut() = error(failure);
+                                }
                             }
                             current.refresh(&inner);
                             let _ = reply.reply(result.map_err(admission_error));
@@ -183,6 +185,8 @@ pub(super) async fn start(
                         Command::Idle(reply) => {
                             if inner.pending() == 0 {
                                 let _ = reply.reply(Ok(()));
+                            } else if recovery.stopped() {
+                                let _ = reply.reply(Err(current.error.borrow().clone()));
                             } else if idle.as_ref().is_some_and(|reply| !reply.is_closed()) {
                                 let _ =
                                     reply.reply(Err(error("an idle wait is already registered")));
@@ -193,7 +197,7 @@ pub(super) async fn start(
                         }
                     }
                 }
-                Wake::Retry => true,
+                Wake::Retry => recovery.on_timer(),
                 Wake::Published(change) => {
                     let ended = change.is_none();
                     if let Some(Err(failure)) = change {
@@ -202,7 +206,7 @@ pub(super) async fn start(
                     if ended {
                         changes = Box::pin(futures::stream::pending());
                     }
-                    !ended && inner.pending() > 0
+                    !ended && inner.pending() > 0 && recovery.on_publication()
                 }
             };
             if automatic {
@@ -213,14 +217,15 @@ pub(super) async fn start(
                 loop {
                     match inner.flush().await {
                         Ok(_) => {
-                            failures = 0;
+                            recovery.succeeded();
+                            *current.error.borrow_mut() = JsValue::UNDEFINED;
                             break;
                         }
                         Err(failure @ FileClientError::Rejected { .. }) => {
                             *current.error.borrow_mut() = admission_error(failure);
                         }
                         Err(failure) => {
-                            retry = retry_after(Some(&failure), true, &mut failures);
+                            retry = retry_after(&failure, true, &mut recovery);
                             *current.error.borrow_mut() = admission_error(failure);
                             break;
                         }
@@ -232,6 +237,13 @@ pub(super) async fn start(
                 && let Some(idle) = idle.take()
             {
                 let _ = idle.reply(Ok(()));
+            } else if recovery.stopped()
+                && let Some(idle) = idle.take()
+            {
+                // A terminal failure has no future timer or publication that can
+                // finish this wait. Return its retained request identity to the
+                // caller instead of leaving an unowned idle waiter behind.
+                let _ = idle.reply(Err(current.error.borrow().clone()));
             }
         }
     });

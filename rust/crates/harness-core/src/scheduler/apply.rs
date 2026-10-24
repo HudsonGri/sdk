@@ -36,9 +36,17 @@ impl Scheduler {
         let prepared = (|| {
             retained = event.retained_clone_owned_bytes()?;
             if let SchedulerEvent::Declared { spec } = &event {
-                let mut bytes = size_of::<(OperationId, OperationState)>() as u64;
+                let mut bytes = (size_of::<(OperationId, OperationState)>()
+                    + size_of::<(OperationId, TreeEntry)>()) as u64;
                 if spec.parent.is_some() {
-                    bytes += size_of::<((OperationId, String), OperationId)>() as u64;
+                    bytes += size_of::<(String, OperationId)>() as u64;
+                    if spec
+                        .parent
+                        .as_ref()
+                        .is_some_and(|parent| !self.child_slots.contains_key(&parent.operation_id))
+                    {
+                        bytes += size_of::<(OperationId, BTreeMap<String, OperationId>)>() as u64;
+                    }
                 }
                 if let Some(io) = work.as_deref_mut() {
                     io.admit_allocation(bytes)?;
@@ -68,7 +76,7 @@ impl Scheduler {
                     observed += (cancellation.capacity() * size_of::<OperationId>()) as u64;
                 }
             }
-            self.reserve_completion(&event, &cancellation, work)
+            Ok(())
         })();
         if let Err(error) = prepared {
             if let Some(io) = work.as_deref_mut() {
@@ -119,30 +127,6 @@ impl Scheduler {
         }
         Ok(())
     }
-    pub(super) fn cancellation_descendant(
-        &self,
-        mut candidate: OperationId,
-        root: OperationId,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<bool> {
-        let owner = self
-            .operation(root)
-            .map(|state| state.spec.owner.authority());
-        while candidate != root {
-            observe(work)?;
-            let Some(state) = self.operation(candidate) else {
-                return Ok(false);
-            };
-            if Some(state.spec.owner.authority()) != owner {
-                return Ok(false);
-            }
-            let Some(parent) = &state.spec.parent else {
-                return Ok(false);
-            };
-            candidate = parent.operation_id;
-        }
-        Ok(true)
-    }
     fn cancel_validated(&mut self, id: OperationId) -> Result<()> {
         let state = self
             .operations
@@ -151,6 +135,7 @@ impl Scheduler {
         if state.phase == OperationPhase::Terminal {
             return Ok(());
         }
+        let held = state.reservation.is_some();
         state.revision += 1;
         if !matches!(
             state.phase,
@@ -160,88 +145,66 @@ impl Scheduler {
             state.phase = OperationPhase::Terminal;
             state.reservation = None;
             state.outcome = Some(Outcome::Cancelled);
-            self.completion_order.push(id);
+            self.record_completion(id)?;
         } else {
             state.cancellation_requested = true;
         }
-        Ok(())
+        self.update_reservation_count(id, held)
     }
-    /// Reserves completion-order slots before mutation so pushes cannot fail.
-    fn reserve_completion(
-        &mut self,
-        event: &SchedulerEvent,
-        cancellation: &[OperationId],
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        let state = self.operation(event.operation_id());
-        let mut extra = match event {
-            SchedulerEvent::Rejected { .. } => 1,
-            SchedulerEvent::WaitingForChildren { .. } | SchedulerEvent::LeaseReleased { .. } => {
-                usize::from(state.is_some_and(|state| state.cancellation_requested))
-            }
-            SchedulerEvent::Completed { outcome, .. } => usize::from(
-                !matches!(outcome, Outcome::Indeterminate { .. })
-                    && state.is_some_and(|state| state.phase != OperationPhase::Terminal)
-                    && !self.completion_order.contains(&event.operation_id()),
-            ),
-            SchedulerEvent::Orchestrated { outcome, .. } => {
-                usize::from(!matches!(outcome, Outcome::Indeterminate { .. }))
-            }
-            _ => 0,
-        };
-        let cancel = match event {
-            SchedulerEvent::CancellationRequested { .. } => cancellation,
-            SchedulerEvent::Orchestrated { cancel, .. } => cancel.as_slice(),
-            _ => &[],
-        };
-        for id in cancel {
-            if self.operation(*id).is_some_and(|state| {
-                !matches!(
-                    state.phase,
-                    OperationPhase::Terminal
-                        | OperationPhase::Running
-                        | OperationPhase::Reconciling
-                ) && (state.phase == OperationPhase::Admitted || state.reservation.is_none())
-            }) {
-                extra += 1;
-            }
-        }
-        let target = self
-            .completion_order
-            .len()
-            .checked_add(extra)
-            .ok_or_else(|| diagnostic(work, Invalid, "scheduler completion slots overflow"))?;
-        if target <= self.completion_order.capacity() {
+
+    fn update_reservation_count(&mut self, id: OperationId, held: bool) -> Result<()> {
+        let current = self
+            .operation(id)
+            .is_some_and(|state| state.reservation.is_some());
+        if held == current {
             return Ok(());
         }
-        let bytes = target
-            .checked_mul(size_of::<OperationId>())
-            .ok_or_else(|| diagnostic(work, Invalid, "scheduler completion slots overflow"))?
-            as u64;
-        let copied = (self.completion_order.len() * size_of::<OperationId>()) as u64;
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_owned(bytes)?;
-            io.admit_copy(copied)?;
-            io.admit_allocation(bytes)?;
-            io.retain_owned(bytes)?;
-            if let Err(error) = io.copy_bytes(copied) {
-                let _ = io.release_owned(bytes);
-                return Err(error);
-            }
+        let root = self
+            .tree
+            .get(&id)
+            .ok_or_else(|| Error::Storage("operation tree entry is missing".into()))?
+            .root;
+        let entry = self
+            .tree
+            .get_mut(&root)
+            .ok_or_else(|| Error::Storage("session tree root is missing".into()))?;
+        entry.active = if current {
+            entry.active.checked_add(1)
+        } else {
+            entry.active.checked_sub(1)
         }
-        if let Err(cause) = self
-            .completion_order
-            .try_reserve_exact(target - self.completion_order.len())
+        .ok_or_else(|| Error::Storage("session reservation accounting is inconsistent".into()))?;
+        Ok(())
+    }
+
+    fn record_completion(&mut self, id: OperationId) -> Result<()> {
+        if let Some(parent) = self
+            .operation(id)
+            .and_then(|state| state.spec.parent.as_ref())
+            .map(|parent| parent.operation_id)
         {
-            return Err(match work.as_deref_mut() {
-                Some(io) => {
-                    let error = io.allocation_failure(cause);
-                    let _ = io.release_owned(bytes);
-                    error
-                }
-                None => Error::Storage(cause.to_string()),
-            });
+            let last = self
+                .tree
+                .get(&parent)
+                .ok_or_else(|| Error::Storage("completion parent is missing".into()))?
+                .last_completed;
+            if let Some(last) = last {
+                self.tree
+                    .get_mut(&last)
+                    .ok_or_else(|| Error::Storage("completion predecessor is missing".into()))?
+                    .next_completed = Some(id);
+            }
+            let entry = self
+                .tree
+                .get_mut(&parent)
+                .ok_or_else(|| Error::Storage("completion parent is missing".into()))?;
+            if entry.first_completed.is_none() {
+                entry.first_completed = Some(id);
+            }
+            entry.last_completed = Some(id);
         }
+        #[cfg(test)]
+        self.completion_order.push(id);
         Ok(())
     }
     #[inline(never)]
@@ -254,6 +217,10 @@ impl Scheduler {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let id = event.operation_id();
+        let held = self
+            .operation(id)
+            .is_some_and(|state| state.reservation.is_some());
+        let cancellation_event = matches!(event, SchedulerEvent::CancellationRequested { .. });
         macro_rules! state {
             ($id:expr) => {
                 self.operations.get_mut(&$id).ok_or_else(|| {
@@ -289,7 +256,7 @@ impl Scheduler {
                 state.reservation = None;
                 state.phase = OperationPhase::Terminal;
                 state.outcome = Some(Outcome::Failed { message: reason });
-                self.completion_order.push(id);
+                self.record_completion(id)?;
             }
             SchedulerEvent::Started { .. } => state!(id).phase = OperationPhase::Running,
             SchedulerEvent::Checkpointed { checkpoint, .. } => {
@@ -306,7 +273,7 @@ impl Scheduler {
                 if state.cancellation_requested {
                     state.phase = OperationPhase::Terminal;
                     state.outcome = Some(Outcome::Cancelled);
-                    self.completion_order.push(id);
+                    self.record_completion(id)?;
                 } else {
                     state.phase = phase;
                 }
@@ -347,10 +314,13 @@ impl Scheduler {
 
             SchedulerEvent::Orchestrated { .. } => self.apply_orchestration(event, work)?,
         }
+        if !cancellation_event {
+            self.update_reservation_count(id, held)?;
+        }
         Ok(())
     }
 
-    fn apply_declaration(
+    pub(super) fn apply_declaration(
         &mut self,
         event: SchedulerEvent,
         mut child_slot: Option<String>,
@@ -366,10 +336,22 @@ impl Scheduler {
         };
 
         let spec = *spec;
+        let (root, depth) = if let Some(parent) = &spec.parent {
+            let (root, depth) = self.session_root(parent.operation_id, work)?;
+            (
+                root,
+                depth
+                    .checked_add(1)
+                    .ok_or_else(|| diagnostic(work, Invalid, "task depth overflow"))?,
+            )
+        } else {
+            (id, 0)
+        };
         if let Some(parent) = &spec.parent {
-            self.child_slots.insert(
-                (
-                    parent.operation_id,
+            self.child_slots
+                .entry(parent.operation_id)
+                .or_default()
+                .insert(
                     child_slot.take().ok_or_else(|| {
                         diagnostic(
                             work,
@@ -377,9 +359,8 @@ impl Scheduler {
                             "prepared child slot is missing",
                         )
                     })?,
-                ),
-                id,
-            );
+                    id,
+                );
         }
         self.operations.insert(
             id,
@@ -394,6 +375,29 @@ impl Scheduler {
                 revision: 0,
             },
         );
+        self.tree.insert(
+            id,
+            TreeEntry {
+                root,
+                depth,
+                total: u64::from(root == id),
+                active: 0,
+                model_steps: 0,
+                first_completed: None,
+                last_completed: None,
+                next_completed: None,
+            },
+        );
+        if root != id {
+            let entry = self
+                .tree
+                .get_mut(&root)
+                .ok_or_else(|| diagnostic(work, Invalid, "session tree root is missing"))?;
+            entry.total = entry
+                .total
+                .checked_add(1)
+                .ok_or_else(|| diagnostic(work, Invalid, "task count overflow"))?;
+        }
         Ok(())
     }
 
@@ -418,16 +422,28 @@ impl Scheduler {
             ));
         };
 
-        self.model_claims
+        let root = self.session_root(id, work)?.0;
+        let claims = self
+            .model_claims
             .entry(id)
             .or_insert_with(|| TaskModelClaims {
                 ceiling: *ceiling,
+                used: 0,
                 attempts: BTreeMap::new(),
-            })
+            });
+        if claims
             .attempts
             .entry(*attempt_id)
             .or_default()
-            .insert(*step, *request_digest);
+            .insert(*step, *request_digest)
+            .is_none()
+        {
+            claims.used += 1;
+            self.tree
+                .get_mut(&root)
+                .ok_or_else(|| diagnostic(work, Invalid, "session tree root is missing"))?
+                .model_steps += 1;
+        }
         Ok(())
     }
 
@@ -471,7 +487,7 @@ impl Scheduler {
         state.outcome = Some(outcome);
         state.reservation = None;
         if state.phase == OperationPhase::Terminal {
-            self.completion_order.push(id);
+            self.record_completion(id)?;
         }
         Ok(())
     }
@@ -496,8 +512,8 @@ impl Scheduler {
             OperationPhase::Terminal
         };
         state.outcome = Some(outcome);
-        if state.phase == OperationPhase::Terminal && !self.completion_order.contains(&id) {
-            self.completion_order.push(id);
+        if state.phase == OperationPhase::Terminal {
+            self.record_completion(id)?;
         }
 
         Ok(())

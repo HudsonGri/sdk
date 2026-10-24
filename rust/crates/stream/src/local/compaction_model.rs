@@ -79,7 +79,10 @@ pub(crate) fn verify(fault: u8) {
                     }
                     let request = request();
                     let publication = provider.inner.publication.write().await;
-                    let frame = provider.prepare(&Command::Commit(request.clone())).unwrap();
+                    let frame = provider
+                        .prepare(&Command::Commit(request.clone()))
+                        .await
+                        .unwrap();
                     provider.inner.provider.commit(request).await.unwrap();
                     provider.persist(frame).await.unwrap();
                     let _retained = provider.release_publication(publication);

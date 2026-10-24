@@ -61,7 +61,7 @@ impl LocalStream {
                             None
                         } else {
                             work.reserve_durability(4)?;
-                            Some(stream.prepare(&command)?)
+                            Some(stream.prepare(&command).await?)
                         };
                         let Command::Commit(request) = command else {
                             unreachable!()
@@ -157,7 +157,7 @@ impl LocalStream {
                             .as_ref()
                             .ok_or(StreamError::Unavailable)?
                             .reserve_durability(4)?;
-                        Some(stream.prepare(&command)?)
+                        Some(stream.prepare(&command).await?)
                     };
                     let Command::Append(request) = command else {
                         unreachable!()

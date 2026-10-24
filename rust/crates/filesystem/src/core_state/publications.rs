@@ -40,6 +40,23 @@ impl GitCompatStore for LocalCoreStateStore {
 impl MultiRootPublicationStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
 
+    async fn parent_operation(
+        &self,
+        parent_context_id: WorkspaceContextId,
+    ) -> Result<Option<OperationId>, Self::Error> {
+        self.transaction(move |namespace| {
+            let mut paths = namespace.record(
+                MULTI_ROOT_PARENT_CLAIM_FAMILY,
+                &parent_context_id.into_bytes(),
+            )?;
+            with_lock(&mut paths, |paths| {
+                Ok(read_recoverable::<MultiRootParentClaim>(paths)?
+                    .map(|(claim, _)| claim.operation_id))
+            })
+        })
+        .await
+    }
+
     async fn load(
         &self,
         operation_id: OperationId,

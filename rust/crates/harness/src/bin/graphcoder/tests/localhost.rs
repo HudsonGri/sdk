@@ -78,27 +78,7 @@ async fn shipping_prompt_jsonl_replay_and_scope_use_the_deployed_package()
     registry.package(code)?;
     let server = Server::start(stream, filesystem, registry).await?;
     let endpoint = server.endpoint();
-    let mut api =
-        wire::actors_service_client::ActorsServiceClient::new(client::channel(&endpoint).await?);
-    let deployment = wire::DeploymentRequest {
-        name: scope.namespace,
-        account_id: scope.account,
-        code_sha256: digest.to_vec(),
-        limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1000,
-            memory_bytes: 8 * 1024 * 1024,
-            checkpoint_bytes: 8 * 1024 * 1024,
-        }),
-        idempotency_key: "install".into(),
-        ..Default::default()
-    };
-    api.deploy_namespace(deployment.clone()).await?;
-    let mut wrong = deployment;
-    wrong.account_id = b"another-account".to_vec();
-    assert_eq!(
-        api.deploy_namespace(wrong).await.unwrap_err().code(),
-        tonic::Code::PermissionDenied
-    );
+    deploy(&endpoint, scope, digest).await?;
     for jsonl in [false, true] {
         let operation = OperationId::new();
         let request = format!(
@@ -123,9 +103,33 @@ async fn shipping_prompt_jsonl_replay_and_scope_use_the_deployed_package()
         2,
         "reconnect must not dispatch a completed request again"
     );
-    drop(api);
     server.shutdown().await?;
     model_server.abort();
+    Ok(())
+}
+
+async fn deploy(endpoint: &str, scope: Scope, digest: [u8; 32])
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut api = wire::actors_service_client::ActorsServiceClient::new(client::channel(endpoint).await?);
+    let deployment = wire::DeploymentRequest {
+        name: scope.namespace,
+        account_id: scope.account,
+        code_sha256: digest.to_vec(),
+        limits: Some(wire::ActorLimits {
+            handler_timeout_millis: 1000,
+            memory_bytes: 8 * 1024 * 1024,
+            checkpoint_bytes: 8 * 1024 * 1024,
+        }),
+        idempotency_key: "install".into(),
+        ..Default::default()
+    };
+    api.deploy_namespace(deployment.clone()).await?;
+    let mut wrong = deployment;
+    wrong.account_id = b"another-account".to_vec();
+    assert_eq!(
+        api.deploy_namespace(wrong).await.unwrap_err().code(),
+        tonic::Code::PermissionDenied
+    );
     Ok(())
 }
 

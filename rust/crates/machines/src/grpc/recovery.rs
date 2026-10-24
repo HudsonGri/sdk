@@ -29,6 +29,10 @@ pub(super) async fn wait(
     obs::finish(
         async {
             let mut unknown_observations = 0;
+            let mut backoff = acyclic_stream::runtime::Backoff::new(
+                acyclic_stream::runtime::BackoffPolicy::CONNECTION,
+                &key.as_bytes(),
+            );
             loop {
                 match provider
                     .client()
@@ -86,7 +90,10 @@ pub(super) async fn wait(
                     }
                     Err(_) => {}
                 }
-                tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;
+                let Some(delay) = backoff.next(true, None, false) else {
+                    return Err(ProviderError::Indeterminate(key));
+                };
+                tokio::time::sleep(delay).await;
             }
         }
         .await,
@@ -245,25 +252,16 @@ pub(super) fn retryable_observation_error(
     value: &tonic::Status,
     unknown_observations: &mut u8,
 ) -> bool {
-    match value.code() {
-        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
-        // Repeated ambiguous errors return the retained recovery key.
-        tonic::Code::Unknown => {
-            *unknown_observations = unknown_observations.saturating_add(1);
-            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS
-        }
-        _ => false,
+    if value.code() == tonic::Code::Unknown {
+        *unknown_observations = unknown_observations.saturating_add(1);
+        *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS
+    } else {
+        acyclic_stream::grpc::retryable(value)
     }
 }
 
 pub(super) fn retryable_watch_error(value: &tonic::Status) -> bool {
-    matches!(
-        value.code(),
-        tonic::Code::Unavailable
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::Cancelled
-            | tonic::Code::Unknown
-    )
+    acyclic_stream::grpc::retryable(value)
 }
 
 pub(super) fn observed_outcome(

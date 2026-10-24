@@ -243,14 +243,11 @@ impl Scheduler {
         result
     }
     fn successful_completions(&self, parent: OperationId) -> impl Iterator<Item = &FileRef> {
-        self.completion_order.iter().filter_map(move |id| {
-            self.children(parent)
-                .find(|(_, child)| child.spec.operation_id == *id)
-                .and_then(|(_, child)| match &child.outcome {
-                    Some(Outcome::Succeeded(file)) => Some(file),
-                    _ => None,
-                })
-        })
+        self.completed_children(parent)
+            .filter_map(|child| match &child.outcome {
+                Some(Outcome::Succeeded(file)) => Some(file),
+                _ => None,
+            })
     }
     fn inspect_orchestration(
         &self,
@@ -288,26 +285,17 @@ impl Scheduler {
             }
             Orchestration::Race | Orchestration::Quorum { .. } => {
                 let mut successes = 0;
-                for completed in &self.completion_order {
+                for child in self.completed_children(parent) {
                     observe(work)?;
-                    for (_, child) in self.children(parent) {
-                        observe(work)?;
-                        if child.spec.operation_id == *completed {
-                            if let Some(Outcome::Succeeded(file)) = &child.outcome {
-                                if matches!(state.spec.orchestration, Orchestration::Race) {
-                                    return Ok(Plan::Succeeded(file));
-                                }
-                                successes += 1;
-                                if let Orchestration::Quorum { required } = state.spec.orchestration
-                                    && successes >= required as usize
-                                {
-                                    return Ok(Plan::Assemble(
-                                        AssemblyKind::Quorum,
-                                        required as usize,
-                                    ));
-                                }
-                            }
-                            break;
+                    if let Some(Outcome::Succeeded(file)) = &child.outcome {
+                        if matches!(state.spec.orchestration, Orchestration::Race) {
+                            return Ok(Plan::Succeeded(file));
+                        }
+                        successes += 1;
+                        if let Orchestration::Quorum { required } = state.spec.orchestration
+                            && successes >= required as usize
+                        {
+                            return Ok(Plan::Assemble(AssemblyKind::Quorum, required as usize));
                         }
                     }
                 }
@@ -435,9 +423,10 @@ impl Scheduler {
                 while let Some(parent) = frontier.get(index).copied() {
                     for (_, child) in self.children(parent) {
                         observe(work)?;
-                        if owner == Some(child.spec.owner.authority())
-                            && !frontier.contains(&child.spec.operation_id)
-                        {
+                        // A declaration names an already-existing parent;
+                        // identities and parent links never change. Each node
+                        // therefore has exactly one path from this root.
+                        if owner == Some(child.spec.owner.authority()) {
                             push(&mut frontier, child.spec.operation_id, &mut held, work)?;
                         }
                     }

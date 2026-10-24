@@ -428,14 +428,61 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     graph.register_root(&root).await?;
+    let child_key = IdempotencyKey::from_bytes([1; 16]);
     let child = graph
-        .fork(&root, "graph-child", IdempotencyKey::from_bytes([1; 16]))
+        .fork(
+            &root,
+            "graph-child",
+            child_key,
+            None,
+            |generation| {
+                let root = &root;
+                async move {
+                    root.fork::<_, _, acyclic_fs::WorkspaceError>(
+                        "graph-child",
+                        ForkOptions::from_generation(generation, child_key),
+                        acyclic_fs::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        (),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| {
+                        WorkspaceLineageError::<LineageStoreError>::from(failure.error)
+                    })
+                }
+            },
+            |child| child,
+        )
         .await?;
+    let grandchild_key = IdempotencyKey::from_bytes([2; 16]);
     let grandchild = graph
         .fork(
             &child,
             "graph-grandchild",
-            IdempotencyKey::from_bytes([2; 16]),
+            grandchild_key,
+            None,
+            |generation| {
+                let child = &child;
+                async move {
+                    child
+                        .fork::<_, _, acyclic_fs::WorkspaceError>(
+                            "graph-grandchild",
+                            ForkOptions::from_generation(generation, grandchild_key),
+                            acyclic_fs::PublicationPermit::Unrestricted,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                            (),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| {
+                            WorkspaceLineageError::<LineageStoreError>::from(failure.error)
+                        })
+                }
+            },
+            |child| child,
         )
         .await?;
     drop(graph);

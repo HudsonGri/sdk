@@ -68,7 +68,7 @@ pub struct DaytonaConfig {
     pub tenant: Option<String>,
     /// Daytona organization to act in when the credential spans several.
     pub organization_id: Option<String>,
-    /// Interval between state polls while waiting for a sandbox or snapshot to settle.
+    /// Initial upper delay for bounded jittered sandbox/snapshot observation.
     pub poll_interval: Duration,
     /// Maximum time to wait for a sandbox or snapshot to settle before reporting indeterminate.
     pub ready_timeout: Duration,
@@ -444,6 +444,26 @@ impl DaytonaProvider {
         }
     }
 
+    fn observation_backoff(
+        &self,
+        key: IdempotencyKey,
+        resource: &str,
+    ) -> acyclic_stream::runtime::Backoff {
+        let mut identity = Sha256::new();
+        identity.update(b"daytona:observation:v1");
+        identity.update(key.as_bytes());
+        identity.update(resource.as_bytes());
+        acyclic_stream::runtime::Backoff::new(
+            acyclic_stream::runtime::BackoffPolicy {
+                base_delay_ms: u32::try_from(self.config.poll_interval.as_millis())
+                    .unwrap_or(u32::MAX),
+                max_delay_ms: 2_000,
+                ..acyclic_stream::runtime::BackoffPolicy::CONNECTION
+            },
+            &identity.finalize(),
+        )
+    }
+
     /// Polls a sandbox until its state settles.
     async fn wait_settled(
         &self,
@@ -451,6 +471,7 @@ impl DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<Sandbox, ProviderError> {
         let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
+        let mut observation = self.observation_backoff(key, sandbox_id);
         loop {
             let sandbox = self.api.get(sandbox_id).await?;
             if map::is_settled(sandbox.state.as_deref()) {
@@ -463,7 +484,10 @@ impl DaytonaProvider {
             if tokio::time::Instant::now() >= deadline {
                 return Err(ProviderError::Indeterminate(key));
             }
-            tokio::time::sleep(self.config.poll_interval).await;
+            let delay = observation
+                .next(true, None, false)
+                .ok_or(ProviderError::Indeterminate(key))?;
+            tokio::time::sleep(delay).await;
         }
     }
 
@@ -476,6 +500,7 @@ impl DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<Snapshot, ProviderError> {
         let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
+        let mut observation = self.observation_backoff(key, snapshot);
         loop {
             match self.api.get_snapshot(snapshot).await {
                 Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
@@ -495,7 +520,10 @@ impl DaytonaProvider {
             if tokio::time::Instant::now() >= deadline {
                 return Err(ProviderError::Indeterminate(key));
             }
-            tokio::time::sleep(self.config.poll_interval).await;
+            let delay = observation
+                .next(true, None, false)
+                .ok_or(ProviderError::Indeterminate(key))?;
+            tokio::time::sleep(delay).await;
         }
     }
 
@@ -779,7 +807,7 @@ impl DaytonaProvider {
         // A native child is complete the moment it exists: memory and disk were copied.
         ours.insert(map::LABEL_READY.to_owned(), "true".to_owned());
         let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
-        let mut backoff = self.config.poll_interval;
+        let mut backoff = self.observation_backoff(key, &name);
         let (child, adopted) = loop {
             self.wait_running(source, key).await?;
             let request = ForkRequest {
@@ -799,8 +827,10 @@ impl DaytonaProvider {
                     if map::fork_refused_for_state(&detail)
                         && tokio::time::Instant::now() < deadline =>
                 {
-                    tokio::time::sleep(backoff).await;
-                    backoff = backoff.saturating_mul(2).min(MAX_FORK_BACKOFF);
+                    let Some(delay) = backoff.next(true, None, false) else {
+                        return Err(ProviderError::Indeterminate(key));
+                    };
+                    tokio::time::sleep(delay).await;
                 }
                 Err(error) => return Err(error),
             }
@@ -1557,8 +1587,7 @@ impl MachinesProvider for DaytonaProvider {
         Ok(observation)
     }
 
-    /// Mutations complete inline, so the stream yields the current observation and, while it
-    /// is still pending, one more once it leaves `Pending` or the ready timeout elapses.
+    /// Yields the current observation and, while pending, its next terminal transition.
     async fn watch_operation(
         &self,
         operation: OperationId,
@@ -1567,14 +1596,7 @@ impl MachinesProvider for DaytonaProvider {
         if current.phase != OperationPhase::Pending {
             return Ok(futures::stream::once(async move { Ok(current) }).boxed());
         }
-        let last = self
-            .ops
-            .watch(
-                operation,
-                self.config.poll_interval,
-                self.config.ready_timeout,
-            )
-            .await;
+        let last = self.ops.watch(operation).await;
         Ok(futures::stream::iter([Ok(current), last]).boxed())
     }
 }
@@ -1601,7 +1623,6 @@ async fn run(api: &DaytonaApi, sandbox_id: &str, command: String) -> Result<(), 
 }
 
 /// Longest wait between retries of a fork refused because its source is still forking.
-const MAX_FORK_BACKOFF: Duration = Duration::from_secs(2);
 /// Attempts [`quiescent_archive_script`] makes before giving up.
 const ARCHIVE_ATTEMPTS: u32 = 5;
 /// Exit status of [`quiescent_archive_script`] when the workspace never held still.

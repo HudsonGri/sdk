@@ -82,6 +82,7 @@ function copyWorkspaceLineageRecord(
     workspaceName: record.workspaceName,
     parentWorkspaceId: copyOptionalBytes(record.parentWorkspaceId),
     parentWorkspaceName: record.parentWorkspaceName,
+    creationOperation: copyOptionalBytes(record.creationOperation),
     forkGeneration: new Uint8Array(record.forkGeneration),
     initialGeneration: new Uint8Array(record.initialGeneration),
   };

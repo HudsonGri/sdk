@@ -120,7 +120,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     },
   });
   try {
-    const { exerciseWorkspace } = await import("../typescript/packages/filesystem/test/workspace-composition.mjs");
+    const { exerciseWorkspace, exerciseWorkspaceGraph } = await import("../typescript/packages/filesystem/test/workspace-composition.mjs");
     await exerciseWorkspace(engine);
     const workspace = await engine.createWorkspace("qualification");
     const originalId = workspace.id;
@@ -176,7 +176,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
       }), "workspace");
       await rejectsForeign(() => changes.compose(foreignChange, 32), "change set");
       const graph = await openNativeWorkspaceGraph(join(engineRoot, "graph-adapter"));
-      await graph.registerRoot(workspace);
+      await exerciseWorkspaceGraph(graph, workspace);
       const graphChild = await graph.fork(workspace, "graph-child");
       const graphChildGeneration = await graphChild.sync();
       await graphChild.forkAt("graph-grandchild", graphChildGeneration);

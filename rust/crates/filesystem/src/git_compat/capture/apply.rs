@@ -1,35 +1,52 @@
 use super::*;
 
-pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn apply_git_capture<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    S: crate::WorkspaceLineageStore,
+>(
+    graph: &crate::WorkspaceGraph<S>,
     parent: &Generation<A, O>,
     base: Option<&Generation<A, O>>,
     source: Option<&Generation<A, O>>,
     paths: &[String],
     tracked_paths: BTreeSet<String>,
     operation_id: OperationId,
-) -> Result<GitCapturedGeneration<A, O>, GitCaptureError> {
+) -> Result<GitCapturedGeneration<A, O>, GitCaptureAuthenticationError<S::Error>> {
     let bytes = operation_id.into_bytes();
     let workspace_hash = hex::encode(&parent.workspace_id().into_bytes()[..6]);
-    let capture = parent
-        .workspace()
-        .fork::<_, _, crate::WorkspaceError>(
-            format!("git-capture-{workspace_hash}-{}", hex::encode(bytes)),
-            crate::ForkOptions::from_generation(parent.clone(), IdempotencyKey::from_bytes(bytes)),
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    },
-                ))
+    let destination = format!("git-capture-{workspace_hash}-{}", hex::encode(bytes));
+    let source_workspace = parent.workspace();
+    let key = IdempotencyKey::from_bytes(bytes);
+    let capture = graph
+        .fork(
+            &source_workspace,
+            &destination,
+            key,
+            Some(parent.id()),
+            |generation| {
+                let source_workspace = &source_workspace;
+                let destination = &destination;
+                async move {
+                    source_workspace
+                        .fork::<_, _, WorkspaceError>(
+                            &destination,
+                            crate::ForkOptions::from_generation(generation, key),
+                            crate::PublicationPermit::Unrestricted,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                            (),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| {
+                            GitCaptureAuthenticationError::<S::Error>::from(failure.error)
+                        })
+                }
             },
+            |child| child,
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?;
     let mut apply_bytes = bytes;
     apply_bytes[0] ^= 0xa5;
     let apply_key = IdempotencyKey::from_bytes(apply_bytes);
@@ -45,7 +62,7 @@ pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStor
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?;
         let [initial_generation] = parents.as_slice() else {
-            return Err(GitCaptureError::Conflict);
+            return Err(GitCaptureError::Conflict.into());
         };
         (generation, *initial_generation)
     } else {
@@ -74,7 +91,7 @@ pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStor
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)?;
                 let [initial_generation] = parents.as_slice() else {
-                    return Err(GitCaptureError::Conflict);
+                    return Err(GitCaptureError::Conflict.into());
                 };
                 (generation, *initial_generation)
             }
@@ -82,7 +99,7 @@ pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStor
             | crate::WorkspacePathApply::Stale(_)
             | crate::WorkspacePathApply::Fenced
             | crate::WorkspacePathApply::IdempotencyConflict => {
-                return Err(GitCaptureError::Conflict);
+                return Err(GitCaptureError::Conflict.into());
             }
         }
     };

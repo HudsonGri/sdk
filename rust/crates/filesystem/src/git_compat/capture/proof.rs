@@ -10,7 +10,7 @@ pub struct GitCapturedGeneration<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
-    /// Authenticates the capture's SDK fork and registers its durable lineage.
+    /// Authenticates the capture against lineage committed by its SDK graph fork.
     pub async fn authenticated_proof<S: crate::WorkspaceLineageStore>(
         &self,
         operation_id: OperationId,
@@ -66,14 +66,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         {
             return Err(GitCaptureError::Conflict.into());
         }
-        graph
-            .register_existing_child_at_generation(
-                &parent.workspace(),
-                &child,
-                parent.id(),
-                *initial_generation,
-            )
+        let lineage = graph
+            .authorize_join(child.id(), parent.workspace_id())
             .await?;
+        if lineage.fork_generation != parent.id()
+            || lineage.initial_generation != *initial_generation
+            || lineage.creation_operation != Some(operation_id)
+        {
+            return Err(GitCaptureError::Conflict.into());
+        }
         Ok(Some(GitCaptureProof {
             fork_parent: GitTreeRef::exact(parent.workspace_id(), parent.id()),
             initial_generation: *initial_generation,
@@ -105,4 +106,10 @@ pub enum GitCaptureAuthenticationError<E: std::error::Error + 'static> {
     /// The direct-parent lineage could not be durably registered.
     #[error(transparent)]
     Lineage(#[from] crate::WorkspaceLineageError<E>),
+}
+
+impl<E: std::error::Error + 'static> From<WorkspaceError> for GitCaptureAuthenticationError<E> {
+    fn from(error: WorkspaceError) -> Self {
+        Self::Capture(GitCaptureError::from(error))
+    }
 }

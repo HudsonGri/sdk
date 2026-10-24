@@ -264,22 +264,6 @@ fn uncertain_execution_retains_capacity_and_rejects_stale_owners() -> Result<()>
 }
 
 #[test]
-fn task_inbox_is_gapless_and_idempotent() -> Result<()> {
-    let task_id = TaskId::from_bytes([4; 16]);
-    let item = InboxItem {
-        task_id,
-        sequence: 1,
-        message_id: "message-1".into(),
-        payload: state_ref()?,
-    };
-    let mut inbox = TaskInbox::new(task_id);
-    inbox.apply(item.clone())?;
-    inbox.apply(item)?;
-    assert_eq!(inbox.after(0, 10).len(), 1);
-    Ok(())
-}
-
-#[test]
 fn recursive_cancellation_stops_at_owner_boundaries() -> Result<()> {
     let mut scheduler = Scheduler::new();
     let mut parent = spec(id(20), Orchestration::Join)?;

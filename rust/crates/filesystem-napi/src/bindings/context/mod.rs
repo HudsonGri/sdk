@@ -15,6 +15,7 @@ pub struct NativeWorkspaceLineageRecord {
     pub workspace_name: String,
     pub parent_workspace_id: Option<Buffer>,
     pub parent_workspace_name: Option<String>,
+    pub creation_operation: Option<Buffer>,
     pub fork_generation: Buffer,
     pub initial_generation: Buffer,
 }
@@ -47,11 +48,36 @@ impl NativeWorkspaceGraph {
         destination: String,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
+        let key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
                 &parent.inner,
-                destination,
-                native_idempotency_key(idempotency_key)?,
+                &destination,
+                key,
+                None,
+                |generation| {
+                    let destination = &destination;
+                    async move {
+                        parent
+                            .inner
+                            .fork::<_, _, acyclic_fs::WorkspaceError>(
+                                &destination,
+                                acyclic_fs::ForkOptions::from_generation(generation, key),
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                acyclic_fs::WorkBudget::UNBOUNDED,
+                                &acyclic_fs::CancellationToken::new(),
+                                (),
+                            )
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| {
+                                acyclic_fs::WorkspaceLineageError::<
+                                    acyclic_fs::LocalCoreStateStoreError,
+                                >::from(failure.error)
+                            })
+                    }
+                },
+                |child| child,
             )
             .await
             .map(|inner| NativeWorkspace { inner })
@@ -107,6 +133,9 @@ pub(in crate::bindings) fn native_workspace_lineage_record(
             .parent_workspace_id
             .map(|id| Buffer::from(id.into_bytes().to_vec())),
         parent_workspace_name: record.parent_workspace_name,
+        creation_operation: record
+            .creation_operation
+            .map(|id| Buffer::from(id.into_bytes().to_vec())),
         fork_generation: Buffer::from(record.fork_generation.digest().into_bytes().to_vec()),
         initial_generation: Buffer::from(record.initial_generation.digest().into_bytes().to_vec()),
     }

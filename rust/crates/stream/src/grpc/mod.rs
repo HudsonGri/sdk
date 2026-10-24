@@ -43,7 +43,6 @@ pub(crate) mod tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
-const RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Connection configuration failure.
 #[derive(Debug, Error)]
@@ -301,6 +300,10 @@ impl Client {
     {
         let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
         let mut attempt = 0_u64;
+        let mut backoff = crate::runtime::Backoff::new(
+            crate::runtime::BackoffPolicy::CONNECTION,
+            &crate::new_identity_bytes(),
+        );
         loop {
             attempt += 1;
             // One span describes one physical RPC attempt.
@@ -325,16 +328,15 @@ impl Client {
                 Err(_) => Status::deadline_exceeded("attempt expired"),
             };
             completion.status(&error);
-            if !retryable(&error) {
+            let Some(delay) = backoff.next(retryable(&error), None, false) else {
                 return Err(status(&error));
-            }
+            };
             tracing::warn!(
                 attempt,
                 rpc.code = error.code() as u64,
                 "stream rpc retried"
             );
-            tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
-                .await;
+            tokio::time::sleep_until((tokio::time::Instant::now() + delay).min(deadline)).await;
             if tokio::time::Instant::now() >= deadline {
                 return Err(status(&error));
             }
@@ -406,7 +408,7 @@ fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectErro
 }
 
 /// Whether the outcome of an attempt is unknown because the transport was lost.
-pub(crate) fn retryable(error: &Status) -> bool {
+pub fn retryable(error: &Status) -> bool {
     match error.code() {
         Code::Unavailable | Code::DeadlineExceeded => return true,
         Code::Unknown if std::error::Error::source(error).is_none() => return true,

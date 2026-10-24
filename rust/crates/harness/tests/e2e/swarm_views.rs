@@ -309,7 +309,7 @@ impl<'a> State<'a> {
         }
         let file = FileValue::from_record(&record)
             .map_err(publish::storage)?
-            .ok_or_else(|| Error::Invalid("content header repeated".into()))?;
+            .into_iter().next().ok_or_else(|| Error::Invalid("content header repeated".into()))?;
         let view = self
             .heads
             .get_mut(&id)

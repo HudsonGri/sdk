@@ -198,10 +198,14 @@ struct Route {
     generation: u64,
     placement_epoch: u64,
     received: u64,
+    // Unlike `received`, this cut never rewinds when reconnecting from the
+    // application cursor. Replayed buffered records are not new progress.
+    recovery_progress: u64,
     received_opaque: Bytes,
     acknowledge: bool,
     acknowledged: u64,
     opened: bool,
+    recovery: crate::runtime::Backoff,
     credit: wire::SessionWindow,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,

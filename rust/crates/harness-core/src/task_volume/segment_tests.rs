@@ -5,6 +5,31 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 use std::sync::Arc;
 
+#[test]
+fn native_json_denial_precedes_serialization() {
+    struct Probe<'a>(&'a std::sync::atomic::AtomicUsize);
+    impl Serialize for Probe<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            serializer.serialize_str("mailbox body")
+        }
+    }
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    budget.bytes_encoded = 0;
+    let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+    let baseline = work.live_allocation_bytes();
+    assert!(encode_json(&Probe(&attempts), Some(&work)).is_err());
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    // The former direct serializer executes despite the exhausted native ledger.
+    assert!(serde_json::to_vec(&Probe(&attempts)).is_ok());
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // Attribution survives both the persisted segment and public file codecs.

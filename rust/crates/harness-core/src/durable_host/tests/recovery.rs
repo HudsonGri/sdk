@@ -3,6 +3,32 @@ use crate::distributed::{WorkPull, Worker};
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
+async fn outcome_wait_is_push_driven_and_does_not_hold_the_coordinator() -> Result<()> {
+    use futures::FutureExt;
+    let f = Fixture::new(
+        Arc::new(MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        None,
+        &[],
+    )
+    .await?;
+    let task = TaskId::from_bytes([1; 16]);
+    f.host.admit(f.admission(1, json!(0))).await?;
+    let wait = f.host.wait_outcome(task);
+    futures::pin_mut!(wait);
+    assert!(futures::poll!(&mut wait).is_pending());
+    f.host.cancel(task).await?;
+    assert_eq!(
+        wait.now_or_never().transpose()?,
+        Some(Outcome::Cancelled),
+        "committed completion must be ready without advancing a poll timer"
+    );
+    assert_eq!(f.host.wait_outcome(task).await?, Outcome::Cancelled);
+    Ok(())
+}
+
+#[tokio::test]
 async fn b11_pull_response_loss_keeps_original_reservation() -> Result<()> {
     for mode in 0..3 {
         let stream: Arc<crate::test_stream::LostSessionAck<MemoryStream>> =

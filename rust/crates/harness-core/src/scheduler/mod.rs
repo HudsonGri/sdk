@@ -17,7 +17,7 @@ pub use declarations::{
     ResourceRequest, SessionLimits,
 };
 pub use events::SchedulerEvent;
-pub use inbox::{InboxItem, TaskInbox};
+pub use inbox::InboxItem;
 pub use orchestration::{
     AssemblyKind, OrchestrationDecision, assembly_invocation_digest, reduction_invocation_digest,
 };
@@ -37,19 +37,37 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 struct TaskModelClaims {
     ceiling: u64,
+    used: u64,
     attempts: BTreeMap<OperationId, BTreeMap<u32, [u8; 32]>>,
 }
 impl TaskModelClaims {
     fn used(&self) -> u64 {
-        self.attempts.values().map(|steps| steps.len() as u64).sum()
+        self.used
     }
+}
+
+// Immutable ancestry and root-local counters are projected by the same event
+// application as operations. No caller maintains or reconstructs a second tree.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+struct TreeEntry {
+    root: OperationId,
+    depth: u32,
+    total: u64,
+    active: u64,
+    model_steps: u64,
+    first_completed: Option<OperationId>,
+    last_completed: Option<OperationId>,
+    next_completed: Option<OperationId>,
 }
 
 /// Pure projection of dependency, capacity, ownership and cancellation events.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 pub struct Scheduler {
     operations: BTreeMap<OperationId, OperationState>,
-    child_slots: BTreeMap<(OperationId, String), OperationId>,
+    child_slots: BTreeMap<OperationId, BTreeMap<String, OperationId>>,
+    tree: BTreeMap<OperationId, TreeEntry>,
+    // Test-only event trace: production completion order lives in parent links.
+    #[cfg(test)]
     completion_order: Vec<OperationId>,
     #[serde(default)]
     sessions: BTreeMap<OperationId, SessionLimits>,
@@ -63,6 +81,8 @@ impl Scheduler {
         Self {
             operations: BTreeMap::new(),
             child_slots: BTreeMap::new(),
+            tree: BTreeMap::new(),
+            #[cfg(test)]
             completion_order: Vec::new(),
             sessions: BTreeMap::new(),
             model_claims: BTreeMap::new(),
@@ -75,14 +95,56 @@ impl Scheduler {
     }
     /// Structured children in stable slot order.
     pub fn children(&self, parent: OperationId) -> impl Iterator<Item = (&str, &OperationState)> {
+        self.children_after(parent, None)
+    }
+
+    /// Seeks directly past a parent-local cursor; callers bound each page with
+    /// `take` without visiting earlier pages or unrelated tasks.
+    pub fn children_after<'a>(
+        &'a self,
+        parent: OperationId,
+        after: Option<&'a str>,
+    ) -> impl Iterator<Item = (&'a str, &'a OperationState)> + 'a {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = after.map_or(Unbounded, Excluded);
         self.child_slots
-            .range((parent, String::new())..)
-            .take_while(move |((id, _), _)| *id == parent)
-            .filter_map(|((_, slot), child)| {
+            .get(&parent)
+            .into_iter()
+            .flat_map(move |slots| slots.range::<str, _>((start, Unbounded)))
+            .filter_map(|(slot, child)| {
                 self.operations
                     .get(child)
                     .map(|state| (slot.as_str(), state))
             })
+    }
+
+    /// Looks up a parent-local child reference without enumerating siblings.
+    #[must_use]
+    pub fn child(&self, parent: OperationId, slot: &str) -> Option<&OperationState> {
+        self.child_slots
+            .get(&parent)?
+            .get(slot)
+            .and_then(|id| self.operation(*id))
+    }
+
+    /// Resolves an immutable direct parent without walking the tree.
+    #[must_use]
+    pub fn parent(&self, child: OperationId) -> Option<&OperationState> {
+        self.operation(child)?
+            .spec
+            .parent
+            .as_ref()
+            .and_then(|parent| self.operation(parent.operation_id))
+    }
+
+    fn completed_children(&self, parent: OperationId) -> impl Iterator<Item = &OperationState> {
+        std::iter::successors(
+            self.tree
+                .get(&parent)
+                .and_then(|entry| entry.first_completed),
+            |id| self.tree.get(id).and_then(|entry| entry.next_completed),
+        )
+        .filter_map(|id| self.operation(id))
     }
 }
 

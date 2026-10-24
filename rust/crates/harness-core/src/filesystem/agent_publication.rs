@@ -155,6 +155,7 @@ pub async fn record_agent_publication(
         let mut capture_id = [0_u8; 16];
         capture_id.copy_from_slice(&capture_hasher.finalize().as_bytes()[..16]);
         let captured = capture_git_compatible_generation_at(
+            &WorkspaceGraph::new(state.clone()),
             &workspace,
             published_generation,
             &ignore,

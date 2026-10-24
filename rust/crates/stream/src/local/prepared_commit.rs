@@ -47,8 +47,9 @@ impl LocalStream {
                 let capacity = size
                     .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
                     .ok_or(StreamError::Capacity)?;
-                let frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
+                let mut frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
                     .map_err(|error| stream.frame_error(error))?;
+                stream.prepare_path_cuts(&mut frame, &command).await?;
                 work.reserve_durability(4)?;
                 let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
                 let ingress = Arc::clone(&slot);

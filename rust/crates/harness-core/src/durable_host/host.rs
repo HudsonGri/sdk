@@ -424,6 +424,31 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         self.task_outcome(task_id, None).await
     }
 
+    async fn wait_outcome(&self, task_id: TaskId) -> Result<Outcome<Value>> {
+        // Subscribe before the observation; the follow owns its cut after the
+        // guard is dropped and never prevents the worker from completing.
+        let mut changes = {
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh(&mut None).await?;
+            coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(task_id.into_bytes()),
+                &mut None,
+            )?;
+            coordinator.changes().await?
+        };
+        loop {
+            if let Some(outcome) = self.task_outcome(task_id, None).await? {
+                return Ok(outcome);
+            }
+            if changes.try_next().await?.is_none() {
+                return Err(Error::Storage("task outcome subscription ended".into()));
+            }
+        }
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn observe_admission_with_native_work<'a>(
         &'a self,

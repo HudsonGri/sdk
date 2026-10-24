@@ -88,14 +88,17 @@ impl Scheduler {
             }
             SchedulerEvent::CancellationRequested { recursive, .. } => {
                 self.validated_operation(id, work)?;
-                for (candidate, state) in &self.operations {
-                    observe(work)?;
-                    if *candidate == id
-                        || (*recursive && self.cancellation_descendant(*candidate, id, work)?)
-                    {
-                        revision(state.revision, work)?;
-                    }
+                let targets = self.cancellation_frontier(id, *recursive, work)?;
+                let result = targets.iter().try_for_each(|target| {
+                    let state = self.validated_operation(*target, work)?;
+                    revision(state.revision, work).map(|_| ())
+                });
+                let bytes = (targets.capacity() * std::mem::size_of::<OperationId>()) as u64;
+                drop(targets);
+                if let Some(io) = work.as_deref_mut() {
+                    io.release_owned(bytes)?;
                 }
+                result?;
             }
             SchedulerEvent::Completed { .. } => self.validate_completion_event(event, work)?,
 
@@ -193,15 +196,8 @@ impl Scheduler {
                         return Err(diagnostic(work, Conflict, "model attempt changed request"));
                     }
                 } else {
-                    let mut used = 0u64;
-                    for (task, claims) in &self.model_claims {
-                        observe(work)?;
-                        if self.session_root(*task, work)?.0 == root {
-                            used = used.checked_add(claims.used()).ok_or_else(|| {
-                                diagnostic(work, Invalid, "model step accounting overflows")
-                            })?;
-                        }
-                    }
+                    observe(work)?;
+                    let used = self.tree.get(&root).map_or(0, |entry| entry.model_steps);
                     if used >= limits.model_steps
                         || claims.map_or(0, TaskModelClaims::used) >= *ceiling
                     {

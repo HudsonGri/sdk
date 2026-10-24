@@ -62,6 +62,11 @@ impl Pool {
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
+                let policy = crate::runtime::BackoffPolicy {
+                    attempts: if recovering { 8 } else { 2 },
+                    ..crate::runtime::BackoffPolicy::CONNECTION
+                };
+                let mut backoff = crate::runtime::Backoff::new(policy, &identity);
                 let outcome = loop {
                     let result = async {
                         let channel = match &channel {
@@ -79,9 +84,14 @@ impl Pool {
                     }
                     .await;
                     match result {
-                        // Existing interests own recovery until cancellation.
-                        // Initial admission and credential rejection stay bounded.
-                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        Err(StreamError::Unavailable) => {
+                            let Some(delay) = backoff.next(true, None, false) else {
+                                break Err(StreamError::Unavailable);
+                            };
+                            executor
+                                .sleep(u32::try_from(delay.as_millis()).unwrap_or(u32::MAX))
+                                .await;
+                        }
                         result => break result,
                     }
                 };
@@ -303,10 +313,35 @@ impl Pool {
         } else {
             node
         };
-        let registering = self
+        // A Welcome is not recovery progress. Keep each interest's budget
+        // across physical links, including discovery of a replacement home.
+        let mut delay = None;
+        let mut exhausted = Vec::new();
+        for (id, route) in self
             .routes
-            .values()
-            .any(|route| route.node == node && route.live() && route.ready.is_some());
+            .iter_mut()
+            .filter(|(_, route)| route.node == node && route.live())
+        {
+            match route.recovery.next(true, None, false) {
+                Some(next) => {
+                    // Preserve an established interest's immediate first
+                    // reconnect; subsequent attempts use shared jitter.
+                    let next = if route.ready.is_none() && route.recovery.attempts_used() == 1 {
+                        std::time::Duration::ZERO
+                    } else {
+                        next
+                    };
+                    delay = Some(delay.map_or(next, |prior: std::time::Duration| prior.max(next)));
+                }
+                None => exhausted.push(*id),
+            }
+        }
+        for id in exhausted {
+            self.reject(id, StreamError::Unavailable);
+        }
+        let Some(delay) = delay else {
+            return Ok(());
+        };
         for route in self
             .routes
             .values_mut()
@@ -327,14 +362,18 @@ impl Pool {
             },
             Some(link.channel.clone()),
         );
-        if registering && let Some(dial) = self.dials.remove(destination) {
+        if !delay.is_zero()
+            && let Some(dial) = self.dials.remove(destination)
+        {
             let executor = self.executor.clone();
             // An immediate Welcome/EOF peer can otherwise monopolize the
             // browser microtask queue and prevent registration deadlines.
             self.dials.insert(
                 destination.into(),
                 Box::pin(async move {
-                    executor.sleep(10).await;
+                    executor
+                        .sleep(u32::try_from(delay.as_millis()).unwrap_or(u32::MAX))
+                        .await;
                     dial.await
                 }),
             );
@@ -350,38 +389,26 @@ async fn open_link(
     credentials: BTreeMap<u32, Bytes>,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
 ) -> Result<Ready, StreamError> {
-    for attempt in 0..3 {
-        let mut observation = Observation::session(attempt);
-        let result = observation
-            .operation
-            .clone()
-            .scope(deadline::until(
-                handshake(
-                    channel.clone(),
-                    destination,
-                    identity.clone(),
-                    credentials.clone(),
-                ),
-                executor.sleep(1_000),
-            ))
-            .await
-            .unwrap_or(Err(StreamError::Unavailable));
-        let result = match result {
-            Ok((node, mut link, response)) => {
-                link.observation = Some(observation);
-                Ok((node, link, response))
-            }
-            Err(error) => {
-                observation.finish(Some(&error));
-                Err(error)
-            }
-        };
-        match result {
-            Err(StreamError::Unavailable) if attempt < 2 => executor.sleep(10).await,
-            result => return result,
+    let mut observation = Observation::session(0);
+    let result = observation
+        .operation
+        .clone()
+        .scope(deadline::until(
+            handshake(channel, destination, identity, credentials),
+            executor.sleep(1_000),
+        ))
+        .await
+        .unwrap_or(Err(StreamError::Unavailable));
+    match result {
+        Ok((node, mut link, response)) => {
+            link.observation = Some(observation);
+            Ok((node, link, response))
+        }
+        Err(error) => {
+            observation.finish(Some(&error));
+            Err(error)
         }
     }
-    Err(StreamError::Unavailable)
 }
 
 async fn handshake(

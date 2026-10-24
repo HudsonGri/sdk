@@ -94,6 +94,10 @@ impl Client {
             remaining: limit,
             active: None,
             buffered: Vec::new().into_iter(),
+            backoff: crate::runtime::Backoff::new(
+                crate::runtime::BackoffPolicy::CONNECTION,
+                &crate::new_identity_bytes(),
+            ),
             completion,
         };
         context
@@ -367,6 +371,7 @@ struct RecordCursor {
     )>,
     buffered: std::vec::IntoIter<Record>,
     completion: Completion,
+    backoff: crate::runtime::Backoff,
 }
 
 impl RecordCursor {
@@ -423,7 +428,10 @@ impl RecordCursor {
                     return None;
                 }
                 Some(Err(_)) | None => {
-                    tokio::time::sleep(RETRY_DELAY).await;
+                    let Some(delay) = self.backoff.next(true, None, false) else {
+                        return self.fail(StreamError::Unavailable);
+                    };
+                    tokio::time::sleep(delay).await;
                     self.active = None;
                 }
             }

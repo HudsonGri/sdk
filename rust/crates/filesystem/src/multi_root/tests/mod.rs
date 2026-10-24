@@ -506,4 +506,5 @@ async fn context_authorizer_rejects_forged_root_bindings() -> Result<(), Box<dyn
 
 mod abort;
 mod conflicts;
+mod parent_lookup;
 mod publication;

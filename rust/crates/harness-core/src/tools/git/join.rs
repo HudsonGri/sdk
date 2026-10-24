@@ -171,6 +171,7 @@ where
             return Ok(plan);
         }
         let filtered = acyclic_fs::git_generation_with_paths_from(
+            &WorkspaceGraph::new(self.store.clone()),
             &self
                 .join_generation(plan.source(), plan.source_head())
                 .await?,

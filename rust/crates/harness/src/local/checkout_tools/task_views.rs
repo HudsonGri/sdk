@@ -160,17 +160,33 @@ impl CheckoutTools {
             None
         };
         let view = original.as_ref().unwrap_or(view);
-        let (view, _) = view
-            .fork(
-                &name,
-                IdempotencyKey::from_bytes(task.into_bytes()),
-                // This lazy fork has no mount-operation lease. The
-                // authority still rejects an active reservation.
-                PublicationPermit::Unrestricted,
-                &mut accounting,
-            )
+        let key = IdempotencyKey::from_bytes(task.into_bytes());
+        let cut = view
+            .prepare_fork(&name, key, &mut accounting)
             .await
             .map_err(storage)?;
+        let graph = acyclic_fs::WorkspaceGraph::new(self.workspace.store.clone());
+        let (view, _) = graph
+            .fork(
+                view.workspace(),
+                &name,
+                key,
+                Some(cut.authored_generation),
+                |_generation| async {
+                    owner.verify_owner(None)?.await?;
+                    view.fork_snapshot(
+                        &name,
+                        cut,
+                        key,
+                        PublicationPermit::Unrestricted,
+                        &mut accounting,
+                    )
+                    .await
+                    .map_err(Error::from)
+                },
+                |result| result.0.workspace(),
+            )
+            .await?;
         owner.verify_owner(None)?.await?;
         Ok(view)
     }

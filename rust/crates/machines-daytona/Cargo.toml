@@ -13,6 +13,7 @@ keywords = ["machines", "daytona", "sandbox"]
 categories = ["api-bindings"]
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines" }
 async-trait.workspace = true
 futures.workspace = true

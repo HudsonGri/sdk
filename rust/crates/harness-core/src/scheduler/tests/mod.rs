@@ -17,6 +17,7 @@ mod orchestration;
 mod property;
 mod session;
 mod settlement_orders;
+mod tree;
 fn id(value: u8) -> OperationId {
     OperationId::from_bytes([value; 16])
 }

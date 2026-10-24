@@ -579,16 +579,18 @@ fn needs_work_count(
 fn release_completed(
     position: u64,
     active: &mut BTreeSet<Component>,
-    completions: &mut BTreeMap<Component, u64>,
+    completions: &mut BTreeSet<(u64, Component)>,
 ) -> BTreeSet<Component> {
-    let ready: BTreeSet<_> = completions
-        .iter()
-        .filter(|(_, accepted)| **accepted <= position)
-        .map(|(reference, _)| reference.clone())
-        .collect();
-    for reference in &ready {
-        completions.remove(reference);
-        active.remove(reference);
+    let mut ready = BTreeSet::new();
+    while let Some((accepted, _)) = completions.first() {
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("child-completion-examined", 1u64));
+        if *accepted > position {
+            break;
+        }
+        let (_, reference) = completions.pop_first().expect("observed first completion");
+        active.remove(&reference);
+        ready.insert(reference);
     }
     ready
 }

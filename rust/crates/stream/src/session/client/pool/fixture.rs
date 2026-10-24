@@ -110,10 +110,12 @@ pub(in crate::session::client) fn route(
         generation: 1,
         placement_epoch: 0,
         received: 0,
+        recovery_progress: 0,
         received_opaque: Bytes::new(),
         acknowledge: false,
         acknowledged: 0,
         opened: true,
+        recovery: crate::runtime::Backoff::connection(),
         credit: wire::SessionWindow {
             bytes: crate::MAX_COMMAND_BYTES as u64,
             frames: 2,

@@ -48,6 +48,8 @@ async fn missing(
 
 #[tokio::test]
 async fn host_namespaces_stay_outside_every_repository_view() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let policy = host_policy();
     // A tracked set recorded before the namespace was host-owned.
     let legacy = BTreeSet::from([LEGACY.to_owned()]);
@@ -57,6 +59,7 @@ async fn host_namespaces_stay_outside_every_repository_view() {
 
     let (workspace, live) = host_fixture("git-host-namespaces").await;
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &policy,
         &legacy,
@@ -70,6 +73,7 @@ async fn host_namespaces_stay_outside_every_repository_view() {
 
     // A capture that kept the namespace before the fix is rebuilt, not reused.
     let legacy_capture = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::default(),
         &BTreeSet::new(),
@@ -87,6 +91,7 @@ async fn host_namespaces_stay_outside_every_repository_view() {
         .expect("more host metadata");
     let after = publish_fixture(edit).await;
     let incremental = capture_git_compatible_generation_incremental(
+        &graph,
         &workspace,
         &live,
         &legacy_capture.generation,

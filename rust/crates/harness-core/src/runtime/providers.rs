@@ -172,16 +172,13 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
             "task state has no original-ledger outcome observer",
         ))
     }
-    /// Waits for a terminal result; providers may override polling.
+    /// Waits for a terminal result through the provider's push subscription.
+    /// Providers without subscriptions can return an already terminal outcome,
+    /// but may not turn pending state into a polling loop.
     async fn wait_outcome(&self, task_id: TaskId) -> Result<Outcome<Value>> {
-        let mut delay_ms = 50_u64;
-        loop {
-            if let Some(outcome) = self.outcome(task_id).await? {
-                return Ok(outcome);
-            }
-            crate::live::sleep_millis(delay_ms).await?;
-            delay_ms = delay_ms.saturating_mul(2).min(1_000);
-        }
+        self.outcome(task_id)
+            .await?
+            .ok_or_else(|| unbound("task state provider has no push outcome subscription"))
     }
     /// Requests cancellation without claiming a terminal result.
     async fn cancel(&self, task_id: TaskId) -> Result<()>;

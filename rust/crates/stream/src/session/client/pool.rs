@@ -7,6 +7,8 @@ pub(super) mod model;
 #[cfg(test)]
 #[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
 mod ordering;
+#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod recovery_budget;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod retry_model;
 #[cfg(test)]
@@ -274,10 +276,12 @@ impl Pool {
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
+                        recovery_progress: from,
                         received_opaque: Bytes::new(),
                         acknowledge,
                         acknowledged: from,
                         opened: false,
+                        recovery: crate::runtime::Backoff::connection(),
                         credit: wire::SessionWindow::default(),
                         progress,
                         records,
@@ -610,7 +614,13 @@ impl Pool {
             ),
         };
         match route.records.try_send(Ok(delivery)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if route.received > route.recovery_progress {
+                    route.recovery_progress = route.received;
+                    route.recovery = crate::runtime::Backoff::connection();
+                }
+                Ok(())
+            }
             Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id),
             Err(mpsc::error::TrySendError::Full(_)) => Err(StreamError::Capacity),
         }

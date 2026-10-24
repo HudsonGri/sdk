@@ -10,6 +10,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
+        let cut = self.prepare_fork(destination, key, ctx).await?;
+        self.fork_snapshot(destination, cut, key, permit, ctx).await
+    }
+    /// Persists the first complete lazy cut before a graph fork intent or an
+    /// external creator. Recovery uses its original source, overlay and shadows
+    /// rather than observing the parent's current view.
+    pub async fn prepare_fork(
+        &self,
+        destination: &str,
+        key: IdempotencyKey,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         let (name, id) =
             self.workspace
                 .volume
@@ -20,7 +32,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             Some(state) => self.fork_origin(&state, id, key.operation_id())?.snapshot,
             None => self.snapshot(ctx).await?,
         };
-        self.fork_snapshot(destination, cut, key, permit, ctx).await
+        self.prepare_fork_snapshot(destination, cut, key.operation_id(), ctx)
+            .await
     }
     /// Forks the authenticated immutable cut under its original creation operation.
     pub async fn fork_snapshot(

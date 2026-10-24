@@ -94,10 +94,11 @@ mod tests {
                 for index in 0..=depth + 1 {
                     let parent = (index > 1).then(|| id(index - 1));
                     let record = WorkspaceLineageRecord {
-                        version: 1, revision: 1, ready: true,
+                        version: 2, revision: 1, ready: true,
                         workspace_id: id(index), workspace_name: format!("workspace-{index}"),
                         parent_workspace_id: parent,
                         parent_workspace_name: parent.map(|_| format!("workspace-{}", index - 1)),
+                        creation_operation: parent.map(|_| acyclic_fs::OperationId::from_bytes(seed)),
                         fork_generation: generation, initial_generation: generation,
                     };
                     assert!(store.compare_and_swap(id(index), 0, record).await.unwrap());

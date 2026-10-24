@@ -447,6 +447,8 @@ async fn discard_retires_only_an_idle_non_current_branch() {
 
 #[tokio::test]
 async fn filtered_commit_completes_and_clears_its_transition() {
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+
     let workspace = memory_workspace("git-filtered-commit").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x6b; 16])).await;
     transaction
@@ -482,6 +484,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
         panic!("expected capture transition");
     };
     let captured = capture_git_compatible_generation(
+        &graph,
         &workspace,
         &GitIgnorePolicy::parse("*.tmp\n"),
         &BTreeSet::new(),
@@ -490,10 +493,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     .await
     .expect("capture");
     let proof = captured
-        .authenticated_proof(
-            transition.operation_id(),
-            &crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new()),
-        )
+        .authenticated_proof(transition.operation_id(), &graph)
         .await
         .expect("verified proof");
     let result = GitFilesystemResult::Captured {
@@ -547,6 +547,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
         panic!("expected prepared transition");
     };
     let ignored_capture = capture_git_compatible_generation_incremental(
+        &graph,
         &workspace,
         &live,
         &captured.generation,

@@ -1,5 +1,44 @@
 use super::*;
 
+fn welcome_without_progress(reset_budget: bool) -> TestResult {
+    let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
+    let (mut pool, _records) = pool::fixture::fixture(&channel);
+    pool.home = "bad".into();
+    for attempt in 0..=crate::runtime::BackoffPolicy::CONNECTION.attempts {
+        let (mut physical, _unused) = pool::fixture::fixture(&channel);
+        let link = physical
+            .links
+            .remove("good")
+            .ok_or("missing fixture link")?;
+        pool.links.insert("good".into(), link);
+        pool.dials.clear();
+        if reset_budget && let Some(route) = pool.routes.get_mut(&3) {
+            route.recovery = crate::runtime::Backoff::connection();
+        }
+        pool.reconnect("good")?;
+        if attempt < crate::runtime::BackoffPolicy::CONNECTION.attempts {
+            assert!(pool.routes.contains_key(&3));
+        }
+    }
+    assert!(
+        !pool.routes.contains_key(&3),
+        "Welcome without data cannot renew the recovery budget"
+    );
+    assert!(pool.dials.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn welcomes_without_progress_exhaust_one_subscription_budget() -> TestResult {
+    welcome_without_progress(false)
+}
+
+#[tokio::test]
+#[should_panic(expected = "Welcome without data cannot renew the recovery budget")]
+async fn negative_control_welcome_resets_the_subscription_budget() {
+    welcome_without_progress(true).unwrap();
+}
+
 struct ReplacedNode {
     provider: Arc<MemoryStream>,
     replacement: AtomicUsize,

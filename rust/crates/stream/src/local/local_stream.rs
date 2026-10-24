@@ -160,9 +160,9 @@ impl LocalStream {
     }
 
     /// Encodes the command and pins its recorded commit timestamp.
-    fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
+    async fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
-        let frame = PreparedFrame::encode(command, committed_at_millis, self.work.clone())
+        let mut frame = PreparedFrame::encode(command, committed_at_millis, self.work.clone())
             .map_err(|error| match error {
                 LocalStreamError::InvalidLimits => StreamError::Capacity,
                 LocalStreamError::Io(error) => match &self.work {
@@ -174,6 +174,7 @@ impl LocalStream {
                 },
                 _ => StreamError::Unavailable,
             })?;
+        self.prepare_path_cuts(&mut frame, command).await?;
         self.inner
             .journal
             .lock()
@@ -192,6 +193,59 @@ impl LocalStream {
             })?;
         self.inner.commit_clock.pin(committed_at_millis);
         Ok(frame)
+    }
+
+    // Called before issuance. Every path owns its publication node, so another
+    // writer cannot consume a prepared packet's capacity while it awaits input.
+    async fn prepare_path_cuts(&self, frame: &mut PreparedFrame, command: &Command) -> Result<(), StreamError> {
+        let count = match command {
+            Command::Append(_) | Command::Fork(_) => 1,
+            Command::Commit(request) => request.mutations.len(),
+        };
+        let paths = (0..count).filter_map(|index| match command {
+            Command::Append(request) => Some(&request.path),
+            Command::Fork(request) => Some(&request.destination),
+            Command::Commit(request) => request.mutations.get(index).map(|mutation| match mutation {
+                crate::CommitMutation::Append { path, .. } => path,
+                crate::CommitMutation::Fork { destination, .. } => destination,
+            }),
+        });
+        let bytes = count.checked_mul(std::mem::size_of::<PreparedPath>()).ok_or(StreamError::Capacity)?;
+        let mut allocation = self.work.as_ref().map(|work| work.record(
+            acyclic_native_runtime::ReadAllocation::new(&work.meter, bytes)
+        )).transpose()?;
+        frame.paths.try_reserve_exact(count).map_err(|_| StreamError::Capacity)?;
+        if let Some(allocation) = &mut allocation {
+            self.work.as_ref().ok_or(StreamError::Unavailable)?.record(
+                allocation.reconcile_capacity(frame.paths.capacity() * std::mem::size_of::<PreparedPath>())
+            )?;
+        }
+        frame._paths_allocation = allocation;
+        for path in paths {
+            let tail = match self.inner.provider.tail(path.clone()).await {
+                Ok(tail) => tail,
+                Err(StreamError::NotFound) => 0,
+                Err(error) => return Err(error),
+            };
+            let tails = self.inner.durable_tails.lock().map_err(|_| StreamError::Unavailable)?;
+            let initial = if tails.contains_key(path) {
+                None
+            } else {
+                let allocation = self.work.as_ref().map(|work| work.record(
+                    acyclic_native_runtime::ReadAllocation::new(&work.meter,
+                        std::mem::size_of::<(StreamPath, PathDurability)>())
+                )).transpose()?;
+                let cut = PathDurability {
+                    durable: tail, _entry_allocation: allocation, ..Default::default()
+                };
+                Some(cut)
+            };
+            // Rejected requests never install a permanent path entry. The
+            // pre-funded entry moves into the index only after acceptance.
+            frame.paths.push(PreparedPath { path: path.clone(), initial,
+                pending: PendingCut::prepare(self.work.as_deref())? });
+        }
+        Ok(())
     }
 
     /// Flushes every frame written without waiting for the storage device
@@ -237,6 +291,29 @@ impl LocalStream {
 
     /// Writes `frame`, in the order its mutation applied, without waiting for
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
+        // The publication fence spans mutation, WAL append and these exact
+        // per-path cuts. Never infer a path's durable tail from another path's
+        // most recent frame.
+        let sequence = self.inner.revision.borrow().saturating_add(1);
+        for mut prepared in frame.paths.drain(..) {
+            let tail = match self.inner.provider.tail(prepared.path.clone()).await {
+                Ok(tail) => tail,
+                Err(StreamError::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            let synced = *self.inner.synced.borrow();
+            let mut tails = self.inner.durable_tails.lock().map_err(|_| StreamError::Unavailable)?;
+            if let Some(initial) = prepared.initial.take() {
+                tails.entry(prepared.path.clone()).or_insert(initial);
+            }
+            let cut = tails.get_mut(&prepared.path).ok_or(StreamError::Unavailable)?;
+            let durable = cut.through(synced);
+            if durable < tail {
+                prepared.pending.sequence = sequence;
+                prepared.pending.tail = tail;
+                cut.pending.push(prepared.pending);
+            }
+        }
         #[cfg(feature = "test-support")]
         let cut = self.inner.persistence_cut.get().cloned();
         #[cfg(feature = "test-support")]

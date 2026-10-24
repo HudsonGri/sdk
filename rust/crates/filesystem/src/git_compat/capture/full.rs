@@ -1,11 +1,12 @@
 use super::*;
 
-pub(crate) async fn capture_git_compatible_generation_from<A, O>(
+pub(crate) async fn capture_git_compatible_generation_from<A, O, S: crate::WorkspaceLineageStore>(
+    graph: &crate::WorkspaceGraph<S>,
     live: crate::Generation<A, O>,
     policy: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
     operation_id: OperationId,
-) -> Result<GitCapturedGeneration<A, O>, GitCaptureError>
+) -> Result<GitCapturedGeneration<A, O>, GitCaptureAuthenticationError<S::Error>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -47,6 +48,7 @@ where
         });
     }
     apply_git_capture(
+        graph,
         &live,
         Some(&live),
         None,

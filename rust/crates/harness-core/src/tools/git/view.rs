@@ -121,39 +121,65 @@ impl<'a> View<'a> {
         destination: &str,
         operation: OperationId,
         permit: PublicationPermit,
+        store: &LocalCoreStateStore,
     ) -> crate::Result<OwnedView> {
         let cancellation = CancellationToken::new();
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
+        let graph = WorkspaceGraph::new(store.clone());
         match self {
-            Self::Checkout(view) => view
-                .fork(
-                    destination,
-                    key,
-                    permit,
-                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                )
-                .await
-                .map(|(child, _)| OwnedView::Checkout(child))
-                .map_err(Error::from),
-            Self::Volume(view) => {
-                let generation = view
-                    .head(WorkBudget::UNBOUNDED, &cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                let child = view
-                    .fork::<_, _, WorkspaceError>(
+            Self::Checkout(view) => {
+                let cut = view
+                    .prepare_fork(
                         destination,
-                        acyclic_fs::ForkOptions::from_generation(generation, key),
-                        permit,
-                        WorkBudget::UNBOUNDED,
-                        &cancellation,
-                        (),
+                        key,
+                        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                    )
+                    .await?;
+                let (child, _) = graph
+                    .fork(
+                        view.workspace(),
+                        destination,
+                        key,
+                        Some(cut.authored_generation),
+                        |_generation| async {
+                            view.fork_snapshot(
+                                destination,
+                                cut,
+                                key,
+                                permit,
+                                &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                            )
+                            .await
+                            .map_err(Error::from)
+                        },
+                        |result| result.0.workspace(),
+                    )
+                    .await?;
+                Ok(OwnedView::Checkout(child))
+            }
+            Self::Volume(view) => {
+                graph
+                    .fork(
+                        view,
+                        destination,
+                        key,
+                        None,
+                        |generation| async move {
+                            view.fork::<_, _, WorkspaceError>(
+                                destination,
+                                acyclic_fs::ForkOptions::from_generation(generation, key),
+                                permit,
+                                WorkBudget::UNBOUNDED,
+                                &cancellation,
+                                (),
+                            )
+                            .await
+                            .map(|receipt| OwnedView::Volume(receipt.value))
+                            .map_err(|failure| Error::from(failure.error))
+                        },
+                        OwnedView::workspace,
                     )
                     .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                Ok(OwnedView::Volume(child))
             }
         }
     }

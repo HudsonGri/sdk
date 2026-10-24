@@ -262,6 +262,7 @@ fn check_lifecycle(
             );
         }
         prop_assert!(claims_preserved(&before, &scheduler));
+        super::tree::assert_tree(&scheduler);
         for (root, limits) in &scheduler.sessions {
             let used = scheduler
                 .model_claims
