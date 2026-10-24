@@ -16,10 +16,13 @@ import subprocess
 import tempfile
 import time
 
-VERSION = 'sdk-target-reflink-v1'
+# Earlier snapshots did not exclude writers in nested target directories.
+# A new key generation prevents any such snapshot from being reused.
+VERSION = 'sdk-target-reflink-v2-hierarchy'
 ROOT = Path('/mnt/bb/sdk-target-store-v1')
 BUDGET = 64 * 1024**3  # Logical upper bound, including shared extents.
-SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock'}
+SCAFFOLD = {'.host-targets', '.host-src', '.gate.lock', '.cargo-lock',
+            '.gate-cache-boot', '.gate-cache-inflight'}
 
 
 def children(root):
@@ -69,7 +72,7 @@ def tool_identity():
     return result
 
 
-def request_key(meta, env, job):
+def request_key(meta, env, job, components=None):
     source = meta.get('source') or {}
     tree = source.get('content_sha256')
     payload = env.get('BB_TARGET_REQUEST_SHA256')
@@ -85,9 +88,14 @@ def request_key(meta, env, job):
         if name in ignored or name.startswith(('BUILD_SLOT_', 'BB_', 'SCCACHE_')):
             continue
         selected[name] = value.replace(str(job), '$JOB')
-    return digest({'version': VERSION, 'source': source, 'argv': meta['argv'],
-                   'cwd': str(Path.cwd()), 'environment': digest(selected),
-                   'tools': tool_identity(), 'target': env.get('CARGO_TARGET_DIR')})
+    inputs = {'version': VERSION, 'source': source, 'argv': meta['argv'],
+              'cwd': str(Path.cwd()), 'environment': digest(selected),
+              'tools': tool_identity(), 'target': env.get('CARGO_TARGET_DIR')}
+    if components is not None:
+        # Diagnose missed reuse without persisting argument/environment bodies.
+        # This is observational: the exact original key payload is unchanged.
+        components.update({name: digest(value) for name, value in inputs.items()})
+    return digest(inputs)
 
 
 def inspect_tree(root):
@@ -154,10 +162,13 @@ class Session:
         started = time.monotonic()
         fcntl.flock(self.lock, fcntl.LOCK_EX)
         self.receipt['wait_seconds'] = time.monotonic() - started
-        # The kernel releases this key's lease after a crash. No live builder
-        # for this key can own a staging directory while we hold that lease.
-        for abandoned in (self.root / 'staging').glob(self.key + '-*'):
-            remove_tree(abandoned)
+        # Every stage is created and removed under the catalog lease. Holding
+        # it proves all existing stages abandoned, regardless of their key;
+        # cleanup cannot depend on the crashed source/argv being used again.
+        with (self.root / 'catalog.lock').open('a') as catalog:
+            fcntl.flock(catalog, fcntl.LOCK_EX)
+            for abandoned in (self.root / 'staging').iterdir():
+                remove_tree(abandoned)
         started = time.monotonic()
         marker = self.entry / 'complete.json'
         if marker.is_file():
@@ -229,8 +240,14 @@ class Session:
             self.lock.close(); self.lock = None
 
 
+def disabled(env):
+    return (env.get('BB_CACHE_DISABLED') == '1'
+            or env.get('BB_TARGET_STORE_DISABLED') == '1'
+            or env.get('RUSTC_WRAPPER') == '')
+
+
 def prepare(meta, env, job):
-    if env.get('BB_TARGET_STORE_DISABLED') == '1' or not private_target(meta):
+    if disabled(env) or not private_target(meta):
         return None
     key = request_key(meta, env, job)
     if key is None:

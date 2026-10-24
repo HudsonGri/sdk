@@ -5,6 +5,7 @@ Installed behind a PATH cargo proxy. bb-job also routes explicit cargo paths
 through it. Unknown commands/targets bypass the store and execute normally.
 """
 import fcntl
+from contextlib import contextmanager, ExitStack
 import json
 import os
 from pathlib import Path
@@ -63,11 +64,30 @@ def local_target_lock(job, target):
     return directory / store.digest(str(target.resolve()))
 
 
+@contextmanager
+def local_target_leases(job, target, root=Path('/work/target')):
+    # A snapshot of a parent also reads every descendant target. Shared leases
+    # on ancestors let siblings compile concurrently while a parent snapshot
+    # excludes all child writers. All acquisitions follow root-to-leaf order.
+    root, target = root.resolve(), target.resolve()
+    relative = target.relative_to(root)
+    paths = [root]
+    for part in relative.parts:
+        paths.append(paths[-1] / part)
+    with ExitStack() as stack:
+        leases = []
+        for path in paths:
+            lease = stack.enter_context(local_target_lock(job, path).open('a'))
+            fcntl.flock(lease, fcntl.LOCK_EX if path == target else fcntl.LOCK_SH)
+            leases.append(lease)
+        yield leases
+
+
 def run(argv):
     env = dict(os.environ)
     build, run_tests = compilation(argv)
     file = env.get('BUILD_SLOT_RECEIPT_META')
-    if not file or build is None or env.get('BB_TARGET_STORE_DISABLED') == '1':
+    if not file or build is None or store.disabled(env):
         os.execv(CARGO, [CARGO] + argv)
     meta = json.loads(Path(file).read_text())
     target = target_path(argv, env)
@@ -78,15 +98,18 @@ def run(argv):
     meta['argv'] = ['cargo'] + build
     env['CARGO_TARGET_DIR'] = str(target)
     job = Path(env['BB_JOB_HOME']).parent
-    key = store.request_key(meta, env, job)
+    identity = {}
+    key = store.request_key(meta, env, job, components=identity)
     if not key:
         os.execv(CARGO, [CARGO] + argv)
     target.mkdir(parents=True, exist_ok=True)
     # Exclude another Cargo invocation in this same job while snapshotting its
     # target. This is separate from the cross-job single-flight request lease.
-    with local_target_lock(job, target).open('a') as local:
-        fcntl.flock(local, fcntl.LOCK_EX)
+    local_started = time.monotonic()
+    with local_target_leases(job, target) as local:
         session = store.Session(store.ROOT, key, target)
+        session.receipt['request_identity'] = identity
+        session.receipt['local_wait_seconds'] = time.monotonic() - local_started
         try:
             # Cargo is authoritative for existing private files. Do not merge a
             # stored snapshot into a target already used by this job.
@@ -113,7 +136,7 @@ def run(argv):
             start = time.monotonic()
             # Cargo retains both kernel leases if this proxy is killed. An
             # orphaned live builder must not race a successor publication.
-            leases = (local.fileno(),) + ((session.lock.fileno(),) if session.lock else ())
+            leases = tuple(lease.fileno() for lease in local) + ((session.lock.fileno(),) if session.lock else ())
             result = subprocess.run([CARGO] + build, env=env, pass_fds=leases)
             session.receipt['compile_seconds'] = time.monotonic() - start
             session.receipt['compile_rc'] = result.returncode
@@ -129,7 +152,7 @@ def run(argv):
             return result.returncode if result.returncode > 0 else 128-result.returncode
         if run_tests:
             # The store contains build output from before this execution.
-            rc = subprocess.call([CARGO] + argv, env=env, pass_fds=(local.fileno(),))
+            rc = subprocess.call([CARGO] + argv, env=env, pass_fds=tuple(lease.fileno() for lease in local))
             return rc if rc >= 0 else 128-rc
         return 0
 
