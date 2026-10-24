@@ -59,12 +59,12 @@ fn exchange(mut command: Command, requests: &[FileValue], expected: i32) {
     );
 }
 
-async fn recovery(cancel: bool) {
+async fn recovery(case: Case, cancel: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let operation = OperationId::new();
     let fixture = Fixture {
-        case: Case::HumanAllow,
+        case,
         address,
         parent_task: acyclic_harness::runtime::task_id_for_admission(operation),
         effects: Arc::new(AtomicUsize::new(0)),
@@ -77,9 +77,9 @@ async fn recovery(cancel: bool) {
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let files = Files::new(Case::HumanAllow, address);
+    let files = Files::new(case, address);
     tokio::task::spawn_blocking(move || {
-        let request = defer(files.command(Case::HumanAllow, operation), operation);
+        let request = defer(files.command(case, operation), operation);
         let decision = decision(&request, "human", true);
         assert_eq!(fixture.effects.load(Ordering::SeqCst), 0);
         if cancel {
@@ -93,8 +93,8 @@ async fn recovery(cancel: bool) {
                 })
                 .unwrap()
                 .into();
-            exchange(files.command(Case::HumanAllow, cancellation), &[command], 0);
-            exchange(files.command(Case::HumanAllow, operation), &[decision], 1);
+            exchange(files.command(case, cancellation), &[command], 0);
+            exchange(files.command(case, operation), &[decision], 1);
             assert_eq!(
                 fixture.effects.load(Ordering::SeqCst),
                 0,
@@ -102,11 +102,11 @@ async fn recovery(cancel: bool) {
             );
         } else {
             exchange(
-                files.command(Case::HumanAllow, operation),
+                files.command(case, operation),
                 &[decision.clone(), decision.clone()],
                 0,
             );
-            exchange(files.command(Case::HumanAllow, operation), &[decision], 0);
+            exchange(files.command(case, operation), &[decision], 0);
             assert_eq!(
                 fixture.effects.load(Ordering::SeqCst),
                 1,
@@ -114,9 +114,16 @@ async fn recovery(cancel: bool) {
             );
             assert_eq!(
                 fixture.root_calls.load(Ordering::SeqCst),
-                2,
+                if case.child_human() { 3 } else { 2 },
                 "reopen regenerated the model"
             );
+            if case.child_human() {
+                assert_eq!(
+                    fixture.child_calls.load(Ordering::SeqCst),
+                    2,
+                    "reopen regenerated the child's tool request"
+                );
+            }
         }
     })
     .await
@@ -127,12 +134,22 @@ async fn recovery(cancel: bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approvals_reopen_and_exact_decision_retry_dispatch_once() {
-    recovery(false).await;
+    recovery(Case::HumanAllow, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approvals_cancelled_request_cannot_dispatch_after_reopen() {
-    recovery(true).await;
+    recovery(Case::HumanAllow, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approvals_child_reopen_and_exact_decision_retry_dispatch_once() {
+    recovery(Case::ChildHumanAllow, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approvals_cancelled_child_request_cannot_dispatch_after_reopen() {
+    recovery(Case::ChildHumanAllow, true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
