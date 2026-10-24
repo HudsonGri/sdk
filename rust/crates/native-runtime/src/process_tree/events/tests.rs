@@ -68,3 +68,55 @@ fn an_exit_fires_for_a_child_that_exits_and_one_that_already_has() -> io::Result
     assert!(tree.try_wait(None)?.is_some());
     Ok(())
 }
+
+/// Set to run [`a_tree_holds_the_hub_before_its_first_wait`]'s probe in a
+/// fresh process, where nothing else has started the hub.
+const HUB_PROBE: &str = "ACYCLIC_PROCESS_HUB_PROBE";
+
+#[test]
+fn hub_probe() -> io::Result<()> {
+    if std::env::var_os(HUB_PROBE).is_none() {
+        return Ok(());
+    }
+    assert!(!started(), "nothing in this process has started the hub");
+    #[cfg(unix)]
+    let mut command = std::process::Command::new("true");
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd.exe");
+        command.args(["/d", "/c", "exit 0"]);
+        command
+    };
+    let tree = super::super::ProcessTree::spawn(
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    )?;
+    // No wait has armed anything: the tree itself holds the hub, so a
+    // process's service threads and descriptors never depend on whether
+    // its children happened to exit before anyone waited for them.
+    assert!(started(), "a spawned tree holds the process-event hub");
+    drop(tree);
+    Ok(())
+}
+
+#[test]
+fn a_tree_holds_the_hub_before_its_first_wait() -> io::Result<()> {
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "process_tree::events::tests::hub_probe",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(HUB_PROBE, "1")
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

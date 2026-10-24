@@ -164,6 +164,9 @@ impl CallbackFailure {
 /// machinery (exhausted or cancelled work, a changed control or meter, a
 /// denied callback, failed allocation, a panic, or anything unclassified)
 /// is retained, and the mount reports it at its next sync or unmount.
+/// ProjFS notifications fail only with source errors and ask
+/// [`source_stops_mount`] directly.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn stops_mount(error: &NativeMountError) -> bool {
     match error {
         NativeMountError::Io(_) => false,

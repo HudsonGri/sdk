@@ -237,6 +237,7 @@ pub(super) fn spawn_controlled(
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
     command.process_group(0);
+    let events = super::events::Events::start()?;
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         let child = command.spawn()?;
         // A Unix Child ID originated as pid_t at this same SDK boundary.
@@ -256,6 +257,7 @@ pub(super) fn spawn_controlled(
             #[cfg(target_os = "linux")]
             exit_fd: None,
             writer: Writer,
+            _events: events,
         });
         Ok(())
     })
@@ -321,6 +323,7 @@ pub(super) fn spawn_closed_with_arguments(
     meter: &dyn crate::NativeReadMeter,
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
+    let events = super::events::Events::start()?;
     let attr_cleanup = meter.reserve_cleanup_write()?;
     let actions_cleanup = match meter.reserve_cleanup_write() {
         Ok(cleanup) => cleanup,
@@ -337,7 +340,7 @@ pub(super) fn spawn_closed_with_arguments(
     };
     let spawned = objects
         .initialize(meter)
-        .and_then(|()| objects.spawn(program, arguments, environment, meter, custody));
+        .and_then(|()| objects.spawn(program, arguments, environment, meter, custody, events));
     // Retire objects in reverse construction order. Both actual
     // destroys run even after cancellation or another cleanup failure.
     let (actions_result, actions) = retire(
@@ -372,6 +375,7 @@ pub(super) fn spawn_closed_with_arguments(
             #[cfg(target_os = "linux")]
             exit_fd: None,
             writer: Writer,
+            _events: events,
         });
         owner.spawn_resources = retained;
     }
@@ -451,6 +455,7 @@ impl SpawnObjects {
         environment: Option<*mut *mut libc::c_char>,
         meter: &dyn crate::NativeReadMeter,
         custody: &mut Option<super::ProcessTree>,
+        events: super::events::Events,
     ) -> io::Result<()> {
         let mut pid = 0;
         loop {
@@ -488,6 +493,7 @@ impl SpawnObjects {
                             #[cfg(target_os = "linux")]
                             exit_fd: None,
                             writer: Writer,
+                            _events: events,
                         });
                     }
                     spawn_status(status)

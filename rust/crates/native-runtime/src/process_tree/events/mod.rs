@@ -92,7 +92,18 @@ struct Hub {
     registry: Mutex<Registry>,
 }
 
+#[cfg(test)]
+static STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether anything in this process has started the hub.
+#[cfg(test)]
+fn started() -> bool {
+    STARTED.load(Ordering::Acquire)
+}
+
 static HUB: LazyLock<io::Result<&'static Hub>> = LazyLock::new(|| {
+    #[cfg(test)]
+    STARTED.store(true, Ordering::Release);
     let hub: &'static Hub = Box::leak(Box::new(Hub {
         poller: platform::Poller::new()?,
         registry: Mutex::new(Registry::default()),
@@ -102,6 +113,22 @@ static HUB: LazyLock<io::Result<&'static Hub>> = LazyLock::new(|| {
         .spawn(move || hub.run())?;
     Ok(hub)
 });
+
+/// The running hub, held by every process tree from before its child is
+/// created. The hub is therefore part of the first spawn, never of whichever
+/// later wait happens to arm first: a process's service threads and
+/// descriptors do not depend on whether its children exited before anyone
+/// waited, and a hub that cannot start fails the spawn, not a later wait.
+#[derive(Clone, Copy)]
+pub(super) struct Events {
+    _hub: &'static Hub,
+}
+
+impl Events {
+    pub(super) fn start() -> io::Result<Self> {
+        hub().map(|hub| Self { _hub: hub })
+    }
+}
 
 fn hub() -> io::Result<&'static Hub> {
     HUB.as_ref()
