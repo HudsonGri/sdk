@@ -26,7 +26,13 @@ fn byte_count(
     Ok(count)
 }
 
-async fn check(history: &[String], current: &str, copies: usize, capacity: u32) -> Result<usize> {
+async fn check(
+    history: &[String],
+    current: &str,
+    copies: usize,
+    capacity: u32,
+    automatic: bool,
+) -> Result<usize> {
     let mut dispatched = 0;
     for entry in 0..3 {
         let provider = Arc::new(
@@ -72,15 +78,19 @@ async fn check(history: &[String], current: &str, copies: usize, capacity: u32) 
             ToolRegistry::default(),
         )
         .with_max_output_tokens(128)?
-        .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-            crate::context::ThresholdCompaction::for_capacity(
-                crate::context::ModelContextCapacity {
-                    context_tokens: capacity,
-                    output_tokens: Some(256),
-                },
-                0,
-            )?,
-        ));
+        .with_compaction_policy(if automatic {
+            crate::context::CompactionPolicy::Threshold(
+                crate::context::ThresholdCompaction::for_capacity(
+                    crate::context::ModelContextCapacity {
+                        context_tokens: capacity,
+                        output_tokens: Some(256),
+                    },
+                    0,
+                )?,
+            )
+        } else {
+            crate::context::CompactionPolicy::Disabled
+        });
         let input = TurnInput {
             operation_id: OperationId::new(),
             input: ModelContent::Text(current.repeat(copies)),
@@ -117,8 +127,63 @@ async fn check(history: &[String], current: &str, copies: usize, capacity: u32) 
 
 #[tokio::test]
 async fn small_input_dispatches_and_oversized_mandatory_input_does_not() -> Result<()> {
-    assert_eq!(check(&[], "hello", 1, 4096).await?, 3);
-    assert_eq!(check(&[], &"x".repeat(16_384), 1, 4096).await?, 0);
+    assert_eq!(check(&[], "hello", 1, 4096, true).await?, 3);
+    assert_eq!(check(&[], &"x".repeat(16_384), 1, 4096, true).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabling_compaction_preserves_capacity_admission() -> Result<()> {
+    assert_eq!(check(&[], "hello", 1, 4096, false).await?, 3);
+    assert_eq!(check(&[], &"x".repeat(16_384), 1, 4096, false).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabling_compaction_rejects_missing_accounting_before_effects() -> Result<()> {
+    for entry in 0..3 {
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("must not dispatch".into())])
+                .without_accounting(),
+        );
+        let executor = uncompacted_executor(
+            Model::new(
+                "fixture".into(),
+                "unknown-capacity".into(),
+                "1".into(),
+                Value::Null,
+            )?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let result = match entry {
+            0 => executor.execute(input.clone(), &journal).await.map(|_| ()),
+            1 => {
+                let progress = executor.execute_progress(input.clone(), &journal).await?;
+                assert!(matches!(&progress, ExecutionProgress::PreDispatchFailed(_)));
+                progress.into_output().map(|_| ())
+            }
+            _ => executor
+                .model_step(&journal, &input, 0, &[])
+                .await
+                .map(|_| ()),
+        };
+        assert!(
+            matches!(result, Err(Error::Unsupported(_))),
+            "entry {entry}: {result:?}"
+        );
+        assert!(provider.requests().is_empty(), "entry {entry}");
+        assert!(journal.0.lock().unwrap().is_empty(), "entry {entry}");
+        assert!(journal.1.lock().unwrap().is_empty(), "entry {entry}");
+    }
     Ok(())
 }
 
@@ -127,9 +192,9 @@ proptest! {
     #[test]
     fn arbitrary_history_never_dispatches_past_the_selected_capacity(
         history in prop::collection::vec(".{0,64}", 0..20), current in ".{0,64}",
-        copies in 1usize..64, capacity in 4_096u32..32_768,
+        copies in 1usize..64, capacity in 4_096u32..32_768, automatic in any::<bool>(),
     ) {
         tokio::runtime::Builder::new_current_thread().build().unwrap()
-            .block_on(check(&history, &current, copies, capacity)).unwrap();
+            .block_on(check(&history, &current, copies, capacity, automatic)).unwrap();
     }
 }

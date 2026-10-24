@@ -54,7 +54,7 @@ impl HttpTransport for Boundary {
     }
 }
 
-async fn check(input: &str, capacity: u32) -> Result<usize> {
+async fn check(input: &str, capacity: u32, automatic: bool) -> Result<usize> {
     let mut dispatched = 0;
     for (adapter, response) in stock_responses() {
         let transport = Arc::new(Boundary {
@@ -63,9 +63,16 @@ async fn check(input: &str, capacity: u32) -> Result<usize> {
         });
         let mut selected = provider_with(adapter, "http://127.0.0.1:1234/v1", transport.clone());
         selected.capacity.context_tokens = capacity;
-        let policy = CompactionPolicy::Threshold(
-            acyclic_harness_core::context::ThresholdCompaction::for_capacity(selected.capacity, 0)?,
-        );
+        let policy = if automatic {
+            CompactionPolicy::Threshold(
+                acyclic_harness_core::context::ThresholdCompaction::for_capacity(
+                    selected.capacity,
+                    0,
+                )?,
+            )
+        } else {
+            CompactionPolicy::Disabled
+        };
         let result = run_stock_input(
             selected,
             adapter,
@@ -93,8 +100,15 @@ async fn check(input: &str, capacity: u32) -> Result<usize> {
 
 #[tokio::test]
 async fn native_small_input_dispatches_and_oversized_mandatory_input_does_not() -> Result<()> {
-    assert_eq!(check("hello", 8192).await?, 4);
-    assert_eq!(check(&"x".repeat(16_384), 8192).await?, 0);
+    assert_eq!(check("hello", 8192, true).await?, 4);
+    assert_eq!(check(&"x".repeat(16_384), 8192, true).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_disabling_compaction_preserves_capacity_admission() -> Result<()> {
+    assert_eq!(check("hello", 8192, false).await?, 4);
+    assert_eq!(check(&"x".repeat(16_384), 8192, false).await?, 0);
     Ok(())
 }
 
@@ -102,9 +116,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(8))]
     #[test]
     fn arbitrary_native_input_never_crosses_catalog_capacity(
-        input in ".{0,64}", copies in 1usize..256, capacity in 4_096u32..16_384,
+        input in ".{0,64}", copies in 1usize..256, capacity in 4_096u32..16_384, automatic in any::<bool>(),
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(check(&input.repeat(copies), capacity)).unwrap();
+            .block_on(check(&input.repeat(copies), capacity, automatic)).unwrap();
     }
 }

@@ -10,7 +10,7 @@ impl StockExecution<'_> {
         tail: u64,
     ) -> Result<(
         ResponseProjection,
-        Option<ContextAccounting>,
+        ContextAccounting,
         Option<crate::model::PreparedModelRequest>,
     )> {
         let base = self
@@ -31,29 +31,17 @@ impl StockExecution<'_> {
             None
         };
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let (projection, accounting, prepared) = if let Some(capacity) = self.model_capacity()? {
-            let (mut projection, prepared) = self
-                .prepare_transformed_request(&context_input, base)
-                .await?;
-            let count =
-                stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
-            with_history_io(self.io, |work| count.validate(&prepared, work))?;
-            if self.io.is_none() {
-                projection.messages =
-                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
-            }
-            (
-                projection,
-                Some(ContextAccounting { capacity, count }),
-                Some(prepared),
-            )
-        } else {
-            (
-                self.transform_projection(&context_input, base).await?,
-                None,
-                None,
-            )
-        };
+        let capacity = self.model_capacity()?;
+        let (mut projection, prepared) = self
+            .prepare_transformed_request(&context_input, base)
+            .await?;
+        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
+        with_history_io(self.io, |work| count.validate(&prepared, work))?;
+        if self.io.is_none() {
+            projection.messages =
+                crate::model::clone_messages(&prepared.request().messages, self.io)?;
+        }
+        let accounting = ContextAccounting { capacity, count };
         let projection = ResponseProjection {
             model: crate::model::clone_model(self.model(), self.io)?,
             context: projection,
@@ -71,23 +59,17 @@ impl StockExecution<'_> {
             self.io,
         )
         .await?;
-        let accounting_ref = if let Some(accounting) = &accounting {
-            let accounting_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("context:{step}:accounting"), work)
-            })?;
-            Some(
-                stage_json(
-                    journal,
-                    input.operation_id,
-                    &accounting_key,
-                    accounting,
-                    self.io,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        let accounting_key = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("context:{step}:accounting"), work)
+        })?;
+        let accounting_ref = stage_json(
+            journal,
+            input.operation_id,
+            &accounting_key,
+            &accounting,
+            self.io,
+        )
+        .await?;
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
@@ -100,7 +82,7 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
-                    accounting: accounting_ref,
+                    accounting: Some(accounting_ref),
                 },
                 self.io,
             )?
@@ -108,7 +90,7 @@ impl StockExecution<'_> {
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        Ok((projection, accounting, prepared))
+        Ok((projection, accounting, Some(prepared)))
     }
 
     pub(super) async fn prepared_response(
@@ -153,10 +135,16 @@ impl StockExecution<'_> {
                     load_json::<ResponseProjection>(journal, reference, self.io).await?,
                 )?,
                 match accounting {
-                    Some(reference) => Some(retain_preparation(
+                    Some(reference) => retain_preparation(
                         load_json::<ContextAccounting>(journal, reference, self.io).await?,
-                    )?),
-                    None => None,
+                    )?,
+                    None => {
+                        return Err(stock_boundary(
+                            self.io,
+                            crate::wire::ErrorCode::Storage,
+                            "prepared response has no capacity accounting",
+                        ));
+                    }
                 },
                 None,
             ),
@@ -179,7 +167,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
         mut projection: ResponseProjection,
-        accounting: Option<ContextAccounting>,
+        accounting: ContextAccounting,
         prepared: Option<crate::model::PreparedModelRequest>,
         retained: (&[ExecutionRecord], &mut DispatchPhase),
     ) -> Result<crate::model::PreparedModelRequest> {
@@ -290,7 +278,7 @@ impl StockExecution<'_> {
                     "compacted context requires threshold policy",
                 ));
             };
-            if self.model_capacity()? != Some(final_accounting.capacity)
+            if self.model_capacity()? != final_accounting.capacity
                 || proof.retention != policy.retention
                 || proof.summary.as_ref().is_none_or(|summary| {
                     summary.operation_id != input.operation_id || summary.step != step
@@ -328,25 +316,33 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        captured: (ResponseProjection, Option<ContextAccounting>),
+        captured: (ResponseProjection, ContextAccounting),
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
         phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step) = turn;
         let (projection, accounting) = captured;
-        match (self.compaction_policy()?, accounting) {
-            (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
-            (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
-                if self.model_capacity()? != Some(accounting.capacity) {
+        let input_tokens = self.accounted_input(&prepared, &accounting)?;
+        match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Disabled => {
+                let output = prepared.request().max_output_tokens.ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Storage,
+                        "prepared response has no output budget",
+                    )
+                })?;
+                if !accounting.capacity.permits_request(input_tokens, output) {
                     return Err(stock_boundary(
                         self.io,
-                        crate::wire::ErrorCode::Conflict,
-                        "selected capacity differs from captured accounting",
+                        crate::wire::ErrorCode::Invalid,
+                        "response input exceeds selected model capacity",
                     ));
                 }
-                let input_tokens =
-                    with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+                Ok(prepared)
+            }
+            crate::context::CompactionPolicy::Threshold(policy) => {
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, records)
                     .await?
@@ -386,11 +382,6 @@ impl StockExecution<'_> {
                 )
                 .await
             }
-            _ => Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "captured accounting differs from compaction policy",
-            )),
         }
     }
 
