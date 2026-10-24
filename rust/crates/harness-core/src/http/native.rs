@@ -117,7 +117,7 @@ pub struct Response {
     pub status: u16,
     /// Original response headers.
     pub headers: reqwest::header::HeaderMap,
-    /// Lazy body; every body failure is conservatively MayHaveSent.
+    /// Lazy body; every body failure is conservatively `MayHaveSent`.
     pub body: BoxProviderStream<'static, std::result::Result<Bytes, Failure>>,
 }
 

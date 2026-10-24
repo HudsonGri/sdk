@@ -151,3 +151,34 @@ test("MCP uses owned split deadlines through the full u32 range", async () => {
     globalThis.clearTimeout = originalClear;
   }
 });
+
+test("MCP cancellation owns the reader independently of the injected fetch signal", async () => {
+  for (const pendingRead of [false, true]) {
+    let cancelled = false;
+    let source;
+    const stream = new ReadableStream({
+      start(controller) { source = controller; },
+      cancel() { cancelled = true; },
+    });
+    const provider = createBrowserMcpHttpProvider(async () => new Response(stream));
+    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, 1000);
+    let exchange;
+    let rejected;
+    try {
+      exchange = provider(operation, transport.initializationRequest(operation, "fixture", "1"));
+      await exchange.response;
+      if (pendingRead) {
+        rejected = assert.rejects(exchange.read());
+        await Promise.resolve();
+      }
+      exchange.cancel();
+      assert.equal(cancelled, true);
+      assert.equal(stream.locked, false);
+      await rejected;
+    } finally {
+      if (!cancelled) source.close();
+      exchange?.cancel();
+      transport.free();
+    }
+  }
+});

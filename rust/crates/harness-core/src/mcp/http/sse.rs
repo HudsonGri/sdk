@@ -22,18 +22,8 @@ pub(super) async fn response(
     let mut spelling = [0; 36];
     let identity = uuid::Uuid::from_bytes(operation.into_bytes());
     let expected: &str = identity.hyphenated().encode_lower(&mut spelling);
-    let mut received = 0_usize;
-    // Bound input before the parser buffers it.
-    let bounded = body.map(move |chunk| -> Result<Bytes> {
-        let chunk = chunk?;
-        received = received
-            .checked_add(chunk.len())
-            .filter(|total| *total as u64 <= u64::from(maximum_bytes))
-            .ok_or(Error::Indeterminate(operation))?;
-        Ok(chunk)
-    });
     let events = crate::http::sse::frames(
-        Box::pin(bounded),
+        bounded(body, operation, maximum_bytes),
         maximum_bytes as usize,
         crate::http::sse::Decoder::default(),
     );
@@ -119,6 +109,23 @@ pub(super) async fn response(
             return Err(Error::Indeterminate(operation));
         }
     }
+}
+
+fn bounded(
+    body: BoxProviderStream<'static, Result<Bytes>>,
+    operation: OperationId,
+    maximum_bytes: u32,
+) -> BoxProviderStream<'static, Result<Bytes>> {
+    let mut received = 0_usize;
+    // Bound input before the parser buffers it.
+    Box::pin(body.map(move |chunk| -> Result<Bytes> {
+        let chunk = chunk?;
+        received = received
+            .checked_add(chunk.len())
+            .filter(|total| *total as u64 <= u64::from(maximum_bytes))
+            .ok_or(Error::Indeterminate(operation))?;
+        Ok(chunk)
+    }))
 }
 
 fn decode(event: Result<crate::http::sse::Frame>, operation: OperationId) -> Result<Option<Value>> {
