@@ -217,7 +217,10 @@ pub use volumes::{
 mod tests;
 
 /// Projection of one agent-owned conversation.
-#[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+///
+/// It has no heap layout: rebuilding its indexes allocates per message, so a
+/// bounded decode reads [`ConversationStateWire`] and rebuilds under its work.
+#[derive(Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ConversationStateWire")]
 pub struct ConversationState {
     /// Set once at admission.

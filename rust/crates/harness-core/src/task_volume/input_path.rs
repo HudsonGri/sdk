@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
     Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize, crate::HeapLayout,
 )]
 #[serde(try_from = "String", into = "String")]
+// The conversion keeps the decoded string.
+#[heap_layout(as = String)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InputPath(pub(super) String);
 

@@ -4,7 +4,8 @@
 //! attributes: field and variant names after renaming, the enum
 //! representation, flattened members and skipped fields. A field decoded by a
 //! custom function has no layout serde can describe, so it must name one with
-//! `#[heap_layout(as = Type)]` or `#[heap_layout(scalar)]`.
+//! `#[heap_layout(as = Type)]` or `#[heap_layout(scalar)]`, and so must a type
+//! decoded through `from` or `try_from`.
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ext::IdentExt;
@@ -429,8 +430,15 @@ fn enumeration(data: &syn::DataEnum, attrs: &Attrs) -> syn::Result<Layout> {
 
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let attrs = Attrs::parse(&input.attrs)?;
-    let layout = if let Some(from) = &attrs.from {
-        Layout::Ref(quote!(<#from as __layout::HeapLayout>::LAYOUT))
+    // A conversion keeps whatever it builds from its source, which serde's
+    // attributes cannot describe, so the type names what it keeps.
+    let layout = if let Some(layout) = &attrs.layout {
+        Layout::Ref(layout.clone())
+    } else if attrs.from.is_some() {
+        return Err(syn::Error::new_spanned(
+            input,
+            "a type decoded through `from` or `try_from` needs #[heap_layout(as = Type)] naming what the conversion keeps",
+        ));
     } else {
         match &input.data {
             Data::Struct(data) => body(&data.fields, attrs.rename_all, attrs.transparent)?,
