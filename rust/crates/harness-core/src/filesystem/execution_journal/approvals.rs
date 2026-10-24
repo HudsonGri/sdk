@@ -168,7 +168,18 @@ where
             },
             bytes,
         );
-        Ok(files.publish_owned(&value, native_work(io)).await?)
+        let _file = files.publish_durable(&value, native_work(io)).await?;
+        // The file and this canonical journal are bound to the same provider
+        // by with_task_files. Its eager publication covers the earlier open
+        // event too; require that provider's explicit canonical proof as well.
+        let _request = aggregate.durable_receipt().await?.ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "approval request awaits durability",
+            )
+        })?;
+        Ok(())
     }
 
     /// Validates the committed decision's mandatory file and proves its

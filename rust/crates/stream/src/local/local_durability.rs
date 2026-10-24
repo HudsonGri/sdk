@@ -24,6 +24,16 @@ fn current_deferral() -> Deferral {
     DEFERRED.try_with(|value| *value).unwrap_or(Deferral::Eager)
 }
 
+// Every publication worker inherits the caller's exact provider scope. Native
+// guarded and prepared commits must use the same boundary as ordinary writes.
+fn publication_scope<F>(future: F) -> impl Future<Output = F::Output> + Send
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    DEFERRED.scope(current_deferral(), future)
+}
+
 /// Leaves local-stream mutations accepted until an explicit durability barrier.
 pub async fn deferring_durability<F: Future>(future: F) -> F::Output {
     DEFERRED.scope(Deferral::All, future).await

@@ -105,16 +105,26 @@ where
                 .transpose()?;
             (ticket_hold, ticket)
         };
-        let publication = host
-            .open_at(
-                operation,
-                None,
-                &ticket,
-                self.owner.as_ref().map(|(owner, _)| owner),
-                io,
-                &mut transaction,
-            )
-            .await;
+        let publication = host.open_at(
+            operation,
+            None,
+            &ticket,
+            self.owner.as_ref().map(|(owner, _)| owner),
+            io,
+            &mut transaction,
+        );
+        #[cfg(feature = "filesystem-local")]
+        let publication = async {
+            if self.owner.is_some() && matches!(interaction, Interaction::Approval { .. }) {
+                // The task-file publisher below proves both durable prefixes.
+                // Only this provider's canonical append may share its flush;
+                // staging on an independent filesystem authority stays eager.
+                acyclic_stream::deferring_provider_durability(&*self.stream, publication).await
+            } else {
+                publication.await
+            }
+        };
+        let publication = publication.await;
         drop(ticket);
         drop(ticket_hold);
         if let Some((owner, _)) = &self.owner {

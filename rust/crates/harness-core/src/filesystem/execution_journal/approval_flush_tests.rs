@@ -58,6 +58,7 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
         assert!(output.status.success(), "{stdout}\n{stderr}");
         assert!(stdout.contains("1 passed; 0 failed"), "{stdout}\n{stderr}");
         assert_eq!(stderr.matches("APPROVALS_SETTLEMENT_FLUSHES").count(), 2);
+        assert_eq!(stderr.matches("APPROVALS_REQUEST_FLUSHES").count(), 2);
         eprint!("{stderr}");
         return Ok(());
     }
@@ -141,6 +142,8 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
             )?;
         for approved in [false, true] {
             let mut measured = Vec::new();
+            let mut opening = Vec::new();
+            let mut former_native = None;
             for entry in 0..3 {
                 let id = InteractionId::from_bytes([100 + entry + 3 * u8::from(approved); 16]);
                 let request = Interaction::approval(
@@ -149,8 +152,111 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
                     [5; 32],
                     ApprovalSubject::Opaque {},
                 )?;
-                journal.open_interaction(id, &request, None)?.await?;
                 let host = journal.interactions()?;
+                flushes.0.store(0, Ordering::Relaxed);
+                match entry {
+                    0 => journal.open_interaction(id, &request, None)?.await?,
+                    1 => {
+                        let cancellation = acyclic_fs::CancellationToken::new();
+                        let work = acyclic_fs::NativeMaterializationWork::new(
+                            acyclic_fs::performance::work_budget(65_536, 64 << 20),
+                            &cancellation,
+                        )
+                        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                        let io = PreparationIo::from_native_work(&work)?;
+                        // The former fixture supplied an ordinary journal to
+                        // another ledger. It must fail before either record.
+                        assert!(matches!(
+                            journal.open_interaction_with_io(id, &request, Some(&io)).await,
+                            Err(Error::Unauthorized(message))
+                                if message == "journal owner uses another metadata ledger"
+                        ));
+                        assert!(host.read(id, None).await?.is_none());
+                        assert_eq!(flushes.0.load(Ordering::Relaxed), 0);
+                        let (task, fence) = journal
+                            .owner
+                            .as_ref()
+                            .ok_or_else(|| Error::Storage("native proof has no owner".into()))?
+                            .0
+                            .task_binding();
+                        let native = FilesystemExecutionJournal::for_task(
+                            fixture.host.journal_owner(task, fence, Some(&io)).await?,
+                            operation,
+                            operation,
+                            fixture.files.clone(),
+                            crate::filesystem::FilesystemJournalBinding {
+                                volume: &journal.volume,
+                                verifier: &journal.verifier,
+                                scope: &journal.scope,
+                                maximum_bytes: journal.maximum_payload_bytes,
+                                io: Some(&io),
+                            },
+                        )?
+                        .with_task_files(files.clone())?
+                        .with_interaction_owner(
+                            &conversation.verifier(&mut None)?,
+                            &SchemaRegistry::new(),
+                            &scope,
+                            &fixture.storage,
+                            Some(&io),
+                        )?;
+                        flushes.0.store(0, Ordering::Relaxed);
+                        // Compare the native path with its own former shape:
+                        // native filesystem staging has a different I/O cost
+                        // from the ordinary publisher.
+                        let former_id = InteractionId::from_bytes([120 + 3 * u8::from(approved); 16]);
+                        let native_host = native.interactions()?;
+                        let mut transaction = native_host.transaction(Some(&io)).await?;
+                        let ticket = native_host.stage_request(former_id, &request, None, Some(&io)).await?;
+                        native_host.open_at(
+                            super::super::interactions::interaction_open_operation(former_id, Some(&io))?,
+                            None,
+                            &ticket,
+                            native.owner.as_ref().map(|(owner, _)| owner),
+                            Some(&io),
+                            &mut transaction,
+                        ).await?;
+                        native.publish_approval_request(former_id, &transaction.aggregate.0, Some(&io)).await?;
+                        former_native = Some(flushes.0.load(Ordering::Relaxed));
+                        drop(transaction);
+                        drop(ticket);
+                        flushes.0.store(0, Ordering::Relaxed);
+                        native.open_interaction_with_io(id, &request, Some(&io)).await?;
+                    }
+                    _ => {
+                        // Execute the former eager canonical open, then the
+                        // identical mandatory task-file and canonical proofs.
+                        let mut transaction = host.transaction(None).await?;
+                        let ticket = host.stage_request(id, &request, None, None).await?;
+                        host.open_at(
+                            super::super::interactions::interaction_open_operation(id, None)?,
+                            None,
+                            &ticket,
+                            journal.owner.as_ref().map(|(owner, _)| owner),
+                            None,
+                            &mut transaction,
+                        )
+                        .await?;
+                        journal
+                            .publish_approval_request(id, &transaction.aggregate.0, None)
+                            .await?;
+                    }
+                }
+                let count = flushes.0.load(Ordering::Relaxed);
+                assert!(count > 0, "request flushes were not observed");
+                opening.push(count);
+                let opened = files
+                    .snapshot(&Query::Approval { task: task(), request: request_id(id) }, 1)
+                    .await?;
+                assert_eq!(opened.files.len(), 1);
+                assert!(files.inner.file_is_durable(&opened.files[0]).await?);
+                let aggregate = host.aggregate(None).await?;
+                assert!(aggregate.0.durable_receipt().await?.is_some());
+                drop(aggregate);
+                assert!(journal.interaction_outcome_with_io(id, None).await?.is_none());
+                flushes.0.store(0, Ordering::Relaxed);
+                journal.open_interaction(id, &request, None)?.await?;
+                assert_eq!(flushes.0.load(Ordering::Relaxed), 0, "exact reopen flushed again");
                 let ticket = host.read(id, None).await?.unwrap().0;
                 let human = responder(&conversation, "human", &[id])?;
                 let decision = decision(
@@ -225,6 +331,13 @@ fn settlement_flushes(shared_provider: bool) -> Result<()> {
                     })
                 );
             }
+            assert_eq!(opening[0] + 1, opening[2], "public open did not group publication");
+            let former_native = former_native.ok_or_else(|| Error::Storage("native control was not executed".into()))?;
+            assert_eq!(opening[1] + 1, former_native, "native open did not group publication");
+            eprintln!(
+                "APPROVALS_REQUEST_FLUSHES shared={shared_provider} approved={approved} public={} native={} former={} former_native={former_native}",
+                opening[0], opening[1], opening[2],
+            );
             if shared_provider {
                 assert!(
                     measured[0] < measured[2],

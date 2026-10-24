@@ -127,6 +127,148 @@ async fn provider_scoped_deferral_cannot_defer_a_foreign_authority() -> Result {
     Ok(())
 }
 
+async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Meter>> {
+    let meter = Arc::new(Meter::local());
+    let records = vec![
+        if entry == 2 {
+            Bytes::new()
+        } else {
+            Bytes::from_static(b"native publication")
+        }
+        .into(),
+    ];
+    if entry == 0 {
+        let outcome = provider
+            .native_append(
+                AppendRequest {
+                    path: path(),
+                    records,
+                    if_tail: Some(1),
+                    idempotency_key: None,
+                },
+                meter.original(),
+            )
+            .await??;
+        assert!(matches!(
+            outcome.value(),
+            crate::AppendOutcome::Committed(_)
+        ));
+    } else {
+        let request = CommitRequest {
+            conditions: vec![
+                crate::CommitCondition::Tail {
+                    path: path(),
+                    expected: 1,
+                },
+                crate::CommitCondition::Tail {
+                    path: StreamPath::new("native-deferral-owner")?,
+                    expected: 1,
+                },
+            ],
+            mutations: vec![crate::CommitMutation::Append {
+                path: path(),
+                records,
+            }],
+            idempotency_key: IdempotencyKey::new("native-deferral")?,
+        };
+        let outcome = if entry == 1 {
+            provider
+                .native_commit_guarded(request, None, meter.original(), || {
+                    std::future::ready(Ok::<_, StreamError>(()))
+                })
+                .await??
+        } else {
+            let packet = provider
+                .native_prepare_commit(request, 64, meter.original())
+                .await??;
+            let (packet, allocation) = packet.into_parts();
+            let result = packet
+                .finish(Bytes::from_static(b"native publication").into())
+                .await??;
+            drop(allocation);
+            result
+        };
+        assert!(matches!(
+            outcome.value(),
+            crate::CommitOutcome::Committed(_)
+        ));
+    }
+    Ok(meter)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn native_publication_workers_preserve_provider_scope_and_both_device_prefixes() -> Result {
+    for entry in 0..3 {
+        for scoped in [false, true] {
+            let selected_directory = tempfile::tempdir()?;
+            let foreign_directory = tempfile::tempdir()?;
+            let selected = LocalStream::open(selected_directory.path(), Default::default()).await?;
+            let foreign = LocalStream::open(foreign_directory.path(), Default::default()).await?;
+            append(&selected, b"base").await?;
+            append(&foreign, b"base").await?;
+            // Prepared ingress owns an exact owner-tail and target-tail pair;
+            // both fences exist before the deferred publication begins.
+            for provider in [&selected, &foreign] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new("native-deferral-owner")?,
+                        records: vec![Bytes::from_static(b"owner").into()],
+                        if_tail: Some(0),
+                        idempotency_key: None,
+                    })
+                    .await?;
+            }
+            let mut foreign_bytes = synced_bytes(&foreign).ok_or("base was not durable")?;
+            let selected_bytes = synced_bytes(&selected).ok_or("base was not durable")?;
+            let mut meters = Vec::new();
+            let publication = async {
+                meters.push(native_publication(&selected, entry).await?);
+                assert!(
+                    synced_bytes(&selected).is_none(),
+                    "native worker lost its deferral"
+                );
+                meters.push(native_publication(&foreign, entry).await?);
+                if let Some(bytes) = synced_bytes(&foreign) {
+                    foreign_bytes = bytes;
+                }
+                assert_eq!(synced_bytes(&foreign).is_some(), scoped);
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            };
+            if scoped {
+                deferring_provider_durability(&selected, publication).await?;
+            } else {
+                // Former ambient grouping loses a separate authority's write.
+                deferring_durability(publication).await?;
+            }
+            let foreign = power_cut(foreign_directory.path(), foreign, foreign_bytes).await?;
+            assert_eq!(foreign.tail(path()).await?, if scoped { 2 } else { 1 });
+            if scoped {
+                selected
+                    .durable_receipt(path(), 2)
+                    .await?
+                    .ok_or("native receipt missing")?;
+                let bytes = synced_bytes(&selected).ok_or("native receipt preceded device sync")?;
+                let selected = power_cut(selected_directory.path(), selected, bytes).await?;
+                assert_eq!(selected.tail(path()).await?, 2);
+                append(&selected, b"scope ended").await?;
+                assert!(synced_bytes(&selected).is_some());
+            } else {
+                let selected =
+                    power_cut(selected_directory.path(), selected, selected_bytes).await?;
+                assert_eq!(
+                    selected.tail(path()).await?,
+                    1,
+                    "accepted native write survived without a receipt"
+                );
+            }
+            for meter in meters {
+                meter.assert_refunded();
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_vendor = "apple")]
 async fn survives_barrier_cut(receipt: bool) -> Result<u64> {
     let directory = tempfile::tempdir()?;

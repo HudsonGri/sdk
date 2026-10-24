@@ -443,9 +443,8 @@ impl LocalStream {
         })?;
         let stream = self.clone();
         // The mutation owns completion as well as durability, even if its caller is dropped.
-        let deferred = current_deferral();
         let operation = span.clone();
-        spawn(DEFERRED.scope(deferred, async move {
+        spawn(publication_scope(async move {
             let result = operation
                 .scope(async {
                     let (result, required) = {
