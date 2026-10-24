@@ -251,15 +251,16 @@ impl ConcurrentControlRequestDispatcher for SucceedsUnfunded {
         _request: ControlRequest,
         work: &mut Option<acyclic_fs::NativeMaterializationWork>,
     ) -> acyclic_harness::Result<ControlDispatchResponse> {
-        let starved = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
-                peak_allocation_bytes:
-                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 64,
-                ..pi_root_provider::allocation_budget()
-            },
-            &CancellationToken::new(),
-        )
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+        let starved =
+            acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget {
+                    peak_allocation_bytes:
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 64,
+                    ..pi_root_provider::allocation_budget()
+                },
+                &CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
         *work = Some(starved);
         let execution = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         Ok((json!({ "execution": execution }), None))
@@ -283,6 +284,9 @@ async fn an_unfunded_successful_reply_is_never_replayed_as_a_failure() {
     );
     assert!(allocation.is_none());
     assert!(first.is_refusal() && first.reply_failed());
+    // The finished operation holds no in-flight slot: it is a retained,
+    // indeterminate outcome that ages out like any other.
+    assert_eq!(ledger.in_flight(), 0);
     // A retry, live or after a restart, reports the indeterminate outcome:
     // it neither re-executes nor replays the reply refusal as the result.
     // Recording the refusal as the completed response replays `first`.
