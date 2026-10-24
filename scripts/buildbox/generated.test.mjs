@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
+import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
 
 test('gate execution never replays a historical PASS verdict',async()=>{
@@ -224,7 +225,7 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
   for(const [negative,expected] of [[false,224],[true,0]]){
    const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("rc = 224; category = 'infra';",''):source);
    const meta=path.join(cwd,`meta-${negative}.json`);const receipt=path.join(cwd,`done-${negative}.json`);
-   fs.writeFileSync(meta,JSON.stringify({owner:{pid:process.pid,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   fs.writeFileSync(meta,JSON.stringify({owner:processOwner(),side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
    const result=spawnSync(process.execPath,[module,'finish',meta,'0','command'],{encoding:'utf8'});
    assert.equal(result.status,expected,result.stderr);
    const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);

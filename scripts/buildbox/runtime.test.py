@@ -325,7 +325,7 @@ finally:a.close();b.close()
         finally:
             if p.exists():job.remove_home(p)
     def test_outputs_are_archived_before_target_removal(self):
-        prefix=Path('/mnt/bb/jobs')/('r19-export-'+str(os.getpid()))
+        prefix=Path('/mnt/bb/jobs')/('r19-export-'+self.d.name)
         Path(str(prefix)+'.t0').touch()
         target=self.d/'target';target.mkdir();(target/'test.exe').write_bytes(b'executable')
         os.utime(target/'test.exe',(1,1)) # named Cargo outputs survive fresh builds too
@@ -382,7 +382,7 @@ finally:a.close();b.close()
         self.assertIn('export_error',runtime);self.assertTrue(runtime['targets_removed'])
 
     def test_glibc_pinned_export_keeps_the_requested_local_path(self):
-        prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
+        prefix=Path('/mnt/bb/jobs')/('r19-glibc-'+self.d.name);Path(str(prefix)+'.t0').touch()
         target=self.d/'target';p=target/'x86_64-unknown-linux-gnu/debug/tool';p.parent.mkdir(parents=True);p.write_bytes(b'linux-binary')
         spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/debug/tool'],'build':True}
         try:
@@ -395,7 +395,7 @@ finally:a.close();b.close()
         finally:Path(str(prefix)+'.t0').unlink();shutil.rmtree(str(prefix)+'.exports',ignore_errors=True)
 
     def test_glibc_pinned_whole_target_directory_export(self):
-        prefix=Path('/mnt/bb/jobs')/('r19-whole-target-'+str(os.getpid()));Path(str(prefix)+'.t0').touch()
+        prefix=Path('/mnt/bb/jobs')/('r19-whole-target-'+self.d.name);Path(str(prefix)+'.t0').touch()
         target=self.d/'target';p=target/'x86_64-unknown-linux-gnu/debug/tool';p.parent.mkdir(parents=True);p.write_bytes(b'linux-binary')
         spec={'prefix':str(prefix),'cwd':str(self.d),'paths':['/work/target/'],'build':True,'targetMapping':{'triple':'x86_64-unknown-linux-gnu','profiles':['debug','release']}}
         try:
@@ -538,7 +538,9 @@ finally:a.close();b.close()
         receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('interval = 1000','interval = 20')
         (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
         for negative in [False,True]:
-            prefix=Path('/mnt/bb/jobs')/f'r19-wrapper-{os.getpid()}-{negative}'
+            # PID numbers repeat in every private /proc. The allocated fixture
+            # directory, not a namespace-local PID, owns this global prefix.
+            prefix=Path('/mnt/bb/jobs')/f'r19-wrapper-{self.d.name}-{negative}'
             marker=self.d/f'wrapper-ready-{negative}'
             meta=self.d/f'wrapper-{negative}.receipt-meta.v2.json'
             probe=self.d/'generate-wrapper.mjs'
@@ -574,8 +576,8 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
                 data=json.loads(receipt.read_text())
                 self.assertEqual((data['exit_status'],data['termination']),(137,'interrupted'))
                 self.assertTrue(data.get('home_removed'),data);self.assertTrue(data['targets_removed'])
-                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative)
-                self.assertEqual(bool(data.get('outer_targets_removed')),not negative)
+                for suffix in ['.targets','.tmp']:self.assertEqual(Path(str(prefix)+suffix).exists(),negative,data)
+                self.assertEqual(bool(data.get('outer_targets_removed')),not negative,data)
             finally:
                 if process.poll() is None:process.kill();process.wait()
                 process.stdout.close();process.stderr.close();job.cleanup_runtime(str(meta)+'.runtime',prefix)
