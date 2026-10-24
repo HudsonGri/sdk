@@ -169,6 +169,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-fs",
  "acyclic-fs-base",
  "acyclic-fs-wire",
  "acyclic-grpc-observability",

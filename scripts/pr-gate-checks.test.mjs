@@ -12,6 +12,7 @@ test('affected PR checks every target and docs, including test=false fuzz binari
   try{
     mkdirSync(join(cwd,'bin'));mkdirSync(join(cwd,'scripts'));
     writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),readFileSync(join(scripts,'gate-test-runner.sh')));
+    writeFileSync(join(cwd,'scripts/gate-windows-features.sh'),'#!/bin/bash\necho "windows-features $*" >> calls\nexit "${WINDOWS_FEATURE_RC:-0}"\n');
     const cargo=join(cwd,'bin/cargo');
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls
@@ -32,18 +33,19 @@ esac
     writeFileSync(join(cwd,'.gate-tests-packages'),'acyclic-harness-fuzz\nreverse-consumer\n');
     writeFileSync(join(cwd,'.gate-clippy-packages'),'acyclic-harness-fuzz\nreverse-consumer\n');
     const source=readFileSync(join(scripts,'pr-gate-checks.sh'),'utf8');
-    for(const [broken,negative,expected] of [[true,false,101],[true,true,0],[false,false,0]]){
+    for(const [broken,negative,expected,windows=0] of [[true,false,101],[true,true,0],[false,false,0],[false,false,101,101]]){
       const runner=join(cwd,'runner.sh');writeFileSync(runner,negative?source.replace('run_tests targets --all-targets','run_tests targets'):source);
       writeFileSync(join(cwd,'calls'),'');
-      const result=spawnSync('bash',[runner,'--skip','known-flake'],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:broken?'1':'0'}});
+      const result=spawnSync('bash',[runner,'--skip','known-flake'],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:broken?'1':'0',WINDOWS_FEATURE_RC:String(windows)}});
       assert.equal(result.status,expected,result.stdout+result.stderr);
+      assert.equal(readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(line=>line==='windows-features affected').length,1);
       const calls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(c=>c.startsWith('test '));
       assert.equal(calls.length,2);assert.ok(calls.every(c=>c.includes('-p acyclic-harness-fuzz -p reverse-consumer')));
       assert.ok(!calls.some(c=>c.includes('--workspace')),'affected scope remains narrowed');
       if(!negative)assert.match(calls[0],/--all-targets/);
       assert.match(calls[1],/--doc/);assert.ok(calls.every(c=>c.includes('--skip known-flake')));
       assert.match(result.stdout,new RegExp('GATE_DONE rc='+expected));
-      if(expected)assert.match(result.stdout,/error\[E0425\]: cannot find type Capabilities/);
+      if(broken&&!negative)assert.match(result.stdout,/error\[E0425\]: cannot find type Capabilities/);
       assert.equal(readFileSync(join(cwd,'.gate-fuzz-bins'),'utf8'),'recorded_invocation\n');
     }
     // A preparation error must not launch unobserved background Cargo jobs.
