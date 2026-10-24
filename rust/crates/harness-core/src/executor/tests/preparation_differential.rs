@@ -211,8 +211,8 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
         .unwrap(),
     )
     .unwrap();
-    // Exact snapshot of the complete capture, including the shared-prefix
-    // header, segment, manifest and projection metadata. This is equality,
+    // Exact snapshot of capture using the stable inline projection. Request
+    // headers and segments are staged only when dispatch is claimed.
     // The response context helper drops its copied ContextInput before
     // accounting/staging: one allocation and eight peak bytes in this fixture.
     // This is not a growing allowance; restoring extra preparation must still fail.

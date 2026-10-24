@@ -1,9 +1,9 @@
-//! Immutable message segments shared by projections and dispatched requests.
+//! Immutable dispatched-request segments and stable inline projections.
 use super::*;
 
 mod digests;
 mod projection;
-pub(super) use projection::load_prepared_projection;
+
 pub(crate) use projection::load_projection;
 
 pub(crate) const REQUEST_MEDIA: &str = "application/vnd.acyclic.request-segments+json";
@@ -137,26 +137,18 @@ struct SegmentView<'a> {
 
 #[derive(Serialize)]
 struct ProjectionView<'a> {
-    request: &'a FileRef,
-    metadata: &'a std::collections::BTreeMap<String, FileRef>,
-    current_input_index: Option<u32>,
+    context: ContextView<'a>,
     canonical: &'a Option<FileRef>,
     checkpoint: &'a Option<FileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     working: &'a Option<FileRef>,
 }
 
-/// Projection metadata references the same immutable request as `ModelStarted`.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct StoredProjection {
-    pub(crate) request: FileRef,
-    metadata: std::collections::BTreeMap<String, FileRef>,
+#[derive(Serialize)]
+struct ContextView<'a> {
+    messages: &'a [ModelMessage],
+    metadata: &'a std::collections::BTreeMap<String, FileRef>,
     current_input_index: Option<u32>,
-    canonical: Option<FileRef>,
-    checkpoint: Option<FileRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    working: Option<FileRef>,
 }
 
 #[cfg(feature = "filesystem")]
@@ -201,35 +193,6 @@ impl PreparationRecord for RequestManifest {
             std::mem::size_of::<Self>() as u64,
             self.header.logical_owned_bytes()?,
             self.messages.reference.logical_owned_bytes()?,
-        ])
-        .map(Some)
-    }
-}
-#[cfg(feature = "filesystem")]
-impl PreparationRecord for StoredProjection {
-    fn container_collection_slots() -> bool {
-        // Map values are FileRef objects; keys and optional indices fit the
-        // per-item Content allowance, including malformed scalar inputs.
-        true
-    }
-
-    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        // Keep sparse BTreeMap node capacity, not just occupied entry slots.
-        // A node has eleven entries, fourteen header/edge words, and at least
-        // five occupied entries except at the root.
-        crate::core::owned_sum([
-            std::mem::size_of::<Self>() as u64,
-            crate::filesystem::file_map_owned_bytes(&self.metadata)?,
-            self.request.logical_owned_bytes()?,
-            self.canonical
-                .as_ref()
-                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
-            self.checkpoint
-                .as_ref()
-                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
-            self.working
-                .as_ref()
-                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
         ])
         .map(Some)
     }
@@ -653,17 +616,29 @@ pub(super) async fn stage_projection(
     operation: OperationId,
     key: &str,
     projection: &ResponseProjection,
-    request: &FileRef,
+    prepared: &crate::model::PreparedModelRequest,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
+    // This is the sole persisted projection schema, including main's inline
+    // context. Validate the combined value before either its event or request
+    // can be published; per-message admission is insufficient.
+    let messages = &prepared.request().messages;
+    crate::context::validate_projected_messages(
+        &projection.context,
+        messages,
+        prepared.admitted_limits(),
+        io,
+    )?;
     stage_json(
         journal,
         operation,
         key,
         &ProjectionView {
-            request,
-            metadata: &projection.context.metadata,
-            current_input_index: projection.context.current_input_index,
+            context: ContextView {
+                messages,
+                metadata: &projection.context.metadata,
+                current_input_index: projection.context.current_input_index,
+            },
             canonical: &projection.canonical,
             checkpoint: &projection.checkpoint,
             working: &projection.working,
@@ -685,7 +660,8 @@ pub(super) async fn working_reference(
     let io = scope.io();
     #[cfg(not(feature = "filesystem"))]
     let io = original;
-    let stored = retain_preparation(load_json::<StoredProjection>(journal, reference, io).await?)?;
+    let stored =
+        retain_preparation(load_json::<ResponseProjection>(journal, reference, io).await?)?;
     #[cfg(feature = "filesystem")]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     let working = stored
@@ -745,25 +721,4 @@ impl StockExecution<'_> {
         )
         .await
     }
-}
-
-pub(super) async fn projection_request(
-    journal: &dyn ExecutionJournal,
-    projection: &FileRef,
-    request_digest: [u8; 32],
-    io: Option<&PreparationIo>,
-) -> Result<FileRef> {
-    #[cfg(feature = "filesystem")]
-    let scope = crate::filesystem::PreparationScope::new(io)?;
-    #[cfg(feature = "filesystem")]
-    let io = scope.io();
-    let projection =
-        retain_preparation(load_json::<StoredProjection>(journal, projection, io).await?)?;
-    let manifest = load_manifest(journal, &projection.request, io).await?;
-    if manifest.request_digest != request_digest {
-        return Err(invalid(io));
-    }
-    #[cfg(feature = "filesystem")]
-    scope.finish(projection.request.logical_owned_bytes()?)?;
-    Ok(projection.request)
 }

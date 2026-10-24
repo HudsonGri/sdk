@@ -1,4 +1,4 @@
-//! Recover the admitted request together with its projection metadata.
+//! The single durable projection codec retains main's inline context schema.
 use super::*;
 
 #[cfg(all(
@@ -9,20 +9,12 @@ use super::*;
 ))]
 mod tests;
 
-type PreparedProjection = (
-    ResponseProjection,
-    Option<crate::model::PreparedModelRequest>,
-);
-type AdmittedProjection = (ResponseProjection, crate::model::PreparedModelRequest);
-
-impl StoredProjection {
-    /// The running stock turn already owns this projection's admitted request.
-    /// Read its small metadata without decoding any historical message segment.
+impl ResponseProjection {
     pub(in crate::executor) async fn continuation_metadata(
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
         original: Option<&PreparationIo>,
-    ) -> Result<ResponseProjection> {
+    ) -> Result<Self> {
         #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(original)?;
         #[cfg(feature = "filesystem")]
@@ -35,18 +27,18 @@ impl StoredProjection {
         let context = crate::context::copy_context(
             &crate::context::Context {
                 messages: Vec::new(),
-                metadata: stored.metadata,
-                current_input_index: stored.current_input_index,
+                metadata: stored.context.metadata,
+                current_input_index: stored.context.current_input_index,
             },
             io,
         )?;
         let working = stored
             .working
             .as_ref()
-            .map(|reference| crate::model::clone_file(reference, io))
+            .map(|file| crate::model::clone_file(file, io))
             .transpose()?;
         drop((
-            stored.request,
+            stored.context.messages,
             stored.canonical,
             stored.checkpoint,
             stored.working,
@@ -60,23 +52,23 @@ impl StoredProjection {
             })?;
             scope.finish(retained)?;
         }
-        Ok(ResponseProjection {
+        let projection = Self {
             context,
             canonical: None,
             checkpoint: None,
             working,
-        })
+        };
+        Ok(projection)
     }
 }
 
-async fn load<'a>(
+pub(crate) async fn load_projection<'a>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     limits: Limits,
-    keep_request: bool,
     original: Option<&'a PreparationIo>,
 ) -> Result<(
-    PreparedProjection,
+    ResponseProjection,
     Option<crate::conversation::ContentHold<'a>>,
 )> {
     #[cfg(feature = "filesystem")]
@@ -85,22 +77,13 @@ async fn load<'a>(
     let io = scope.io();
     #[cfg(not(feature = "filesystem"))]
     let io = original;
-    let stored = retain_preparation(load_json::<StoredProjection>(journal, reference, io).await?)?;
-    let request = load_model_request(journal, &stored.request, limits, io).await?;
-    let (request, messages) = if keep_request {
-        (Some(request), Vec::new())
-    } else {
-        (None, request.into_messages())
-    };
-    let context = crate::context::Context {
-        messages,
-        metadata: stored.metadata,
-        current_input_index: stored.current_input_index,
-    };
+    let stored =
+        retain_preparation(load_json::<ResponseProjection>(journal, reference, io).await?)?;
+    crate::context::validate_projected_context(&stored.context, limits, io)?;
     #[cfg(feature = "filesystem")]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     let projection = ResponseProjection {
-        context: crate::context::copy_context(&context, io)?,
+        context: crate::context::copy_context(&stored.context, io)?,
         canonical: stored
             .canonical
             .as_ref()
@@ -117,24 +100,12 @@ async fn load<'a>(
             .map(|file| crate::model::clone_file(file, io))
             .transpose()?,
     };
-    let messages = request
-        .as_ref()
-        .map_or(projection.context.messages.as_slice(), |request| {
-            request.request().messages.as_slice()
-        });
-    crate::context::validate_projected_messages(&projection.context, messages, limits, io)?;
+    drop(stored);
     #[cfg(feature = "filesystem")]
     let hold = {
         let retained = io.map_or(Ok(0), |io| {
-            let projection = io
-                .owned_bytes()?
+            io.owned_bytes()?
                 .checked_sub(before)
-                .ok_or_else(|| invalid(Some(io)))?;
-            let request = request
-                .as_ref()
-                .map_or(Ok(0), |request| request.preparation_owned_bytes(io))?;
-            projection
-                .checked_add(request)
                 .ok_or_else(|| invalid(Some(io)))
         })?;
         scope.finish(retained)?;
@@ -142,32 +113,22 @@ async fn load<'a>(
     };
     #[cfg(not(feature = "filesystem"))]
     let hold = None;
-    Ok(((projection, request), hold))
-}
-
-pub(crate) async fn load_projection<'a>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-    io: Option<&'a PreparationIo>,
-) -> Result<(
-    ResponseProjection,
-    Option<crate::conversation::ContentHold<'a>>,
-)> {
-    let ((projection, _), hold) = load(journal, reference, limits, false, io).await?;
     Ok((projection, hold))
 }
 
-pub(crate) async fn load_prepared_projection<'a>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-    io: Option<&'a PreparationIo>,
-) -> Result<(
-    AdmittedProjection,
-    Option<crate::conversation::ContentHold<'a>>,
-)> {
-    let ((projection, request), hold) = load(journal, reference, limits, true, io).await?;
-    let request = request.ok_or_else(|| invalid(io))?;
-    Ok(((projection, request), hold))
+impl StockExecution<'_> {
+    pub(in crate::executor) async fn load_response_projection(
+        &self,
+        journal: &dyn ExecutionJournal,
+        reference: &FileRef,
+    ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
+        let mut projection = retain_preparation(
+            load_projection(journal, reference, self.stock.limits, self.io).await?,
+        )?;
+        let request =
+            self.request_from_messages(std::mem::take(&mut projection.context.messages))?;
+        let prepared =
+            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
+        Ok((projection, prepared))
+    }
 }

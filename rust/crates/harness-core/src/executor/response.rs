@@ -73,18 +73,12 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
-        let request_key = with_history_io(self.io, |work| {
-            preparation_format(format_args!("model:{step}:request"), work)
-        })?;
-        let request = self
-            .stage_response_request(journal, input, step, &request_key, &prepared)
-            .await?;
         let reference = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             &projection,
-            &request,
+            &prepared,
             self.io,
         )
         .await?;
@@ -164,15 +158,8 @@ impl StockExecution<'_> {
                     .await?
             }
             Some((reference, accounting)) => {
-                let (projection, prepared) = retain_preparation(
-                    transcript::load_prepared_projection(
-                        journal,
-                        reference,
-                        self.stock.limits,
-                        self.io,
-                    )
-                    .await?,
-                )?;
+                let (projection, prepared) =
+                    self.load_response_projection(journal, reference).await?;
                 self.validate_response_request(&prepared)?;
                 let accounting = match accounting {
                     Some(reference) => Some(retain_preparation(
@@ -234,10 +221,7 @@ impl StockExecution<'_> {
             ));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let (mut retained, request) = retain_preparation(
-                transcript::load_prepared_projection(journal, retained, self.stock.limits, self.io)
-                    .await?,
-            )?;
+            let (mut retained, request) = self.load_response_projection(journal, retained).await?;
             self.validate_response_request(&request)?;
             retained.context.messages =
                 crate::model::clone_messages(&request.request().messages, self.io)?;

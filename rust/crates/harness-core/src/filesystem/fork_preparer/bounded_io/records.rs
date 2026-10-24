@@ -160,12 +160,47 @@ macro_rules! records {
 records!(
     crate::Capabilities => None,
     crate::context::SummarySource => SummarySource,
-    crate::executor::ResponseProjection => ResponseProjection,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::fork::InheritedConversationPrefix => None, crate::core::ExtensionConfiguration => None,
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
+impl PreparationRecord for crate::executor::ResponseProjection {
+    fn container_collection_slots() -> bool {
+        <crate::context::Context as PreparationRecord>::container_collection_slots()
+    }
+
+    fn json_value_schema() -> &'static Schema {
+        Schema::ResponseProjection
+    }
+
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        let context = self.context.decoded_owned_bytes()?.ok_or_else(|| {
+            decode_allowance_error("projection context inventory is missing", None)
+        })?;
+        let payload = context
+            .checked_sub(size_of::<crate::context::Context>() as u64)
+            .ok_or_else(|| {
+                decode_allowance_error("projection context inventory underflows", None)
+            })?;
+        // The inline context owns its message/value buffers. Decode scratch is
+        // transient and must not remain charged across checkpoint validation.
+        crate::core::owned_sum([
+            size_of::<Self>() as u64,
+            payload,
+            self.canonical
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+            self.checkpoint
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+            self.working
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+        ])
+        .map(Some)
+    }
+}
 impl PreparationRecord for crate::model::ModelEvent {
     fn json_value_schema() -> &'static Schema {
         Schema::ModelEvent
@@ -175,6 +210,13 @@ impl PreparationRecord for crate::model::ModelEvent {
     }
 }
 impl PreparationRecord for crate::context::Context {
+    fn container_collection_slots() -> bool {
+        // Message and structured-part headers have object encodings. Scalar
+        // roles, strings and digest elements need only Content buffering;
+        // arbitrary Values retain their separate schema-based inventory.
+        true
+    }
+
     fn json_value_schema() -> &'static Schema {
         Schema::Context
     }

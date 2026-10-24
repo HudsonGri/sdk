@@ -281,18 +281,12 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:compacted"), work)
         })?;
-        let request_key = with_history_io(self.io, |work| {
-            preparation_format(format_args!("model:{step}:compacted-request"), work)
-        })?;
-        let request = self
-            .stage_response_request(journal, input, step, &request_key, request)
-            .await?;
         let projection = transcript::stage_projection(
             journal,
             input.operation_id,
             &projection_key,
             compacted,
-            &request,
+            request,
             self.io,
         )
         .await?;

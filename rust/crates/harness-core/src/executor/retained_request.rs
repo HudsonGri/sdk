@@ -92,8 +92,7 @@ impl<'a> StockExecution<'a> {
             .previous_request_projection(journal, input.operation_id, retained.step)
             .await?;
         let projection =
-            transcript::StoredProjection::continuation_metadata(journal, &previous, self.io)
-                .await?;
+            ResponseProjection::continuation_metadata(journal, &previous, self.io).await?;
         self.synchronize_working_cut(
             journal,
             input,

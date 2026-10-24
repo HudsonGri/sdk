@@ -54,8 +54,7 @@ pub use fork_preparer::bounded_io::UploadRecord;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
 pub(crate) use fork_preparer::bounded_io::{
-    DecodeReservation, file_map_owned_bytes, preparation_file_record_slot_bytes,
-    preparation_slot_bytes, retain_decoded,
+    DecodeReservation, preparation_file_record_slot_bytes, preparation_slot_bytes, retain_decoded,
 };
 pub(crate) use fork_preparer_io::PreparationScope;
 use fork_preparer_io::decode_record;

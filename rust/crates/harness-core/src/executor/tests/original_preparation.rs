@@ -111,12 +111,6 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let request_key = with_history_io(self.io, |work| {
-            preparation_format(format_args!("model:{step}:request"), work)
-        })?;
-        let stored_request = self
-            .stage_response_request(journal, input, step, &request_key, &stored_request)
-            .await?;
         let reference = transcript::stage_projection(
             journal,
             input.operation_id,

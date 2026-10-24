@@ -1,5 +1,7 @@
 use super::*;
 
+mod malformed;
+
 #[derive(Serialize, Deserialize)]
 #[serde(transparent)]
 struct CoarseMetadata<T>(T);
@@ -236,23 +238,6 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         false,
         Some("retention"),
     )?;
-    for count in [1, 8] {
-        let projection = StoredProjection {
-            request: reference.clone(),
-            metadata: (0..count)
-                .map(|index| (format!("file:{index}"), reference.clone()))
-                .collect(),
-            current_input_index: Some(0),
-            canonical: Some(reference.clone()),
-            checkpoint: Some(reference.clone()),
-            working: Some(reference.clone()),
-        };
-        check_decode(
-            &projection,
-            if count == 1 { 4 } else { 16 } * 1024 * 1024,
-            true,
-        )?;
-    }
     for count in [1, 8, 64] {
         let checkpoint = crate::context::CanonicalContextCheckpoint {
             operation_id: OperationId::new(),
@@ -328,6 +313,67 @@ async fn contexts_retain_values_and_sparse_nodes_without_decoder_scratch() -> Re
             hold.bytes() > 256 * 1024,
             "negative control did not retain context decode scratch"
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_reads() -> Result<()>
+{
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    let reference = storage
+        .stage(
+            OperationId::new(),
+            "metadata/projection.json",
+            b"{}",
+            "application/json",
+            "projection.json",
+        )
+        .await?;
+    for count in [1, 8] {
+        let projection = ResponseProjection {
+            context: crate::context::Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("history".repeat(128)),
+                }],
+                metadata: (0..count)
+                    .map(|index| (format!("file:{index}"), reference.clone()))
+                    .collect(),
+                current_input_index: Some(0),
+            },
+            canonical: Some(reference.clone()),
+            checkpoint: Some(reference.clone()),
+            working: Some(reference.clone()),
+        };
+        // Includes physical peak/residence, malformed diagnostics, sparse maps,
+        // original native custody, and resident-Value decoding through one codec.
+        check_decode(&projection, 16 * 1024 * 1024, true)?;
+        let bytes = crate::contract::canonical_json_bytes(&projection)?;
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = if native {
+                PreparationIo::from_native_work(&work)?
+            } else {
+                PreparationIo::from_budget(budget, &cancellation)?
+            };
+            let (decoded, hold) = io.decode(
+                std::marker::PhantomData::<CoarseMetadata<ResponseProjection>>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            )?;
+            assert!(
+                hold.bytes() > 256 * 1024,
+                "negative control did not retain projection decode scratch"
+            );
+            drop(decoded);
+            drop(hold);
+            assert_eq!(io.owned_bytes()?, 0);
+        }
     }
     Ok(())
 }
