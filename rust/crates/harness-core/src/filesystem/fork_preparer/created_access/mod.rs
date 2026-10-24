@@ -16,6 +16,7 @@ use acyclic_fs::CancellationToken;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::WorkCounters;
 mod authentication;
+mod journal;
 mod provenance;
 mod provider;
 use authentication::CreationRequest;
