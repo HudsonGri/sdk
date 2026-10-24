@@ -193,6 +193,12 @@ macro_rules! copy_layouts {
 }
 copy_layouts!(
     acyclic_fs::access::VolumeOperation,
+    acyclic_fs::access::Action,
+    acyclic_fs::access::Effect,
+    acyclic_fs::access::PrincipalKind,
+    acyclic_fs::access::Relation,
+    acyclic_fs::access::GenerationRange,
+    acyclic_fs::access::Generations,
     acyclic_fs::LazySnapshotRef,
     acyclic_fs::JoinCommitWitness,
     acyclic_fs::WorkCounters,
@@ -255,6 +261,15 @@ pub mod markers {
                 tagged: false,
                 of: &[<serde_json::Value as HeapLayout>::LAYOUT, T::LAYOUT],
             },
+        };
+    }
+    /// Bytes decoded from base64 text: the text and the bytes it decodes to,
+    /// which are never longer, are alive together.
+    pub struct Base64Bytes;
+    impl HeapLayout for Base64Bytes {
+        const LAYOUT: &'static JsonLayout = &JsonLayout::Scaled {
+            times: 2,
+            inner: &JsonLayout::Scalar,
         };
     }
     /// A set decoded from a JSON array into a `BTreeSet<T>`.
@@ -373,6 +388,78 @@ mod materializer {
             "phase" => <MaterializationPhase as HeapLayout>::LAYOUT,
             "applied" => &JsonLayout::Scalar,
             "restored" => &JsonLayout::Scalar,
+        );
+    }
+}
+
+/// Filesystem access policies and capabilities, as their derived
+/// `Deserialize` decodes them.
+mod access {
+    use super::{Alloc, HeapLayout, JsonLayout};
+    use acyclic_fs::access::{
+        Action, Capability, Conditions, Effect, GenerationRange, Generations, Grant, Policy,
+        PrincipalKind, PrincipalPattern, Relation, ResourcePattern, Rule,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const STRING: &JsonLayout = &JsonLayout::Scalar;
+    const OPTIONAL_STRING: &JsonLayout = <Option<String> as HeapLayout>::LAYOUT;
+    const ACTIONS: &JsonLayout = <BTreeSet<Action> as HeapLayout>::LAYOUT;
+    const ATTRIBUTES: &JsonLayout = <BTreeMap<String, String> as HeapLayout>::LAYOUT;
+
+    impl HeapLayout for ResourcePattern {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "lineage_root" => OPTIONAL_STRING,
+            "volume" => OPTIONAL_STRING,
+            "generations" => <Generations as HeapLayout>::LAYOUT,
+            "path" => STRING,
+        );
+    }
+    impl HeapLayout for PrincipalPattern {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "kind" => <Option<PrincipalKind> as HeapLayout>::LAYOUT,
+            "id" => OPTIONAL_STRING,
+            "group" => OPTIONAL_STRING,
+            "attributes" => ATTRIBUTES,
+        );
+    }
+    impl HeapLayout for Conditions {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "expires_at" => &JsonLayout::Scalar,
+            "generations" => <Option<GenerationRange> as HeapLayout>::LAYOUT,
+            "relation" => <Option<Relation> as HeapLayout>::LAYOUT,
+            "role" => OPTIONAL_STRING,
+            "tag" => OPTIONAL_STRING,
+            "approvals" => &JsonLayout::Scalar,
+        );
+    }
+    impl HeapLayout for Rule {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "id" => STRING,
+            "effect" => <Effect as HeapLayout>::LAYOUT,
+            "principal" => <PrincipalPattern as HeapLayout>::LAYOUT,
+            "actions" => ACTIONS,
+            "resource" => <ResourcePattern as HeapLayout>::LAYOUT,
+            "conditions" => <Conditions as HeapLayout>::LAYOUT,
+        );
+    }
+    impl HeapLayout for Policy {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "schema_version" => &JsonLayout::Scalar,
+            "version" => &JsonLayout::Scalar,
+            "layers" => <Vec<Vec<Rule>> as HeapLayout>::LAYOUT,
+        );
+    }
+    impl HeapLayout for Grant {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "actions" => ACTIONS,
+            "resource" => <ResourcePattern as HeapLayout>::LAYOUT,
+        );
+    }
+    impl HeapLayout for Capability {
+        const LAYOUT: &'static JsonLayout = &record!(
+            "layers" => <Vec<Vec<Grant>> as HeapLayout>::LAYOUT,
+            "expires_at" => &JsonLayout::Scalar,
         );
     }
 }
