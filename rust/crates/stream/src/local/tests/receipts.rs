@@ -85,6 +85,48 @@ async fn negative_control_a_deferred_acknowledgement_is_lost_by_a_power_cut() ->
     Ok(())
 }
 
+async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
+    let selected_directory = tempfile::tempdir()?;
+    let foreign_directory = tempfile::tempdir()?;
+    let selected = LocalStream::open(selected_directory.path(), Default::default()).await?;
+    let foreign = LocalStream::open(foreign_directory.path(), Default::default()).await?;
+    append(&selected, b"base").await?;
+    append(&foreign, b"base").await?;
+    let mut foreign_durable = synced_bytes(&foreign).ok_or("base was not durable")?;
+    let cloned = selected.clone();
+    let publication = async {
+        append(&cloned, b"deferred").await?;
+        assert!(synced_bytes(&selected).is_none());
+        append(&foreign, b"independent authority").await?;
+        if let Some(bytes) = synced_bytes(&foreign) {
+            foreign_durable = bytes;
+        }
+        selected
+            .durable_receipt(path(), 2)
+            .await?
+            .ok_or("selected journal receipt missing")?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    };
+    if scoped {
+        deferring_provider_durability(&selected, publication).await?;
+    } else {
+        // Execute the former ambient scope: the selected journal's receipt
+        // cannot make another authority's acknowledged append survive a cut.
+        deferring_durability(publication).await?;
+    }
+    append(&selected, b"scope ended").await?;
+    assert!(synced_bytes(&selected).is_some());
+    let foreign = power_cut(foreign_directory.path(), foreign, foreign_durable).await?;
+    Ok(foreign.tail(path()).await?)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_scoped_deferral_cannot_defer_a_foreign_authority() -> Result {
+    assert_eq!(foreign_provider_survives_cut(true).await?, 2);
+    assert_eq!(foreign_provider_survives_cut(false).await?, 1);
+    Ok(())
+}
+
 #[cfg(target_vendor = "apple")]
 async fn survives_barrier_cut(receipt: bool) -> Result<u64> {
     let directory = tempfile::tempdir()?;
