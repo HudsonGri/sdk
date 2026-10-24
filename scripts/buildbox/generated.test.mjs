@@ -4,8 +4,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
+import {copyBackDestination} from './buildbox.mjs';
 import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('declared output stays outside the source snapshot during cleanup',()=>{
+ const root=fs.mkdtempSync(path.join(tmpdir(),'source-output-custody-'));
+ try{
+  const source=path.join(root,'source'),records=path.join(root,'records');
+  fs.mkdirSync(source);
+  const env={BUILD_SLOT_REMOTE_FETCH_DIR:records};
+  const destination=copyBackDestination({target:false},source,'.',env);
+  fs.mkdirSync(destination,{recursive:true});
+  const artifact=path.join(destination,'windows-artifacts.tar.gz');
+  fs.writeFileSync(artifact,'owned output');fs.unlinkSync(artifact);
+  assert.deepEqual(fs.readdirSync(source),[],'output lifetime cannot mutate source inputs');
+  assert.equal(copyBackDestination({target:false},source,'.',{}),source,'negative control: former output destination was the source tree');
+  assert.equal(copyBackDestination({target:true},source,'.',env),path.join(source,'target'));
+  assert.throws(()=>copyBackDestination({target:false},source,'.',{BUILD_SLOT_REMOTE_FETCH_DIR:'relative'}),/must be absolute/);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 
 test('gate execution never replays a historical PASS verdict',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-no-verdict-replay-'));
