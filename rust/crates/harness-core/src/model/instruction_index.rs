@@ -24,6 +24,7 @@ impl<T> Default for Index<T> {
 }
 impl<T: Copy> Index<T> {
     /// Visits live leaf entries when building an initial durable snapshot.
+    #[cfg(any(test, feature = "filesystem"))]
     pub(crate) fn entries(&self) -> impl Iterator<Item = ([u8; 32], T)> + '_ {
         self.nodes
             .iter()
@@ -71,6 +72,7 @@ impl<T: Copy> Index<T> {
     }
 
     /// Removes a key and its redundant branch without retaining tombstones.
+    #[cfg(any(test, feature = "filesystem"))]
     pub(crate) fn remove(
         &mut self,
         domain: usize,

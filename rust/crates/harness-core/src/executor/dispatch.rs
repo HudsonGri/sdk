@@ -3,6 +3,13 @@ use super::*;
 use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 
+struct PreparedDispatchStep {
+    request: crate::model::PreparedModelRequest,
+    admission: ModelEventAdmission,
+    events: Vec<ModelEvent>,
+    started: bool,
+}
+
 impl StockExecution<'_> {
     /// Cancellation covers preparation and response headers as well as chunks.
     pub(super) async fn cancellable_model_step(
@@ -41,33 +48,14 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
-        self.require_model_producer().await?;
-        let RetainedModelStep {
-            request: retained_request,
+        let PreparedDispatchStep {
+            request,
             mut admission,
             events: replayed,
+            started,
         } = self
-            .retained_dispatch_step(journal, input.operation_id, step, purpose)
+            .prepare_dispatch_step(journal, input, step, prior_messages, purpose, phase)
             .await?;
-        let started = retained_request.is_some();
-        if started {
-            phase.start();
-        }
-        if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
-            return Err(Error::Indeterminate(input.operation_id));
-        }
-        let preparation = self.resolve_model_request(
-            journal,
-            input,
-            (step, prior_messages, purpose),
-            retained_request,
-            phase,
-        );
-        let request = if started {
-            preparation.await?
-        } else {
-            super::phase::run(journal, io, preparation).await?
-        };
         let request_digest = request.request_digest();
         let purpose_key = model_purpose_key(purpose);
         #[cfg(not(target_arch = "wasm32"))]
@@ -151,6 +139,50 @@ impl StockExecution<'_> {
         }
         crate::obs::obs_record!("items" = observed.len());
         Ok(observed)
+    }
+
+    async fn prepare_dispatch_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
+        phase: &mut DispatchPhase,
+    ) -> Result<PreparedDispatchStep> {
+        self.require_model_producer().await?;
+        let RetainedModelStep {
+            request,
+            admission,
+            events,
+        } = self
+            .retained_dispatch_step(journal, input.operation_id, step, purpose)
+            .await?;
+        let started = request.is_some();
+        if started {
+            phase.start();
+        }
+        if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        let preparation = self.resolve_model_request(
+            journal,
+            input,
+            (step, prior_messages, purpose),
+            request,
+            phase,
+        );
+        let request = if started {
+            preparation.await?
+        } else {
+            super::phase::run(journal, self.io, preparation).await?
+        };
+        Ok(PreparedDispatchStep {
+            request,
+            admission,
+            events,
+            started,
+        })
     }
 
     #[cfg(feature = "filesystem")]

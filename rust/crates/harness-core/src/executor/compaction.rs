@@ -100,20 +100,9 @@ impl StockExecution<'_> {
         } else {
             projection.working
         };
-        let (compacted, request) = if pre_stage {
-            let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
-            let (compacted, request) = self
-                .prepare_transformed_request(&context_input, compacted)
-                .await?;
-            (compacted, request)
-        } else {
-            let request = crate::model::PreparedModelRequest::prepare(
-                self.request_from_context(&compacted)?,
-                self.stock.limits,
-                self.io,
-            )?;
-            (compacted, request)
-        };
+        let (compacted, request) = self
+            .prepare_compacted_request(input, step, compacted, pre_stage)
+            .await?;
         let compacted = ResponseProjection {
             context: compacted,
             canonical: projection.canonical,
@@ -129,6 +118,27 @@ impl StockExecution<'_> {
             request,
         )
         .await
+    }
+
+    async fn prepare_compacted_request(
+        &self,
+        input: &TurnInput,
+        step: u32,
+        compacted: crate::context::Context,
+        pre_stage: bool,
+    ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        if pre_stage {
+            let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
+            self.prepare_transformed_request(&context_input, compacted)
+                .await
+        } else {
+            let request = crate::model::PreparedModelRequest::prepare(
+                self.request_from_context(&compacted)?,
+                self.stock.limits,
+                self.io,
+            )?;
+            Ok((compacted, request))
+        }
     }
 
     async fn summary_budget(
