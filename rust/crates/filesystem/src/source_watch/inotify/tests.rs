@@ -1043,9 +1043,8 @@ fn demand_reads_do_not_invalidate_their_own_source() -> Result<(), Box<dyn std::
     let file = root.path().join("file");
     std::fs::write(&file, b"unchanged")?;
     let (watch, changes) = counted(root.path())?;
-    std::fs::File::open(&file)?.set_times(
-        std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH),
-    )?;
+    std::fs::File::open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))?;
     watch.fence()?;
     assert_eq!(changes.0.load(Ordering::Acquire), 0);
     assert_eq!(std::fs::read(&file)?, b"unchanged");

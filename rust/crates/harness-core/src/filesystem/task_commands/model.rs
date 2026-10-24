@@ -176,7 +176,9 @@ where
             ModelExecution {
                 context,
                 command: ModelExecutionInput {
-                    conversation_id: command.conversation_id.unwrap_or_else(|| crate::ConversationId::from_bytes(admission.task_id().into_bytes())),
+                    conversation_id: command.conversation_id.unwrap_or_else(|| {
+                        crate::ConversationId::from_bytes(admission.task_id().into_bytes())
+                    }),
                     role: command.role,
                     input: command.input,
                     selected_context: command.selected_context,
@@ -218,7 +220,11 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<ModelTaskCommand> {
         let command: ModelTaskCommand = mail::decode_command(payload, io)?;
-        if command.role.as_deref().is_some_and(|role| role.trim().is_empty()) {
+        if command
+            .role
+            .as_deref()
+            .is_some_and(|role| role.trim().is_empty())
+        {
             return Err(boundary(io, ErrorCode::Invalid, "agent role is empty"));
         }
         self.model.as_ref().ok_or_else(|| {

@@ -349,7 +349,12 @@ impl CaptureBatch<'_> {
         self.finish_present(changed, linked_path, &metadata)
     }
 
-    fn finish_present(&mut self, changed: bool, linked_path: Option<NamespacePath>, metadata: &HostStat) -> Result<(), CaptureError> {
+    fn finish_present(
+        &mut self,
+        changed: bool,
+        linked_path: Option<NamespacePath>,
+        metadata: &HostStat,
+    ) -> Result<(), CaptureError> {
         if changed {
             self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
         }

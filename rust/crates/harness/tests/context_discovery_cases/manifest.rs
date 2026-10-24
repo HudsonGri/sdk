@@ -256,7 +256,10 @@ async fn assert_cached_binding(
         .await?;
     assert_eq!(rendered.metadata.get("context.manifest"), Some(reference));
     let current = assert_conventions_before_input(&rendered.messages, &manifest.conventions);
-    assert_eq!(rendered.current_input_index, Some(u32::try_from(current).unwrap()));
+    assert_eq!(
+        rendered.current_input_index,
+        Some(u32::try_from(current).unwrap())
+    );
     assert_eq!(
         rendered.messages.last().map(|message| message.role),
         Some(ModelRole::User)
@@ -318,7 +321,10 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
             };
             assert!(text.contains(&format!("name: {name}\n")));
         }
-        assert_eq!(context.current_input_index, Some(u32::try_from(current).unwrap()));
+        assert_eq!(
+            context.current_input_index,
+            Some(u32::try_from(current).unwrap())
+        );
         assert_eq!(counted.reads.load(Ordering::Relaxed), 2);
     }
     assert!(

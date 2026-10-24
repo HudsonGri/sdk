@@ -77,7 +77,10 @@ struct Predecessor {
     stale_guidance: (bool, bool),
 }
 
-async fn predecessor(key: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<Predecessor> {
+async fn predecessor(
+    key: u8,
+    bootstrap: &super::super::bootstrap::Bootstrap,
+) -> Result<Predecessor> {
     let directory = bootstrap.restore()?;
     let provider = scripted((0..3).map(|_| ScriptedTurn::Text("answer".into())));
     let harness = LocalHarness::open(
@@ -199,8 +202,7 @@ async fn case(bits: u8, predecessor: &Predecessor) -> Result<()> {
     // old route; constructing fewer witnesses cannot silently miss a branch.
     assert_eq!(predecessor.stale_guidance, (!expected.0, !expected.1));
     assert_ne!(
-        predecessor.stale_guidance,
-        expected,
+        predecessor.stale_guidance, expected,
         "old route escaped case {bits}"
     );
     harness.close().await?;

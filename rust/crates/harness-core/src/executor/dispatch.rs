@@ -24,9 +24,14 @@ impl StockExecution<'_> {
             stop: &stopped,
             cancellation: &cancellation,
         };
-        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> = Box::pin(
-            self.dispatch_model_step(journal, input, step, prior_messages, (purpose, control, phase)),
-        );
+        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
+            Box::pin(self.dispatch_model_step(
+                journal,
+                input,
+                step,
+                prior_messages,
+                (purpose, control, phase),
+            ));
         let outcome = match futures::future::select(cancelled, execution).await {
             Either::Left((result, execution)) => {
                 if active.load(std::sync::atomic::Ordering::Acquire) {
@@ -53,7 +58,11 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        turn: (ModelPurpose, super::stream_tools::StreamControl<'_, '_>, &mut DispatchPhase),
+        turn: (
+            ModelPurpose,
+            super::stream_tools::StreamControl<'_, '_>,
+            &mut DispatchPhase,
+        ),
     ) -> Result<Vec<ModelEvent>> {
         let (purpose, control, phase) = turn;
         let io = self.io;
@@ -141,7 +150,9 @@ impl StockExecution<'_> {
             let generated = attempt.generate(self.stock.provider.as_ref(), request, dispatch);
             Either::Right(generated)
         };
-        control.active.store(true, std::sync::atomic::Ordering::Release);
+        control
+            .active
+            .store(true, std::sync::atomic::Ordering::Release);
         let observed = self
             .record_model_events(
                 journal,
@@ -250,7 +261,9 @@ impl StockExecution<'_> {
             }
             None => {
                 let selected = self.selected_for_turn(input, step)?;
-                self.for_model(selected).prepare_request(input, step, prior_messages).await?
+                self.for_model(selected)
+                    .prepare_request(input, step, prior_messages)
+                    .await?
             }
         };
         self.verify_model_request_content(journal, &request).await?;

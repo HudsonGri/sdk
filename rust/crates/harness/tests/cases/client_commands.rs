@@ -597,6 +597,8 @@ fn assert_submitted_input(
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
     assert_eq!(submitted, command);
     submitted.input.validate_user_input(&mut None)?;
-    submitted.input.validate_limits(Default::default(), &mut None)?;
+    submitted
+        .input
+        .validate_limits(Default::default(), &mut None)?;
     Ok(())
 }
