@@ -46,7 +46,6 @@ pub(in crate::local) async fn bind_owner(
                 causal_parent: None,
                 action: Action::BindConversation { agent },
             },
-            None,
             &mut None,
         )
         .await?;
