@@ -263,7 +263,6 @@ where
             ));
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_creation(volume, None, None).await?;
             let after = after
                 .map(|name| {
                     LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
@@ -388,6 +387,8 @@ where
         file: Option<&FileRef>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+        acyclic_differential::record(("content creation verify", 0u64));
         if let Some(bound) = &self.exact_file
             && file != Some(bound)
         {

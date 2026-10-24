@@ -24,6 +24,7 @@ const PAGES = [
   "browser-publication.html?profile=opfs",
   "browser-stream.html",
   "../harness/test/browser-wire.html",
+  "../harness/test/browser-context.html",
   "../harness/test/browser-wasm-init-failure.html",
   "../harness/test/browser-task.html",
   "../harness/test/browser-task-multitab.html",
@@ -45,6 +46,8 @@ const require = createRequire(import.meta.url);
 // work with both isolated and hoisted installs.
 const dependencyRoots = new Map([
   ["/stream/", resolve(root, "../stream")],
+  ["/actors/", resolve(root, "../actors")],
+  ["/auth/", resolve(root, "../auth")],
   ["/harness/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
   ["/harness/", resolve(root, "../harness")],
   ["/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],

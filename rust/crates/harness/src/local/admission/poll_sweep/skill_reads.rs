@@ -41,7 +41,7 @@ async fn measured(
 async fn root_reads(fixture: &mut Fixture, harness: &Harness) -> Result<usize> {
     // Instruction capture has already selected the generation, outside this
     // incremental cost. Do not call discovery or inspect its observed trace.
-    let (workspace, generation) = selected(harness).await?;
+    let (_, generation) = selected(harness).await?;
     let reader = harness.context_reader()?;
     for name in ["AGENTS.md", "CLAUDE.md"] {
         match reader
@@ -65,10 +65,21 @@ async fn root_reads(fixture: &mut Fixture, harness: &Harness) -> Result<usize> {
         }
     }
     measured(fixture, async {
-        for root in ["/.agents/skills", "/.claude/skills"] {
-            match harness
-                .files
-                .stat(&workspace, Some(&generation), root)
+        // The independent oracle uses the authorized public reader directly.
+        // Discovery uses its trait adapter, which must not reverify creation.
+        for root in [".agents/skills", ".claude/skills"] {
+            match reader
+                .list_private_directory(
+                    &harness.project,
+                    root,
+                    root,
+                    crate::filesystem::DirectoryOptions {
+                        generation: Some(&generation),
+                        after: None,
+                        maximum_entries: 128,
+                        ceiling: None,
+                    },
+                )
                 .await
             {
                 Err(Error::NotFound(_)) => {}
@@ -126,4 +137,80 @@ fn pinned_skill_catalog_reads_roots_once_and_reuses_the_generation() -> Result<(
         }
         Ok(())
     })
+}
+
+#[test]
+fn directory_trait_adapter_verifies_creation_exactly_once() -> Result<()> {
+    use acyclic_test_support::differential;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let (mut fixture, harness) = runtime.block_on(async {
+        let seed = Seed::new(Scenario::Text).await?;
+        let fixture = Fixture::new(Scenario::Text, Some(&seed)).await?;
+        let harness = fixture.open().await?;
+        Ok::<_, Error>((fixture, harness))
+    })?;
+    // Prime instruction and authority metadata before observing directory calls,
+    // as the admission path does before it asks for the skill catalog.
+    runtime.block_on(root_reads(&mut fixture, &harness))?;
+    let (_, generation) = runtime.block_on(selected(&harness))?;
+    let reader = harness.context_reader()?;
+    let pair = differential::pair_of(
+        &["content creation verify"],
+        || (),
+        |(), direct| {
+            runtime.block_on(async {
+                measured(&mut fixture, async {
+                    let root = ".agents/skills";
+                    let result = if direct {
+                        reader
+                            .list_private_directory(
+                                &harness.project,
+                                root,
+                                root,
+                                crate::filesystem::DirectoryOptions {
+                                    generation: Some(&generation),
+                                    after: None,
+                                    maximum_entries: 128,
+                                    ceiling: None,
+                                },
+                            )
+                            .await
+                            .map(|_| ())
+                    } else {
+                        ContentResidencyVerifier::list_private_directory(
+                            reader.as_ref(),
+                            &harness.project,
+                            root,
+                            root,
+                            Some(&generation),
+                            None,
+                            128,
+                            None,
+                            None,
+                        )?
+                        .await
+                        .map(|_| ())
+                    };
+                    match result {
+                        Err(Error::NotFound(_)) => Ok(()),
+                        result => result,
+                    }
+                })
+                .await
+            })
+        },
+    );
+    for (result, trace) in pair {
+        result?;
+        assert_eq!(
+            trace,
+            [("content creation verify", 0)],
+            "directory adapter repeated creation verification"
+        );
+    }
+    Ok(())
 }

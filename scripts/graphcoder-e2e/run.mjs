@@ -111,7 +111,7 @@ async function execute(test, gitOrigin) {
       }
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
-      const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: fixture.workspace, env: fixture.env });
+      const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env });
       if (input.kill_on) {
         await Promise.race([events.wait(event => event.case === test.id && event.path === input.kill_on.path && event.step === input.kill_on.step), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
@@ -128,11 +128,15 @@ async function execute(test, gitOrigin) {
       assert.equal(result.code, input.exit ?? 0, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
       if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}`);
-      if ((input.exit ?? 0) === 0 && !input.args) {
+      if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
         const frames = result.stdout.trim().split("\n").map(JSON.parse);
         assert.equal(frames[0][0].TaskSession.session, op);
-        const outcome = outcomes(frames, op).at(-1);
-        assert.equal(outcome?.completion, "completed", JSON.stringify(outcome));
+        const results = outcomes(frames, op);
+        assert.equal(results.length, 1, "one authoritative result");
+        const outcome = results[0];
+        if (input.outcome !== undefined) {
+          assert.ok(subset(outcome, input.outcome), `terminal outcome mismatch: ${JSON.stringify(outcome)}`);
+        } else assert.equal(outcome.completion, "completed", JSON.stringify(outcome));
         if (input.answer !== undefined) assert.equal(outcome.ok.text, input.answer);
       }
     }
