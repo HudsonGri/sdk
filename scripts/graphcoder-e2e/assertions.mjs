@@ -36,6 +36,15 @@ export function toolResults(records) {
   return [...new Set(results)];
 }
 
+// Script-step consumption is exclusive. Once acknowledged, another provider
+// cannot serve the same step later; reject route drift at this boundary.
+export function requestStep(records, expected) {
+  const record = records.find(record => record.step === expected.step);
+  if (!record) return false;
+  assert.equal(record.path, expected.path, `provider route for script step ${expected.step}`);
+  return true;
+}
+
 export function requests(test, records) {
   const generations = records.filter(record => ["responses", "messages", "chat/completions"].includes(record.path)
     || /^models\/[^/]+:streamGenerateContent(?:\?alt=sse)?$/.test(record.path));
