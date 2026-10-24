@@ -114,6 +114,13 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    #[cfg(all(test, not(acyclic_loom)))]
+    pub(crate) fn test_coordinator(
+        &self,
+    ) -> &Arc<crate::durable_host::CoordinatorTaskHost<LocalStream>> {
+        self.runtime.task_host()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
