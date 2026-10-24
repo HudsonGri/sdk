@@ -125,3 +125,13 @@ owner runs the corresponding scale and sandbox matrix with native sessions.
 The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
 `Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
 native model-session acceptance.
+
+The no-model MCP framing probe runs all three host entry points without opening
+workspace state or native login files:
+
+```sh
+python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
+```
+
+It checks CRLF, buffered requests and an oversized peer that keeps its input
+pipe open without sending a newline. Framing uses the shared harness MCP codec.

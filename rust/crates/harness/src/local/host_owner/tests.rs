@@ -11,6 +11,10 @@ struct Fixture {
 
 impl Fixture {
     async fn open() -> Result<Self> {
+        Self::for_host("pi").await
+    }
+
+    async fn for_host(host: &str) -> Result<Self> {
         let checkout = tempfile::tempdir().map_err(storage)?;
         let state = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("source.txt"), b"source").map_err(storage)?;
@@ -26,7 +30,7 @@ impl Fixture {
             .dispatch(
                 OperationId::new(),
                 HostAction::Open {
-                    host: "pi".into(),
+                    host: host.into(),
                     session: "native-root".into(),
                 },
             )
@@ -130,8 +134,22 @@ async fn failed_and_cancelled_native_tools_leave_capturable_mergeable_views() ->
 }
 
 #[tokio::test]
-async fn native_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
-    let mut fixture = Fixture::open().await?;
+async fn codex_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
+    shared_native_session_lifecycle("codex").await
+}
+
+#[tokio::test]
+async fn claude_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
+    shared_native_session_lifecycle("claude-code").await
+}
+
+#[tokio::test]
+async fn pi_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
+    shared_native_session_lifecycle("pi").await
+}
+
+async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
+    let mut fixture = Fixture::for_host(host).await?;
     std::fs::write(
         fixture.checkout.path().join("instructions.md"),
         b"discovered in child view",
@@ -171,6 +189,9 @@ async fn native_sessions_use_shared_ordered_mailboxes_and_resume_after_recreatio
             .is_err()
     );
     let child: TaskId = serde_json::from_value(first["task"].clone()).map_err(storage)?;
+    let admission = fixture.owner.local.runtime.task_host().observe_admission(child).await?;
+    assert_eq!(admission.parent, Some(fixture.parent));
+    assert_eq!(admission.input.get("host"), Some(&json!(host)));
     let cwd = PathBuf::from(
         first["cwd"]
             .as_str()

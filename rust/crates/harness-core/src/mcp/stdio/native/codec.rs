@@ -39,7 +39,15 @@ impl<T: DeserializeOwned> Decoder for BoundedCodec<T> {
 
     fn decode(&mut self, buffer: &mut BytesMut) -> io::Result<Option<T>> {
         self.refresh_decoder_bound();
-        self.decoder.decode(buffer).map_err(Into::into)
+        loop {
+            let before = buffer.len();
+            let value = self.decoder.decode(buffer).map_err(io::Error::from)?;
+            if value.is_some() || buffer.len() == before {
+                return Ok(value);
+            }
+            // A skipped nonstandard notification may already precede another
+            // complete frame. Consume it before asking the pipe for more bytes.
+        }
     }
 
     fn decode_eof(&mut self, buffer: &mut BytesMut) -> io::Result<Option<T>> {
@@ -99,8 +107,29 @@ impl Write for BoundedWrite<'_> {
     }
 }
 
-#[cfg(test)]
-#[cfg(acyclic_harness_loom)]
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn skipped_notification_does_not_hide_the_next_buffered_frame() -> io::Result<()> {
+        let messages = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/private\"}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n";
+        let mut codec = BoundedCodec::<rmcp::model::ServerJsonRpcMessage>::new(Arc::new(
+            AtomicU32::new(256),
+        ));
+        assert!(codec.decode(&mut BytesMut::from(messages.as_slice()))?.is_some());
+
+        // Negative control: the underlying single decode returns no frame
+        // while the valid response is still buffered and the pipe stays open.
+        let mut old = JsonRpcMessageCodec::<rmcp::model::ServerJsonRpcMessage>::new_with_max_length(256);
+        let mut pending = BytesMut::from(messages.as_slice());
+        assert!(old.decode(&mut pending).map_err(io::Error::from)?.is_none());
+        assert!(!pending.is_empty());
+        Ok(())
+    }
+}
+
+#[cfg(all(test, acyclic_harness_loom))]
 mod tests {
     use super::*;
     use loom::sync::mpsc;

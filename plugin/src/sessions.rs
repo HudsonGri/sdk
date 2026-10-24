@@ -4,7 +4,7 @@ use acyclic_harness::{local::host_owner::SessionAction, task_volume::Control};
 use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTree};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{BufRead as _, Write as _},
+    io::Write as _,
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
@@ -450,18 +450,12 @@ fn emit(value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn input_messages() -> mpsc::Receiver<serde_json::Result<Value>> {
+fn input_messages() -> mpsc::Receiver<io::Result<Value>> {
     let (send, receive) = mpsc::sync_channel(16);
     std::thread::spawn(move || {
         let input = io::stdin();
-        let mut input = input.lock();
-        loop {
-            let mut line = Vec::new();
-            match input.by_ref().take(65_537).read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break,
-                _ => {}
-            }
-            if line.len() > 65_536 || send.send(serde_json::from_slice::<Value>(&line)).is_err() {
+        for message in acyclic_harness::mcp::stdio::JsonLineReader::new(input.lock(), 65_536) {
+            if send.send(message).is_err() {
                 break;
             }
         }
