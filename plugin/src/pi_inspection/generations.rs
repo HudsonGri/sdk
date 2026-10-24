@@ -129,17 +129,12 @@ pub(crate) async fn build_writeback_generations<'a>(
             Err(error) => return Err(crate::pi_fork_host::native_lazy_error(error)),
         }
     }
-    let cut = baseline
-        .snapshot(&mut accounting)
-        .await
-        .map_err(crate::pi_fork_host::native_lazy_error)?;
     let destination = native_work.display(&format_args!("pi-writeback-{operation}-candidate"))?;
     // The shared fork owner returns its original creation generation on every
     // recovery, even after the candidate workspace has published its changes.
     let (selected, origin) = baseline
-        .fork_snapshot(
+        .fork(
             &destination.0,
-            cut,
             acyclic_fs::IdempotencyKey::from_bytes(
                 phase_operation(operation, b"pi-writeback-candidate-fork").into_bytes(),
             ),
