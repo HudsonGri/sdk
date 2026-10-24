@@ -17,11 +17,13 @@ impl acyclic_stream::UnixMillisClock for Clock {
     }
 }
 
-async fn fixture() -> Result<Journal> {
+async fn fixture() -> Result<(Journal, crate::core::AuthorityIssuer)> {
     fixture_with_filesystem(acyclic_fs::Fs::memory()).await
 }
 
-async fn fixture_with_filesystem(filesystem: acyclic_fs::MemoryFs) -> Result<Journal> {
+async fn fixture_with_filesystem(
+    filesystem: acyclic_fs::MemoryFs,
+) -> Result<(Journal, crate::core::AuthorityIssuer)> {
     let provider = ProviderRef::new("future".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
@@ -51,7 +53,7 @@ async fn fixture_with_filesystem(filesystem: acyclic_fs::MemoryFs) -> Result<Jou
         None,
         &mut None,
     )?;
-    FilesystemExecutionJournal::new(
+    let journal = FilesystemExecutionJournal::new(
         Arc::new(acyclic_stream::MemoryStream::new_with_clock(
             Default::default(),
             Arc::new(Clock),
@@ -65,7 +67,8 @@ async fn fixture_with_filesystem(filesystem: acyclic_fs::MemoryFs) -> Result<Jou
             maximum_bytes: 4096,
             io: None,
         },
-    )
+    )?;
+    Ok((journal, issuer))
 }
 
 #[tokio::test]
@@ -79,7 +82,7 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
         bucket.clone(),
     );
     let second_fs = acyclic_fs::Fs::from_memory_providers(Arc::new(provider), objects, bucket);
-    let first = fixture_with_filesystem(first_fs).await?;
+    let (first, _runtime) = fixture_with_filesystem(first_fs).await?;
     let second = FilesystemExecutionJournal::new(
         first.stream.clone(),
         FilesystemHost::new(second_fs, first.volume.provider(), None)?,
@@ -286,7 +289,7 @@ async fn fixture_state(
 
 #[tokio::test]
 async fn journal_fixture_state_detects_mutation() -> Result<()> {
-    let journal = fixture().await?;
+    let (journal, _runtime) = fixture().await?;
     let operation = OperationId::from_bytes([4; 16]);
     let before = fixture_state(&journal, operation, &journal.volume).await?;
     assert_eq!(
@@ -719,7 +722,7 @@ fn journal_wrapper_observations(
     let initializations = std::cell::Cell::new(0);
     let [before, after] = [true, restore_box].map(|old| {
         initializations.set(initializations.get() + 1);
-        let mut journal = runtime.block_on(fixture()).unwrap();
+        let (mut journal, _runtime) = runtime.block_on(fixture()).unwrap();
         let file = runtime
             .block_on(prepare(&journal, operation, &event, b"payload"))
             .unwrap();
@@ -824,7 +827,7 @@ proptest! {
         let event = ExecutionEvent::Started { request_digest: if failure == 1 { [0;32] } else { digest } };
         let key = if failure == 2 { "" } else { &key };
         for mode in 0..5 {
-            let observations = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
+            let observations = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(), |(journal, _runtime), old| {
                 let selected = Choice(&journal, old, false);
                 let file = runtime.block_on(selected.stage(operation, "seed-only", b"seed", "application/octet-stream", None).unwrap()).unwrap();
                 if mode == 2 { runtime.block_on(selected.append(operation, "start", &ExecutionEvent::Started { request_digest: digest }, None).unwrap()).unwrap(); }
@@ -848,7 +851,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let [expected, actual] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None, false)).unwrap());
+            |(journal, _runtime), old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None, false)).unwrap());
         prop_assert_eq!(&actual, &expected);
         for group in 0..3 {
             let mut broken = actual.clone();
@@ -859,7 +862,7 @@ proptest! {
         missing.0[2].pop();
         prop_assert_ne!(&missing, &expected);
         let broken = differential::observe::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None, false)).unwrap());
+            |(journal, _runtime)| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None, false)).unwrap());
         prop_assert_eq!(&expected.0, &broken.0);
         prop_assert_ne!(&expected.1, &broken.1, "extra verification was not detected");
     }
@@ -1070,7 +1073,7 @@ fn records_poll_parent(mode: u8, early: bool) -> Result<bool> {
         .enable_all()
         .build()
         .unwrap();
-    let journal = runtime.block_on(fixture())?;
+    let (journal, _runtime) = runtime.block_on(fixture())?;
     let operation = OperationId::from_bytes([4; 16]);
     let event = ExecutionEvent::Started {
         request_digest: [9; 32],
