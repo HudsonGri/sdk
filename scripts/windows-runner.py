@@ -179,6 +179,13 @@ class Commands:
             log=str(log_path), process_host_sha256=digest(self.host),
             verification_error=verification_error,
         )
+        # Each completed command owns one immutable structured receipt. The
+        # invocation summary below is only a view: reusing a producer/records
+        # directory must never erase an earlier invocation's evidence.
+        receipts = self.records / "receipts"
+        receipts.mkdir(exist_ok=True)
+        with (receipts / (identity + ".json")).open("x", encoding="utf-8") as receipt:
+            json.dump(result, receipt, indent=2)
         self.results.append(result)
         (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
         print("WIN_TEST_RESULT", json.dumps(result), flush=True)

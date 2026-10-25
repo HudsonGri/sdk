@@ -164,7 +164,22 @@ def main():
         plan_path.write_text(json.dumps(plan), encoding="utf-8")
         assert subprocess.call([python, "-X", "utf8", str(module_path), str(plan_path)]) == 0
         cli_results = json.loads((records / "cli/results.json").read_text(encoding="utf-8"))
-        lease_wait_seconds = commands.lease_wait_seconds + cli_results[0]["lease_wait_seconds"]
+        # A second independent invocation can update the convenience summary,
+        # but every first invocation receipt must remain byte-for-byte intact.
+        receipts = records / "receipts"
+        retained = {path.name: path.read_bytes() for path in receipts.glob("*.json")}
+        assert len(retained) == len(commands.results)
+        with module.Commands(records, source, host) as successor:
+            assert successor.run([python, "-c", probe], cwd=source,
+                                 name="successor-invocation", sha256=checksum) == 0
+        for name, original in retained.items():
+            assert (receipts / name).read_bytes() == original, "earlier receipt was overwritten"
+        assert len(list(receipts.glob("*.json"))) == len(retained) + 1
+        for result in [*commands.results, *successor.results]:
+            path = receipts / (result["fixture"] + ".json")
+            assert json.loads(path.read_text(encoding="utf-8")) == result
+        lease_wait_seconds = (commands.lease_wait_seconds + successor.lease_wait_seconds
+                              + cli_results[0]["lease_wait_seconds"])
     finally:
         if old_key is None:
             os.environ.pop("RUNNER_PROBE_API_KEY", None)
