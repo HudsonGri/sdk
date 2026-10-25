@@ -126,6 +126,10 @@ including generated Node preparation, is launched inside its root-owned lease
 ceiling (`cpuset.cpus` plus `cpu.max`). Only its bounded work subtree is
 delegated. Nested commands reuse the kernel-verified lease and tenant. An
 environment marker cannot substitute for the protected record and cgroup.
+Migration into another job's writable leaf still requires write access to its
+root-owned common ancestor's `cgroup.procs`; delegation never grants that
+access. The kernel control tests the actual denial and an isolated negative
+that grants the missing ancestor permission.
 
 Both services must set `BUILD_SLOT_TENANT=graphcoder` (SDK) or
 `BUILD_SLOT_TENANT=cloud` (Cloud) explicitly. Missing labels refuse before heavy
@@ -139,6 +143,10 @@ start the payload before admission durably journals the ticket. A crash before
 handoff starts no work; a crash afterward retains the lease through root
 custody and pidfd recovery. A slot becomes reusable only after its exact
 subtree is empty. Bounded terminal records resolve exit/retirement races.
+Final counters are durably checkpointed before removing the empty subtree,
+so recovery can finish retirement if the manager dies after its last `rmdir`
+or after terminal publication. Admission startup adopts that custody even
+when the retired directory is already absent.
 Receipt sidecars retain lease identity, queue time, execution/end timestamps,
 and exclusive subtree CPU/pressure counters. Nested totals overlap their
 parent lease and must never be added to it. Shared cache CPU stays unallocated.

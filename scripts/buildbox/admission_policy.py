@@ -8,6 +8,7 @@ import shlex
 import resource
 import ctypes
 import tempfile
+import select
 
 # One admission policy, shared by the scheduler, kernel boundary and receipts.
 # No test-only reserve: all eight leases serve the existing priority queues.
@@ -51,6 +52,16 @@ def require_tenant(tenant, argv=()):
                            ' recovery='+shlex.quote(recovery)+' cloud_recovery='+shlex.quote(cloud)+' detail='+shlex.quote(
                                'set graphcoder for SDK or cloud for Cloud; no inferred/default tenant'))
     return tenant
+
+
+def wait_process(pid, expected, seconds):
+    """Sample at a deadline, but wake immediately when this exact owner ends."""
+    if not expected or expected=='None' or process_identity(pid)!=expected:return False
+    try:descriptor=os.pidfd_open(pid)
+    except ProcessLookupError:return False
+    try:
+        return process_identity(pid)==expected and not select.select([descriptor],[],[],seconds)[0]
+    finally:os.close(descriptor)
 
 # The single host cache policy. All launchers and compiler clients import it;
 # a client environment cannot reconfigure an already-running server.
@@ -235,6 +246,10 @@ if __name__ == '__main__':
     try:
         if sys.argv[1:] == ['capture-limits']:
             print(json.dumps(capture_limits(), separators=(',', ':')))
+        elif sys.argv[1:2] == ['process-identity'] and len(sys.argv)==3:
+            print(process_identity(int(sys.argv[2])))
+        elif sys.argv[1:2] == ['watch-wait'] and len(sys.argv)==5:
+            raise SystemExit(0 if wait_process(int(sys.argv[2]),sys.argv[3],float(sys.argv[4])) else 1)
         elif sys.argv[1:3] == ['exec-user', 'var'] and sys.argv[3:4] == ['--'] and len(sys.argv) > 4:
             import pwd
             # Do this after systemd/sudo and before setuid. runuser's PAM

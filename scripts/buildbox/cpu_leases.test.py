@@ -191,6 +191,33 @@ print(json.dumps(owner))
         process,_=self.invoke(0,code);output,error=process.communicate(timeout=3)
         self.assertEqual(process.returncode,0,error.decode());self.assertEqual(len(json.loads(output)['cpus']),16)
 
+    def test_peer_migration_requires_root_owned_common_ancestor(self):
+        # cgroup v2 checks the common ancestor's cgroup.procs as well as the
+        # destination. A same-UID writable peer leaf cannot bypass that check.
+        common=self.group/'cgroup.procs'
+        for negative in [False,True]:
+            victim,token=self.invoke(1,'import sys;print("true",flush=True);sys.stdin.readline()')
+            self.ready(victim)
+            target=self.group/'slot-1'/('run-'+token)/'work/job/cgroup.procs'
+            permission='import os,sys;os.chown(sys.argv[1],int(sys.argv[2]),-1)'
+            try:
+                if negative:subprocess.run(['sudo','-n','/usr/bin/python3','-B','-c',permission,str(common),str(os.getuid())],check=True)
+                code='''import os,json
+from pathlib import Path
+before=sorted(os.sched_getaffinity(0));denied=False
+try:Path(TARGET).write_text('0')
+except PermissionError:denied=True
+print(json.dumps({'denied':denied,'before':before,'after':sorted(os.sched_getaffinity(0))}))
+'''.replace('TARGET',repr(str(target)))
+                attacker,_=self.invoke(0,code);output,error=attacker.communicate(timeout=3)
+                self.assertEqual(attacker.returncode,0,error.decode())
+                result=json.loads(output)
+                self.assertEqual(result['denied'],not negative)
+                self.assertEqual(result['before']==result['after'],not negative)
+            finally:
+                if negative:subprocess.run(['sudo','-n','/usr/bin/python3','-B','-c',permission,str(common),'0'],check=True)
+                self.finish(victim)
+
     def test_crashed_manager_keeps_lease_until_orphans_are_retired(self):
         code='import os,json,sys;print(json.dumps(os.getpid()),flush=True);sys.stdin.readline()'
         process,token=self.invoke(1,code)
@@ -211,6 +238,82 @@ fd=os.pidfd_open(pid);assert process_identity(pid)==sys.argv[3];signal.pidfd_sen
         process.communicate(timeout=3)
         successor,_=self.invoke(1,'print("reclaimed")');out,err=successor.communicate(timeout=3)
         self.assertEqual(successor.returncode,0,err.decode());self.assertIn(b'reclaimed',out)
+
+    def test_kill_during_retirement_recovers_final_counters_and_slot(self):
+        former=HERE/'fixtures/cpu-leases/former-retire.py'
+        provenance=json.loads(former.with_name('former-retire.origin.json').read_text())
+        self.assertEqual(hashlib.sha256(former.read_bytes()).hexdigest(),provenance['sha256'])
+        driver='''import os,sys,signal
+from pathlib import Path
+sys.path.insert(0,sys.argv[1]);import cpu_leases as c
+token,boundary,former=sys.argv[2:]
+if former!='new':exec(Path(former).read_text(),c.__dict__)
+rmdir=Path.rmdir;atomic=c.atomic_json
+def interrupted_rmdir(path,*args,**kwargs):
+ result=rmdir(path,*args,**kwargs)
+ if boundary=='rmdir' and path.name=='run-'+token:os.kill(os.getpid(),signal.SIGKILL)
+ return result
+def interrupted_atomic(path,*args,**kwargs):
+ result=atomic(path,*args,**kwargs)
+ if boundary=='terminal' and Path(path).name=='slot-5.terminal':os.kill(os.getpid(),signal.SIGKILL)
+ return result
+Path.rmdir=interrupted_rmdir;c.atomic_json=interrupted_atomic
+c.execute(5,token,'cloud',[sys.executable,'-c','pass'])
+'''
+        for boundary in ['rmdir','terminal']:
+            for negative in [True,False]:
+                with self.subTest(boundary=boundary,negative=negative), tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+                    token=uuid.uuid4().hex
+                    meta=str(Path(temporary)/'owned-fixture-meta')
+                    killed=subprocess.run(['sudo','-n','--preserve-env','/usr/bin/python3','-B','-c',driver,
+                        str(self.control),token,boundary,str(former) if negative else 'new'],
+                        env={**self.env,'BUILD_SLOT_RECEIPT_META':meta},capture_output=True)
+                    self.assertIn(killed.returncode,[-9,137],killed.stderr.decode())
+                    recovered_result=None
+                    if not negative and boundary=='rmdir':
+                        # Startup must adopt a root record even when the old
+                        # manager already removed its directory before dying.
+                        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+                            queue=Path(temporary);(queue/'admit.conf').write_text('compile=1\n')
+                            env={**self.env,'BB_ADMIT_ROOT':str(queue),'BB_ADMIT_WRAPPED_COMMAND':'1'}
+                            env.pop('RUSTC_WRAPPER',None)
+                            try:
+                                resumed=subprocess.run([sys.executable,str(self.control/'bb-admit.py'),'lane','cloud','--',
+                                    sys.executable,'-c','print("retirement-adopted")'],env=env,capture_output=True,timeout=3)
+                                self.assertEqual(resumed.returncode,0,resumed.stderr.decode())
+                                self.assertIn(b'retirement-adopted',resumed.stdout)
+                                recovered_result=json.loads((self.control/'slot-5.terminal').read_bytes())
+                            finally:
+                                info=queue/'daemon.json'
+                                if info.exists():
+                                    daemon=json.loads(info.read_text())
+                                    from admission_policy import process_identity
+                                    if process_identity(daemon['pid'])==daemon['identity']:os.kill(daemon['pid'],signal.SIGTERM)
+                    else:
+                        recovery=subprocess.run(['sudo','-n','/usr/bin/python3','-B',str(self.module),'cancel',token],capture_output=True)
+                    if negative:
+                        self.assertEqual(recovery.returncode,224,recovery.stderr.decode())
+                        # The actual old retirement deleted the only counters.
+                        # Remove only this isolated empty fixture's stale record.
+                        cleanup='from pathlib import Path;import sys;p=Path(sys.argv[1]);assert not Path(sys.argv[2]).exists();p.unlink()'
+                        subprocess.run(['sudo','-n','/usr/bin/python3','-B','-c',cleanup,
+                            str(self.control/(token+'.json')),str(self.group/'slot-5'/('run-'+token))],check=True)
+                    else:
+                        if recovered_result is None:
+                            self.assertEqual(recovery.returncode,0,recovery.stderr.decode())
+                            recovered_result=json.loads(recovery.stdout)
+                        result=recovered_result
+                        self.assertTrue(result['empty']);self.assertEqual(result['id'],token)
+                        self.assertIn('usage_usec',result['cpu_stat'])
+                        self.assertFalse((self.control/(token+'.json')).exists())
+                        receipt=json.loads(Path(meta+'.cpu-lease.terminal').read_text())
+                        self.assertEqual(receipt['id'],token);self.assertTrue(receipt['empty'])
+                        self.assertEqual(receipt['termination'],'interrupted')
+                        self.assertIsNone(receipt['exit_status'],'a killed manager lost the payload outcome')
+                    successor,_=self.invoke(5,'print("retirement-reclaimed")')
+                    output,error=successor.communicate(timeout=3)
+                    self.assertEqual(successor.returncode,0,error.decode())
+                    self.assertIn(b'retirement-reclaimed',output)
 
     def test_real_shared_admission_bounds_all_classes_queues_ninth_and_reclaims_killed_job(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:

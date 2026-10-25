@@ -133,7 +133,7 @@ def serve():
     for file in cpu_leases.CONTROL_ROOT.glob('*.json'):
         token=file.stem
         if token in restored:continue
-        record,_=cpu_leases.verified_record(token)
+        record,_=cpu_leases.verified_record(token,directory_required=False)
         manager=record['manager']
         t={'id':token,'cpu_index':record['index'],'pid':manager['pid'],'identity':manager['identity'],
            'tier':record['tier'],'tenant':record['tenant'],'cls':record['cls']}

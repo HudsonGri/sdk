@@ -140,16 +140,19 @@ class HostAuthority(unittest.TestCase):
         try:cls.service=load(cls.stage/'bb-cache.py','staged_cache_authority')
         finally:sys.modules['admission_policy']=cls.original_policy;sys.path.pop(0)
         cls.ready=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM)
+        cls.ready.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
         cls.ready.bind(str(cls.root/'notify'));cls.ready.settimeout(5)
         cls.log=open(cls.data/'authority.log','wb')
         launch_env={key:value for key,value in os.environ.items() if not key.startswith('SCCACHE_')}
         launch_env['NOTIFY_SOCKET']=str(cls.root/'notify')
         starts=[subprocess.Popen(['/usr/bin/python3','-B',str(cls.stage/'bb-cache.py'),'serve'],
-                     env=launch_env,stdout=cls.log,stderr=cls.log) for _ in range(2)]
+                     env=launch_env,stdout=cls.log,stderr=cls.log,
+                     preexec_fn=lambda:__import__('resource').setrlimit(__import__('resource').RLIMIT_NOFILE,(32,32))) for _ in range(2)]
         try:
-            assert cls.ready.recv(128)==b'READY=1'
-            with socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET) as authority:
-                authority.connect(str(cls.service.CONTROL));authority_pid=cls.service.peer(authority)[0]
+            packet,ancillary,_,_=cls.ready.recvmsg(128,socket.CMSG_SPACE(12))
+            assert packet==b'READY=1'
+            authority_pid=next(__import__('struct').unpack('3i',value)[0] for level,kind,value in ancillary
+                               if level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS)
             cls.process=next(process for process in starts if process.pid==authority_pid)
             cls.loser=next(process for process in starts if process is not cls.process)
             assert cls.loser.wait(timeout=5)==224
@@ -257,6 +260,74 @@ class HostAuthority(unittest.TestCase):
                               capture_output=True)
         self.assertNotEqual(denied.returncode,0)
         self.assertEqual(self.service.validate_server(),self.owner)
+
+    def test_idle_clients_cannot_consume_authority_descriptors_and_actual_old_loop_fails(self):
+        before=len(list(Path('/proc',str(self.process.pid),'fd').iterdir()))
+        idle=[]
+        try:
+            for _ in range(128):
+                connection=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM)
+                connection.connect(str(self.service.CONTROL));idle.append(connection)
+            self.assertEqual(len(list(Path('/proc',str(self.process.pid),'fd').iterdir())),before)
+            self.assertEqual(self.service.admitted({}),self.owner)
+            self.assertIsNone(self.process.poll())
+        finally:
+            for connection in idle:connection.close()
+        # Execute the captured former listener, with the same real server,
+        # under a low descriptor budget. No invented external-tool responses.
+        fixture=HERE/'fixtures/cache-policy/former-control-loop.py'
+        info=json.loads(fixture.with_name('former-control-loop.origin.json').read_text())
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(),info['sha256'])
+        endpoint=self.root/'former-control.sock';notify=self.root/'former-notify.sock'
+        script='''import sys,resource,json,os
+from pathlib import Path
+sys.path.insert(0,sys.argv[1]);import importlib.util
+spec=importlib.util.spec_from_file_location('old_authority',Path(sys.argv[1])/'bb-cache.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m.CONTROL=Path(sys.argv[2]);m.owner=json.loads(sys.argv[3]);os.environ['NOTIFY_SOCKET']=sys.argv[4]
+resource.setrlimit(resource.RLIMIT_NOFILE,(32,32))
+exec(Path(sys.argv[5]).read_text(),m.__dict__)
+'''
+        with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as ready:
+            ready.bind(str(notify));ready.settimeout(3)
+            old=subprocess.Popen([sys.executable,'-B','-c',script,str(self.stage),str(endpoint),
+                                  json.dumps(self.owner),str(notify),str(fixture)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            clients=[]
+            try:
+                self.assertEqual(ready.recv(128),b'READY=1')
+                for _ in range(64):
+                    connection=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+                    connection.setblocking(False);clients.append(connection)
+                    try:connection.connect(str(endpoint))
+                    except (BlockingIOError,ConnectionRefusedError,FileNotFoundError):pass
+                output,error=old.communicate(timeout=3)
+                self.assertNotEqual(old.returncode,0,output.decode())
+                self.assertIn(b'Too many open files',error)
+            finally:
+                for connection in clients:connection.close()
+                if old.poll() is None:old.kill();old.communicate(timeout=3)
+
+    def test_atomic_requests_reject_bad_or_abandoned_reply_channels_without_fd_leaks(self):
+        import array
+        before=len(list(Path('/proc',str(self.process.pid),'fd').iterdir()))
+        with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as sender:
+            sender.connect(str(self.service.CONTROL))
+            for data in [b'invalid',b'verify'*20]:
+                receiver,reply=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
+                with receiver,reply:
+                    receiver.settimeout(3)
+                    sender.sendmsg([data],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[reply.fileno()]))])
+                    self.assertIn('error',json.loads(receiver.recv(16384)))
+            # A closed reply peer, extra descriptors and a non-socket fd are
+            # all bounded single-packet work; a subsequent valid request joins
+            # the FIFO after them and proves the authority remains alive.
+            with open('/dev/null') as file:
+                sender.sendmsg([b'verify'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[file.fileno()]))])
+            receiver,reply=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
+            receiver.close()
+            with reply:
+                sender.sendmsg([b'verify'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[reply.fileno(),reply.fileno()]))])
+            self.assertEqual(self.service.admitted({}),self.owner)
+        self.assertEqual(len(list(Path('/proc',str(self.process.pid),'fd').iterdir())),before)
 
     def test_wrong_and_reused_peer_identity_refused(self):
         for changed in [{'identity':'different-birth'},{'pid':self.owner['pid']+1}]:

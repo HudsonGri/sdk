@@ -605,6 +605,8 @@ const NPM_ENSURE = "if [ -z \"${BUILD_SLOT_NO_NPM:-}\" ]; then (cd /work/src && 
 // bb-admit owns admission and Cargo parallelism on the build box.
 let jobTdir = '';  // the target dir the job actually used (its wrapper writes $J.tdir), for copy-back
 function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', base = '', id, maxSec = jobMaxSec(), idleOk = process.env.BUILD_SLOT_IDLE_OK === '1', receipt) {
+  const tenant = tenantOf(process.env.BUILD_SLOT_LABEL || path.basename(src), process.cwd(), repo, argv);
+  const watcherRefusal = 'kind=WATCHER step=watcher-retirement owner=gate-speed recovery=' + q('BUILD_SLOT_TENANT='+tenant+' /home/var/bin/build-slot '+argv.map(q).join(' '));
   // Cargo and explicit gate jobs get the owned compiler cache. Other Node/bash jobs keep a plain toolchain env: tools they run set
   // their own (the SDK's build:wasm puts a rustc capture wrapper on PATH with RUSTC_WORKSPACE_WRAPPER, which a global
   // RUSTC/RUSTC_WRAPPER breaks: "sccache: Compiler not supported ... spawnSync -E ENOENT").
@@ -766,19 +768,26 @@ node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # Hang reaper (2026-10-18, crit-bslot): the job's scope cgroup must use 5 s of CPU per 10 min; a job under that (a deadlocked
 # test, a wedged wait) is killed (rc 124) so its admission slot frees. BUILD_SLOT_IDLE_OK=1 exempts a job that legitimately
 # waits (live cloud ops). Sampled every 30 s over a sliding 20-sample window; jobs without a bbjobs scope are not reaped.
-( exec 8>&-; s0=$(date +%s); cg=; n=0; declare -a u; while kill -0 $p 2>/dev/null; do sleep 30
+p_birth=$(python3 /home/var/bin/admission_policy.py process-identity "$p")
+( exec 8>&-; s0=$(date +%s); cg=; n=0; declare -a u
+  while :; do
+    python3 /home/var/bin/admission_policy.py watch-wait "$p" "$p_birth" 30; sampled=$?
+    case "$sampled" in 1) break;; 0) :;; *) echo ${q(watcherRefusal)} >> $J.err; exit 224;; esac
     if [ -z "$cg" ]; then c=$(pgrep -P $p | head -1); [ -n "$c" ] && cg=$(sed -n 's/^0:://p' /proc/$c/cgroup 2>/dev/null)
       case "$cg" in /bbjobs.slice/buildbox-cpu/slot-*/run-*/work/job) cg=/sys/fs/cgroup\${cg%/work/job};; *) [ -n "$c" ] && cg=- || cg=;; esac; fi
     if ${idleOk ? 'false' : 'true'} && [ -n "$cg" ] && [ "$cg" != - ] && [ -r $cg/cpu.stat ]; then n=$((n + 1)); u[$n]=$(awk '/^usage_usec/{print $2}' $cg/cpu.stat)
       if [ $n -gt 20 ] && [ $(( u[n] - u[n-20] )) -lt 5000000 ]; then touch $J.idle
         echo "[buildbox] hang reaper: the job used $(( (u[n] - u[n-20]) / 1000 )) ms of CPU in the last 10 min (minimum 5 s): presumed hung (deadlocked test or stuck wait); killed (rc 124), admission slot freed. BUILD_SLOT_IDLE_OK=1 exempts a job that legitimately waits" >> $J.err
-        kill -TERM -- -$p 2>/dev/null; sleep 10; kill -KILL -- -$p 2>/dev/null; break; fi; fi
+        kill -TERM -- -$p 2>/dev/null; python3 /home/var/bin/admission_policy.py watch-wait "$p" "$p_birth" 10 && kill -KILL -- -$p 2>/dev/null; break; fi; fi
     if [ $(( $(date +%s) - $(stat -c %Y $J.hb) )) -gt 900 ]; then touch $J.interrupted; echo "[buildbox] client heartbeat lost for 15 min: killing the job" >> $J.err
-      kill -TERM -- -$p 2>/dev/null; sleep 10; kill -KILL -- -$p 2>/dev/null; break; fi
+      kill -TERM -- -$p 2>/dev/null; python3 /home/var/bin/admission_policy.py watch-wait "$p" "$p_birth" 10 && kill -KILL -- -$p 2>/dev/null; break; fi
     if [ $(( $(date +%s) - s0 )) -gt ${maxSec} ]; then touch $J.ceiling
       echo "[buildbox] job ceiling: still running after ${Math.round(maxSec / 60)} min; killed (rc 124). Lane jobs get 30 min; merge gates, qualification (BUILD_SLOT_TIER=qual) and BUILD_SLOT_STRESS=1 runs 3 h" >> $J.err
-      kill -TERM -- -$p 2>/dev/null; sleep 10; kill -KILL -- -$p 2>/dev/null; break; fi; done ) &
-wait $p; rc=$?; [ -e $J.ceiling ] && rc=124; [ -e $J.idle ] && rc=124
+      kill -TERM -- -$p 2>/dev/null; python3 /home/var/bin/admission_policy.py watch-wait "$p" "$p_birth" 10 && kill -KILL -- -$p 2>/dev/null; break; fi; done ) &
+watcher=$!
+wait $p; rc=$?
+wait "$watcher" || { echo ${q(watcherRefusal)} >> $J.err; rc=224; }
+[ -e $J.ceiling ] && rc=124; [ -e $J.idle ] && rc=124
 # Last use for bb-target-prune's LRU (2026-10-20 lane-loop): it reads the unit dir's own mtime, which builds inside
 # .host-targets/ never change, so an inner-loop target used minutes ago was evicted as the oldest (solo-hib, lane-loop).
 touch ${TD} $T 2>/dev/null || true
@@ -790,7 +799,6 @@ exit $rc`;
   if (boundary < 0) throw new Error('missing remote admission boundary');
   const admissionSave = q("import {atomic} from '/home/var/bin/buildbox-receipt.mjs';atomic(process.argv[1],{tier:process.env.BB_ADMIT_TIER,tenant:process.env.BB_ADMIT_TENANT,wait_seconds:Number(process.env.BB_ADMIT_WAIT_SECONDS),build_jobs:Number(process.env.CARGO_BUILD_JOBS)});");
   const admitted = 'J=' + J + '\nexport PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/bin:/bin\nnode --input-type=module -e ' + admissionSave + ' ' + J + '.receipt-meta.v2.json.admission\n' + wrapper.slice(boundary);
-  const tenant = tenantOf(process.env.BUILD_SLOT_LABEL || path.basename(src), process.cwd(), repo, argv);
   const cls = jobClass(argv) || 'light';
   wrapper = wrapper.slice(0, boundary) + `export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BB_ADMIT_CLASS=${q(cls)} BB_ADMIT_WRAPPED_COMMAND=1
 /home/var/bin/bb-admit ${jobTier} ${q(tenant)} -- bash ${J}.admitted >> ${J}.out 2>> ${J}.err
