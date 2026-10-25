@@ -565,7 +565,12 @@ async fn selected_approval_refuses_an_ordinary_only_verifier() -> TestResult {
     let digest = approval.digest(&fixture.work)?;
     assert!(matches!(
         approval
-            .authorize(&OrdinaryOnly, crate::InteractionId::new(), &digest, &fixture.work)
+            .authorize(
+                &OrdinaryOnly,
+                crate::InteractionId::new(),
+                &digest,
+                &fixture.work
+            )
             .await,
         Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
