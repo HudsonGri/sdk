@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[path = "resources/monitor.rs"]
 mod monitor;
 pub use monitor::ResourceSampler;
 
