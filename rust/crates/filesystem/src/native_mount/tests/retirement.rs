@@ -1,40 +1,51 @@
 use super::*;
 
-fn fixture() -> Result<
-    (
-        tempfile::TempDir,
-        NativeMountSession,
-        NativeMaterializationWork,
-        PathBuf,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    registry::initialize()?;
-    let root = tempfile::tempdir()?;
-    let destination = root.path().join("retired-mount");
-    std::fs::create_dir(&destination)?;
-    std::fs::write(root.path().join("authored"), b"keep")?;
-    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .map_err(|(cause, _)| cause)?;
-    let mut guard = None;
-    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
-    let held = guard.as_mut().ok_or("destination fence absent")?;
-    let fence = held.lock_path.clone();
-    assert!(fence.is_file(), "fixture has no physical destination fence");
-    held.prepare_destination_cleanup(&destination, &work)?;
-    let mut session = NativeMountSession::new(
-        NativeMountRequest {
-            mount_id: MountId::new(),
-            volume_id: VolumeId::new(),
-            destination,
-            writable: false,
-        },
-        None,
-        None,
-    );
-    session.destination_guard = guard;
-    session.namespace_detach_confirmed = true;
-    Ok((root, session, work, fence))
+struct Fixture {
+    root: tempfile::TempDir,
+    session: NativeMountSession,
+    work: NativeMaterializationWork,
+    fence: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        registry::initialize()?;
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("retired-mount");
+        std::fs::create_dir(&destination)?;
+        std::fs::write(root.path().join("authored"), b"keep")?;
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(cause, _)| cause)?;
+        let mut guard = None;
+        MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+        let held = guard.as_mut().ok_or("destination fence absent")?;
+        let name = std::str::from_utf8(
+            held.fence_name
+                .as_ref()
+                .ok_or("destination fence name absent")?,
+        )?;
+        let fence = registry::with_directory(|directory| Ok(directory.join(name)))?;
+        assert!(fence.is_file(), "fixture has no physical destination fence");
+        held.prepare_destination_cleanup(&destination, &work)?;
+        let mut session = NativeMountSession::new(
+            NativeMountRequest {
+                mount_id: MountId::new(),
+                volume_id: VolumeId::new(),
+                destination,
+                writable: false,
+            },
+            None,
+            None,
+        );
+        session.destination_guard = guard;
+        session.namespace_detach_confirmed = true;
+        Ok(Self {
+            root,
+            session,
+            work,
+            fence,
+        })
+    }
 }
 
 fn retired(
@@ -57,7 +68,12 @@ fn retired(
 #[test]
 fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (root, mut session, work, fence) = fixture()?;
+    let Fixture {
+        root,
+        mut session,
+        work,
+        fence,
+    } = Fixture::new()?;
     let mut packet = NativeMountRetirement {
         retained_source: None,
         startup_source_watch: None,
@@ -86,7 +102,12 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
 fn detached_session_retirement_completes_fence_after_waiter_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     for mode in 0..3 {
-        let (root, mut session, work, fence) = fixture()?;
+        let Fixture {
+            root,
+            mut session,
+            work,
+            fence,
+        } = Fixture::new()?;
         let before = work.receipt();
         work.cancellation().cancel();
         let wait = CancellationToken::new();
