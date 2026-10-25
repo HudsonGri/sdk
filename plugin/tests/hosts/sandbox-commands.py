@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Native-host command contract, using only fixture profiles and a local model.
+"""Native-host command contract.
 
-Run on the host OS with prebuilt binaries; never starts a model or reads a login.
-Codex uses its own sandbox CLI. Claude uses its real Bash tool and sandbox with
-a scripted HTTP response. Pi uses its real RPC Bash tool; --pi-sandbox-codex
+Run on the host OS with prebuilt binaries; never reads or copies a login.
+Codex and Pi probes are model-free. The coordinator owns real Claude Code
+sandbox qualification. Pi uses its real RPC Bash tool; --pi-sandbox-codex
 launches Pi under the pinned Codex workspace-write profile to test inheritance.
 """
 import argparse
-import http.server
 import json
 import os
 from pathlib import Path
@@ -17,7 +16,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 
@@ -83,53 +81,6 @@ def inside(config):
     (workspace / 'sandbox-result.json').write_text(json.dumps(result))
 
 
-def scripted_model(command):
-    class Handler(http.server.BaseHTTPRequestHandler):
-        """One real Bash tool call; no network model and no inherited authentication."""
-
-        def log_message(self, *_args):
-            pass
-
-        def do_POST(self):
-            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            if self.path.endswith('/count_tokens'):
-                body = b'{"input_tokens":1}'
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            assert '/messages' in self.path, self.path
-            done = any(block.get('type') == 'tool_result' and block.get('tool_use_id') == 'sandbox-probe'
-                       for message in request.get('messages', [])
-                       for block in (message.get('content') if isinstance(message.get('content'), list) else []))
-            block = {'type': 'text', 'text': ''} if done else {
-                'type': 'tool_use', 'id': 'sandbox-probe', 'name': 'Bash', 'input': {}}
-            delta = {'type': 'text_delta', 'text': 'done'} if done else {
-                'type': 'input_json_delta', 'partial_json': json.dumps({'command': command,
-                                                                      'description': 'Sandbox command contract'})}
-            events = [
-                ('message_start', {'message': {'id': 'fixture-message', 'type': 'message', 'role': 'assistant',
-                                              'model': 'claude-haiku-5-5', 'content': [], 'stop_reason': None,
-                                              'usage': {'input_tokens': 1, 'output_tokens': 0}}}),
-                ('content_block_start', {'index': 0, 'content_block': block}),
-                ('content_block_delta', {'index': 0, 'delta': delta}),
-                ('content_block_stop', {'index': 0}),
-                ('message_delta', {'delta': {'stop_reason': 'end_turn' if done else 'tool_use', 'stop_sequence': None},
-                                   'usage': {'output_tokens': 1}}),
-                ('message_stop', {}),
-            ]
-            body = ''.join('event: ' + name + '\ndata: ' + json.dumps({'type': name, **fields}) + '\n\n'
-                           for name, fields in events).encode()
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/event-stream')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-    return Handler
-
-
 def codex_sandbox(binary, workspace):
     return [binary, 'sandbox', '-c', 'sandbox_mode="workspace-write"', '-c',
             'approval_policy="never"', '-c', 'sandbox_workspace_write.writable_roots=' +
@@ -168,7 +119,7 @@ def pi_command(binary, command, *, cwd, env, log, prefix=()):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--inside')
-    parser.add_argument('--host', choices=['codex', 'claude-code', 'pi'])
+    parser.add_argument('--host', choices=['codex', 'pi'])
     parser.add_argument('--binary')
     parser.add_argument('--graphcoder')
     parser.add_argument('--native')
@@ -245,38 +196,6 @@ def main():
                     checked([*codex_sandbox(args.native, workspace),
                              sys.executable, str(probe), '--inside', str(config)],
                             cwd=workspace, env=env)
-                elif args.host == 'claude-code':
-                    policy = root / 'policy.json'
-                    policy.write_text(json.dumps({'sandbox': {'enabled': True, 'failIfUnavailable': True,
-                        'autoAllowBashIfSandboxed': True, 'allowUnsandboxedCommands': False}}))
-                    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), scripted_model(command))
-                    worker = threading.Thread(target=server.serve_forever, daemon=True)
-                    worker.start()
-                    env.update(ANTHROPIC_BASE_URL=f'http://127.0.0.1:{server.server_port}',
-                               ANTHROPIC_API_KEY='local-fixture-only', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
-                               DISABLE_AUTOUPDATER='1')
-                    try:
-                        result = subprocess.run([args.native, '-p', 'Run the sandbox contract.', '--model',
-                            'claude-haiku-5-5', '--settings', str(policy), '--permission-mode', 'default',
-                            '--add-dir', str(workspace), '--plugin-dir', str(Path(args.package) / 'claude'),
-                            '--allowedTools', 'Bash', '--output-format', 'stream-json', '--verbose',
-                            '--include-hook-events'],
-                            cwd=workspace, env=env, text=True, stdout=native_log, stderr=native_log, timeout=8)
-                        assert result.returncode == 0, (root / 'native.log').read_text()[-5000:]
-                    finally:
-                        server.shutdown()
-                        server.server_close()
-                        worker.join()
-                    native_log.flush()
-                    events = [json.loads(line) for line in (root / 'native.log').read_text().splitlines()
-                              if line.startswith('{')]
-                    hooks = {event.get('hook_event') for event in events
-                             if event.get('subtype') == 'hook_response' and event.get('outcome') == 'success'}
-                    assert {'SessionStart', 'Stop'} <= hooks, ('native capture hooks absent', hooks)
-                    for event in events:
-                        if event.get('subtype') == 'hook_response':
-                            outcome = json.loads(event['stdout'])
-                            assert outcome.get('continue') is not False, outcome
                 else:
                     prefix = ()
                     if args.pi_sandbox_codex:
