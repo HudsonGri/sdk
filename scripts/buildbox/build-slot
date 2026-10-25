@@ -21,5 +21,5 @@ if [ "${1##*/}" = cargo ]; then
 fi
 export BUILD_SLOT=buildbox
 if [ "${BB_ADMITTED:-}" = 1 ] || [ "${BB_JOB_ACTIVE:-}" = 1 ]; then exec python3 /home/var/bin/bb-job.py "$@"; fi
-tenant=${BUILD_SLOT_TENANT:-graphcoder}; tier=${BUILD_SLOT_TIER:-lane}
+tenant=${BUILD_SLOT_TENANT:-}; tier=${BUILD_SLOT_TIER:-lane}
 exec /home/var/bin/bb-admit "$tier" "$tenant" -- "$@"

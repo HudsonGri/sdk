@@ -196,6 +196,10 @@ function finishLocked(metaFile, rc, category, extra = {}) {
     const exec = read(metaFile + '.exec');
     const out = { exec_start: null, toolchain: null, ...m, ...exec, end: new Date().toISOString(), exit_status: Number(rc), termination: category,
       ...runtime, ...extra };
+    const leaseTerminal = metaFile + '.cpu-lease.terminal';
+    const cpuLease = read(leaseTerminal) || read(metaFile + '.cpu-lease');
+    if (cpuLease) out.cpu_lease = {...cpuLease, terminal_file: leaseTerminal,
+      counters_pending: cpuLease.empty !== true};
     // Retain the original ledger's basic fields for existing cost readers.
     out.at = out.end; out.rc = out.exit_status; out.cwd = out.worktree;
     out.wall = (Date.parse(out.end) - Date.parse(out.admission_start)) / 1000;

@@ -630,7 +630,7 @@ umask 022
 export HOME="$BB_JOB_HOME" CARGO_HOME=/mnt/bb/toolchains/cargo RUSTUP_HOME=/home/var/.rustup PATH=/home/var/bin/bb-cargo:${pathPre}/home/var/bin/bbnpm:/home/var/.cargo/bin:/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/bin:/usr/local/bin:/usr/bin:/bin
 # The job's delegated cgroup (see the launch below): BB_CGROUP is the job leaf; the bbcg systemd-run shim turns
 # "systemd-run --user --scope -p Delegate=yes -p MemoryMax=N CMD" into an exclusive child cgroup inside the job.
-case "$(cat /proc/self/cgroup)" in 0::/bbjobs.slice/run-*.scope/job) export BB_CGROUP=/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup) PATH=/home/var/bin/bbcg:$PATH;; esac
+export BB_CGROUP=$(python3 /home/var/bin/cpu_leases.py work) PATH=/home/var/bin/bbcg:$PATH
 # Host paths behind this job's binds of /tmp, /work/src and /work/target (docker -v resolves on the host).
 export BB_HOST_TMP=${J}.tmp BB_HOST_SRC=${src} BB_HOST_TARGET=$(cat ${J}.tdir 2>/dev/null || echo ${TD})
 export CARGO_INCREMENTAL=0  # job-owned targets are deleted; use shared sccache instead
@@ -760,8 +760,7 @@ chmod go-w ${SH ? `/mnt/bb/targets ${SH} ` : ''}$T /mnt/bb /mnt/bb/home /mnt/bb/
 # Each job is its own Delegate=yes scope (2026-10-16 delegated cgroup): root moves the job into a "job" leaf and hands the
 # scope to var, so jobs (local e2e's heap cgroups, via /home/var/bin/bbcg/systemd-run) can build cgroups inside the job.
 # Only a cgroup that is a bbjobs.slice scope is ever touched.
-S=; [ -e /etc/systemd/system/bbjobs.slice ] && S='systemd-run --scope -q --slice=bbjobs.slice -p Delegate=yes --'
-setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
+setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON unshare -m --propagation private bash -c 'mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
 p=$!; echo $p > $J.pid
 node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # Hang reaper (2026-10-18, crit-bslot): the job's scope cgroup must use 5 s of CPU per 10 min; a job under that (a deadlocked
@@ -769,7 +768,7 @@ node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # waits (live cloud ops). Sampled every 30 s over a sliding 20-sample window; jobs without a bbjobs scope are not reaped.
 ( exec 8>&-; s0=$(date +%s); cg=; n=0; declare -a u; while kill -0 $p 2>/dev/null; do sleep 30
     if [ -z "$cg" ]; then c=$(pgrep -P $p | head -1); [ -n "$c" ] && cg=$(sed -n 's/^0:://p' /proc/$c/cgroup 2>/dev/null)
-      case "$cg" in /bbjobs.slice/run-*.scope/job) cg=/sys/fs/cgroup\${cg%/job};; /bbjobs.slice/run-*.scope) cg=/sys/fs/cgroup$cg;; *) [ -n "$c" ] && cg=- || cg=;; esac; fi
+      case "$cg" in /bbjobs.slice/buildbox-cpu/slot-*/run-*/work/job) cg=/sys/fs/cgroup\${cg%/work/job};; *) [ -n "$c" ] && cg=- || cg=;; esac; fi
     if ${idleOk ? 'false' : 'true'} && [ -n "$cg" ] && [ "$cg" != - ] && [ -r $cg/cpu.stat ]; then n=$((n + 1)); u[$n]=$(awk '/^usage_usec/{print $2}' $cg/cpu.stat)
       if [ $n -gt 20 ] && [ $(( u[n] - u[n-20] )) -lt 5000000 ]; then touch $J.idle
         echo "[buildbox] hang reaper: the job used $(( (u[n] - u[n-20]) / 1000 )) ms of CPU in the last 10 min (minimum 5 s): presumed hung (deadlocked test or stuck wait); killed (rc 124), admission slot freed. BUILD_SLOT_IDLE_OK=1 exempts a job that legitimately waits" >> $J.err
@@ -791,7 +790,7 @@ exit $rc`;
   if (boundary < 0) throw new Error('missing remote admission boundary');
   const admissionSave = q("import {atomic} from '/home/var/bin/buildbox-receipt.mjs';atomic(process.argv[1],{tier:process.env.BB_ADMIT_TIER,tenant:process.env.BB_ADMIT_TENANT,wait_seconds:Number(process.env.BB_ADMIT_WAIT_SECONDS),build_jobs:Number(process.env.CARGO_BUILD_JOBS)});");
   const admitted = 'J=' + J + '\nexport PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/bin:/bin\nnode --input-type=module -e ' + admissionSave + ' ' + J + '.receipt-meta.v2.json.admission\n' + wrapper.slice(boundary);
-  const tenant = tenantOf(process.env.BUILD_SLOT_LABEL || path.basename(src), process.cwd(), repo);
+  const tenant = tenantOf(process.env.BUILD_SLOT_LABEL || path.basename(src), process.cwd(), repo, argv);
   const cls = jobClass(argv) || 'light';
   wrapper = wrapper.slice(0, boundary) + `export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BB_ADMIT_CLASS=${q(cls)} BB_ADMIT_WRAPPED_COMMAND=1
 /home/var/bin/bb-admit ${jobTier} ${q(tenant)} -- bash ${J}.admitted >> ${J}.out 2>> ${J}.err
@@ -1162,12 +1161,10 @@ function jobMaxSec() {
   const cap = long ? 10800 : 1800; const want = Number(process.env.BUILD_SLOT_JOB_MAX_SEC || cap);
   return Math.max(60, Math.min(cap, Number.isFinite(want) ? want : cap));
 }
-function tenantOf(label, cwd, repo) {
-  const e = process.env.BUILD_SLOT_TENANT || process.env.BUILD_SLOT_SESSION;
-  if (e) return e.replace(/[^\w.-]/g, '_');
-  const names = [label, path.basename(process.env.CARGO_TARGET_DIR || ''), path.basename(cwd)];
-  if (names.some((n) => /^(gc|co|hf)-/.test(n)) || repo === 'sdk') return 'graphcoder';
-  return 'cloud';
+function tenantOf(label, cwd, repo, argv = []) {
+  const tenant = process.env.BUILD_SLOT_TENANT;
+  if (tenant === 'graphcoder' || tenant === 'cloud') return tenant;
+  throw new Error('kind=CPU_LEASE step=tenant-label recovery='+q('BUILD_SLOT_TENANT=graphcoder /home/var/bin/build-slot --remote '+argv.map(q).join(' '))+' detail="set graphcoder for SDK or cloud for Cloud; explicit tenant required"');
 }
 function configureRemoteTier(cwd) {
   const label = process.env.BUILD_SLOT_LABEL || path.basename(cwd);

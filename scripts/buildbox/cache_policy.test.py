@@ -39,7 +39,9 @@ class CachePolicy(unittest.TestCase):
         self.assertEqual(policy.cache_environment({})['SCCACHE_CACHE_SIZE'], '50G')
         self.assertEqual(policy.SCCACHE_CACHE_BYTES, 53687091200)
         for env in [{'SCCACHE_CACHE_SIZE': '400G'}, {'SCCACHE_DIR': '/tmp'},
-                    {'SCCACHE_SERVER_PORT': '1234'}, {'SCCACHE_IDLE_TIMEOUT': '120'}]:
+                    {'SCCACHE_SERVER_PORT': '1234'}, {'SCCACHE_IDLE_TIMEOUT': '120'},
+                    {'SCCACHE_CLIENT_SIDE':'0'}, {'SCCACHE_CONF':'/tmp/config'},
+                    {'SCCACHE_ERROR_LOG':'/tmp/log'}, {'SCCACHE_DIST_SCHEDULER_URL':'http://localhost'}]:
             with self.subTest(env=env), patch.object(subprocess, 'run') as spawned:
                 with self.assertRaisesRegex(policy.CachePolicyError, 'kind=CACHE_POLICY'):
                     cache.admitted(env)
@@ -117,6 +119,8 @@ class CachePolicy(unittest.TestCase):
 class HostAuthority(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        from cpu_test_fixture import KernelFixture
+        cls.cpu_fixture=KernelFixture()
         cls.root=Path('/run/buildbox-cache-test-'+uuid.uuid4().hex);cls.root.mkdir(mode=0o755)
         cls.data=Path(tempfile.mkdtemp(prefix='cache-policy-',dir='/mnt/bb/tmp'))
         account=pwd.getpwnam('var');os.chown(cls.data,account.pw_uid,account.pw_gid)
@@ -166,9 +170,10 @@ class HostAuthority(unittest.TestCase):
         finally:os.close(descriptor)
         cls.process.wait(timeout=5);cls.log.close();cls.ready.close()
         shutil.rmtree(cls.root);shutil.rmtree(cls.data)
+        cls.cpu_fixture.close()
 
     def client_env(self,extra=None):
-        env={k:v for k,v in os.environ.items() if not k.startswith('SCCACHE_')}
+        env={k:v for k,v in self.cpu_fixture.environment().items() if not k.startswith('SCCACHE_')}
         env.update(extra or {});return env
 
     def test_concurrent_starts_leave_one_birth_verified_owner(self):
@@ -178,6 +183,47 @@ class HostAuthority(unittest.TestCase):
         self.assertEqual(second.returncode,224,second.stderr)
         self.assertEqual(self.service.validate_server(),self.owner)
         self.assertEqual(len(list(self.service.cache_owners())),1)
+
+    def test_cold_compiler_stays_in_lease_with_actual_server_side_negative(self):
+        controls=load(HERE/'cpu_leases.test.py','cache_cpu_kernel_controls').KernelLeases
+        controls.setUpClass()
+        try:
+            probe=self.stage/'compiler-probe'
+            # Keep rustup's multicall basename; resolving the symlink would
+            # execute `rustup --crate-name ...` rather than rustc.
+            compiler=Path('/home/var/.cargo/bin/rustc')
+            probe.write_text('#!/usr/bin/python3 -B\nimport os,json,sys\nfrom pathlib import Path\n'
+                'with open(os.environ["CPU_COMPILER_TRACE"],"a") as stream:stream.write(json.dumps({"cpus":sorted(os.sched_getaffinity(0)),"cgroup":Path("/proc/self/cgroup").read_text(),"argv":sys.argv[1:]})+"\\n")\n'
+                'os.execv('+repr(str(compiler))+',['+repr(str(compiler))+',*sys.argv[1:]])\n')
+            probe.chmod(0o555)
+            for negative in [False,True]:
+                name='lease_control_'+uuid.uuid4().hex
+                source=self.data/(name+'.rs');source.write_text('pub fn answer() -> u32 { 42 }\n')
+                trace=self.data/(name+'.jsonl')
+                env=controls.env.copy()
+                for key in list(env):
+                    if key.startswith('SCCACHE_'):env.pop(key)
+                env.update(self.policy.cache_environment({}));env['CPU_COMPILER_TRACE']=str(trace)
+                env['RUSTUP_HOME']='/home/var/.rustup'
+                env['TMPDIR']=str(self.data)
+                # Execute the actual default server-side path as the negative,
+                # rather than asserting only a configuration constant.
+                if negative:env.pop('SCCACHE_CLIENT_SIDE')
+                entry=[self.service.SCCACHE] if negative else [str(self.stage/'sccache-rustc')]
+                command=[*entry,str(probe),'--crate-name',name,'--crate-type','rlib',
+                         '--emit=link','--out-dir',str(self.data),str(source)]
+                result=subprocess.run(['sudo','-n','--preserve-env','/usr/bin/python3','-B',str(controls.module),
+                    'exec','0',uuid.uuid4().hex,'cloud','--',*command],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                rows=[json.loads(line) for line in trace.read_text().splitlines()]
+                codegen=[row for row in rows if '--crate-name' in row['argv']]
+                self.assertTrue(codegen,'a cold real compiler invocation must be observed')
+                expected=set(policy.cpu_layout()[0])
+                if negative:self.assertTrue(any(set(row['cpus'])!=expected for row in codegen))
+                else:
+                    for row in codegen:self.assertEqual(set(row['cpus']),expected)
+                print('CPU_CACHE_COMPILER '+json.dumps({'negative_server_side':negative,'codegen':codegen}),file=sys.stderr)
+        finally:controls.tearDownClass()
 
     def test_actual_job_reuses_owner_and_teardown_leaves_it_alive(self):
         with patch.object(job,'cache_authority',return_value=self.service):
@@ -266,7 +312,7 @@ class HostAuthority(unittest.TestCase):
         release=self.data/'release';os.mkfifo(release,0o666);release.chmod(0o666)
         done=self.data/'second-finished'
         env=self.client_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1','BB_CACHE_DISABLED':'1'})
-        entry=['/usr/sbin/runuser','-u','var','--','/usr/bin/python3','-B',str(HERE/'bb-admit.py'),'lane','cloud','--','/usr/bin/python3','-c']
+        entry=['/usr/sbin/runuser','-u','var','--','/usr/bin/python3','-B',str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--','/usr/bin/python3','-c']
         first=subprocess.Popen([*entry,f'print("ready",flush=True);open({str(release)!r}).read()'],
                                env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         self.assertEqual(first.stdout.readline(),b'ready\n')

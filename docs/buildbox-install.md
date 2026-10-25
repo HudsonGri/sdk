@@ -117,3 +117,46 @@ child CPU is attributed there; cumulative shared-server statistics are never
 charged repeatedly to concurrent clients. Under 15% free, admission prints
 bounded retained quota observations with their age/source before applying the
 unchanged 10% safety floor. Those observations are not current physical usage.
+
+CPU admission uses the existing `bb-admit.py` priority/fair-share authority and
+one `CPU_LEASE_SHAPE = (8, 16)` in `admission_policy.py`. No separate scheduler
+or budget-test reserve exists. The 128 job CPUs are spread over CPUs 0–191;
+the complementary 64 CPUs serve the one host cache. Every admitted command,
+including generated Node preparation, is launched inside its root-owned lease
+ceiling (`cpuset.cpus` plus `cpu.max`). Only its bounded work subtree is
+delegated. Nested commands reuse the kernel-verified lease and tenant. An
+environment marker cannot substitute for the protected record and cgroup.
+
+Both services must set `BUILD_SLOT_TENANT=graphcoder` (SDK) or
+`BUILD_SLOT_TENANT=cloud` (Cloud) explicitly. Missing labels refuse before heavy
+work, with the original argv in an executable recovery command. Generated WSL
+and native callers switch together at the coordinator-announced cut-over;
+do not install CPU admission before that coordination and full gate proof.
+The same exclusive/draining host migration publishes this complete generation.
+
+Dispatch uses a root-peer/birth-verified handshake: the constructor cannot
+start the payload before admission durably journals the ticket. A crash before
+handoff starts no work; a crash afterward retains the lease through root
+custody and pidfd recovery. A slot becomes reusable only after its exact
+subtree is empty. Bounded terminal records resolve exit/retirement races.
+Receipt sidecars retain lease identity, queue time, execution/end timestamps,
+and exclusive subtree CPU/pressure counters. Nested totals overlap their
+parent lease and must never be added to it. Shared cache CPU stays unallocated.
+
+The installed sccache 0.18.0 supports its own client-side execution mode:
+the wrapper's canonical policy enables `SCCACHE_CLIENT_SIDE=1` and an empty
+configuration (`SCCACHE_CONF=/dev/null`). It refuses overrides, error logging
+and distributed configuration that can disable this containment. Hashing and
+rustc therefore remain in the caller's lease; the host daemon handles storage.
+See the [versioned upstream architecture](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Architecture.md).
+The actual cold-compiler negative runs server-side mode and observes codegen
+outside the job lease, while the admitted mode observes it inside that lease.
+
+The initial shape follows the Cloud observation window
+2026-10-25 17:15–19:15Z (292 terminal receipts, 13 active jobs). That evidence
+has broad unbounded job scopes and missing/mislabelled tenant custody; it does
+not prove whole-host CPU saturation or additive per-merge cost. The initial
+8×16 shape is a bounded starting policy, not a measured throughput optimum.
+Tune the single shape from joined queue waits, per-merge wall time and CPU
+counters after the coordinated cut-over; do not claim realized savings before
+those measurements exist.
