@@ -134,3 +134,111 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
     }
     Ok(())
 }
+
+#[test]
+fn demand_round_trips_do_not_nest_transports_or_allocate() {
+    for cause in [
+        DemandError::NativeWorkUnavailable,
+        DemandError::OriginalWorkPoisoned,
+        DemandError::WorkerUnavailable,
+        DemandError::SourceUnavailable,
+        DemandError::CursorBusy,
+        DemandError::NotRegularFile,
+        DemandError::InvalidRequest,
+    ] {
+        let expected = std::mem::discriminant(&cause);
+        let mut retained = Some(cause);
+        let allocations = acyclic_test_support::measure(|| {
+            for lazy in [false, true] {
+                let mounted = convert(retained.take().expect("cause retained"), lazy);
+                retained = Some(DemandError::from(mounted));
+            }
+        });
+        assert_eq!(
+            std::mem::discriminant(&retained.expect("cause returned")),
+            expected,
+            "reverse demand transport must unwrap its original cause"
+        );
+        assert_eq!(allocations.count_total, 0);
+    }
+}
+
+#[cfg(feature = "native-watch")]
+#[test]
+fn observation_round_trip_returns_the_original_box() {
+    let original = Box::new(crate::watch::NativeWatchError::BoundedObservationUnavailable);
+    let identity = std::ptr::from_ref(original.as_ref());
+    let mut retained = None;
+    let allocations = acyclic_test_support::measure(|| {
+        retained = Some(DemandError::from(convert(
+            DemandError::Observation(original),
+            true,
+        )));
+    });
+    let Some(DemandError::Observation(retained)) = retained else {
+        panic!("reverse observation transport must return its original box");
+    };
+    assert_eq!(std::ptr::from_ref(retained.as_ref()), identity);
+    assert_eq!(allocations.count_total, 0);
+}
+
+#[test]
+fn mount_work_and_cancellation_use_the_shared_demand_conversion() {
+    for cause in [
+        MountSourceError::Work(crate::WorkError::Overflow),
+        MountSourceError::Cancelled,
+        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::Overflow,
+        )),
+        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled),
+    ] {
+        let cancelled = matches!(
+            cause,
+            MountSourceError::Cancelled
+                | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled)
+        );
+        let mut retained = None;
+        let allocations = acyclic_test_support::measure(|| {
+            retained = Some(DemandError::from(cause));
+        });
+        let retained = retained.expect("conversion completed");
+        assert_eq!(
+            matches!(retained, DemandError::Cancelled),
+            cancelled,
+            "all demand callers must share cancellation semantics"
+        );
+        assert!(
+            matches!(
+                retained,
+                DemandError::Cancelled | DemandError::Work(crate::WorkError::Overflow)
+            ),
+            "all demand callers must share work semantics"
+        );
+        assert_eq!(allocations.count_total, 0);
+    }
+}
+
+#[test]
+fn capture_io_keeps_the_actual_host_error_without_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    // Capture the actual host error before measuring the transport itself.
+    let error =
+        std::fs::File::open(root.path().join("not-created")).expect_err("fixture path is absent");
+    let code = error.raw_os_error().ok_or("host open has no native code")?;
+    let mut retained = None;
+    let allocations = acyclic_test_support::measure(|| {
+        retained = Some(crate::native_mount::adapter::capture_io_error(error));
+    });
+    let retained = retained.expect("conversion completed");
+    assert_eq!(
+        crate::native_mount::outcome::source_failure(&retained),
+        crate::native_mount::outcome::NativeFailure::Os(code),
+        "capture I/O must keep its actual host error"
+    );
+    assert!(
+        matches!(retained, MountSourceError::Io(error, None) if error.raw_os_error() == Some(code))
+    );
+    assert_eq!(allocations.count_total, 0);
+    Ok(())
+}
