@@ -85,11 +85,10 @@ fn workspace_is_terminal(error: &crate::WorkspaceError) -> bool {
     if let crate::WorkspaceError::Filesystem(error) = error {
         return filesystem_is_terminal(error);
     }
-    crate::workspace::workspace_bounded_error(error).is_some()
-        || matches!(
-            super::workspace_failure(error),
-            NativeFailure::Io | NativeFailure::Allocation | NativeFailure::Cancelled
-        )
+    matches!(
+        super::workspace_failure(error),
+        NativeFailure::Io | NativeFailure::Allocation | NativeFailure::Cancelled
+    )
 }
 
 fn demand_is_terminal(error: &crate::DemandError) -> bool {
