@@ -5,13 +5,17 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const CHILD: &str = "materializer::directory_preparation::crash_tests::publication_write_child";
 const OPERATION: OperationId = OperationId::from_bytes([0xa7; 16]);
 
-fn spawn(root: &Path, cut: Option<u64>) -> std::io::Result<Child> {
+fn spawn(root: &Path, cut: Option<u64>, prepare: bool) -> std::io::Result<Child> {
     Command::new(std::env::current_exe()?)
         .args(["--exact", CHILD, "--nocapture"])
         .env("ACYCLIC_PUBLICATION_CRASH_ROOT", root)
         .env(
             "ACYCLIC_PUBLICATION_CRASH_CUT",
             cut.unwrap_or(0).to_string(),
+        )
+        .env(
+            "ACYCLIC_PUBLICATION_PREPARE_ONLY",
+            u8::from(prepare).to_string(),
         )
         .env_remove("RUST_MIN_STACK")
         .stdout(Stdio::piped())
@@ -107,8 +111,18 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         .try_into()
         .map_err(|_| "one registered publication partition must be selected")?;
     let root = tempfile::tempdir()?;
+    let seed = root.path().join("seed");
+    succeeds(spawn(&seed, None, true)?)?;
+    assert_eq!(
+        std::fs::read(seed.join("checkout/file"))?,
+        b"original generation",
+        "setup must not perform the measured transition"
+    );
+    assert!(!seed.join("checkout/added").exists());
+    let seed = acyclic_test_support::snapshot::Snapshot::capture(&seed)?;
     let baseline = root.path().join("baseline");
-    succeeds(spawn(&baseline, None)?)?;
+    seed.restore(&baseline)?;
+    succeeds(spawn(&baseline, None, false)?)?;
     let writes: u64 = std::fs::read_to_string(baseline.join("writes"))?.parse()?;
     assert!(
         writes > 3,
@@ -135,7 +149,11 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         let started = std::time::Instant::now();
         let cut = u64::try_from(index)?.checked_add(1).ok_or("cut overflow")?;
         let path = root.path().join(cut.to_string());
-        let output = spawn(&path, Some(cut))?.wait_with_output()?;
+        // Only generation setup is shared, captured after its writer exits.
+        // Every transition and recovery still runs against independent files
+        // with the original physical write/sync probe and durable semantics.
+        seed.restore(&path)?;
+        let output = spawn(&path, Some(cut), false)?.wait_with_output()?;
         assert_eq!(
             output.status.code(),
             Some(if cut <= writes { 86 } else { 0 }),
@@ -143,7 +161,8 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        succeeds(spawn(&path, None)?).map_err(|error| format!("recovery cut {cut}: {error}"))?;
+        succeeds(spawn(&path, None, false)?)
+            .map_err(|error| format!("recovery cut {cut}: {error}"))?;
         assert_eq!(
             std::fs::read(path.join("checkout/file"))?,
             b"rebased generation"
@@ -171,12 +190,14 @@ async fn publish(root: &Path, cut: Option<u64>) -> TestResult {
     let cancellation = crate::CancellationToken::new();
     let fs = crate::Fs::local(crate::LocalOptions::new(root.join("fs"))).await?;
     let manifest = root.join("generations");
+    let prepare = std::env::var("ACYCLIC_PUBLICATION_PREPARE_ONLY")? == "1";
     let workspace = if manifest.exists() {
         fs.open_workspace("publication", crate::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| failure.error)?
             .value
     } else {
+        assert!(prepare, "a publication cut must restore its captured seed");
         let workspace = fs
             .create_workspace("publication", crate::WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -205,6 +226,9 @@ async fn publish(root: &Path, cut: Option<u64>) -> TestResult {
         std::fs::write(&manifest, ids)?;
         workspace
     };
+    if prepare {
+        return Ok(());
+    }
     let ids = std::fs::read(&manifest)?;
     let from = GenerationId::new(crate::Digest::from_bytes(ids[..32].try_into()?));
     let to = GenerationId::new(crate::Digest::from_bytes(ids[32..].try_into()?));

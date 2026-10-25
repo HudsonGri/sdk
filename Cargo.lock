@@ -1013,7 +1013,9 @@ name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [
  "acyclic-differential",
+ "acyclic-native-runtime",
  "proptest",
+ "tempfile",
 ]
 
 [[package]]
