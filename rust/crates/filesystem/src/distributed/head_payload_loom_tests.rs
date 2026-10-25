@@ -133,7 +133,12 @@ impl StreamProvider for ModelStream {
     async fn fork(&self, _: ForkRequest) -> Result<ForkReceipt, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn follow(&self, _: StreamPath, _: u64) -> Result<RecordStream, StreamError> {
+    async fn follow(
+        &self,
+        _: StreamPath,
+        _: u64,
+        _: acyclic_stream::FollowFilter,
+    ) -> Result<RecordStream, StreamError> {
         Err(StreamError::Unsupported)
     }
     async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -190,7 +195,10 @@ fn request(
             },
             None => CommitCondition::Absent { path: path.clone() },
         }],
-        mutations: vec![CommitMutation::Append { path, records }],
+        mutations: vec![CommitMutation::Append {
+            path,
+            records: records.into_iter().map(Into::into).collect(),
+        }],
         idempotency_key: stream_key(b"head-model", &[key]).unwrap(),
     }
 }
