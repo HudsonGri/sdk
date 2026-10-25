@@ -44,6 +44,7 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
         let status = std::process::Command::new(std::env::current_exe()?)
             .args([test.as_str(), "--exact", "--nocapture"])
             .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "1")
+            .stdout(std::process::Stdio::null())
             .status()?;
         assert!(status.success(), "child test failed: {status}");
         return Ok(());
