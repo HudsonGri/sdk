@@ -312,8 +312,21 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
 }
 
 #[tokio::test]
-async fn immutable_record_batches_refuse_existing_and_duplicate_bindings_for_every_adapter() -> Result<()> {
-    for adapter in 0..3 {
+async fn unmetered_immutable_batches_refuse_existing_and_duplicate_bindings() -> Result<()> {
+    immutable_record_batch(0).await
+}
+
+#[tokio::test]
+async fn measured_immutable_batches_refuse_existing_and_duplicate_bindings() -> Result<()> {
+    immutable_record_batch(1).await
+}
+
+#[tokio::test]
+async fn native_immutable_batches_refuse_existing_and_duplicate_bindings() -> Result<()> {
+    immutable_record_batch(2).await
+}
+
+async fn immutable_record_batch(adapter: u8) -> Result<()> {
     let provider = ProviderRef::new(
         "immutable-batch".into(),
         "filesystem".into(),
@@ -377,7 +390,6 @@ async fn immutable_record_batches_refuse_existing_and_duplicate_bindings_for_eve
     );
     assert!(matches!(host.read(&workspace, None, "/uncommitted/first", 64, None).await,
         Err(error) if error.code() == crate::wire::ErrorCode::NotFound));
-    }
     }
     Ok(())
 }
