@@ -229,7 +229,7 @@ impl Sessions {
         }
         Ok(false)
     }
-    fn refresh(&mut self) -> Result<()> {
+    fn refresh(&mut self, waiting: &mut Vec<(Value, String)>) -> Result<()> {
         let page: Option<Vec<Component>> = serde_json::from_value(host_files::request(
             &self.cwd,
             HostAction::Sessions {
@@ -238,6 +238,7 @@ impl Sessions {
             },
         )?)?;
         let mut references: BTreeSet<String> = self.children.keys().cloned().collect();
+        references.extend(waiting.iter().map(|(_, reference)| reference.clone()));
         if let Some(page) = page {
             self.after = page.last().cloned();
             references.extend(
@@ -247,18 +248,28 @@ impl Sessions {
         }
         for reference in references {
             let observed = self.request(&reference, SessionAction::Observe)?;
-            let Some(mut running) = self.children.remove(&reference) else {
-                self.start(&reference, &observed)?;
-                continue;
-            };
-            match self.refresh_running(&reference, &observed, &mut running) {
-                Ok(Some(observed)) => self.start(&reference, &observed)?,
-                Ok(None) => {
-                    self.children.insert(reference, running);
+            let observed = if let Some(mut running) = self.children.remove(&reference) {
+                match self.refresh_running(&reference, &observed, &mut running) {
+                    Ok(Some(observed)) => {
+                        self.start(&reference, &observed)?;
+                        observed
+                    }
+                    Ok(None) => {
+                        self.children.insert(reference.clone(), running);
+                        observed
+                    }
+                    Err(error) => {
+                        self.children.insert(reference, running);
+                        return Err(error);
+                    }
                 }
-                Err(error) => {
-                    self.children.insert(reference, running);
-                    return Err(error);
+            } else {
+                self.start(&reference, &observed)?;
+                observed
+            };
+            if settled(&observed) {
+                for (id, _) in waiting.extract_if(.., |(_, pending)| pending == &reference) {
+                    reply(&id, Ok(observed.clone()))?;
                 }
             }
         }
@@ -474,15 +485,7 @@ pub(super) fn serve(host: &str) -> Result<()> {
         loop {
             if Instant::now() >= next_refresh {
                 if let Some(state) = sessions.as_mut() {
-                    state.refresh()?;
-                    let mut remaining = Vec::new();
-                    for (id, reference) in waiting.drain(..) {
-                        match state.request(&reference, SessionAction::Observe) {
-                            Ok(value) if !settled(&value) => remaining.push((id, reference)),
-                            result => reply(&id, result)?,
-                        }
-                    }
-                    waiting = remaining;
+                    state.refresh(&mut waiting)?;
                 }
                 next_refresh = Instant::now() + Duration::from_millis(100);
             }
