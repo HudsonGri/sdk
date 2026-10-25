@@ -118,8 +118,20 @@ def admit_archive(records, archive, expected_sha256):
         allowed = {"bin/" + row["name"]: row["sha256"] for row in manifest["artifacts"]}
         allowed.update({"bin/" + name: row["sha256"] for name, row in manifest["dlls"].items()})
         allowed.update({"source/" + name: value for name, value in manifest["source"].items()})
+        if "process_host" in manifest:
+            host = manifest["process_host"]
+            name = "bin/" + host["name"]
+            if name in allowed:
+                raise ValueError("Process host aliases a test or fixture artifact")
+            allowed[name] = host["sha256"]
+            allowed["host-receipt.json"] = host["receipt_sha256"]
+            for path, checksum in host["receipt"]["source"].items():
+                if manifest["source"].get(path) != checksum:
+                    raise ValueError("Process host source differs from the exported graph: " + path)
         if not set(allowed).issubset(names):
             raise ValueError("Incomplete artifact/fixture fetch")
+        if "process_host" in manifest and json.load(tar.extractfile("host-receipt.json")) != manifest["process_host"]["receipt"]:
+            raise ValueError("Process host receipt differs from the export manifest")
         planned, needed, reused = [], 0, 0
         for member in members:
             name = member.name

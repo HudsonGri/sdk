@@ -201,7 +201,11 @@ def run_tests(records, manifest, runtime):
     if len(fixtures) > 1:
         raise ValueError("ambiguous normal executable fixture")
     binary = records / "bin" / fixtures[0]["name"] if fixtures else None
-    host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
+    if "process_host" in manifest:
+        host = admitted_host(source, records / "bin" / manifest["process_host"]["name"],
+                             records / "host-receipt.json")
+    else:
+        host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
     with Commands(records, source, host, binary) as commands:
         for row in manifest["artifacts"]:
             if row["test"]:

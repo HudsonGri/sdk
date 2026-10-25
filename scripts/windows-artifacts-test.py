@@ -27,7 +27,7 @@ class AdmissionTests(unittest.TestCase):
         self.records = self.root / "records"
         self.records.mkdir()
 
-    def export(self, extra=(), missing=False, duplicate=False, bad_file=False):
+    def export(self, extra=(), missing=False, duplicate=False, bad_file=False, host=None):
         data = b"admitted-cross-built-fixture"
         expected = hashlib.sha256(data).hexdigest()
         manifest = dict(artifacts=[dict(name="probe.exe", sha256=expected)], dlls={}, source={})
@@ -36,6 +36,22 @@ class AdmissionTests(unittest.TestCase):
             members.append(("bin/probe.exe", b"corrupt" if bad_file else data))
         if duplicate:
             members.append(members[0])
+        if host:
+            source_name = "rust/crates/native-runtime/src/bin/acyclic-process-host.rs"
+            source = b"source-qualified host fixture"
+            manifest["source"][source_name] = hashlib.sha256(source).hexdigest()
+            receipt = dict(exit=0, target="x86_64-pc-windows-msvc", executable_sha256=expected,
+                           source={source_name: manifest["source"][source_name]})
+            if host == "changed-source":
+                receipt["source"][source_name] = "0" * 64
+            raw_receipt = json.dumps(receipt).encode()
+            manifest["process_host"] = dict(name="probe.exe" if host == "alias" else "host.exe",
+                                            sha256=expected, receipt=receipt,
+                                            receipt_sha256=hashlib.sha256(raw_receipt).hexdigest())
+            members[0] = ("manifest.json", json.dumps(manifest).encode())
+            members.extend([("bin/host.exe", data), ("source/" + source_name, source)])
+            if host != "missing-receipt":
+                members.append(("host-receipt.json", b"{}" if host == "changed-receipt" else raw_receipt))
         members.extend(extra)
         archive = self.root / "export.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
@@ -74,6 +90,25 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.admit_archive(self.records, archive, "0" * 64)
         self.assertEqual(list(self.records.iterdir()), [])
+
+    def test_owned_host_is_part_of_the_admitted_export(self):
+        archive, checksum, data = self.export(host="valid")
+        manifest = api.admit_archive(self.records, archive, checksum)
+        self.assertEqual((self.records / "bin/host.exe").read_bytes(), data)
+        self.assertEqual(json.loads((self.records / "host-receipt.json").read_text()),
+                         manifest["process_host"]["receipt"])
+
+    def test_host_source_must_match_the_exported_graph(self):
+        self.assert_rejected_without_writes(host="changed-source")
+
+    def test_host_receipt_must_be_present(self):
+        self.assert_rejected_without_writes(host="missing-receipt")
+
+    def test_host_receipt_must_match_the_manifest(self):
+        self.assert_rejected_without_writes(host="changed-receipt")
+
+    def test_host_cannot_alias_a_test_artifact(self):
+        self.assert_rejected_without_writes(host="alias")
 
     def test_capacity_rejects_before_writes(self):
         archive, checksum, _ = self.export()

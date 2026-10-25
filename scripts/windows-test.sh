@@ -92,7 +92,7 @@ start=time.monotonic()
 base=['cargo','xwin','test','--no-run','--locked','--target','x86_64-pc-windows-msvc','-p',p['name'],'--message-format=json-render-diagnostics']
 all_artifacts=[]
 logs=[]
-def build(cmd,label):
+def build(cmd,label,package_id=p['id']):
     log=root/(c['stem']+'-'+label+'.jsonl')
     logs.append(log)
     print('WIN_TEST_BUILD',json.dumps(cmd),flush=True)
@@ -102,7 +102,7 @@ def build(cmd,label):
             output.write(line)
             try: v=json.loads(line)
             except ValueError: continue
-            if v.get('reason')=='compiler-artifact' and v.get('package_id')==p['id']:
+            if v.get('reason')=='compiler-artifact' and v.get('package_id')==package_id:
                 all_artifacts.append((v,log))
         rc=proc.wait()
     assert rc==0, 'Cross-build failed with exit '+str(rc)+'; no Windows tests were run'
@@ -111,8 +111,9 @@ def build(cmd,label):
 # the same Cargo output pathname. Both graphs use the one artifact stager.
 admission={'artifacts':{}}
 rows=[]
+host_rows=[]
 
-def stage(label, artifacts, is_test):
+def stage(label, artifacts, is_test, runtime_host=False):
     specifications=[];identities=set()
     for v,log in artifacts:
         if not v.get('executable') or bool(v['profile']['test']) != is_test:continue
@@ -133,13 +134,29 @@ def stage(label, artifacts, is_test):
         value=selected[spec['name']]
         assert Path(value['source']).suffix.lower()=='.exe', 'Cargo artifact is not a Windows executable'
         row=dict(remote=value['path'],cargo_path=value['source'],name=spec['name'],target=spec['target'],test=is_test,sha256=value['sha256'])
-        rows.append(row)
+        (host_rows if runtime_host else rows).append(row)
         print('WIN_TEST_REMOTE_EXE',json.dumps(row),flush=True)
+
+# The native host is compiled and staged before test feature unification can
+# replace Cargo's output pathname. It belongs to this same job/source graph.
+host_package=next(package for package in metadata['packages'] if package['name']=='acyclic-native-runtime')
+host_flags=[];i=0
+while i<len(c['cargo']):
+    arg=c['cargo'][i];key=arg.split('=',1)[0]
+    if arg in ('--release','--offline','--frozen'):host_flags.append(arg)
+    elif key in ('--profile','--jobs','-j'):
+        host_flags.append(arg)
+        if '=' not in arg:i+=1;host_flags.append(c['cargo'][i])
+    i+=1
+build(['cargo','xwin','build','--locked','--target','x86_64-pc-windows-msvc','-p','acyclic-native-runtime','--bin','acyclic-process-host','--message-format=json-render-diagnostics']+host_flags,'process-host',host_package['id'])
+stage('process-host',all_artifacts,False,runtime_host=True)
+assert len(host_rows)==1 and host_rows[0]['target']=='acyclic-process-host'
+all_artifacts.clear()
 
 keys={arg.split('=',1)[0] for arg in c['cargo']}
 unit_selection=bool(keys & {'--lib','--bin','--bins','--example','--examples','--bench','--benches'})
 integration_selection=bool(keys & {'--test','--tests','--all-targets'}) or not unit_selection
-bins=[t for t in p['targets'] if 'bin' in t['kind']]
+bins=[t for t in p['targets'] if 'bin' in t['kind'] and t['name']!='acyclic-process-host']
 if integration_selection and bins:
     assert len(bins)==1, 'Ambiguous normal executable fixture: '+repr([t['name'] for t in bins])
     shared=[];i=0
@@ -173,19 +190,24 @@ for name in tracked+c['fixtures']:
         assert f.is_file(), 'Missing runtime fixture: '+str(f)
         files[f.as_posix()]=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
 dlls={}
-for row in rows:
+for row in rows+host_rows:
     folder=Path(row['cargo_path']).parent
     for directory in (folder,folder.parent,folder/'deps'):
         for f in directory.glob('*.dll'):
             h=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
             assert f.name not in dlls or dlls[f.name]['sha256']==h, 'Ambiguous runtime DLL '+f.name
             dlls[f.name]=dict(remote=str(f),sha256=h)
-manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,artifact_admission=admission,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
+host_receipt=dict(exit=0,target='x86_64-pc-windows-msvc',executable_sha256=host_rows[0]['sha256'],source={name:value for name,value in files.items() if name.startswith(('rust/crates/native-runtime/','rust/crates/host-platform/')) or name in ('Cargo.toml','Cargo.lock','rust-toolchain.toml','.cargo/config.toml')},cargo_admission=admission['artifacts'][host_rows[0]['name']])
+host_receipt_path=root/(c['stem']+'-host-receipt.json')
+host_receipt_path.write_text(json.dumps(host_receipt))
+process_host=dict(host_rows[0],receipt=host_receipt,receipt_sha256=hashlib.file_digest(host_receipt_path.open('rb'),'sha256').hexdigest())
+manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,artifact_admission=admission,process_host=process_host,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
 manifest_path=root/(c['stem']+'-manifest.json');manifest_path.write_text(json.dumps(manifest))
 archive=root/(c['stem']+'.tar.gz')
 with tarfile.open(archive,'w:gz',compresslevel=1) as tar:
     tar.add(manifest_path,arcname='manifest.json')
-    for row in rows:tar.add(row['remote'],arcname='bin/'+row['name'])
+    for row in rows+host_rows:tar.add(row['remote'],arcname='bin/'+row['name'])
+    tar.add(host_receipt_path,arcname='host-receipt.json')
     for name,row in dlls.items():tar.add(row['remote'],arcname='bin/'+name)
     for name in files:tar.add(name,arcname='source/'+name)
     for log in logs:tar.add(log,arcname='logs/'+log.name)
@@ -274,8 +296,6 @@ def main():
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)
-    shared_runner = runner_module(root / 'scripts/windows-runner.py')
-    shared_runner.admitted_host(root, os.environ['E2E_PROCESS_HOST'], os.environ['WIN_TEST_PROCESS_HOST_RECEIPT'])
     config = dict(crate=sys.argv[1], cargo=cargo, stem=stem, fixtures=fixtures)
     payload, program = remote_invocation(config)
     import shlex
