@@ -21,6 +21,7 @@ test("main covers targets and docs, retains errors and never retries failures", 
     const cargo = join(cwd, "bin", "cargo");
     writeFileSync(cargo, `#!/bin/bash
 echo "$*" >> calls
+echo "$1|$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER|$GATE_FUZZ_EXECUTABLES" >> phase-env
 case "$1" in
 metadata) echo '{"workspace_members":["a","b"],"packages":[{"id":"a","name":"harness"},{"id":"b","name":"examples"}]}' ;;
 test)
@@ -97,9 +98,25 @@ esac
     const privateRun=spawnSync('bash',[runner],{cwd,encoding:'utf8',env:{...process.env,PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),EARLY_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
     assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
     assert.throws(()=>readFileSync(join(cwd,'.gate-main-metadata.json')),/ENOENT/);
-    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
-    assert.equal(output.status,0,output.stderr);
-    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-main-metadata.json'),'utf8')).packages.length);
+    const output=/^GATE_OUTPUT_DIRECTORY (.+)$/mu.exec(privateRun.stdout);
+    assert.ok(output,'private invocation retains its actual output identity');
+    assert.ok(JSON.parse(readFileSync(join(output[1],'.gate-main-metadata.json'),'utf8')).packages.length);
+    // Exercise real dispatch: compiler-only phases must not inherit random
+    // invocation paths, while test execution must receive its own runner.
+    const exports = 'export GATE_FUZZ_EXECUTABLES="$gate_fuzz_executables" GATE_BASE_TEST_RUNNER="$gate_base_test_runner"\nexport CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"\n';
+    assert.ok(source.includes(exports));
+    writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'#!/bin/bash\necho "features|$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER|$GATE_FUZZ_EXECUTABLES" >> phase-env\nexit 0\n');
+    for (const negative of [false,true]) {
+      const selected=join(cwd,'environment-runner.sh');
+      writeFileSync(selected,negative?source.replace(exports,'').replace('( CARGO_TARGET_DIR="$clippy_target"',exports+'( CARGO_TARGET_DIR="$clippy_target"'):source);
+      writeFileSync(join(cwd,'phase-env'),'');
+      const result=spawnSync('bash',[selected],{cwd,encoding:'utf8',env:{...process.env,PATH:`${join(cwd,'bin')}:${process.env.PATH}`,GATE_MAIN_TARGET_DIR:join(cwd,'cache'),CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:'',GATE_FUZZ_EXECUTABLES:'',EARLY_FAIL:'0',BUILD_FAIL:'0',TARGET_RC:'0',DOC_RC:'0',FEATURE_RC:'0',BROWSER_RC:'0',WINDOWS_FEATURE_RC:'0'}});
+      assert.equal(result.status,0,result.stdout+result.stderr);
+      const phases=readFileSync(join(cwd,'phase-env'),'utf8').trim().split('\n').map(line=>line.split('|'));
+      const compilerInputs=()=>{for(const phase of ['clippy','features'])assert.deepEqual(phases.find(([name])=>name===phase),[phase,'','']);};
+      if(negative)assert.throws(compilerInputs,assert.AssertionError);else compilerInputs();
+      for(const [,runner,manifest] of phases.filter(([name])=>name==='test')){assert.ok(runner.endsWith('gate-test-runner.sh'));assert.ok(manifest.endsWith('.gate-fuzz-executables'));}
+    }
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

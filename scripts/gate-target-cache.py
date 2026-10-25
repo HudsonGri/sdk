@@ -60,16 +60,13 @@ def matrix_lifetime(job, target):
 
 def output_directory(env=None):
     env = os.environ if env is None else env
-    if private_inputs(env, ['/work/target']) is None:
-        return Path.cwd()
-    temporary = Path(env['TMPDIR']).resolve()
-    if not temporary.is_relative_to(Path(env['BB_JOB_HOME']).parent):
-        raise ValueError('gate output directory is outside job custody')
-    destination = temporary / 'gate-output'
-    if destination.is_symlink():
-        raise ValueError('gate output directory is an alias')
-    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return destination
+    temporary = Path(env.get('TMPDIR', tempfile.gettempdir())).resolve()
+    if private_inputs(env, ['/work/target']) is not None:
+        if not temporary.is_relative_to(Path(env['BB_JOB_HOME']).parent):
+            raise ValueError('gate output directory is outside job custody')
+    # A nested qualifier shares the job, not its caller's mutable phase files.
+    # Exclusive creation also separates concurrent invocations in the same cwd.
+    return Path(tempfile.mkdtemp(prefix='gate-output.', dir=temporary))
 
 
 def executable_runner(source, env=None):
@@ -78,12 +75,7 @@ def executable_runner(source, env=None):
     source = Path(source).resolve(strict=True)
     if os.access(source, os.X_OK):
         return source
-    temporary = Path(env.get('TMPDIR', '/tmp')).resolve()
-    meta = private_inputs(env, ['/work/target'])
-    if meta is not None and temporary.is_relative_to(Path(env['BB_JOB_HOME']).parent):
-        destination = temporary / 'gate-test-runner.sh'
-    else:
-        destination = Path(tempfile.mkdtemp(prefix='gate-runner-', dir=temporary)) / 'runner.sh'
+    destination = output_directory(env) / 'gate-test-runner.sh'
     fd, staged = tempfile.mkstemp(prefix='.gate-runner-', dir=destination.parent)
     try:
         with os.fdopen(fd, 'wb') as out:

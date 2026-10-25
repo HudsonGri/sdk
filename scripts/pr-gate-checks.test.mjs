@@ -22,6 +22,7 @@ test('affected PR checks every target and docs, including test=false fuzz binari
     const cargo=join(cwd,'bin/cargo');
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls
+echo "$1|$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER|$GATE_FUZZ_EXECUTABLES" >> phase-env
 echo "$1|$CARGO_TARGET_DIR" >> targets
 case "$1" in
 metadata) [ "$BROKEN_METADATA" != 1 ] || { echo 'error: metadata control' >&2; exit 101; }; echo '{"workspace_members":["fuzz"],"packages":[{"id":"fuzz","name":"fuzz","metadata":{"cargo-fuzz":true},"targets":[{"name":"recorded_invocation","kind":["bin"]}]}]}' ;;
@@ -125,9 +126,9 @@ esac
     const privateRun=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
     assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
     assert.throws(()=>readFileSync(join(cwd,'.gate-pr-metadata.json')),/ENOENT/);
-    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
-    assert.equal(output.status,0,output.stderr);
-    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-pr-metadata.json'),'utf8')).packages.length);
+    const output=/^GATE_OUTPUT_DIRECTORY (.+)$/mu.exec(privateRun.stdout);
+    assert.ok(output,'private invocation retains its actual output identity');
+    assert.ok(JSON.parse(readFileSync(join(output[1],'.gate-pr-metadata.json'),'utf8')).packages.length);
     writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),"console.log('FAILED cargo check --manifest-path fixture/Cargo.toml');console.error('error[E0000]: retained feature diagnostic');console.log('feature matrix: 0/1 sets ok');process.exitCode=101;\n");
     for(const negative of [false,true]){
       const retaining='if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ]; then cat "$gate_output/.gate-features.out"; fi';
@@ -137,6 +138,19 @@ esac
       assert.match(failedFeatures.stdout,/GATE_FEATURES rc=101/);
       if(negative)assert.doesNotMatch(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
       else assert.match(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
+    }
+    const exports='export GATE_FUZZ_EXECUTABLES="$gate_fuzz_executables" GATE_BASE_TEST_RUNNER="$gate_base_test_runner"\nexport CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"\n';
+    assert.ok(source.includes(exports));
+    writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'#!/bin/bash\necho "features|$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER|$GATE_FUZZ_EXECUTABLES" >> phase-env\nexit 0\n');
+    for(const negative of [false,true]){
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(exports,'').replace('( CARGO_TARGET_DIR="$clippy_target"',exports+'( CARGO_TARGET_DIR="$clippy_target"'):source);
+      writeFileSync(join(cwd,'phase-env'),'');
+      const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:'',GATE_FUZZ_EXECUTABLES:'',FORMAT_RC:'0',BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0'}});
+      assert.equal(result.status,0,result.stdout+result.stderr);
+      const phases=readFileSync(join(cwd,'phase-env'),'utf8').trim().split('\n').map(line=>line.split('|'));
+      const compilerInputs=()=>{for(const phase of ['clippy','features'])assert.deepEqual(phases.find(([name])=>name===phase),[phase,'','']);};
+      if(negative)assert.throws(compilerInputs,assert.AssertionError);else compilerInputs();
+      for(const [,runner,manifest] of phases.filter(([name])=>name==='test')){assert.ok(runner.endsWith('gate-test-runner.sh'));assert.ok(manifest.endsWith('.gate-fuzz-executables'));}
     }
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });
