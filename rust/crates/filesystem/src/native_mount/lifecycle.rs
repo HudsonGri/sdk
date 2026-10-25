@@ -172,7 +172,7 @@ pub type NativeMountControlPaths = [PathBuf; 3];
 #[cfg(not(windows))]
 pub type NativeMountControlPaths = [PathBuf; 2];
 
-/// Exact provider metadata beside an absolute, canonical mount destination.
+/// Exact provider metadata for an absolute, canonical mount destination.
 /// Composed namespaces exclude these paths from their parent volume's source
 /// and capture, so a parent never lists another provider's transient state.
 pub fn native_mount_control_paths(

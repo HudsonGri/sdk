@@ -16,6 +16,9 @@ pub(super) struct MountDestinationGuard {
     pub(super) lock_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
+    // A destination may be below a different native mount. Its ownership
+    // witness must remain reachable even after that ancestor loses its server.
+    fence_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     pub(super) registry_file: Option<MountLockFile>,
     pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
@@ -383,10 +386,10 @@ impl MountDestinationGuard {
     ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
-        let registry = registry::open(work)?;
+        let (fence_directory, registry) = registry::open_with_directory(work)?;
         lock_mount_file_with_work(&registry, true, work)?;
         let file = crate::native_host::open_leaf(
-            &parent_directory,
+            &fence_directory,
             Path::new(
                 std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
             ),
@@ -397,6 +400,7 @@ impl MountDestinationGuard {
             file: Some(file.into()),
             lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory),
+            fence_directory: Some(fence_directory),
             fence_name: Some(name),
             registry_file: Some(registry.into()),
             cleanup_name,
@@ -447,6 +451,7 @@ impl MountDestinationGuard {
             file: Some(file.into()),
             lock_path,
             parent_directory: None,
+            fence_directory: None,
             fence_name: None,
             registry_file: None,
             cleanup_name: None,
@@ -458,17 +463,17 @@ impl MountDestinationGuard {
     pub(super) fn paths_for_canonical(
         canonical: &Path,
     ) -> Result<(PathBuf, PathBuf), NativeMountError> {
-        let parent = canonical
+        canonical
             .parent()
             .ok_or(NativeMountError::InvalidDestination)?;
         let mut identity = blake3::Hasher::new();
         identity.update(b"acyclic-fs/native-mount-destination/v1\0");
         update_path_identity(&mut identity, canonical);
-        let lock_path = parent.join(format!(
+        let registry_path = registry::path()?;
+        let lock_path = registry_path.with_file_name(format!(
             ".acyclic-fs-mount-{}.lock",
             identity.finalize().to_hex()
         ));
-        let registry_path = registry::path()?;
         Ok((lock_path, registry_path))
     }
 
@@ -515,7 +520,7 @@ impl MountDestinationGuard {
         let invalid = || {
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::InvalidLayout)
         };
-        let directory = self.parent_directory.as_ref().ok_or_else(invalid)?;
+        let directory = self.fence_directory.as_ref().ok_or_else(invalid)?;
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
@@ -573,7 +578,7 @@ impl MountDestinationGuard {
             return Ok(());
         }
         let opened_directory;
-        let directory = if let Some(directory) = self.parent_directory.as_ref() {
+        let directory = if let Some(directory) = self.fence_directory.as_ref() {
             directory
         } else {
             let parent = self

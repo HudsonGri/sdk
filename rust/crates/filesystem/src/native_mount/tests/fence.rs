@@ -55,7 +55,10 @@ fn destination_fences_survive_ancestor_relocation_and_retire_through_original_pa
         acquire_existing_mount_lock(&fence),
         Err(NativeMountError::DestinationBusy)
     ));
-    assert_eq!(MountDestinationGuard::paths_for_canonical(&canonical)?.0, fence);
+    assert_eq!(
+        MountDestinationGuard::paths_for_canonical(&canonical)?.0,
+        fence
+    );
     cancellation.cancel();
     guard.remove_destination()?;
     guard.release_cleanup(None)?;
@@ -495,6 +498,9 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
     assert!(work.work.backend_write_operations > 0);
     assert!(guard.file.is_some());
     assert!(guard.lock_path.is_dir());
+    std::fs::remove_dir(&guard.lock_path)?;
+    guard.release(&mut work)?;
+    assert!(guard.file.is_none());
     Ok(())
 }
 

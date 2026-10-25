@@ -175,7 +175,7 @@ fn legacy_release(guard: &mut MountDestinationGuard) -> Result<(), NativeMountEr
     };
     lock_mount_file_with_work(registry, true, &mut work)?;
     let removed = crate::native_host::remove_ascii_leaf(
-        guard.parent_directory.as_ref().unwrap(),
+        guard.fence_directory.as_ref().unwrap(),
         guard.cleanup_name.as_ref().unwrap(),
         &mut work,
     );
@@ -304,7 +304,7 @@ proptest::proptest! {
         for _ in 0..removes { fixture.failed_remove(false).unwrap(); }
         let fence = fixture.fence.clone();
         for _ in 0..unlinks {
-            let saved = fence.with_file_name("retained-fence");
+            let saved = fence.with_extension("retained");
             std::fs::rename(&fence, &saved).unwrap();
             std::fs::create_dir(&fence).unwrap();
             assert!(fixture.packet.retire(None).is_err());

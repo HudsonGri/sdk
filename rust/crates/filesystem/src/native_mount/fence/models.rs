@@ -29,7 +29,7 @@ fn cleanup_after_contended_registry(
     // A real failed unlink consumes the original transaction. Retry after
     // caller cancellation must replenish that same ledger before contending
     // with the starter; every following lock schedule remains exhaustive.
-    let saved = fence.with_file_name("retained-fence");
+    let saved = fence.with_extension("retained");
     std::fs::rename(&fence, &saved).unwrap();
     std::fs::create_dir(&fence).unwrap();
     cancellation.cancel();

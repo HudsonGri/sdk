@@ -59,6 +59,15 @@ pub(super) fn open<W: crate::native_host::NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
+    open_with_directory(work).map(|(_, file)| file)
+}
+
+pub(super) fn open_with_directory<W: crate::native_host::NativeHostWork>(
+    work: &mut W,
+) -> Result<(cap_std::fs::Dir, fence_io::MountLockFile), NativeMountError>
+where
+    NativeMountError: From<W::Error>,
+{
     #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
@@ -71,18 +80,18 @@ where
 fn open_in_directory<W: crate::native_host::NativeHostWork>(
     directory: &Path,
     work: &mut W,
-) -> Result<fence_io::MountLockFile, NativeMountError>
+) -> Result<(cap_std::fs::Dir, fence_io::MountLockFile), NativeMountError>
 where
     NativeMountError: From<W::Error>,
 {
     let (directory, _) = crate::native_host::open_root_directory(directory, work)?;
-    Ok(crate::native_host::open_leaf(
+    let file = crate::native_host::open_leaf(
         &directory,
         Path::new(NATIVE_REGISTRY_NAME),
         &crate::native_host::NativeOpenOptions::ReadWriteCreate,
         work,
-    )?
-    .into())
+    )?;
+    Ok((directory, file.into()))
 }
 
 // Match the service's persistent state-root selection before consulting OS
