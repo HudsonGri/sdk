@@ -63,6 +63,48 @@ impl Fixture {
 async fn native_claim_fence_and_read_only_observation_cover_every_host() -> Result<()> {
     for host in ["codex", "claude-code", "pi"] {
         let mut fixture = Fixture::for_host(host).await?;
+        let parent = fixture.owner.attached(fixture.parent)?;
+        fixture
+            .owner
+            .local
+            .admit_host_child(&parent.context, "unentered")
+            .await?;
+        let before = fixture
+            .owner
+            .local
+            .task_files
+            .inner
+            .head()
+            .await
+            .map_err(storage)?;
+        let located = fixture.owner.locate(fixture.checkout.path()).await?;
+        assert_eq!(located["task"], json!(fixture.parent));
+        assert_eq!(
+            fixture.owner.views.len(),
+            1,
+            "cwd discovery attached an unentered task"
+        );
+        assert_eq!(
+            before,
+            fixture
+                .owner
+                .local
+                .task_files
+                .inner
+                .head()
+                .await
+                .map_err(storage)?
+        );
+        let unknown = fixture
+            .checkout
+            .path()
+            .join(host_workspace::HOST_VIEW_ROOT)
+            .join("unadmitted");
+        std::fs::create_dir(&unknown).map_err(storage)?;
+        assert!(
+            fixture.owner.locate(&unknown).await.is_err(),
+            "unknown agent cwd fell back to its parent"
+        );
         fixture
             .session(
                 "worker",
@@ -71,6 +113,13 @@ async fn native_claim_fence_and_read_only_observation_cover_every_host() -> Resu
                 },
             )
             .await?;
+        let child = fixture.session("worker", SessionAction::Observe).await?;
+        let cwd = Path::new(
+            child["cwd"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("child cwd absent".into()))?,
+        );
+        assert_eq!(fixture.owner.locate(cwd).await?["task"], child["task"]);
         let files = fixture.owner.files(fixture.parent).await?;
         let before = files.inner.head().await.map_err(storage)?;
         fixture.session("worker", SessionAction::Observe).await?;
