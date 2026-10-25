@@ -166,13 +166,11 @@ impl FileDescriptor {
 pub(crate) struct PublicationWitness {
     pub(crate) _domain: Arc<PublicationDomain>,
     pub(crate) _identity: [u8; 32],
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) _custody: crate::NativeCustody,
 }
 
 #[derive(Debug)]
 pub(crate) struct PublicationDomain {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) _custody: crate::NativeCustody,
 }
 
