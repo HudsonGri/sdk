@@ -618,9 +618,13 @@ fn read_setup_approval(case: Case, file: &FileValue) -> bool {
     let interaction: acyclic_harness::interaction::Interaction =
         serde_json::from_slice(&file.bytes).unwrap();
     let acyclic_harness::interaction::Interaction::Approval {
-        subject: acyclic_harness::interaction::ApprovalSubject::Tool { tool, arguments, .. },
+        subject:
+            acyclic_harness::interaction::ApprovalSubject::Tool {
+                tool, arguments, ..
+            },
         ..
-    } = interaction else {
+    } = interaction
+    else {
         panic!("read call lost its exact approval subject")
     };
     if tool == "read" {
