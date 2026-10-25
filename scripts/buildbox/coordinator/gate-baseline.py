@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Select an ancestor main baseline whose advertised test coverage completed.
+"""Select qualified main evidence, preferring completed phases at the exact base.
 
-Failed workspace discovery runs are MAIN_WIDE evidence, never PR baselines.
-Legacy green runs retain only package roots actually observed in their output.
+An unrelated red phase cannot invalidate completed workspace tests. Partial
+workspace discovery still cannot claim coverage; legacy green runs retain only
+package roots actually observed in their output.
 """
 import argparse
 import json
@@ -11,8 +12,14 @@ import re
 import subprocess
 
 
+def completed_payload(text):
+    payload = re.findall(r'^GATE_DONE rc=(-?\d+)$', text, re.M)
+    executor = re.findall(r'^GATE_EXECUTOR rc=(-?\d+)$', text, re.M)
+    return len(payload) == len(executor) == 1 and payload == executor and int(payload[0]) in (0, 1, 101)
+
+
 def eligible(text):
-    if not re.search(r'^GATE_DONE rc=0\s*$', text, re.M):
+    if not completed_payload(text) or not re.search(r'^GATE_DONE rc=0\s*$', text, re.M):
         return False
     if not re.search(r'^test result:', text, re.M):
         return False
@@ -30,7 +37,7 @@ def eligible(text):
 
 
 def coverage(text, packages):
-    if not eligible(text):
+    if not (eligible(text) or check_complete(text, 'tests')):
         raise ValueError('incomplete main baseline')
     marker = re.search(r'^GATE_TEST_COVERAGE all-targets\+doc packages=(\S+)\s*$', text, re.M)
     if marker:
@@ -43,10 +50,21 @@ def coverage(text, packages):
 
 
 def check_complete(text, phase):
-    payload = re.findall(r'^GATE_DONE rc=(-?\d+)$', text, re.M)
-    executor = re.findall(r'^GATE_EXECUTOR rc=(-?\d+)$', text, re.M)
-    if len(payload) != 1 or len(executor) != 1 or payload != executor or int(payload[0]) not in (0, 1, 101):
+    if not completed_payload(text):
         return False
+    if phase == 'tests':
+        # Qualify the test phase independently of Loom/features/browser/clippy.
+        # Cargo rc=0 for both whole invocations proves no target was cut off,
+        # failed to compile or silently omitted. Never infer coverage merely
+        # from the test summaries that preceded an interrupted build.
+        if not re.search(r'^test result:', text, re.M):
+            return False
+        for name in ('targets', 'docs'):
+            statuses = re.findall(r'^GATE_TEST_WALL phase=' + name + r' .*\brc=(-?\d+)\s*$', text, re.M)
+            if statuses != ['0']:
+                return False
+        covered = re.findall(r'^GATE_TEST_COVERAGE all-targets\+doc packages=(\S+)\s*$', text, re.M)
+        return len(covered) == 1
     if phase == 'clippy':
         return bool(re.search(r'^GATE_CLIPPY rc=0\s*$', text, re.M))
     # The native matrix owns the first wall marker; later Windows matrix
@@ -78,14 +96,14 @@ def check_complete(text, phase):
 
 def select(checkout, base, directory, alerts, phase='tests', exact=False):
     logs = list(directory.glob('[0-9a-f]*.log'))
-    if phase != 'tests':
+    if phase != 'tests' or exact:
         logs.extend((directory / 'wide').glob('[0-9a-f]*.log'))
     for log in sorted(logs, key=lambda p: p.stat().st_mtime, reverse=True):
         if not re.fullmatch(r'[0-9a-f]{7,40}', log.stem):
             continue
         if exact and log.stem != base:
             continue
-        status = r'MAIN_GATE GREEN ' if phase == 'tests' else r'MAIN_(?:GATE|WIDE) [A-Z]+ '
+        status = r'MAIN_GATE GREEN ' if phase == 'tests' and not exact else r'MAIN_(?:GATE|WIDE) [A-Z]+ '
         if not re.search(status + re.escape(log.stem) + r':', alerts):
             continue
         text = log.read_text(encoding='utf-8', errors='replace')
@@ -97,7 +115,7 @@ def select(checkout, base, directory, alerts, phase='tests', exact=False):
                 proof = None
             if not isinstance(proof, dict) or proof.get('head') != base or not re.fullmatch(r'[0-9a-f]{64}', str(proof.get('runner_sha256', ''))):
                 continue
-        if not (eligible(text) if phase == 'tests' else check_complete(text, phase)):
+        if not (eligible(text) if phase == 'tests' and not exact else check_complete(text, phase)):
             continue
         if subprocess.run(['git', '-C', str(checkout), 'merge-base', '--is-ancestor', log.stem, base], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
             return log
