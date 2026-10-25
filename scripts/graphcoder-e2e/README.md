@@ -37,6 +37,11 @@ competing inside a shared deadline. On Windows run it under the fleet's
 the ten-second limit, including its filesystem variants. The aggregate receipt
 requires every case and variant exactly once; total matrix time is recorded
 separately. Run Node helper tests with `--test-concurrency=1` on Windows.
+The public `scripts/qualify-graphcoder-e2e.sh` entry point uses this same serial
+matrix and strict helper launcher. The Cargo-JSON adapter
+`scripts/qualify-graphcoder-run.py` also delegates to the serial matrix; it records
+the aggregate wall time without changing each case's budget. `run.mjs` remains
+the diagnostic case runner, rather than a second full-platform gate.
 The strict helper launcher also owns its complete process tree. Its active
 nine-second budget cancels and drains the scope; cancellation always fails
 qualification, including when a late child summary reports success.
