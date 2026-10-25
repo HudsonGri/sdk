@@ -2645,7 +2645,11 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<WatchBatch, NativeWatchError> {
         self.begin_rescan_with_work(work)?;
-        self.finish_rescan_with_work(work)
+        let result = self.finish_rescan_with_work(work);
+        if result.is_err() {
+            self.abandon_rescan();
+        }
+        result
     }
 
     /// Returns the exact root identity admitted when the watcher opened.
@@ -2693,6 +2697,35 @@ impl NativeWatch {
         if self.rescan_in_progress {
             return Err(NativeWatchError::RescanAlreadyInProgress);
         }
+        match self.prepare_rescan_with_work(work) {
+            Ok(epoch) => {
+                self.rescan_in_progress = true;
+                Ok(epoch)
+            }
+            Err(error) => {
+                self.abandon_rescan();
+                Err(error)
+            }
+        }
+    }
+
+    // A failed compound baseline cannot leave a scan owned by a caller that
+    // received no scan. Partial native cleanup stays owned by this watcher;
+    // its hints remain unusable until a complete baseline succeeds.
+    fn abandon_rescan(&mut self) {
+        self.rescan_in_progress = false;
+        if let Ok(mut shared) = self.shared.lock() {
+            shared
+                .invalidation
+                .get_or_insert(WatchInvalidationReason::BackendError);
+        }
+        // A poisoned state remains fail-closed through every public method.
+    }
+
+    fn prepare_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<u64, NativeWatchError> {
         let mut shared = self
             .shared
             .lock()
@@ -2727,7 +2760,6 @@ impl NativeWatch {
             .ok_or(NativeWatchError::SequenceExhausted)?;
         self.next_sequence = 0;
         drop(shared);
-        self.rescan_in_progress = true;
         #[cfg(windows)]
         self.clear_windows_directories_with_work(work)
             .map_err(demand_watch_error)?;

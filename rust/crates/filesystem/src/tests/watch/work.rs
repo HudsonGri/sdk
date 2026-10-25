@@ -225,6 +225,58 @@ fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[test]
+fn failed_compound_baselines_release_scan_custody_without_acknowledging_the_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let mut watch = NativeWatch::open_with_profile_measured(
+        directory.path().canonicalize()?,
+        FilesystemProfile::Portable,
+        measured_watch_options(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )?
+    .value;
+    let budget = WorkBudget {
+        backend_read_operations: 0,
+        ..WorkBudget::UNBOUNDED
+    };
+    for native in [false, true] {
+        let result = if native {
+            let work = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            watch.accept_lazy_baseline_with_native_work(&work)
+        } else {
+            watch
+                .accept_lazy_baseline_measured(budget, &cancellation)
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+        };
+        assert!(matches!(result, Err(NativeWatchError::Work(_))));
+        assert!(
+            !watch.rescan_in_progress,
+            "failed compound baseline retained rescan custody"
+        );
+        assert!(
+            matches!(
+                watch
+                    .poll(u32::MAX, WorkBudget::UNBOUNDED, &cancellation)?
+                    .value,
+                WatchBatch::RescanRequired {
+                    reason: WatchInvalidationReason::BackendError,
+                    ..
+                }
+            ),
+            "failed baseline acknowledged an unverified root"
+        );
+        assert!(matches!(watch.accept_lazy_baseline()?,
+            WatchBatch::Changes { changes, .. } if changes.is_empty()));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[test]
 fn baseline_failures_leave_the_rescan_recoverable() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
@@ -255,7 +307,10 @@ fn baseline_failures_leave_the_rescan_recoverable() -> Result<(), Box<dyn std::e
             Err(NativeWatchError::Cancelled(_) | NativeWatchError::Work(_))
         ));
     }
-    watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
+    assert!(
+        !watch.rescan_in_progress,
+        "failed lazy baseline retained rescan custody"
+    );
     let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     watch.begin_rescan_with_work(&mut work)?;
@@ -321,7 +376,16 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
     };
     assert!(!source.is_admitted(Path::new("a")));
     assert!(source.is_admitted(Path::new("b")));
-    watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
+    assert!(
+        !watch.rescan_in_progress,
+        "failed rescan preparation retained rescan custody"
+    );
+    assert!(matches!(
+        watch
+            .poll(u32::MAX, WorkBudget::UNBOUNDED, &cancellation)?
+            .value,
+        WatchBatch::RescanRequired { .. }
+    ));
     let cancelled = CancellationToken::new();
     let cancelled_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
         .map_err(|(error, _)| error)?;
