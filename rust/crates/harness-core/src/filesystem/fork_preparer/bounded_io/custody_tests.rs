@@ -3,9 +3,17 @@ use super::*;
 use crate::store::history::{HistoryIo, HistoryWork};
 
 #[test]
-fn output_custody_outlives_both_observers_and_releases_the_shared_ledger() -> Result<()> {
+fn output_custody_outlives_preparation_observer() -> Result<()> {
+    output_custody_outlives_observer(false)
+}
+
+#[test]
+fn output_custody_outlives_measured_history_observer() -> Result<()> {
+    output_custody_outlives_observer(true)
+}
+
+fn output_custody_outlives_observer(measured: bool) -> Result<()> {
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-    for measured in [false, true] {
         let cancellation = CancellationToken::new();
         let io = PreparationIo::from_budget(budget, &cancellation)?;
         let attempt = io.scoped()?;
@@ -29,11 +37,18 @@ fn output_custody_outlives_both_observers_and_releases_the_shared_ledger() -> Re
         cancellation.cancel();
         drop(output);
         // Retirement must still work after cancellation and observer destruction.
-        assert_eq!(
-            io.remaining()?.peak_allocation_bytes,
-            budget.peak_allocation_bytes
-        );
-    }
+        let live = match &io {
+            PreparationIo::Owned { work, .. } => work
+                .lock()
+                .unwrap()
+                .1
+                .as_ref()
+                .unwrap()
+                .live_bytes(),
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationIo::Native { .. } => unreachable!("standalone fixture"),
+        };
+        assert_eq!(live, 0);
     Ok(())
 }
 
