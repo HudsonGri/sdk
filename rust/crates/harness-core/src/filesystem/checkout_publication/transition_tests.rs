@@ -392,11 +392,76 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
         )?
         .authorize(&verifier, interaction, &confirmation, &fixture.work)
         .await?
-        .publish(&fixture.state, &options, &fixture.work, || {
+        .publish(&fixture.state, &options, || {
             std::future::ready(Ok(()))
         })
         .await?;
     assert_eq!(original, encode(&applied, &paths, "original creator")?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_authority_retains_cancellation_and_original_work() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let publication = fixture.publication(OperationId::new())?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    let paths = vec!["note".into()];
+    let journal = publication
+        .prepare_selected(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+            (&paths, "original creator"),
+        )
+        .await?;
+    let approval = publication.approval_value(
+        &fixture.from,
+        &fixture.to,
+        &paths,
+        &journal,
+        "original creator",
+    )?;
+    let digest = approval.digest(&fixture.work)?;
+    let interaction = crate::InteractionId::from_bytes([99; 16]);
+    let verifier = PublicationDecision {
+        id: interaction,
+        operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
+        digest,
+        approved: true,
+    };
+    let authorized = approval
+        .authorize(&verifier, interaction, &digest, &fixture.work)
+        .await?;
+    fixture.work.cancellation().cancel();
+    assert!(
+        authorized
+            .publish(&fixture.state, &options, || std::future::ready(Ok(())))
+            .await
+            .is_err()
+    );
+    assert!(!fixture.root.join("note").exists());
+
+    // Actual former argument shape: a caller could supply a fresh work context
+    // after authorization. Its cancellation is unrelated to the approved work.
+    // The public authority no longer has an argument that can select this path.
+    let fresh = NativeMaterializationWork::new(
+        fixture.work.budget(),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    publication
+        .publish(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fresh,
+            || std::future::ready(Ok(())),
+        )
+        .await?;
+    assert_eq!(std::fs::read_to_string(fixture.root.join("note"))?, "candidate");
     Ok(())
 }
 #[tokio::test]

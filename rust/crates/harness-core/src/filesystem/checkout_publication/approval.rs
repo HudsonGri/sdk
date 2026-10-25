@@ -81,7 +81,10 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
                 *confirmed,
             )
             .await?;
-        Ok(AuthorizedCheckout { approval: self })
+        Ok(AuthorizedCheckout {
+            approval: self,
+            work: work.clone(),
+        })
     }
 }
 
@@ -89,6 +92,7 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
 /// Only `CheckoutApproval::authorize` can construct this publication authority.
 pub struct AuthorizedCheckout<'a, C> {
     approval: CheckoutApproval<'a, C>,
+    work: NativeMaterializationWork,
 }
 
 impl<C> AuthorizedCheckout<'_, C> {
@@ -98,7 +102,6 @@ impl<C> AuthorizedCheckout<'_, C> {
         self,
         state: &LocalCoreStateStore,
         options: &MaterializeOptions,
-        work: &NativeMaterializationWork,
         guard: F,
     ) -> Result<MaterializationJournal>
     where
@@ -112,7 +115,7 @@ impl<C> AuthorizedCheckout<'_, C> {
                 self.approval.to,
                 state,
                 options,
-                work,
+                &self.work,
                 guard,
             )
             .await

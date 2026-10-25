@@ -55,7 +55,7 @@ pub(crate) fn publish_writeback<'a>(
         writeback_digest_value(root, generations, journal)?
             .authorize(approval.1, approval.2, &confirmation, native_work)
             .await?
-            .publish(state, options, native_work, || root.verify(native_work))
+            .publish(state, options, || root.verify(native_work))
             .await
     }
 }
