@@ -40,7 +40,16 @@ async fn dropping_the_last_customer_owner_retires_the_native_namespace()
     // No explicit unmount and no new cleanup meter. Returning from the last
     // owner must witness physical retirement, rather than just request it.
     drop(mount);
-    assert_eq!(crate::capture_root_identity(destination.path())?, before);
+    let retired = match crate::capture_root_identity(destination.path()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            panic!("last mount owner returned before native namespace retirement: {error:?}")
+        }
+    };
+    assert_eq!(
+        retired, before,
+        "last mount owner returned while its native namespace remained mounted"
+    );
     assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
     assert!(
         source.upgrade().is_none(),
