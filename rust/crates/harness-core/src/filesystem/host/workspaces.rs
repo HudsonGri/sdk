@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "publication_batch.rs"]
+mod batch;
+
 #[derive(Clone, Copy)]
 enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
@@ -343,36 +347,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        let batched = if !invalidate_metadata
-            && !matches!(publication, FilePublication::CreateOnly)
-            && mutations
-                .iter()
-                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
-        {
-            let directories = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let files = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        Some((path.as_str(), bytes.clone()))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            transaction
-                .write_batch(&directories, &files, budget, cancellation)
-                .await
-                .map_err(|failure| map_error(failure.error))?;
-            true
-        } else {
-            false
-        };
+        let batched = !invalidate_metadata
+            && Self::stage_replacement_batch(
+                transaction,
+                mutations,
+                publication,
+                None,
+                cancellation,
+            )
+            .await?;
         #[cfg(target_arch = "wasm32")]
         let batched = false;
         if !batched {
@@ -674,6 +657,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<()> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some(work) = io.original_native_work() {
+                    verify_native_publication(preparation, work).await?;
+                }
+                if Self::stage_replacement_batch(
+                    transaction,
+                    mutations,
+                    publication,
+                    Some(io),
+                    io.cancellation(),
+                )
+                .await?
+                {
+                    return Ok(());
+                }
+            }
             for mutation in mutations {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = io.original_native_work() {
