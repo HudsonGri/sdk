@@ -241,77 +241,144 @@ async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -
 // Negative control: this same lifecycle on the previous per-tool ledger leaves
 // a pending write with no PostToolUse and refuses SessionEnd/capture/merge.
 #[tokio::test]
-async fn failed_and_cancelled_native_tools_leave_capturable_mergeable_views() -> Result<()> {
-    for host in ["codex", "claude-code", "pi"] {
-        let mut fixture = Fixture::for_host(host).await?;
-        for reference in ["failed-write", "cancelled-write"] {
-            let location = fixture
-                .owner
-                .dispatch(
-                    OperationId::new(),
-                    HostAction::Fork {
-                        parent: fixture.parent,
-                        reference: reference.into(),
-                    },
-                )
-                .await?;
-            let child = serde_json::from_value(location["task"].clone()).map_err(storage)?;
-            let cwd = PathBuf::from(
-                location["cwd"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("view absent".into()))?,
-            );
-            assert!(
-                cwd.starts_with(
-                    std::fs::canonicalize(fixture.checkout.path())
-                        .map_err(storage)?
-                        .join(host_workspace::HOST_VIEW_ROOT)
-                )
-            );
-            let parent = fixture.owner.attached(fixture.parent)?;
-            let attached = fixture.owner.attached(child)?;
-            parent
-                .workspace
-                .name_child(
-                    &parent.context,
-                    &attached.context,
-                    &attached.workspace,
-                    reference,
-                )
-                .await?;
-            fixture.owner.dispatch(OperationId::new(),HostAction::Hook {host:host.into(),event:"PreToolUse".into(),input:json!({"task":child,"session_id":"native-root","cwd":cwd,"tool_name":"bash","tool_use_id":reference,"tool_input":{"command":"write then fail or cancel"}})}).await?;
-            native_write(
-                &cwd.join(format!("{reference}.txt")),
-                b"partial native write",
-            )?;
-            // The native host has stopped the failed/cancelled tool. No post hook.
-            fixture
-                .owner
-                .dispatch(
-                    OperationId::new(),
-                    HostAction::Hook {
-                        host: host.into(),
-                        event: "SessionEnd".into(),
-                        input: json!({"task":child,"session_id":"native-root","cwd":cwd}),
-                    },
-                )
-                .await?;
-            fixture
-                .owner
-                .dispatch(
-                    OperationId::new(),
-                    HostAction::Fs {
-                        task: fixture.parent,
-                        command: format!("merge agents/{reference}"),
-                    },
-                )
-                .await?;
-            assert_eq!(
-                std::fs::read(fixture.checkout.path().join(format!("{reference}.txt")))
-                    .map_err(storage)?,
-                b"partial native write"
-            );
-        }
+async fn codex_failed_and_cancelled_tools_leave_mergeable_views() -> Result<()> {
+    failed_and_cancelled_tools_leave_mergeable_views("codex").await
+}
+
+#[tokio::test]
+async fn claude_failed_and_cancelled_tools_leave_mergeable_views() -> Result<()> {
+    failed_and_cancelled_tools_leave_mergeable_views("claude-code").await
+}
+
+#[tokio::test]
+async fn pi_failed_and_cancelled_tools_leave_mergeable_views() -> Result<()> {
+    failed_and_cancelled_tools_leave_mergeable_views("pi").await
+}
+
+async fn failed_and_cancelled_tools_leave_mergeable_views(host: &str) -> Result<()> {
+    let mut fixture = Fixture::for_host(host).await?;
+    for reference in ["failed-write", "cancelled-write"] {
+        let location = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Fork {
+                    parent: fixture.parent,
+                    reference: reference.into(),
+                },
+            )
+            .await?;
+        let child = serde_json::from_value(location["task"].clone()).map_err(storage)?;
+        let cwd = PathBuf::from(
+            location["cwd"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("view absent".into()))?,
+        );
+        assert!(
+            cwd.starts_with(
+                std::fs::canonicalize(fixture.checkout.path())
+                    .map_err(storage)?
+                    .join(host_workspace::HOST_VIEW_ROOT)
+            )
+        );
+        let parent = fixture.owner.attached(fixture.parent)?;
+        let attached = fixture.owner.attached(child)?;
+        parent
+            .workspace
+            .name_child(
+                &parent.context,
+                &attached.context,
+                &attached.workspace,
+                reference,
+            )
+            .await?;
+        let nested = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Fork {
+                    parent: child,
+                    reference: "nested".into(),
+                },
+            )
+            .await?;
+        let nested_task = serde_json::from_value(nested["task"].clone()).map_err(storage)?;
+        let nested_path = PathBuf::from(
+            nested["cwd"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("nested view absent".into()))?,
+        );
+        let parent = fixture.owner.attached(child)?;
+        let attached = fixture.owner.attached(nested_task)?;
+        parent
+            .workspace
+            .name_child(
+                &parent.context,
+                &attached.context,
+                &attached.workspace,
+                "nested",
+            )
+            .await?;
+        let nested_file = format!("{reference}-nested.txt");
+        native_write(&nested_path.join(&nested_file), b"nested native write")?;
+        fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Capture { task: nested_task },
+            )
+            .await?;
+        fixture.owner.dispatch(OperationId::new(),HostAction::Hook {host:host.into(),event:"PreToolUse".into(),input:json!({"task":child,"session_id":"native-root","cwd":cwd,"tool_name":"bash","tool_use_id":reference,"tool_input":{"command":"write then fail or cancel"}})}).await?;
+        native_write(
+            &cwd.join(format!("{reference}.txt")),
+            b"partial native write",
+        )?;
+        // The native host has stopped the failed/cancelled tool. No post hook.
+        // A stale pre-tool record must not block this view as a merge target.
+        fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Fs {
+                    task: child,
+                    command: "merge agents/nested".into(),
+                },
+            )
+            .await?;
+        assert_eq!(
+            std::fs::read(cwd.join(&nested_file)).map_err(storage)?,
+            b"nested native write"
+        );
+        fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Hook {
+                    host: host.into(),
+                    event: "SessionEnd".into(),
+                    input: json!({"task":child,"session_id":"native-root","cwd":cwd}),
+                },
+            )
+            .await?;
+        fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Fs {
+                    task: fixture.parent,
+                    command: format!("merge agents/{reference}"),
+                },
+            )
+            .await?;
+        assert_eq!(
+            std::fs::read(fixture.checkout.path().join(format!("{reference}.txt")))
+                .map_err(storage)?,
+            b"partial native write"
+        );
+        assert_eq!(
+            std::fs::read(fixture.checkout.path().join(nested_file)).map_err(storage)?,
+            b"nested native write"
+        );
     }
     Ok(())
 }
