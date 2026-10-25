@@ -67,19 +67,25 @@ impl LocalHarness {
             acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
             &cancellation,
         )?;
-        let preparation = self
-            .child_preparation(files, file, plan, workspace, &io)
+        // Authentication and replay remain allocation-free. New preparation
+        // retains its execution frame on the original operation ledger, so the
+        // child controller never carries the entire workflow on its poll stack.
+        crate::conversation::BoundedContentFuture::new(Some(&io), || async {
+            let preparation = self
+                .child_preparation(files, file, plan, workspace, &io)
+                .await?;
+            // One authority fence covers every accepted staging prefix, including errors.
+            let prepared = preparation::fenced_inputs(preparation.prepare_inputs(), async {
+                let filesystem = workspace.filesystem.clone();
+                spawn_blocking(move || filesystem.flush_deferred_authority())
+                    .await
+                    .map_err(storage)?
+                    .map_err(storage)
+            })
             .await?;
-        // One authority fence covers every accepted staging prefix, including errors.
-        let prepared = preparation::fenced_inputs(preparation.prepare_inputs(), async {
-            let filesystem = workspace.filesystem.clone();
-            spawn_blocking(move || filesystem.flush_deferred_authority())
-                .await
-                .map_err(storage)?
-                .map_err(storage)
-        })
-        .await?;
-        preparation.finish(prepared, identity.reference).await
+            preparation.finish(prepared, identity.reference).await
+        })?
+        .await
     }
 
     async fn authenticate_child<'a, P: StreamProvider + ?Sized>(

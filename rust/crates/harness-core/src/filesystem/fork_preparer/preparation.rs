@@ -4,6 +4,10 @@ use crate::executor::{stock_boundary, stock_string_copy, with_history_io};
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
     pub(super) async fn prepare(&self, request: ForkRequest) -> Result<ForkReport> {
+        // Fork preparation owns large storage and recovery futures. The shared
+        // content-frame boundary admits their exact storage before construction
+        // and keeps it out of every host adapter's task poll frame.
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
         let preparer = self.preparer;
         let host = &preparer.host;
         let io = self.io;
@@ -17,15 +21,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             ));
         }
         self.verify_task_lease(false).await?;
-        let journal = self.claim(&request).await?;
-        if let Some(report) = read_report(
+        let journal = crate::conversation::BoundedContentFuture::new(io, || async { self.claim(&request).await })?.await?;
+        if let Some(report) = crate::conversation::BoundedContentFuture::new(io, || async { read_report(
             host,
             &journal,
             &request,
             self.journal_limit(MAX_REPORT_BYTES),
             io,
-        )
-        .await?
+        ).await })?.await?
         {
             self.verify_task_allocations(&request).await?;
             return Ok(report);
@@ -74,7 +77,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             .map(|io| io as &mut dyn crate::store::history::HistoryIo);
         for volume in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
-            host.claim_fork_allocation(
+            crate::conversation::BoundedContentFuture::new(io, || async { host.claim_fork_allocation(
                 AllocationClaim {
                     operation_id: operation,
                     preparation_digest: *digest.as_bytes(),
@@ -88,8 +91,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 self.journal_limit(MAX_REQUEST_BYTES),
                 io,
                 task,
-            )
-            .await?;
+            ).await })?.await?;
         }
         let private = policy.child_private_volume.copy(&mut work)?;
         let private_key = key("scratch")?;
@@ -106,7 +108,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             std::borrow::Cow::Owned(self.read_grant(source_project)?)
         };
         self.verify_task_lease(false).await?;
-        let private_observation = (host)
+        let private_observation = crate::conversation::BoundedContentFuture::new(io, || async { (host)
             .fork_volume_pinned(
                 source_private,
                 &private_grant,
@@ -116,14 +118,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 &private_key,
                 io,
                 task,
-            )
-            .await?;
+            ).await })?.await?;
         let controller = (request.parent.kind == crate::core::AggregateKind::Conversation)
             .then(|| preparer.controller(io))
             .transpose()?;
         let project_key = key("project")?;
         self.verify_task_lease(false).await?;
-        let child_project = (host)
+        let child_project = crate::conversation::BoundedContentFuture::new(io, || async { (host)
             .fork_volume_pinned(
                 source_project,
                 &project_grant,
@@ -133,12 +134,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 &project_key,
                 io,
                 task,
-            )
-            .await?;
+            ).await })?.await?;
         let (child_result_volume, child_result_generation) =
             if let Some(volume) = &policy.child_result_volume {
                 self.verify_task_lease(false).await?;
-                let result = (host)
+                let result = crate::conversation::BoundedContentFuture::new(io, || async { (host)
                     .fork_volume_pinned(
                         source_private,
                         &private_grant,
@@ -148,8 +148,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         &key("result")?,
                         io,
                         task,
-                    )
-                    .await?;
+                    ).await })?.await?;
                 (Some(volume.copy(&mut work)?), Some(result.generation))
             } else {
                 (None, None)
@@ -174,7 +173,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 PreparationIo::reserve(&mut continuation_keys, keys.len(), io)?;
                 continuation_keys.extend(keys);
             }
-            let inherited = controller
+            let inherited = crate::conversation::BoundedContentFuture::new(io, || async { controller
                 .materialize_inherited_conversation(
                     &preparer.parent,
                     &private,
@@ -195,8 +194,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .map(PreparedForkHistory::conversation),
                     io,
                     task,
-                )
-                .await?;
+                ).await })?.await?;
             let mut files = crate::model::vec_with_capacity(1, io)?;
             files.push(inherited.file);
             (
@@ -376,10 +374,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 )?;
                 report.history_witness = seed.history_witness.clone();
             }
-            host.bind_fork_seed(&seed, self.journal_limit(MAX_REQUEST_BYTES), io, task)
-                .await?;
+            crate::conversation::BoundedContentFuture::new(io, || async { host.bind_fork_seed(&seed, self.journal_limit(MAX_REQUEST_BYTES), io, task).await })?.await?;
         }
         self.verify_task_lease(false).await?;
-        self.commit_report(&journal, &report).await
+        crate::conversation::BoundedContentFuture::new(io, || async { self.commit_report(&journal, &report).await })?.await
+        })?
+        .await
     }
 }

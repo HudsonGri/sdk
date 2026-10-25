@@ -107,9 +107,7 @@ where
         &self,
         invocation @ CommandInvocation {
             admission,
-            fence,
             command: _,
-            reconciliation_only,
             io,
             ..
         }: CommandInvocation<'_>,
@@ -167,9 +165,9 @@ where
                         &tools,
                         Arc::clone(&context),
                         (
-                            fence,
+                            invocation.fence,
                             operation,
-                            reconciliation_only,
+                            invocation.reconciliation_only,
                             manifest_digest,
                             phase,
                         ),

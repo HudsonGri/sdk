@@ -365,10 +365,15 @@ impl WorkCounters {
         macro_rules! check {
             ($($field:ident),*) => {
                 $({
-                    #[cfg(test)]
-                    ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
-                    let (value, overflowed) = self.$field.overflowing_add(delta.$field);
-                    overflow |= overflowed;
+                    let value = if delta.$field == 0 {
+                        self.$field
+                    } else {
+                        #[cfg(test)]
+                        ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
+                        let (value, overflowed) = self.$field.overflowing_add(delta.$field);
+                        overflow |= overflowed;
+                        value
+                    };
                     within &= value <= budget.$field;
                 })*
             };
@@ -430,9 +435,11 @@ impl WorkCounters {
         macro_rules! add_in_place {
             ($($field:ident),*) => {
                 $({
-                    #[cfg(test)]
-                    ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
-                    self.$field = self.$field.wrapping_add(delta.$field);
+                    if delta.$field != 0 {
+                        #[cfg(test)]
+                        ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
+                        self.$field = self.$field.wrapping_add(delta.$field);
+                    }
                 })*
             };
         }

@@ -54,11 +54,15 @@ impl WindowLedger {
         let mut view = *limit;
         macro_rules! project {
             ($($field:ident),* $(,)?) => {$({
-                let external = work.$field.checked_sub(self.consumed.$field)
-                    .ok_or(WorkError::Overflow)?;
-                let available = add_bounded(limit.$field, external, limit.$field)?;
-                view.$field = available.checked_sub(self.held.$field)
-                    .ok_or(WorkError::Overflow)?;
+                // A counter with no external work and no held reservation
+                // sees its original limit exactly, including the unbounded sentinel.
+                if work.$field != self.consumed.$field || self.held.$field != 0 {
+                    let external = work.$field.checked_sub(self.consumed.$field)
+                        .ok_or(WorkError::Overflow)?;
+                    let available = add_bounded(limit.$field, external, limit.$field)?;
+                    view.$field = available.checked_sub(self.held.$field)
+                        .ok_or(WorkError::Overflow)?;
+                }
             })*};
         }
         crate::performance::additive_counters!(project);

@@ -121,3 +121,18 @@ fn unchanged_window_counters_require_no_addition() {
     assert_eq!(budget, limit);
     assert_eq!(WINDOW_ADDITIONS.with(std::cell::Cell::get), 0);
 }
+
+#[test]
+fn window_counters_without_external_work_require_no_addition() {
+    for value in [0, 1, u64::MAX] {
+        let consumed = crate::performance::work_budget(value, value);
+        let ledger = WindowLedger {
+            consumed,
+            held: WorkCounters::UNCHARGED,
+        };
+        let limit = crate::performance::work_budget(value, value);
+        WINDOW_ADDITIONS.with(|count| count.set(0));
+        assert_eq!(ledger.view(&limit, &consumed).unwrap(), limit);
+        assert_eq!(WINDOW_ADDITIONS.with(std::cell::Cell::get), 0);
+    }
+}
