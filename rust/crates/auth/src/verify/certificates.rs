@@ -4,10 +4,12 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// One owner's latest immutable certificate authentication. Every verification
-/// still checks all workload signatures, current trust, revocations and time.
+/// still authenticates changed workload bytes and checks current trust,
+/// revocations and time. Exact public signed ancestry shares bounded evidence.
 #[derive(Default)]
 pub struct CertificateVerifier {
     latest: Option<Arc<CertifiedRoots>>,
+    pub(super) workloads: signatures::WorkloadAuthentication,
 }
 
 pub(super) struct CertifiedRoots {
@@ -146,8 +148,8 @@ mod tests {
         mint(&owner, &trust, 101)?;
         assert_eq!(
             count() - before,
-            1,
-            "only the new block needs authentication"
+            0,
+            "the exact block and its public ancestry are already authenticated"
         );
         // Execute the former fresh-owner path as the physical-work control.
         let before = count();
@@ -234,6 +236,149 @@ mod tests {
                 revoked_block_ids: Default::default(),
             },
         )
+    }
+
+    #[test]
+    fn sibling_admissions_share_only_authenticated_public_ancestry() -> Result<(), VerifyError> {
+        let (certificates, trust) = fixture(1);
+        let signer =
+            CertifiedSigner::new(certificates.try_into()?, SigningKey::from_bytes(&[3; 32]))?;
+        let root = signer.mint(Vec::new(), SigningKey::from_bytes(&[4; 32]), &trust, 100)?;
+        let parent = root.attenuate(Vec::new(), &[5; 32])?;
+        let first = parent.attenuate(Vec::new(), &[6; 32])?.seal()?;
+        let second = parent.attenuate(Vec::new(), &[7; 32])?.seal()?;
+        let mut owner = CertificateVerifier::default();
+        owner.verify(&first.encode(), &trust, 100)?;
+        let count = crate::crypto::signature_verifications;
+        let before = count();
+        owner.verify(&second.encode(), &trust, 100)?;
+        assert_eq!(count() - before, 2, "new sibling block and sealing proof");
+        let before = count();
+        owner.verify(&second.encode(), &trust, 100)?;
+        assert_eq!(count() - before, 1, "the proof is checked on every use");
+        // Execute the former complete-block verification, retaining the same
+        // certificate owner so the control isolates workload ancestry alone.
+        owner.workloads = Default::default();
+        let before = count();
+        owner.verify(&first.encode(), &trust, 100)?;
+        assert_eq!(count() - before, 4, "all three blocks plus the seal");
+        owner.verify(&root.encode(), &trust, 100)?;
+        owner.verify(&second.encode(), &trust, 100)?;
+        Ok(())
+    }
+
+    #[test]
+    fn authenticated_ancestry_cannot_hide_a_forged_ancestor_behind_a_valid_tip()
+    -> Result<(), VerifyError> {
+        let (certificates, trust) = fixture(1);
+        let signer =
+            CertifiedSigner::new(certificates.try_into()?, SigningKey::from_bytes(&[3; 32]))?;
+        let root = signer.mint(Vec::new(), SigningKey::from_bytes(&[4; 32]), &trust, 100)?;
+        let child = root.attenuate(Vec::new(), &[5; 32])?;
+        let bytes = child.encode();
+        let mut owner = CertificateVerifier::default();
+        owner.verify(&bytes, &trust, 100)?;
+        for index in 0..child.block_ids().len() {
+            let mut forged = wire::decode(&bytes)?;
+            let block = forged.blocks.get_mut(index).ok_or(VerifyError::Malformed)?;
+            *block.signature.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
+            let wire::Proof::Secret(tip) = forged.proof else {
+                return Err(VerifyError::Malformed);
+            };
+            // The final private-key proof remains valid. A stale seal must
+            // not accidentally be the reason this forgery is refused.
+            assert!(
+                owner
+                    .verify(
+                        &wire::encode(&forged.blocks, 18, &tip, VERSION),
+                        &trust,
+                        100
+                    )
+                    .is_err(),
+                "ancestor signature was skipped behind a valid final tip"
+            );
+        }
+        owner.verify(&bytes, &trust, 100)?;
+        Ok(())
+    }
+
+    #[test]
+    fn authenticated_ancestry_rejects_changed_bytes_and_current_trust() -> Result<(), VerifyError> {
+        let (certificates, trust) = fixture(1);
+        let signer =
+            CertifiedSigner::new(certificates.try_into()?, SigningKey::from_bytes(&[3; 32]))?;
+        let root = signer.mint(Vec::new(), SigningKey::from_bytes(&[4; 32]), &trust, 100)?;
+        let child = root.attenuate(Vec::new(), &[5; 32])?.seal()?;
+        let bytes = child.encode();
+        let mut owner = CertificateVerifier::default();
+        owner.verify(&bytes, &trust, 100)?;
+        for index in 0..child.block_ids().len() {
+            for payload in [false, true] {
+                let mut forged = wire::decode(&bytes)?;
+                let block = forged.blocks.get_mut(index).ok_or(VerifyError::Malformed)?;
+                let value = if payload {
+                    &mut block.payload
+                } else {
+                    &mut block.signature
+                };
+                *value.last_mut().ok_or(VerifyError::Malformed)? ^= 1;
+                let wire::Proof::Sealed(proof) = forged.proof else {
+                    return Err(VerifyError::Malformed);
+                };
+                assert!(
+                    owner
+                        .verify(
+                            &wire::encode(&forged.blocks, 26, &proof, VERSION),
+                            &trust,
+                            100
+                        )
+                        .is_err()
+                );
+            }
+        }
+        let mut forged = wire::decode(&bytes)?;
+        let wire::Proof::Sealed(ref mut proof) = forged.proof else {
+            return Err(VerifyError::Malformed);
+        };
+        *proof.first_mut().ok_or(VerifyError::Malformed)? ^= 1;
+        assert!(
+            owner
+                .verify(
+                    &wire::encode(&forged.blocks, 26, proof, VERSION),
+                    &trust,
+                    100
+                )
+                .is_err()
+        );
+        for id in child.block_ids() {
+            let mut revoked = trust.clone();
+            revoked.revoked_block_ids.insert(*id);
+            assert!(owner.verify(&bytes, &revoked, 100).is_err());
+        }
+        let mut expanded = trust.clone();
+        expanded
+            .environment_keys
+            .push(SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            owner.verify(&bytes, &expanded, 100).err(),
+            Some(VerifyError::RepeatedKey)
+        );
+        for change in 0..4 {
+            let mut changed = trust.clone();
+            match change {
+                0 => changed.environment_keys.clear(),
+                1 => changed.issuer_keys.clear(),
+                2 => changed.minimum_key_epoch = 2,
+                _ => {
+                    changed.revoked_key_ids.insert("key".into());
+                }
+            }
+            assert!(owner.verify(&bytes, &changed, 100).is_err());
+        }
+        assert!(owner.verify(&bytes, &trust, 0).is_err());
+        assert!(owner.verify(&bytes, &trust, 1000).is_err());
+        owner.verify(&bytes, &trust, 100)?;
+        Ok(())
     }
 
     #[test]

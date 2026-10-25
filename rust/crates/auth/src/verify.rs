@@ -9,6 +9,7 @@ mod certificates;
 mod current;
 mod effective;
 pub use certificates::CertificateVerifier;
+mod signatures;
 mod signer;
 mod wire;
 pub use current::{TrustEvidence, TrustEvidenceStorage};
@@ -156,11 +157,23 @@ fn verify_certified(
     let mut signer = public_key(&leaf.public_key)?;
     let mut previous = [0; 32];
     let mut ids = Vec::with_capacity(wire.len());
-    for (index, (block, signed)) in wire.iter().zip(&envelope.blocks).enumerate() {
+    // Each id commits to its signing transcript, signature, and predecessor.
+    // Block zero includes the exact certificates and their leaf key. Matching
+    // an authenticated endpoint therefore proves every signed ancestor, while
+    // retaining neither input-sized storage nor a workload's append secret.
+    for (index, signed) in envelope.blocks.iter().enumerate() {
         block_message(&mut message, index as u64, &previous, &signed.payload);
-        verify_signature(&signer, &message, &signed.signature)?;
         previous = block_id(&message, &signed.signature);
         ids.push(previous);
+    }
+    let authenticated_through = certification.workloads.authenticated_through(&ids);
+    previous = [0; 32];
+    for (index, (block, signed)) in wire.iter().zip(&envelope.blocks).enumerate() {
+        if index >= authenticated_through {
+            block_message(&mut message, index as u64, &previous, &signed.payload);
+            verify_signature(&signer, &message, &signed.signature)?;
+        }
+        previous = *ids.get(index).ok_or(VerifyError::Malformed)?;
         signer = public_key(&block.next_public_key)?;
         if !seen.insert(signer.to_bytes()) {
             return Err(VerifyError::RepeatedKey);
@@ -219,6 +232,7 @@ fn verify_certified(
     };
     verified.evaluate();
     verified.check(trust, now_unix_seconds)?;
+    certification.workloads.retain(&verified.ids);
     Ok(verified)
 }
 

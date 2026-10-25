@@ -32,9 +32,14 @@ fn alternating_live_scopes_share_certificate_authentication_and_recheck_authorit
     );
     result?;
     let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
-    assert_eq!(signatures.len(), wire.blocks.len() * scopes.len());
+    assert_eq!(wire.blocks.len(), 2, "root and one attenuated child");
+    assert_eq!(
+        signatures.len(),
+        scopes.len(),
+        "only each changed child block"
+    );
     // Restoring a fresh certificate owner for each scope performs the old
-    // certificate signatures in addition to the mandatory workload signatures.
+    // certificate and ancestor signatures in addition to each changed child.
     let (result, repeated) = acyclic_test_support::differential::observe(
         || (),
         |()| -> Result<()> {
