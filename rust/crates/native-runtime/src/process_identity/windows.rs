@@ -38,6 +38,12 @@ pub fn current_process_started() -> io::Result<u64> {
 pub struct ProcessProbe(OwnedHandle);
 
 impl ProcessProbe {
+    pub(crate) fn from_process(process: &impl AsRawHandle) -> io::Result<Self> {
+        // SAFETY: the caller retains the borrowed process through duplication.
+        let process = unsafe { BorrowedHandle::borrow_raw(process.as_raw_handle()) };
+        Ok(Self(process.try_clone_to_owned()?))
+    }
+
     /// `None` requires OS proof that this nonzero PID does not exist.
     pub fn open(pid: u32) -> io::Result<Option<Self>> {
         if pid == 0 {

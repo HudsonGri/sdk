@@ -31,8 +31,15 @@ def admitted_host(source, executable, receipt):
         raise ValueError("E2E_PROCESS_HOST must name an absolute cross-built executable")
     if receipt["exit"] != 0 or receipt["executable_sha256"] != digest(executable):
         raise ValueError("process host executable differs from its successful build receipt")
-    if receipt["source_sha256"] != digest(source / "scripts/graphcoder-e2e/owned-process.cs"):
-        raise ValueError("process host needs a fresh bb2 build for this source")
+    sources = receipt["source"]
+    entry = "rust/crates/native-runtime/src/bin/acyclic-process-host.rs"
+    if receipt["target"] != "x86_64-pc-windows-msvc" or entry not in sources:
+        raise ValueError("process host needs the shared native-runtime MSVC build receipt")
+    source = Path(source).resolve()
+    for name, expected in sources.items():
+        path = source / name
+        if not path.resolve().is_relative_to(source) or path.is_symlink() or digest(path) != expected:
+            raise ValueError("process host needs a fresh bb2 build for this source: " + name)
     return executable.resolve()
 
 

@@ -11,6 +11,12 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[[bin]]
+name = "acyclic-process-host"
+path = "src/bin/acyclic-process-host.rs"
+test = false
+bench = false
+
 [features]
 test-support = ["dep:blake3", "tokio/macros", "tokio/time", "tokio/test-util"]
 

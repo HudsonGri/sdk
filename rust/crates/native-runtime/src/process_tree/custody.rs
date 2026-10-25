@@ -140,9 +140,12 @@ impl Record {
             }
         }
         #[cfg(windows)]
-        match fs::remove_file(&self.path) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
+        {
+            windows::await_record(self)?;
+            match fs::remove_file(&self.path) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            }
         }
     }
 }
@@ -406,6 +409,18 @@ mod windows {
     /// Separates a record's tree from the custodian it names.
     const CUSTODIAN: &str = "-custodian-";
 
+    pub(super) fn await_record(record: &Record) -> io::Result<()> {
+        let name = record
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if let Some((_, identity)) = name.split_once(CUSTODIAN) {
+            super::super::custodian::await_custodian(identity)?;
+        }
+        Ok(())
+    }
+
     impl Record {
         /// Names the tree's custodian in the record, before any member
         /// starts. The rename is atomic: a fence sees the record with the
@@ -439,11 +454,16 @@ mod windows {
             // A member leaves the Job's list before its process has fully
             // exited; the custodian exits only once each has, so its exit
             // ends the fence.
-            let fenced = terminate_and_await(job)
-                .and_then(|()| custodian.map_or(Ok(()), super::super::custodian::await_custodian));
+            let fenced = terminate_and_await(job);
             // SAFETY: the Job handle opened above.
             unsafe { CloseHandle(job) };
             fenced?;
+        }
+        // A missing Job proves that the custodian closed it after member
+        // retirement, but its own process and retained pipe handles can still
+        // be live. The recorded identity is the same barrier in either case.
+        if let Some(custodian) = custodian {
+            super::super::custodian::await_custodian(custodian)?;
         }
         match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
