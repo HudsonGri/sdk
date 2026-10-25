@@ -56,7 +56,9 @@ fn catalog(provider: &ScriptedModelProvider, index: usize) -> TestResult<Vec<Ski
     let request = requests.get(index).ok_or("missing provider request")?;
     for message in &request.messages {
         if let ModelContent::Text(text) = &message.content
-            && let Ok(skills) = serde_json::from_str::<Vec<SkillMetadata>>(text)
+            && let Ok(catalog) = serde_json::from_str::<serde_json::Value>(text)
+            && let Some(skills) = catalog.get("skills")
+            && let Ok(skills) = serde_json::from_value::<Vec<SkillMetadata>>(skills.clone())
             && !skills.is_empty()
         {
             return Ok(skills);

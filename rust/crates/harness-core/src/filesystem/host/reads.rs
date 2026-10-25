@@ -112,36 +112,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             feature = "native-execution",
             not(target_arch = "wasm32")
         ))]
-        if let Some(sources) = self.skill_sources(volume)?
-            && let Some(source_generation) = expected_generation
-            && sources.matches(volume, source_generation, path)
+        let resolved_skill = if let Some(sources) = self.skill_sources(volume)?
+            && sources.owns_path(volume, path)
         {
-            let generation = if let Some(retained) = sources.materialized(source_generation)? {
-                retained
-            } else {
-                self.materialize_skill(
-                    &sources,
-                    SkillRead {
-                        volume,
-                        grant,
-                        path,
-                        source_generation,
-                        maximum_bytes,
-                        access: crate::conversation::ContentAccess { ceiling, io },
-                    },
-                )
-                .await?
-            };
-            return Box::pin(self.read_private_path_indexed(
-                volume,
-                grant,
-                path,
-                Some(&generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess { ceiling, io },
-            ))
-            .await;
-        }
+            let source_generation = expected_generation
+                .filter(|generation| sources.matches(volume, generation, path))
+                .ok_or(Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "private skill source does not match its retained identity",
+                })?;
+            Some(
+                if let Some(retained) = sources.materialized(source_generation)? {
+                    retained
+                } else {
+                    self.materialize_skill(
+                        &sources,
+                        SkillRead {
+                            volume,
+                            grant,
+                            path,
+                            source_generation,
+                            maximum_bytes,
+                            access: crate::conversation::ContentAccess { ceiling, io },
+                        },
+                    )
+                    .await?
+                },
+            )
+        } else {
+            None
+        };
+        #[cfg(all(
+            feature = "filesystem-local",
+            feature = "native-execution",
+            not(target_arch = "wasm32")
+        ))]
+        let expected_generation = resolved_skill.as_ref().or(expected_generation);
 
         validate_private_read_path(path, io)?;
         let unmeasured;
@@ -407,7 +413,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let bytes = sources
                 .read(volume, source_generation, path, maximum_bytes, original_io)?
                 .await?
-                .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
+                .ok_or(Error::ToolRejected {
+                    code: crate::wire::ErrorCode::NotFound,
+                    reason: "retained skill source is absent",
+                })?;
             super::super::access::require_current(&selected, &view.0, io).await?;
             let (directory, _) = path
                 .rsplit_once('/')

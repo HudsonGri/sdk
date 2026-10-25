@@ -2,6 +2,138 @@ use super::*;
 use crate::{Capabilities, OperationId, conversation::Limits};
 
 #[test]
+fn lazy_source_read_schema_and_decoder_reject_ambiguous_selectors() -> Result<()> {
+    let file = crate::tool::tests::file(b"exact")?;
+    let (generation, _) =
+        crate::resources::GenerationRef::new(file.volume().provider(), b"generation", None, None)?;
+    let source = crate::context::PinnedContextPath {
+        root: crate::context::ContextRoot {
+            volume: file.volume().clone(),
+            directory: String::new(),
+        },
+        generation,
+        path: file.path().into(),
+    };
+    let schema =
+        crate::executor::compile_json_schema(&read()?.definition.input_schema, "read", &mut None)?;
+    for value in [json!({"file":file}), json!({"source":source})] {
+        assert!(schema.is_valid(&value));
+        assert!(serde_json::from_value::<ReadInput>(value).is_ok());
+    }
+    for value in [
+        json!({"file":file,"source":source}),
+        json!({"source":source,"range":{"start":0,"end":1}}),
+        json!({"source":source,"path":"other"}),
+        json!({}),
+    ] {
+        assert!(!schema.is_valid(&value));
+        assert!(serde_json::from_value::<ReadInput>(value).is_err());
+    }
+    let mut wrong_kind = json!({"source":source});
+    wrong_kind["source"]["generation"]["kind"] = json!("workspace");
+    assert!(!schema.is_valid(&wrong_kind));
+    assert!(serde_json::from_value::<ReadInput>(wrong_kind).is_err());
+    let mut unknown_field = json!({"source":source});
+    unknown_field["source"]["generation"]["extra"] = json!(true);
+    assert!(!schema.is_valid(&unknown_field));
+    assert!(serde_json::from_value::<ReadInput>(unknown_field).is_err());
+    Ok(())
+}
+
+#[test]
+fn lazy_source_read_projection_rejects_substitution() -> Result<()> {
+    let file = crate::tool::tests::file(b"exact")?;
+    let source = crate::context::PinnedContextPath {
+        root: crate::context::ContextRoot {
+            volume: file.volume().clone(),
+            directory: String::new(),
+        },
+        generation: crate::resources::GenerationRef::new(
+            file.volume().provider(),
+            b"generation",
+            None,
+            None,
+        )?
+        .0,
+        path: file.path().into(),
+    };
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "source".into(),
+        name: "read".into(),
+        arguments: json!({"source":source}),
+    };
+    for mode in [
+        schema::ProjectionMode::Full,
+        schema::ProjectionMode::Reference,
+    ] {
+        for mutation in 0..6 {
+            let mut value = json!({"file":file,"text":"exact"});
+            match mutation {
+                1 => value["file"]["volume"]["id"] = json!("another-volume"),
+                2 => value["file"]["path"] = json!("another-path"),
+                3 => value["text"] = json!("wrong"),
+                4 => value = json!("exact"),
+                5 => value = Value::Null,
+                _ => {}
+            }
+            let result =
+                FileProjection::Read(mode).project(&invocation, &ToolResult { value }, None);
+            assert_eq!(result.is_ok(), mutation == 0);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn lazy_source_read_requires_original_directory_authority() -> Result<()> {
+    let file = crate::tool::tests::file(b"exact")?;
+    let (generation, _) =
+        crate::resources::GenerationRef::new(file.volume().provider(), b"generation", None, None)?;
+    let source = crate::context::PinnedContextPath {
+        root: crate::context::ContextRoot {
+            volume: file.volume().clone(),
+            directory: String::new(),
+        },
+        generation,
+        path: file.path().into(),
+    };
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "source".into(),
+        name: "read".into(),
+        arguments: json!({"source":source}),
+    };
+    let narrow = RuntimeScope::new(
+        Capabilities::new([file.read_capability(&mut None)?]),
+        Limits::default(),
+    )?;
+    assert!(
+        FileTool::Read
+            .preflight(&narrow, &invocation, None)
+            .is_err()
+    );
+    let granted = RuntimeScope::new(
+        Capabilities::new([file.volume().directory_read_capability("", &mut None)?]),
+        Limits::default(),
+    )?;
+    assert!(
+        FileTool::Read
+            .preflight(&granted, &invocation, None)?
+            .0
+            .is_none()
+    );
+    // A source declaration never grants execution without its admitted context.
+    assert!(
+        read()?
+            .executor
+            .authorize(Some(&granted), None, &invocation, None)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
     let file = crate::tool::tests::file(b"exact")?;
     let missing = RuntimeScope::new(Capabilities::default(), Limits::default())?;

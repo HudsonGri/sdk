@@ -1,6 +1,29 @@
 use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn absent_catalog_consumes_no_render_allowance(render_bytes in 1_u64..512) {
+            let limits = crate::conversation::Limits { render_bytes, ..Default::default() };
+            let messages = DiscoveredContext::default().messages(
+                limits, None,
+            );
+            // Discovery has exactly the existing empty-context envelope cost;
+            // an absent catalog cannot consume another render allowance.
+            let empty = super::super::validate_source_messages(&[], limits, None);
+            prop_assert_eq!(messages.is_ok(), empty.is_ok());
+            if empty.is_ok() {
+                prop_assert!(messages?.is_empty());
+            }
+        }
+    }
+}
+
 /// Immutable discovery revision.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -73,9 +96,17 @@ impl DiscoveredContext {
                 "discovered context exceeds message bound",
             ));
         }
-        let skill_bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
-        })?;
+        let skill_bytes = if self.skills.is_empty() {
+            0
+        } else {
+            crate::executor::with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(
+                    &super::skills::SkillCatalogMessage::new(&self.skills),
+                    limits.render_bytes,
+                    work,
+                )
+            })?
+        };
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
                 limits.validate_file(file, work)?;
@@ -149,7 +180,7 @@ impl DiscoveredContext {
             messages.push(ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(
-                    serde_json::to_string(&self.skills)
+                    serde_json::to_string(&super::skills::SkillCatalogMessage::new(&self.skills))
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 ),
             });

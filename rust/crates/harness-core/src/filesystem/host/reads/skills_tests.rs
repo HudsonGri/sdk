@@ -133,6 +133,36 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn lazy_skill_selections_never_fall_through_to_filesystem_generations() -> Result<()> {
+    let fixture = fixture().await?;
+    let source = &fixture.skills[0].source;
+    for (path, generation) in [
+        ("inputs/skills/unretained/SKILL.md".to_owned(), Some(source.generation.clone())),
+        (source.path.clone(), None),
+        ("inputs/skills/0000000000000000000000000000000000000000000000000000000000000000/SKILL.md".to_owned(),
+            Some(crate::resources::GenerationRef::new(fixture.volume.provider(), &[0;32], None, None)?.0)),
+    ] {
+        let error = fixture.host.read_private_path(
+            &fixture.volume, &fixture.grant, &path, generation.as_ref(), 4096,
+            crate::conversation::ContentAccess::default(),
+        ).await.unwrap_err();
+        assert!(matches!(error, Error::ToolRejected { .. }), "{error:?}");
+        assert!(!error.is_native_failure());
+        assert!(!error.leaves_effect_uncertain());
+        assert!(fixture.sources.materialized(&source.generation)?.is_none());
+    }
+    // Rejection does not create a body, poison the source owner, or change the
+    // selected immutable identity. Its original authenticated read still works.
+    assert!(
+        fixture
+            .read(&fixture.host)
+            .await?
+            .ends_with(b"first body\n")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> Result<()> {
     let fixture = fixture().await?;
     let original = fixture.read(&fixture.host).await?;

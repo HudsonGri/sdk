@@ -1,7 +1,7 @@
 use super::*;
 
 /// A host-declared directory boundary. A declaration conveys no authority.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextRoot {
@@ -230,7 +230,7 @@ impl ContextDiscoveryLimits {
 }
 
 /// Immutable path selected by discovery; resolving it never follows a newer head.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PinnedContextPath {
@@ -295,30 +295,18 @@ impl PinnedContextPath {
         maximum_bytes: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate(&mut None)?;
-        if maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
-            return Err(Error::Invalid(
-                "context byte bound exceeds protocol precision".into(),
-            ));
-        }
-        let (file, bytes, _hold) = reader
-            .read_private_path(
+        let (file, bytes, _hold) = crate::conversation::verified_private_path(
+            reader,
+            (
                 &self.root.volume,
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
-        if file.volume() != &self.root.volume
-            || file.path() != self.path
-            || bytes.len() as u64 > maximum_bytes
-        {
-            return Err(Error::Storage(
-                "pinned path reader returned another file".into(),
-            ));
-        }
-        file.descriptor().verify(&bytes, &mut None)?;
+            ),
+            maximum_bytes,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
         Ok((file, bytes))
     }
 }

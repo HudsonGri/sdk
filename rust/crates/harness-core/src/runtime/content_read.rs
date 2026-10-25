@@ -402,34 +402,118 @@ impl TaskContext {
         path: &str,
         expected_generation: Option<&GenerationRef>,
     ) -> Result<(FileRef, OwnedBytes)> {
-        self.require_private_directory(volume, granted_prefix, path)?;
-        if path.is_empty() {
-            return Err(Error::Invalid("private file path is empty".into()));
+        self.read_bound_private_path(
+            (volume, granted_prefix, path, expected_generation),
+            &self.scope,
+            self.scope.limits.file_bytes,
+            None,
+        )
+        .await
+    }
+
+    /// Resolves lazy context through the task's authenticated reader and original scope.
+    pub(crate) async fn read_pinned_source(
+        &self,
+        source: &crate::context::PinnedContextPath,
+        scope: &RuntimeScope,
+        maximum_bytes: u64,
+        io: Option<&ContentIo>,
+    ) -> Result<(FileRef, OwnedBytes)> {
+        crate::executor::with_history_io(io, |work| source.validate(work))?;
+        self.read_bound_private_path(
+            (
+                &source.root.volume,
+                &source.root.directory,
+                &source.path,
+                Some(&source.generation),
+            ),
+            scope,
+            maximum_bytes,
+            io,
+        )
+        .await
+    }
+
+    async fn read_bound_private_path(
+        &self,
+        source: (&VolumeRef, &str, &str, Option<&GenerationRef>),
+        scope: &RuntimeScope,
+        maximum_bytes: u64,
+        io: Option<&ContentIo>,
+    ) -> Result<(FileRef, OwnedBytes)> {
+        let (volume, granted_prefix, path, expected_generation) = source;
+        #[cfg(feature = "filesystem")]
+        let original = if io.is_none() {
+            self.preparation_io()?
+        } else {
+            None
+        };
+        #[cfg(feature = "filesystem")]
+        let io = io.or(original.as_ref());
+        crate::executor::with_history_io(io, |work| {
+            volume.validate(work)?;
+            crate::conversation::validate_content_path(path, work)?;
+            if !granted_prefix.is_empty() {
+                crate::conversation::validate_content_path(granted_prefix, work)?;
+            }
+            if crate::conversation::is_internal_path(path)
+                || (!granted_prefix.is_empty()
+                    && !path
+                        .strip_prefix(granted_prefix)
+                        .is_some_and(|tail| tail.starts_with('/')))
+            {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "private path is outside its declared directory",
+                ));
+            }
+            if !scope.grants().is_subset_of(self.scope.grants())
+                || !crate::core::directory_read_granted_with_work(
+                    scope.grants(),
+                    volume,
+                    granted_prefix,
+                    work,
+                )?
+            {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "task scope cannot read this private source",
+                ));
+            }
+            if maximum_bytes == 0
+                || maximum_bytes > scope.limits.file_bytes
+                || path.len() > scope.limits.path_bytes
+            {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Invalid,
+                    "private source exceeds original task bounds",
+                ));
+            }
+            Ok(())
+        })?;
+        let content = self.content_binding(Some(volume)).ok_or_else(|| {
+            content_error(io, ErrorCode::Unsupported, "content reader is not bound")
+        })?;
+        let (file, bytes, hold) = crate::conversation::verified_private_path(
+            content.reader.as_ref(),
+            (volume, granted_prefix, path, expected_generation),
+            maximum_bytes,
+            crate::conversation::ContentAccess {
+                ceiling: Some(scope.grants()),
+                io,
+            },
+        )
+        .await?;
+        crate::executor::with_history_io(io, |work| scope.limits.validate_file(&file, work))?;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
         }
-        let content = self
-            .content_binding(Some(volume))
-            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-        let (file, bytes, _hold) = content
-            .reader
-            .read_private_path(
-                volume,
-                granted_prefix,
-                path,
-                expected_generation,
-                self.scope.limits.file_bytes,
-                crate::conversation::ContentAccess {
-                    ceiling: Some(self.scope.grants()),
-                    io: None,
-                },
-            )?
-            .await?;
-        self.scope.limits.validate_file(&file, &mut None)?;
-        if file.volume() != volume || file.path() != path {
-            return Err(Error::Conflict(
-                "private path provider returned another file".into(),
-            ));
-        }
-        file.descriptor().verify(&bytes, &mut None)?;
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
         Ok((file, bytes))
     }
 

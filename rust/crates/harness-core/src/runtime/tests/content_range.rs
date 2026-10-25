@@ -31,6 +31,16 @@ proptest! {
             let file = file_fixture("secrets/key", "text/plain")?;
             let result = context.read_bound_range(&file, acyclic_fs::ByteRange { offset: 0, length: 1 }, &scope, &wide, None).await;
             assert_eq!(result.unwrap_err().code(), crate::wire::ErrorCode::Unauthorized);
+            let source = crate::context::PinnedContextPath {
+                root: crate::context::ContextRoot {
+                    volume: file.volume().clone(), directory: String::new(),
+                },
+                generation: GenerationRef::new(file.volume().provider(), b"generation", None, None)?.0,
+                path: file.path().into(),
+            };
+            let replacement = RuntimeScope::new(wide.clone(), Limits::default())?;
+            let result = context.read_pinned_source(&source, &replacement, 4096, None).await;
+            assert_eq!(result.unwrap_err().code(), crate::wire::ErrorCode::Unauthorized);
             // This was the complete former guard: the backing reader received
             // the replacement grants even though they widened the task scope.
             assert!(read_granted_with_work(&wide, &file, &mut None)?);

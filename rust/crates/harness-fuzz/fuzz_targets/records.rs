@@ -56,7 +56,8 @@ fuzz_target!(|input: &[u8]| {
     }
     round_trip::<owner_record::Owner>(input);
     round_trip::<acyclic_fs::GitCompatState>(input);
-    round_trip::<ReadFileInput>(input);
+    round_trip::<ReadInput>(input);
+    round_trip::<ReadSourceResult>(input);
     round_trip::<WriteFileInput>(input);
     round_trip::<EditFileInput>(input);
     round_trip::<acyclic_harness::Outcome<serde_json::Value>>(input);
