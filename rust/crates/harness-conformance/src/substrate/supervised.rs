@@ -21,9 +21,12 @@ impl acyclic_stream::runtime::Executor for HostExecutor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
-            tokio::spawn(async move {
-                let _ = Abortable::new(future, registration).await;
-            });
+            acyclic_stream::runtime::Executor::spawn(
+                &acyclic_stream::runtime::PlatformExecutor,
+                Box::pin(async move {
+                    let _ = Abortable::new(future, registration).await;
+                }),
+            );
         }
     }
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
@@ -127,5 +130,44 @@ impl<P: StreamProvider> ActorRuntime for Supervised<P> {
         event: Event,
     ) -> BoxProviderFuture<'_, Result<Snapshot>> {
         self.runtime.cancel(placement, event)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_native_runtime::testing::{CapturedClock, Schedule};
+    use acyclic_stream::runtime::Executor as _;
+
+    #[tokio::test]
+    async fn subscriptions_preserve_the_original_native_context() -> TestResult {
+        let (schedule, mut events) = Schedule::seeded(71);
+        schedule.set_unix_millis(100);
+        let (_abort, registration) = AbortHandle::new_pair();
+        let executor = HostExecutor(Mutex::new(Some(registration)));
+        let operation = schedule.scope(async {
+            let (sent, received) = futures::channel::oneshot::channel();
+            executor.spawn(Box::pin(async move {
+                let clock = CapturedClock::capture().map(|clock| clock.unix_millis());
+                let _ = sent.send(clock);
+            }));
+            let clock = received.await?;
+            schedule.drained().await;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(clock)
+        });
+        tokio::pin!(operation);
+        let clock = loop {
+            tokio::select! {
+                biased;
+                event = events.recv() => event.ok_or("lost subscription schedule")?.release(),
+                result = &mut operation => break result?,
+            }
+        };
+        assert_eq!(
+            clock,
+            Some(100),
+            "subscription escaped its owning native context"
+        );
+        Ok(())
     }
 }
