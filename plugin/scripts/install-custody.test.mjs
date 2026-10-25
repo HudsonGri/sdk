@@ -1,25 +1,15 @@
 // Public bootstrap custody regressions use real private files created by the
 // native API and the admitted executable; no fabricated OS output or PID probe.
 import assert from "node:assert/strict";
-import { linkSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { linkSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { Processes } from "../../scripts/graphcoder-e2e/process.mjs";
-import { environment } from "../../scripts/graphcoder-e2e/scratch.mjs";
 import { fixture, digest, packageVersion, target } from "./install-fixture.mjs";
 
-function profile(root) {
-  const inherited = Object.fromEntries(["PATH", "SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]
-    .filter(key => process.env[key]).map(key => [key, process.env[key]]));
-  return { ...environment(join(root, "profile"), inherited), NODE_ENV: "test" };
-}
-
 test("installer retains its stable lock inode across owner exit and recovery", async () => {
-  const value = fixture(), processes = new Processes();
+  const value = fixture();
   try {
-    const env = profile(value.root);
-    const run = extra => processes.runOwned(process.execPath, [join(value.bin, "install.js")],
-      { cwd: value.root, env: { ...env, ...extra } });
+    const run = extra => value.install(undefined, undefined, extra);
     const interrupted = await run({ ACYCLIC_INSTALL_TEST_CRASH: "staged" });
     assert.equal(interrupted.code, 86, interrupted.stderr);
     const lock = join(value.bin, "install.lock");
@@ -30,15 +20,13 @@ test("installer retains its stable lock inode across owner exit and recovery", a
     assert.equal(digest(value.installed), digest(value.source));
     assert.equal(statSync(lock).ino, before.ino, "recovery must never replace the kernel lock inode");
   } finally {
-    await processes.close();
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
 
 test("installer refuses an aliased lock without touching its other name", async () => {
-  const value = fixture(), processes = new Processes();
+  const value = fixture();
   try {
-    const env = profile(value.root);
     // The public API creates the actual OS-private inode, including its Windows
     // DACL. This preparation is independent of the JavaScript under test.
     const input = JSON.stringify({ source: value.source, directory: value.bin,
@@ -50,8 +38,7 @@ test("installer refuses an aliased lock without touching its other name", async 
       const result=spawnSync(executable,["__install-package"],{input,stdio:["pipe","inherit","inherit"],windowsHide:true});
       if(result.error||result.status!==0)throw new Error("step=feed native fixture input: "+(result.error?.message??"exit "+result.status)+"; recovery argv: "+JSON.stringify([process.execPath,...process.execArgv,...process.argv.slice(1)]));
       process.exitCode=result.status??1;`;
-    const prepared = await processes.runOwned(process.execPath, ["-e", feed, value.source, input],
-      { cwd: value.root, env });
+    const prepared = await value.run(process.execPath, ["-e", feed, value.source, input]);
     assert.equal(prepared.code, 0, prepared.stderr);
     const lock = join(value.bin, "install.lock"), alias = join(value.root, "aliased-lock");
     linkSync(lock, alias);
@@ -59,14 +46,12 @@ test("installer refuses an aliased lock without touching its other name", async 
     // the kernel-owned guard must refuse the alias regardless of its age.
     utimesSync(lock, 0, 0);
     const before = readFileSync(alias);
-    const refused = await processes.runOwned(process.execPath, [join(value.bin, "install.js")],
-      { cwd: value.root, env });
+    const refused = await value.install();
     assert.notEqual(refused.code, 0, "a hard-linked lock cannot establish exclusive namespace ownership");
     assert.match(refused.stderr, /step=publish native package/);
     assert.deepEqual(readFileSync(alias), before);
     assert.equal(statSync(alias).nlink, 2);
   } finally {
-    await processes.close();
-    rmSync(value.root, { recursive: true, force: true });
+    await value.close();
   }
 });
