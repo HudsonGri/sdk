@@ -567,20 +567,23 @@ async fn selected_approval_refuses_an_ordinary_only_verifier() -> TestResult {
         "original creator",
     )?;
     let digest = approval.digest(&fixture.work)?;
-    assert!(matches!(
-        approval
-            .authorize(
-                &OrdinaryOnly,
-                crate::InteractionId::new(),
-                &digest,
-                &fixture.work
-            )
-            .await,
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "approval verifier requires original native work support",
-        })
-    ), "selected approval fell back to ordinary verification");
+    assert!(
+        matches!(
+            approval
+                .authorize(
+                    &OrdinaryOnly,
+                    crate::InteractionId::new(),
+                    &digest,
+                    &fixture.work
+                )
+                .await,
+            Err(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "approval verifier requires original native work support",
+            })
+        ),
+        "selected approval fell back to ordinary verification"
+    );
     assert!(!fixture.root.join("note").exists());
     Ok(())
 }

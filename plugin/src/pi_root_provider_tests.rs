@@ -452,9 +452,11 @@ impl acyclic_harness::tool::ToolApprovalVerifier for PublicationDecision {
         _: acyclic_harness::OperationId,
         _: [u8; 32],
     ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<()>> {
-        Box::pin(std::future::ready(Err(acyclic_harness::Error::Unsupported(
-            "selected approval requires original native work".into(),
-        ))))
+        Box::pin(std::future::ready(Err(
+            acyclic_harness::Error::Unsupported(
+                "selected approval requires original native work".into(),
+            ),
+        )))
     }
     fn verify_with_native_work<'a>(
         &'a self,
