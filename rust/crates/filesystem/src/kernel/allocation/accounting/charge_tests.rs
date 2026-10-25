@@ -1,4 +1,4 @@
-use super::tests::{amount, counters, status};
+use super::tests::{amount, counters};
 use super::*;
 use acyclic_test_support::{AllocationInfo, measure};
 use proptest::prelude::*;
@@ -61,6 +61,7 @@ proptest! {
         bounded in any::<bool>(), depth in 0_u8..3, invocation in any::<bool>(),
         recheck in any::<bool>(), stop_at in 0_usize..12, failure in 0_u8..6, scalar in any::<bool>(),
         resource_limits in prop::array::uniform2(prop::array::uniform3(amount(64))),
+        allocation in any::<bool>(), bytes in amount(256), operations in amount(8),
     ) {
         let root_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
         let caller_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
@@ -108,14 +109,21 @@ proptest! {
                 }
             }
             let (old, old_heap) = measured(|| KernelAccounting::native(&work[0], &caller_cancel[0]).check()
-                .and_then(|()| work[0].charge(delta).map_err(Into::into)));
+                .and_then(|()| {
+                    if allocation {
+                        work[0].claim(bytes, operations, WorkCounters::UNCHARGED)
+                            .map(Some).map_err(Into::into)
+                    } else { work[0].charge(delta).map(|()| None).map_err(Into::into) }
+                }));
             let (new, new_heap) = measured(|| {
                 let mut accounting = KernelAccounting::native(&work[1], &caller_cancel[1]);
-                if scalar { accounting.charge_items(delta.items_examined) } else { accounting.charge(delta) }
+                if allocation { accounting.claim_owned(bytes, operations).map(Some) }
+                else { (if scalar { accounting.charge_items(delta.items_examined) } else { accounting.charge(delta) }).map(|()| None) }
             });
             prop_assert_eq!(no_heap_work(old_heap), Ok(()));
             prop_assert_eq!(no_heap_work(new_heap), Ok(()));
-            prop_assert_eq!(status(new), status(old));
+            prop_assert_eq!(new.as_ref().map(|_| ()).map_err(|e| format!("{e:?}")),
+                old.as_ref().map(|_| ()).map_err(|e| format!("{e:?}")));
             prop_assert_eq!(roots[1].receipt(), roots[0].receipt());
             prop_assert_eq!(roots[1].live_allocation_bytes(), roots[0].live_allocation_bytes());
         }
@@ -233,4 +241,27 @@ fn each_kernel_charge_visits_the_original_leaf_once() {
     });
     assert!(result.is_err());
     exactly_one(locks).unwrap();
+}
+
+#[test]
+fn each_kernel_claim_visits_the_original_leaf_once() {
+    let cancellation = crate::CancellationToken::new();
+    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    for depth in 0..3 {
+        for invocation in [false, true] {
+            let work = scope(&root, &vec![WorkBudget::UNBOUNDED; depth], invocation);
+            let mut accounting = KernelAccounting::native(&work, &cancellation);
+            let (claim, locks) = root.state.count_locks(|| accounting.claim_owned(17, 1));
+            let claim = claim.unwrap();
+            exactly_one(locks).unwrap();
+            drop(claim);
+            let (claim, locks) = root.state.count_locks(|| {
+                accounting.check()?;
+                accounting.claim_owned(17, 1)
+            });
+            let claim = claim.unwrap();
+            assert!(exactly_one(locks).is_err());
+            drop(claim);
+        }
+    }
 }

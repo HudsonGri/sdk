@@ -99,10 +99,10 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
         );
         assert_eq!(receipt.peak_allocation_bytes, before.peak_allocation_bytes);
         let state = original.state.lock();
-        assert!(state.native_resource.is_none());
-        assert!(state.native_invocation.is_none());
-        assert!(state.capture_custody.is_none());
-        assert!(!state.recheck_items);
+        assert!(state.native_scope.native_resource.is_none());
+        assert!(state.native_scope.native_invocation.is_none());
+        assert!(state.native_scope.capture_custody.is_none());
+        assert!(!state.native_scope.recheck_items);
     });
     eprintln!(
         "node hash model context={context} shadow={shadow}: {:?}",

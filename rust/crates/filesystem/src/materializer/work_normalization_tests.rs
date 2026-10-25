@@ -134,7 +134,7 @@ fn comparison_detects_bypassing_the_recheck_projection() {
         .state(|state| {
             // Broken variant: ignore the installed recheck policy in the ledger.
             state.scope(
-                |work| &mut work.recheck_items,
+                |work| &mut work.native_scope.recheck_items,
                 false,
                 |state| state.charge(delta),
             )

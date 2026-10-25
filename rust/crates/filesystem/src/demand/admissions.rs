@@ -348,7 +348,7 @@ impl NativeDemandReadMeter {
         }
         let mut work = self.lock();
         work.scope(
-            |work| &mut work.native_invocation,
+            |work| &mut work.native_scope.native_invocation,
             native.invocation.as_ref().map(Arc::downgrade),
             |work| work.check(),
         )

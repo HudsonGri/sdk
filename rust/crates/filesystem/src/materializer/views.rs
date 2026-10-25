@@ -26,7 +26,7 @@ impl NativeInvocationView {
     ) -> T {
         self.metadata.work().state(|state| {
             state.scope(
-                |work| &mut work.native_invocation,
+                |work| &mut work.native_scope.native_invocation,
                 Some(self.self_ref.clone()),
                 operation,
             )

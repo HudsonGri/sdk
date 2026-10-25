@@ -123,7 +123,7 @@ impl NativeWorkReservation {
         let remaining = actual.remaining(state.remaining)?;
         self.meter.state(|ledger| {
             ledger.scope(
-                |work| &mut work.native_resource,
+                |work| &mut work.native_scope.native_resource,
                 None,
                 |ledger| {
                     let mut begin = || ledger.start_native_reserved_work(actual);

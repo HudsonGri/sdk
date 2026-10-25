@@ -118,27 +118,14 @@ impl NativeMaterializationWork {
         self.state.with_original_leaf(|state| {
             state.within_window(self.window.as_deref(), |state| {
                 state.scope(
-                    |work| &mut work.native_invocation,
-                    self.invocation.as_ref().map(Arc::downgrade),
-                    |state| {
-                        state.scope(
-                            |work| &mut work.native_resource,
-                            self.resource.as_ref().map(Arc::downgrade),
-                            |state| {
-                                state.scope(
-                                    |work| &mut work.capture_custody,
-                                    None,
-                                    |state| {
-                                        state.scope(
-                                            |work| &mut work.recheck_items,
-                                            self.recheck_items,
-                                            operation,
-                                        )
-                                    },
-                                )
-                            },
-                        )
+                    |work| &mut work.native_scope,
+                    crate::demand::NativeScope {
+                        native_invocation: self.invocation.as_ref().map(Arc::downgrade),
+                        native_resource: self.resource.as_ref().map(Arc::downgrade),
+                        capture_custody: None,
+                        recheck_items: self.recheck_items,
                     },
+                    operation,
                 )
             })
         })
@@ -149,7 +136,7 @@ impl NativeMaterializationWork {
     ) -> T {
         self.state(|state| {
             state.scope(
-                |work| &mut work.capture_custody,
+                |work| &mut work.native_scope.capture_custody,
                 self.capture_origin.clone(),
                 operation,
             )
@@ -341,8 +328,24 @@ impl NativeMaterializationWork {
         operations: u64,
         delta: WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.state(|state| state.claim_allocation(bytes, operations, delta))
-            .map_err(native_materialization_work_error)?;
+        self.claim_after(bytes, operations, delta, |_| Ok(()))
+    }
+    /// Keeps caller admission and the owned claim under the same original leaf.
+    /// The callback must not re-enter this ledger or drop its allocation owners.
+    pub(crate) fn claim_after<E: From<NativeTreeMaterializationError>>(
+        &self,
+        bytes: u64,
+        operations: u64,
+        delta: WorkCounters,
+        admit: impl FnOnce(&mut crate::demand::DemandWork) -> Result<(), E>,
+    ) -> Result<NativeAllocation, E> {
+        self.state(|state| {
+            admit(state)?;
+            state
+                .claim_allocation(bytes, operations, delta)
+                .map_err(native_materialization_work_error)
+                .map_err(E::from)
+        })?;
         Ok(NativeAllocation {
             meter: self.allocation_work(),
             bytes,

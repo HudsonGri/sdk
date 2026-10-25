@@ -13,11 +13,16 @@ pub struct DemandWork {
     pub(crate) original_work: Option<WorkCounters>,
     pub(super) allocations: AllocationLedger,
     pub(super) cancellation: CancellationToken,
+    pub(crate) native_scope: NativeScope,
+    pub(super) roots: Admissions,
+}
+/// Authority and accounting context restored together at the original leaf.
+#[derive(Default)]
+pub(crate) struct NativeScope {
     pub(crate) native_resource: Option<Weak<NativeResourceAllowance>>,
     pub(crate) native_invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
     pub(crate) capture_custody: Option<Weak<CaptureTransientCustody>>,
     pub(crate) recheck_items: bool,
-    pub(super) roots: Admissions,
 }
 impl DemandWork {
     /// Starts one bounded operation.
@@ -33,10 +38,7 @@ impl DemandWork {
             original_work: None,
             allocations: AllocationLedger::default(),
             cancellation: cancellation.clone(),
-            native_resource: None,
-            native_invocation: None,
-            capture_custody: None,
-            recheck_items: false,
+            native_scope: NativeScope::default(),
             roots: Admissions::default(),
         }
     }
@@ -47,17 +49,31 @@ impl DemandWork {
         value: T,
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let saved = std::mem::replace(field(self), value);
-        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        #[cfg(all(test, not(acyclic_fs_loom)))]
-        let restore = !super::scope_tests::omit_restore();
-        #[cfg(not(all(test, not(acyclic_fs_loom))))]
-        let restore = true;
-        if restore {
-            *field(self) = saved;
+        struct Restore<'a, T, F: Fn(&mut DemandWork) -> &mut T> {
+            work: &'a mut DemandWork,
+            field: F,
+            saved: Option<T>,
         }
-        answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        impl<T, F: Fn(&mut DemandWork) -> &mut T> Drop for Restore<'_, T, F> {
+            fn drop(&mut self) {
+                #[cfg(all(test, not(acyclic_fs_loom)))]
+                if super::scope_tests::omit_restore() {
+                    return;
+                }
+                if let Some(saved) = self.saved.take() {
+                    *(self.field)(self.work) = saved;
+                }
+            }
+        }
+        let saved = std::mem::replace(field(self), value);
+        let restore = Restore {
+            work: self,
+            field,
+            saved: Some(saved),
+        };
+        operation(restore.work)
     }
+
     pub(crate) const fn original_budget(&self) -> WorkBudget {
         self.initial_budget
     }
@@ -66,7 +82,10 @@ impl DemandWork {
         &self.cancellation
     }
     pub(crate) fn capture_custody(&self) -> Option<Arc<CaptureTransientCustody>> {
-        self.capture_custody.as_ref().and_then(Weak::upgrade)
+        self.native_scope
+            .capture_custody
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
     pub(crate) fn check(&self) -> Result<(), DemandError> {
         if self.roots.poisoned {
@@ -75,10 +94,16 @@ impl DemandWork {
         self.cancellation
             .check()
             .map_err(|_| DemandError::Cancelled)?;
-        if let Some(view) = self.native_invocation.as_ref().and_then(Weak::upgrade) {
+        if let Some(view) = self
+            .native_scope
+            .native_invocation
+            .as_ref()
+            .and_then(Weak::upgrade)
+        {
             view.check()?;
         }
         if self
+            .native_scope
             .capture_custody
             .as_ref()
             .is_some_and(|owner| owner.strong_count() == 0)
@@ -88,7 +113,10 @@ impl DemandWork {
         Ok(())
     }
     pub(super) fn resource(&self) -> Option<Arc<NativeResourceAllowance>> {
-        self.native_resource.as_ref().and_then(Weak::upgrade)
+        self.native_scope
+            .native_resource
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
     fn admission(
         &mut self,
@@ -336,7 +364,7 @@ impl DemandWork {
                 .remaining()
                 .map(|local| remaining.intersect_budget(local))
         })?;
-        if self.recheck_items {
+        if self.native_scope.recheck_items {
             remaining.items_examined =
                 self.resource()
                     .map_or(self.initial_budget.items_examined, |resource| {
@@ -348,7 +376,7 @@ impl DemandWork {
         Ok(remaining)
     }
     pub(crate) fn item_charge(&self, mut delta: WorkCounters) -> WorkCounters {
-        if self.recheck_items {
+        if self.native_scope.recheck_items {
             delta.items_examined = 0;
         }
         delta

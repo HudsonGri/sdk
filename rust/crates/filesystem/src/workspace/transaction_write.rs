@@ -36,49 +36,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
-            let path = self.mutation_path(path, accounting, cancellation)?;
-            let existing = self
-                .checkout
-                .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
-                .await?
-                .0
-                .record;
-            let mut operations =
-                crate::kernel::Owned::allocate(if existing.is_some() { 2 } else { 1 }, accounting)?;
-            if let Some(record) = existing {
-                if record.kind != FileKind::Regular {
-                    return Err(WorkspaceError::NotRegularFile);
-                }
-                Self::reset_file(
-                    &path.value,
-                    Some(record),
-                    &mut operations,
+        let bytes = bytes.into();
+        let mut frame =
+            crate::heap_future::with_provider_accounting(accounting, |accounting| async move {
+                let path = self.mutation_path(path, accounting, cancellation)?;
+                let existing = self
+                    .checkout
+                    .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
+                    .await?
+                    .0
+                    .record;
+                let mut operations = crate::kernel::Owned::allocate(
+                    if existing.is_some() { 2 } else { 1 },
                     accounting,
-                    cancellation,
                 )?;
-            }
-            let operation = if existing.is_some() {
-                AuthoredMutation::Write {
-                    path: path.value,
-                    offset: 0,
-                    bytes: bytes.into(),
+                if let Some(record) = existing {
+                    if record.kind != FileKind::Regular {
+                        return Err(WorkspaceError::NotRegularFile);
+                    }
+                    Self::reset_file(
+                        &path.value,
+                        Some(record),
+                        &mut operations,
+                        accounting,
+                        cancellation,
+                    )?;
                 }
-            } else {
-                AuthoredMutation::CreateFile {
-                    path: path.value,
-                    bytes: bytes.into(),
-                    metadata: FileMetadata::default(),
-                }
-            };
-            Self::push_mutation(
-                &mut operations,
-                crate::kernel::Owned::new(operation, path.allocation, path.bytes),
-                accounting,
-            )?;
-            self.apply_authored(operations, accounting, cancellation)
-                .await
-        })?;
+                let operation = if existing.is_some() {
+                    AuthoredMutation::Write {
+                        path: path.value,
+                        offset: 0,
+                        bytes,
+                    }
+                } else {
+                    AuthoredMutation::CreateFile {
+                        path: path.value,
+                        bytes,
+                        metadata: FileMetadata::default(),
+                    }
+                };
+                Self::push_mutation(
+                    &mut operations,
+                    crate::kernel::Owned::new(operation, path.allocation, path.bytes),
+                    accounting,
+                )?;
+                self.apply_authored(operations, accounting, cancellation)
+                    .await
+            })?;
         let result = frame.value.as_mut().await;
         drop(frame);
         result

@@ -229,12 +229,12 @@ pub(crate) fn with_accounting<'a, 'accounting, F: Future>(
 
 /// Erases the admitted frame before it can enter a caller's async state.
 /// Construction, charging and retirement remain owned by `with_accounting`.
-pub(crate) fn with_provider_accounting<'a, 'accounting, F>(
+pub(crate) fn with_provider_accounting<'a, 'accounting, F, T>(
     accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
     create: impl FnOnce(&'a mut crate::kernel::allocation::KernelAccounting<'accounting>) -> F,
-) -> Result<ProviderFrame<'a, F::Output>, crate::FsError>
+) -> Result<ProviderFrame<'a, T>, crate::FsError>
 where
-    F: Future + acyclic_stream::ProviderTask + 'a,
+    F: Future<Output = T> + acyclic_stream::ProviderTask + 'a,
 {
     let frame = with_accounting(accounting, create)?;
     Ok(crate::kernel::ReadOwned {

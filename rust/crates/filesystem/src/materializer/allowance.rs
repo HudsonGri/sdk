@@ -331,7 +331,7 @@ impl NativeResourceAllowance {
     ) -> T {
         self.metadata.work().state(|state| {
             state.scope(
-                |work| &mut work.native_resource,
+                |work| &mut work.native_scope.native_resource,
                 Some(self.self_ref.clone()),
                 operation,
             )
