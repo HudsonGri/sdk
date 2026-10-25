@@ -391,10 +391,9 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
             .await?;
         assert_eq!(observed.snapshot.take().unwrap().files.len(), 128);
         let decide = async {
-            let mut requests = std::collections::BTreeSet::new();
-            // The hook and the configured tool policy are independent
-            // obligations. Approval of one must never authorize the other.
-            for _ in 0..if approved { 2 } else { 1 } {
+            // Only the hook requests a human. The ordinary allow policy must
+            // settle its separate request through its configured rule approver.
+            {
                 let request = loop {
                     let change = observed.changes.next().await.expect("approval follow")?;
                     if let Some(file) = change.file.into_iter().chain(change.files).find(|file| {
@@ -411,10 +410,11 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
                         break request;
                     }
                 };
-                assert!(
-                    requests.insert(request.id),
-                    "approval request was dispatched twice"
-                );
+                assert!(matches!(&request.request, crate::interaction::Interaction::Approval {
+                    subject: crate::interaction::ApprovalSubject::Tool {
+                        route: crate::interaction::ApprovalRoute::Human, ..
+                    }, ..
+                }), "human client received an ordinary policy request");
                 // Negative control: the former all-history selection now exceeds 128.
                 assert!(
                     harness

@@ -368,7 +368,7 @@ where
                 "approval policy differs from admission",
             ));
         }
-        self.approval_wait(context, &identity, definition, invocation, io)
+        self.approval_wait(context, &identity, definition, invocation, io, crate::interaction::ApprovalRoute::Policy)
             .await
     }
 
@@ -381,6 +381,7 @@ where
         definition: &ToolDefinition,
         invocation: &crate::tool::ToolInvocation,
         io: Option<&super::super::PreparationIo>,
+        expected_route: crate::interaction::ApprovalRoute,
     ) -> Result<ApprovalWait> {
         let task = context
             .durable_task_id()
@@ -408,13 +409,14 @@ where
                 action_digest,
                 subject:
                     crate::interaction::ApprovalSubject::Tool {
-                        route: crate::interaction::ApprovalRoute::Policy,
+                        route,
                         tool,
                         call_id,
                         arguments,
                     },
                 ..
-            }) if operation_id == invocation.operation_id
+            }) if route == expected_route
+                && operation_id == invocation.operation_id
                 && action_digest == digest
                 && tool == invocation.name
                 && call_id == invocation.call_id
@@ -742,7 +744,7 @@ where
                                 *input.context_manifest.descriptor().sha256(),
                             );
                             return Ok(matches!(
-                                self.approval_wait(context, &identity, definition, &invocation, io)
+                                self.approval_wait(context, &identity, definition, &invocation, io, crate::interaction::ApprovalRoute::Human)
                                     .await?,
                                 ApprovalWait::Resolved
                             ));

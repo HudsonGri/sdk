@@ -371,6 +371,7 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
+    for route in [crate::interaction::ApprovalRoute::Policy, crate::interaction::ApprovalRoute::Human] {
     for approved in [false, true] {
         let initialized = executor.block_on(setup())?;
         let runtime = &initialized.runtime;
@@ -412,7 +413,7 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
                     invocation.operation_id,
                     digest,
                     ApprovalSubject::Tool {
-                        route: crate::interaction::ApprovalRoute::Policy,
+                        route,
                         tool: invocation.name.clone(),
                         call_id: invocation.call_id.clone(),
                         arguments: invocation.arguments.clone(),
@@ -450,6 +451,10 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
                     ))
                 },
             );
+            if route == crate::interaction::ApprovalRoute::Human && state != 0 {
+                assert!(matches!(ready, Err(Error::Conflict(_))), "ordinary policy readiness accepted a human-routed request");
+                continue;
+            }
             assert_eq!(ready?, state == 2);
             assert_eq!(
                 trace
@@ -488,6 +493,7 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
                 );
             }
         }
+    }
     }
     Ok(())
 }
