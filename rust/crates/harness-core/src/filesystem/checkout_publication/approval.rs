@@ -89,10 +89,16 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
     }
 
     fn require_original_work(&self, work: &NativeMaterializationWork) -> Result<()> {
-        if !self.publication._custody.work().shares_allocation_context(work)
-            || self.journal.custody.as_ref().is_none_or(|custody| {
-                !custody.work().shares_allocation_context(work)
-            })
+        if !self
+            .publication
+            ._custody
+            .work()
+            .shares_allocation_context(work)
+            || self
+                .journal
+                .custody
+                .as_ref()
+                .is_none_or(|custody| !custody.work().shares_allocation_context(work))
         {
             return Err(Error::Unauthorized(
                 "checkout approval changed its original work owner".into(),

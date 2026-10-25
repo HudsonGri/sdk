@@ -497,11 +497,14 @@ async fn selected_approval_refuses_a_foreign_work_owner() -> TestResult {
         .map_err(|(cause, _)| cause)?;
     assert!(!foreign.shares_allocation_context(&fixture.work));
     fixture.work.cancellation().cancel();
-    assert!(matches!(
-        approval.authorize(&verifier, interaction, &digest, &foreign).await,
-        Err(crate::Error::Unauthorized(message))
-            if message == "checkout approval changed its original work owner"
-    ), "foreign work owner authorized");
+    assert!(
+        matches!(
+            approval.authorize(&verifier, interaction, &digest, &foreign).await,
+            Err(crate::Error::Unauthorized(message))
+                if message == "checkout approval changed its original work owner"
+        ),
+        "foreign work owner authorized"
+    );
     assert!(!fixture.root.join("note").exists());
     Ok(())
 }
