@@ -421,6 +421,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "blake3",

@@ -7,7 +7,12 @@ cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate
 cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate http://127.0.0.1:8080/contract --filter core/ --report out.json
 ```
 
-Build on bb2. The runtime budget is measured separately from Cargo compilation.
+Build on bb2. Execution uses the harness's per-recipe `max_steps` (default16)
+and declared model-event/tool-call limits, unchanged across substrates. There
+is no corpus wall-clock budget: queueing or CPU contention cannot spend steps.
+Composer and policy recipes contain finite commands rather than model loops.
+Dropping the report still aborts its admitted case tasks; transport failure or
+caller cancellation is separate from deterministic execution-fuel exhaustion.
 `--corpus DIR` selects an exported copy of `harness/tests/scenarios`. Defaults
 are merged by the existing corpus loader; no case JSON needs changing.
 `--substrate local` runs the same portable executor and composer fixtures
@@ -93,3 +98,9 @@ revision. Unknown drivers fail instead of acquiring an automatic capability.
 `tests/scenarios.rs` compares every portable case with the original direct
 driver, compares direct/Actors reports, exercises the HTTP bridge and proves
 that dropping a contract completion observation fails qualification.
+`tests/execution_budget.rs` runs every discovered case through the Local
+substrate with a controlled60-second scheduler stall per execution, and checks
+that both Local and Actors stop the same existing input at executor step one.
+The negative control restores the original55-second corpus deadline. On Linux,
+run this suite with `taskset -c <admitted CPU>` to restrict it to one CPU; the
+controlled Tokio clock makes the negative independent of incidental host load.
