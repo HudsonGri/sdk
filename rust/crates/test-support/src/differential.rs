@@ -33,6 +33,22 @@ pub fn observe<S, R, T: 'static>(
     )
 }
 
+/// Captures only polls of this future, releasing thread-local capture at every
+/// suspension. I/O can make progress on its executor and unrelated tasks cannot
+/// enter the trace between polls, even if the future moves between threads.
+pub async fn observe_async<R, T: 'static>(
+    future: impl std::future::Future<Output = R>,
+) -> (R, Vec<T>) {
+    let mut future = std::pin::pin!(future);
+    let mut trace = Vec::<T>::new();
+    std::future::poll_fn(|context| {
+        let (result, events) = observe::<_, _, T>(|| (), |()| future.as_mut().poll(context));
+        trace.extend(events);
+        result.map(|value| (value, std::mem::take(&mut trace)))
+    })
+    .await
+}
+
 /// Initialize each side separately; `run` receives true for the baseline.
 pub fn pair<S, R, T: 'static>(
     mut initialize: impl FnMut() -> S,

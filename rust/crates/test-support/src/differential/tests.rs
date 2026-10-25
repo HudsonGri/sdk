@@ -5,6 +5,51 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
+#[test]
+fn async_capture_yields_without_holding_a_thread_trace() {
+    use std::{
+        future::{Future, poll_fn},
+        task::{Context, Poll, Waker},
+    };
+    let count = Cell::new(0u8);
+    let future = poll_fn(|_| {
+        count.set(count.get() + 1);
+        record(count.get());
+        if count.get() == 1 {
+            Poll::Pending
+        } else {
+            Poll::Ready(7)
+        }
+    });
+    let mut capture = std::pin::pin!(super::observe_async::<_, u8>(future));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(capture.as_mut().poll(&mut context).is_pending());
+    assert!(!acyclic_differential::capturing());
+    record(99u8);
+    assert_eq!(
+        capture.as_mut().poll(&mut context),
+        Poll::Ready((7, vec![1, 2]))
+    );
+    assert!(!acyclic_differential::capturing());
+}
+
+#[test]
+fn cancelling_an_async_capture_leaves_no_thread_owner() {
+    use std::{
+        future::{Future, poll_fn},
+        task::{Context, Poll, Waker},
+    };
+    let mut context = Context::from_waker(Waker::noop());
+    let future = poll_fn(|_| {
+        record(1u8);
+        Poll::<()>::Pending
+    });
+    let mut capture = Box::pin(super::observe_async::<_, u8>(future));
+    assert!(capture.as_mut().poll(&mut context).is_pending());
+    drop(capture);
+    assert_eq!(observe::<_, _, u8>(|| (), |()| record(2u8)), ((), vec![2]));
+}
+
 proptest! {
     // Any subscription retains exactly its events, including repeated names
     // and arbitrary payloads, in recorded order on both independent runs.

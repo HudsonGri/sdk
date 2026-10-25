@@ -97,16 +97,10 @@ async fn journal_retains_immutable_authentication_but_rechecks_live_revocation()
 async fn private_staging_reuses_its_original_authenticated_grant_and_rechecks_revocation()
 -> Result<()> {
     let (journal, issuer) = super::super::test_support::journal().await?;
-    let (result, signatures) = acyclic_test_support::differential::observe(
-        || (),
-        |()| {
-            futures::executor::block_on(async {
-                journal
-                    .stage_with_io(OperationId::new(), "stage", b"{}", "application/json", None)
-                    .await
-            })
-        },
-    );
+    let (result, signatures) = acyclic_test_support::differential::observe_async(
+        journal.stage_with_io(OperationId::new(), "stage", b"{}", "application/json", None),
+    )
+    .await;
     let _: crate::conversation::FileRef = result?;
     let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
     assert!(
