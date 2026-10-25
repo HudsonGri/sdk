@@ -1,10 +1,33 @@
 // Public bootstrap custody regressions use real private files created by the
 // native API and the admitted executable; no fabricated OS output or PID probe.
 import assert from "node:assert/strict";
-import { linkSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { chmodSync, linkSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fixture, digest, packageVersion, target } from "./install-fixture.mjs";
+
+test("installer accepts a read-only source without changing the release artifact", async () => {
+  const value = fixture();
+  try {
+    // Real immutable release bytes, including the Windows read-only attribute.
+    // The destination must be a newly owned private file, not a writable copy
+    // obtained by changing the source artifact's permissions.
+    chmodSync(value.source, 0o555);
+    const before = statSync(value.source);
+    const expected = digest(value.source);
+    const installed = await value.install();
+    assert.equal(installed.code, 0,
+      `read-only release artifacts must install through writable private staging: ${installed.stderr}`);
+    assert.equal(digest(value.installed), expected);
+    assert.equal(digest(value.source), expected);
+    assert.equal(statSync(value.source).mode, before.mode,
+      "installation must preserve source artifact permissions");
+    assert.equal(statSync(value.source).ino, before.ino,
+      "installation must preserve source artifact identity");
+  } finally {
+    await value.close();
+  }
+});
 
 test("installer retains its stable lock inode across owner exit and recovery", async () => {
   const value = fixture();
