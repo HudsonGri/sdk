@@ -792,39 +792,40 @@ async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<(
     Ok(())
 }
 
+// Internal authority model for the public publication boundary. Authenticated
+// request/decision files are exercised by the journal suite.
+struct PublicationDecision {
+    interaction: acyclic_harness_core::InteractionId,
+    operation: acyclic_harness_core::OperationId,
+    digest: [u8; 32],
+    approved: bool,
+}
+impl acyclic_harness_core::tool::ToolApprovalVerifier for PublicationDecision {
+    fn verify<'a>(
+        &'a self,
+        interaction: acyclic_harness_core::InteractionId,
+        operation: acyclic_harness_core::OperationId,
+        digest: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async move {
+            if self.approved
+                && self.interaction == interaction
+                && self.operation == operation
+                && self.digest == digest
+            {
+                Ok(())
+            } else {
+                Err(Error::Unauthorized("denied or foreign publication".into()))
+            }
+        })
+    }
+}
+
 #[tokio::test]
 async fn publication_identity_change_after_guard_preserves_conflict_code() -> Result<()> {
     use acyclic_fs::{
         MaterializeOptions, NativeMaterializationWork, NativeTreeMaterializationError,
     };
-    // This internal decision model exercises the public publication boundary.
-    // Authenticated request/decision files are covered by the journal suite.
-    struct Decision {
-        interaction: acyclic_harness_core::InteractionId,
-        operation: acyclic_harness_core::OperationId,
-        digest: [u8; 32],
-        approved: bool,
-    }
-    impl acyclic_harness_core::tool::ToolApprovalVerifier for Decision {
-        fn verify<'a>(
-            &'a self,
-            interaction: acyclic_harness_core::InteractionId,
-            operation: acyclic_harness_core::OperationId,
-            digest: [u8; 32],
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
-            Box::pin(async move {
-                if self.approved
-                    && self.interaction == interaction
-                    && self.operation == operation
-                    && self.digest == digest
-                {
-                    Ok(())
-                } else {
-                    Err(Error::Unauthorized("denied or foreign publication".into()))
-                }
-            })
-        }
-    }
     let (_temp, root, _fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
@@ -862,7 +863,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         .await?;
     let approved = publication.approval_value(&generation, &candidate, &paths, &prepared, ())?;
     let confirmation = approved.digest(&work)?;
-    let mut decision = Decision {
+    let mut decision = PublicationDecision {
         interaction: acyclic_harness_core::InteractionId::from_bytes([101; 16]),
         operation: acyclic_harness_core::OperationId::from_bytes(operation.into_bytes()),
         digest: confirmation,
