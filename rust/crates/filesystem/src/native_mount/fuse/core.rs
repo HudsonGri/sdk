@@ -6,23 +6,7 @@ use crate::native_mount::{
 use crate::sync::{Mutex, atomic::AtomicBool};
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
-pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
-    match error {
-        NativeMountError::Source(error) => crate::native_mount::errno(error),
-        NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-            crate::native_mount::errno(error)
-        }
-        NativeMountError::Materialization(error) => {
-            crate::native_mount::native_materialization_errno(error)
-        }
-        NativeMountError::Io(error) => error.raw_os_error().unwrap_or(libc::EIO),
-        NativeMountError::Allocation(_) => libc::ENOMEM,
-        NativeMountError::CallbackDenied { .. } => libc::EACCES,
-        NativeMountError::Demand(crate::DemandError::Cancelled) => libc::ESTALE,
-        NativeMountError::FuseUnsupportedCapabilities(_) => libc::EOPNOTSUPP,
-        _ => libc::EIO,
-    }
-}
+pub(in crate::native_mount) use crate::native_mount::callback_errno;
 
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {

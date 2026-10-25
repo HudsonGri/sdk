@@ -685,39 +685,28 @@ impl ProjFsSession {
 }
 
 pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
-    match error.semantic_error() {
-        MountSourceError::AccessDenied => HRESULT::from_win32(5),
-        MountSourceError::ReadOnly => HRESULT::from_win32(19),
-        MountSourceError::NotFound => HR_FILE_NOT_FOUND,
-        MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
-        // The statuses NTFS gives a rename across kinds or over a
-        // directory that is not empty.
-        MountSourceError::NotDirectory => HR_DIRECTORY,
-        MountSourceError::IsDirectory => HR_ACCESS_DENIED,
-        MountSourceError::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
-        MountSourceError::Invalid(_) => HR_INVALID_DATA,
-        MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Stale
-        | MountSourceError::Cancelled
-        | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
-            HR_FILE_INVALID
-        }
-        MountSourceError::Io(error, _) => HRESULT::from_win32(u32::from_ne_bytes(
-            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
-        )),
-        _ => HR_IO_DEVICE,
+    failure_hresult(crate::native_mount::outcome::source_failure(error))
+}
+
+fn failure_hresult(failure: crate::native_mount::outcome::NativeFailure) -> HRESULT {
+    use crate::native_mount::outcome::NativeFailure as F;
+    match failure {
+        F::AccessDenied | F::IsDirectory => HR_ACCESS_DENIED,
+        F::ReadOnly => HRESULT::from_win32(19),
+        F::NotFound => HR_FILE_NOT_FOUND,
+        F::AlreadyExists => HR_ALREADY_EXISTS,
+        F::NotDirectory => HR_DIRECTORY,
+        F::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
+        F::Invalid => HR_INVALID_DATA,
+        F::Unsupported => HR_NOT_SUPPORTED,
+        F::Stale | F::Cancelled => HR_FILE_INVALID,
+        F::Allocation => HRESULT::from_win32(8),
+        F::TooLarge => HRESULT::from_win32(223),
+        F::Os(code) => HRESULT::from_win32(u32::from_ne_bytes(code.to_ne_bytes())),
+        F::Io => HR_IO_DEVICE,
     }
 }
 
 pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
-    match error {
-        NativeMountError::Source(error) => source_hresult(error),
-        NativeMountError::Io(error) => HRESULT::from_win32(u32::from_ne_bytes(
-            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
-        )),
-        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
-            HR_FILE_INVALID
-        }
-        _ => HR_IO_DEVICE,
-    }
+    failure_hresult(crate::native_mount::outcome::callback_failure(error))
 }

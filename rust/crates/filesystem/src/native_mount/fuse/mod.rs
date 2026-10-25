@@ -112,6 +112,7 @@ mod state;
 use state::*;
 mod core;
 pub use core::NativeMountWorkScope;
+pub(super) use core::callback_errno;
 use core::*;
 mod lookup;
 use lookup::*;

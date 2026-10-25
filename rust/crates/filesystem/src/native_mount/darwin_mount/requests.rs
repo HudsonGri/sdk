@@ -1,53 +1,6 @@
 use super::*;
 
-pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
-    match error {
-        NativeMountError::CallbackDenied { .. } => libc::EACCES,
-        NativeMountError::Source(error) => source_errno(error),
-        NativeMountError::Demand(crate::DemandError::Mount(error)) => source_errno(error),
-        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
-            libc::ECANCELED
-        }
-        NativeMountError::Materialization(error) => {
-            crate::native_mount::native_materialization_errno(error)
-        }
-        NativeMountError::Io(error) => error.raw_os_error().unwrap_or(libc::EIO),
-        NativeMountError::Demand(crate::DemandError::Cancelled) => libc::ECANCELED,
-        NativeMountError::Allocation(_) => libc::ENOMEM,
-        _ => libc::EIO,
-    }
-}
-
-fn source_errno(error: &MountSourceError) -> i32 {
-    match error.semantic_error() {
-        MountSourceError::AccessDenied => libc::EACCES,
-        MountSourceError::ReadOnly => libc::EROFS,
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::NotDirectory => libc::ENOTDIR,
-        MountSourceError::IsDirectory => libc::EISDIR,
-        MountSourceError::DirectoryNotEmpty => libc::ENOTEMPTY,
-        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
-        MountSourceError::Stale
-        | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
-        MountSourceError::Cancelled
-        | MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ECANCELED,
-        MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
-        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
-            libc::ECANCELED
-        }
-        MountSourceError::NativeWork(error) => {
-            crate::native_mount::native_materialization_errno(error)
-        }
-        MountSourceError::WorkspaceCause(error) => {
-            crate::native_mount::native_workspace_errno(error)
-        }
-        MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        _ => libc::EIO,
-    }
-}
+pub(in crate::native_mount) use crate::native_mount::callback_errno;
 
 pub(super) fn fatal(error: &NativeMountError) -> bool {
     match error {
