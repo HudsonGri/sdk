@@ -152,6 +152,10 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
             .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
             .open(&projected)
             .map_err(|error| format!("open held link, replacement={replacement}: {error}"))?;
+        let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+        let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+        let context = driver.context.ok_or("missing ProjFS context")?;
+        let tree = lock_recover(&runtime.projector.tree);
         source.remove(&name, None, &work)?;
         if replacement {
             source.create_directory(&name, FileMetadata::default(), &work)?;
@@ -159,10 +163,41 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
             source.create_file(&inner, FileMetadata::default(), None, &work)?;
             source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
         }
+        runtime.projector.materialize_locked(
+            Projection {
+                runtime: &runtime,
+                work: &work,
+                context,
+                starting: false,
+            },
+            vec![MountPath::root()],
+        )?;
+        let target = {
+            let state = lock_recover(&runtime.projector.state);
+            assert!(
+                state.pending.contains_key(&name),
+                "the held link must block retirement"
+            );
+            state.notified
+        };
+        let projector = Arc::clone(&runtime.projector);
+        let pending = name.clone();
         let closer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            let mut state = lock_recover(&projector.state);
+            while state.processed < target && state.failure.is_none() && !state.stopping {
+                state = projector
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            assert!(
+                state.pending.contains_key(&pending),
+                "the worker must retain the held incarnation"
+            );
+            drop(state);
             drop(held);
         });
+        drop(tree);
         session
             .revalidate(&work)
             .map_err(|error| format!("revalidate held link, replacement={replacement}: {error}"))?;
