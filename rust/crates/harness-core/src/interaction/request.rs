@@ -38,6 +38,7 @@ pub enum ApprovalSubject {
         call_id: String,
         /// Exact admitted arguments.
         #[serde(deserialize_with = "crate::deserialize_json_value")]
+        #[heap_layout(as = serde_json::Value)]
         arguments: Value,
     },
     /// An action whose preimage stays private to its owner (credentials,

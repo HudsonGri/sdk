@@ -153,8 +153,8 @@ fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Re
                 arguments,
             },
         )?;
-        let bytes = serde_json::to_vec(&request)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let bytes =
+            serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let ticket = InteractionTicket {
             id: Uuid::from_bytes([1; 16]),
             kind: InteractionKind::Approval,
@@ -175,7 +175,10 @@ fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Re
             Ok(decoded) => decoded,
             Err(error) => panic!("native literal approval arguments must decode: {error}"),
         };
-        assert_eq!(decoded.0, request, "native approval changed literal arguments");
+        assert_eq!(
+            decoded.0, request,
+            "native approval changed literal arguments"
+        );
         assert_eq!(decoded.1, 0);
         let Some(custody) = decoded.2.as_ref() else {
             panic!("native request custody");

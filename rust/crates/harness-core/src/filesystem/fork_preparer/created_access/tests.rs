@@ -110,11 +110,19 @@ fn retained_creation_request(native: bool) -> Result<()> {
     };
     let bound = compare_binding(&runtime, &fixture, request, proof, &io, owner)?;
     negative_boundaries(&runtime, &fixture, &bound, request, proof, &io, owner)?;
-    changed_allocation(&runtime, &fixture, &bound, &io, owner, &created.private)?;
+    changed_allocation(
+        &runtime, &fixture, &bound, request, &io, owner, created.seed.operation_id,
+    )?;
+    let restored = runtime.block_on(CreationRequest::new(
+        &fixture.filesystem,
+        request,
+        proof,
+        &io,
+    ))?;
     changed_journal(
         &runtime,
         &fixture,
-        &bound,
+        &restored,
         &io,
         owner,
         created.seed.operation_id,
@@ -222,15 +230,21 @@ fn changed_allocation(
     runtime: &tokio::runtime::Runtime,
     fixture: &CreationFixture,
     bound: &CreationRequest<'_>,
+    request: &ResourcePreparationRequest,
     io: &PreparationIo,
     owner: &Authority,
-    volume: &VolumeRef,
+    operation: OperationId,
 ) -> Result<()> {
-    let journal = allocation_ref(&fixture.filesystem_provider, volume, Some(io))?;
+    let proof = request
+        .child
+        .resource_proofs
+        .first()
+        .ok_or_else(|| Error::Invalid("fixture has no creation proof".into()))?;
+    let journal = preparation_journal(&fixture.filesystem_provider, operation, Some(io))?;
     let original = runtime.block_on(fixture.filesystem.read(
         &journal,
         None,
-        "/claim.json",
+        ALLOCATION_RECORD,
         MAX_REPORT_BYTES,
         None,
     ))?;
@@ -249,7 +263,7 @@ fn changed_allocation(
         &journal,
         None,
         &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(),
+            path: ALLOCATION_RECORD.into(),
             bytes: changed.into(),
         }],
         &IdempotencyKey::new("change-allocation-owner")?,
@@ -258,16 +272,32 @@ fn changed_allocation(
         runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io))),
         Err(Error::Unauthorized(_))
     ));
+    // A fresh cut must reject the changed allocation owner too, independently
+    // of the retained binding's generation fence.
+    let changed = runtime.block_on(CreationRequest::new(
+        &fixture.filesystem, request, proof, io,
+    ))?;
+    assert!(matches!(
+        runtime.block_on(changed.authenticate(&fixture.filesystem, owner, Some(io))),
+        Err(Error::Unauthorized(_))
+    ));
     runtime.block_on(fixture.filesystem.apply(
         &journal,
         None,
         &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(),
+            path: ALLOCATION_RECORD.into(),
             bytes: original,
         }],
         &IdempotencyKey::new("restore-allocation-owner")?,
     ))?;
-    runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io)))?;
+    assert!(matches!(
+        runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io))),
+        Err(Error::Unauthorized(_))
+    ));
+    let restored = runtime.block_on(CreationRequest::new(
+        &fixture.filesystem, request, proof, io,
+    ))?;
+    runtime.block_on(restored.authenticate(&fixture.filesystem, owner, Some(io)))?;
     Ok(())
 }
 
