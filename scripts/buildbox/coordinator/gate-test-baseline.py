@@ -52,6 +52,16 @@ def baseline_complete(output):
     payload, executor = int(payloads[0]), int(executors[0])
     if payload not in (0, 101) or payload != executor:
         return False
+    # Cargo wraps a killed binary as101 and continues other targets. Their
+    # real summaries cannot qualify the incomplete target as main's baseline.
+    spec = importlib.util.spec_from_file_location('gate_hang', Path(__file__).with_name('gate-hang.py'))
+    evidence = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(evidence)
+    try:
+        if evidence.binary_cutoffs(output):
+            return False
+    except ValueError:
+        return False
     build_failed = re.search(r'^error: (?:could not compile|failed to |the lock file|no matching|package ID)', output, re.M)
     isolation_failed = re.search(r'^error: GATE_(?:HOME_LEAK|RUNNER_INFRA) |^BB_DISK_LOW |^\[buildbox\] (?:cleanup|export|HOME guard) INFRA:', output, re.M)
     return bool(not build_failed and not isolation_failed and (payload == 0 or re.search(r'^test result:|^error: test failed, to rerun pass ', output, re.M)))

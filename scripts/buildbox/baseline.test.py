@@ -11,6 +11,7 @@ class BaselineTests(unittest.TestCase):
   root=self.d;work=root/'work';work.mkdir();(root/'bin').mkdir()
   (root/'hangs').write_text('');(root/'gate-baseline.py').write_text('def coverage(text,packages):return set()\n')
   shutil.copyfile(HERE.parent/'gate-test-runner.sh',root/'gate-test-runner.sh')
+  shutil.copyfile(HERE/'coordinator/gate-hang.py',root/'gate-hang.py')
   metadata={'workspace_members':['fixture'],'packages':[{'name':'acyclic-conformance','id':'fixture','targets':[]}]}
   cargo=root/'bin/cargo';cargo.write_text('''#!/bin/bash
 case "$1" in
