@@ -7,7 +7,7 @@ use crate::{
 #[test]
 fn native_reader_reuses_immutable_authentication_and_refuses_revocation() -> Result<()> {
     let provider = ProviderRef::new("reader".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), &provider, None)?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let issuer = AuthorityIssuer::new(
         "reader",
         [117; 32],
