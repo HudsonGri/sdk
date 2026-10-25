@@ -10,10 +10,10 @@ use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 mod admission;
 mod retained;
-use retained::RetainedAuthentication;
 pub(crate) use admission::AuthenticatedRecord;
 pub(super) use admission::HistoricalOwner;
 pub(super) use admission::{live_record, record, verify_record};
+use retained::RetainedAuthentication;
 
 pub(super) struct AuthenticatedWorkload {
     capability: std::sync::Arc<VerifiedCapability>,
@@ -27,9 +27,7 @@ pub(super) struct WorkloadOwner {
     certificates: verify::CertificateVerifier,
 }
 
-fn authenticated(
-    capability: VerifiedCapability,
-) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
+fn authenticated(capability: VerifiedCapability) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
     let (attributes, last) = admission::scope_facts(&capability, false)?;
     Ok(std::sync::Arc::new(AuthenticatedWorkload {
         capability: std::sync::Arc::new(capability),
@@ -60,7 +58,11 @@ fn authenticate(
             .verify(&scope.workload, trust, timestamp)
             .map_err(unauthorized)?,
     )?;
-    retained.latest = Some(RetainedAuthentication::new(&scope.workload, authenticated.clone(), work)?);
+    retained.latest = Some(RetainedAuthentication::new(
+        &scope.workload,
+        authenticated.clone(),
+        work,
+    )?);
     Ok(authenticated)
 }
 
@@ -392,9 +394,8 @@ pub(super) fn verify_trusted(
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
     }
-    let authenticated = authenticated(
-        verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
-    )?;
+    let authenticated =
+        authenticated(verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?)?;
     authorize_scope(trust, audience, scope, timestamp, &authenticated, work)
 }
 

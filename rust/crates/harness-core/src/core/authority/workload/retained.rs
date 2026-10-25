@@ -19,18 +19,37 @@ mod tests {
     fn exact_wire_custody_retires_and_cancellation_precedes_lookup() -> Result<()> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         let before = work.receipt();
         let live = work.live_allocation_bytes();
-        let owner = RetainedAuthentication::new(b"authenticated", Arc::new(7), &mut Some(&mut io.history_io()))?;
+        let owner = RetainedAuthentication::new(
+            b"authenticated",
+            Arc::new(7),
+            &mut Some(&mut io.history_io()),
+        )?;
         assert!(work.receipt().allocation_operations > before.allocation_operations);
         assert!(work.live_allocation_bytes() > live);
-        assert!(owner.get(b"authenticatEd", &mut Some(&mut io.history_io()))?.is_none());
-        assert_eq!(*owner.get(b"authenticated", &mut Some(&mut io.history_io()))?.unwrap(), 7);
+        assert!(
+            owner
+                .get(b"authenticatEd", &mut Some(&mut io.history_io()))?
+                .is_none()
+        );
+        assert_eq!(
+            *owner
+                .get(b"authenticated", &mut Some(&mut io.history_io()))?
+                .unwrap(),
+            7
+        );
         cancellation.cancel();
-        assert!(owner.get(b"authenticated", &mut Some(&mut io.history_io())).is_err());
+        assert!(
+            owner
+                .get(b"authenticated", &mut Some(&mut io.history_io()))
+                .is_err()
+        );
         drop(owner);
         assert_eq!(work.live_allocation_bytes(), live);
         Ok(())

@@ -42,7 +42,11 @@ fn native_reader_reuses_immutable_authentication_and_refuses_revocation() -> Res
         before,
         "immutable reader reauthenticated its workload"
     );
-    assert_eq!(work.receipt().items_examined, examined, "immutable reader reexamined its workload");
+    assert_eq!(
+        work.receipt().items_examined,
+        examined,
+        "immutable reader reexamined its workload"
+    );
     // The former physical path compares even a retained, unmodified scope.
     verifier.verify(&scope, &mut Some(&mut io.history_io()))?;
     assert!(work.receipt().items_examined > examined);
