@@ -34,6 +34,7 @@ fn claimed(value: Option<ChildTurn>) -> ChildTurnClaim {
 async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> {
     let path = StreamPath::new("task-volume/child-turn-history")?;
     let volume = TaskVolume::open(provider.clone(), path.clone()).await?;
+    let observer = TaskVolume::open_existing(provider.clone(), path.clone()).await?;
     let cut = volume.head().await?;
     volume
         .append(
@@ -48,6 +49,35 @@ async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> 
             .await?,
     );
     assert_eq!(volume.head().await?.position, cut.position + 1);
+    let observed = observer
+        .observe_child(&reference(), ChildResultWindow::Latest, 1)
+        .await?;
+    assert_eq!(observed.generation, volume.head().await?);
+    assert_eq!(observed.status_publication, Some(first.operation()));
+    assert_eq!(observed.claim.as_ref(), Some(&first));
+    assert_eq!(observed.delivered, 1);
+    assert_eq!(observed.pending_inputs, 0);
+    assert!(!observed.status.unwrap().settled);
+    assert!(observed.results.is_empty());
+    assert_eq!(observed.control, None);
+    let head = volume.head().await?;
+    volume
+        .append(
+            head,
+            &FileValue::new(key(ChildFile::Control), Control::Resume.bytes().to_vec()),
+        )
+        .await?;
+    let resumed = observer
+        .observe_child(&reference(), ChildResultWindow::Latest, 1)
+        .await?;
+    assert_eq!(resumed.state, ChildState::Running);
+    assert_eq!(
+        resumed.control,
+        Some(Control::Resume),
+        "exact control was reconstructed from reduced state"
+    );
+    assert_eq!(resumed.generation, volume.head().await?);
+
     // A second caller at the same original cut cannot also own this input.
     assert!(
         volume
@@ -114,6 +144,15 @@ async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> 
             .await?,
     );
     assert_eq!(second.turn, 2);
+    let observed = volume
+        .observe_child(&reference(), ChildResultWindow::Latest, 1)
+        .await?;
+    assert_eq!(observed.status_publication, Some(second.operation()));
+    assert_eq!(observed.claim.as_ref(), Some(&second));
+    assert_eq!(observed.delivered, 2);
+    assert_eq!(observed.pending_inputs, 0);
+    assert!(!observed.status.unwrap().settled);
+    assert_eq!(observed.results[0].publication, Some(first.operation()));
     // Replaying an old outcome cannot settle or acknowledge the next claimant.
     let head = volume.head().await?;
     volume
@@ -181,6 +220,34 @@ async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> 
             .unwrap()
             .is_empty()
     );
+    let observed = volume
+        .observe_child(&reference(), ChildResultWindow::Latest, 1)
+        .await?;
+    assert_eq!(observed.state, ChildState::Archived);
+    assert_eq!(observed.control, Some(Control::Archive));
+    let head = volume.head().await?;
+    assert!(
+        volume
+            .append(
+                head,
+                &FileValue::new(key(ChildFile::Control), Control::Resume.bytes().to_vec())
+            )
+            .await
+            .is_err()
+    );
+    let still_archived = observer
+        .observe_child(&reference(), ChildResultWindow::Latest, 1)
+        .await?;
+    assert_eq!(still_archived.state, ChildState::Archived);
+    assert_eq!(still_archived.control, Some(Control::Archive));
+    assert_eq!(still_archived.generation, head);
+
+    assert_eq!(observed.status_publication, Some(second.operation()));
+    assert_eq!(observed.claim.as_ref(), Some(&second));
+    assert!(observed.status.unwrap().settled);
+    assert_eq!(observed.results.len(), 1);
+    assert_eq!(ChildTurnResult::parse(&observed.results[0].bytes)?.turn, 2);
+    assert_eq!(observed.results[0].publication, Some(second.operation()));
     Ok(())
 }
 

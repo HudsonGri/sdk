@@ -3,7 +3,7 @@ mod cancellation;
 mod child;
 pub use cancellation::{cancellation_key, is_cancellation};
 mod child_queries;
-pub use child_queries::ChildObservation;
+pub use child_queries::{ChildObservation, ChildResultWindow};
 mod child_turn;
 pub use child_turn::{ChildTurn, ChildTurnClaim, ChildTurnPublication};
 mod child_result;
