@@ -20,6 +20,9 @@ Its default account is `local` and namespace is `harness`; both can be selected
 with explicit flags. The command prints the endpoint after deployment is ready.
 Ctrl-C fences Actors admission and drains package-owned requests before
 retiring native providers. State is held in a private temporary directory.
+An embedded server's shutdown owner is installed before its handle is returned.
+Dropping that handle or cancelling its shutdown waiter requests the same drain;
+the drain retains effect transports and package owners until retirement.
 
 Connect the shipping client:
 

@@ -9,6 +9,14 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 struct Guest {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Mutex<oneshot::Receiver<()>>,
+    retired: Option<oneshot::Sender<()>>,
+}
+impl Drop for Guest {
+    fn drop(&mut self) {
+        if let Some(retired) = self.retired.take() {
+            let _ = retired.send(());
+        }
+    }
 }
 impl Fetch for Guest {
     fn fetch(
@@ -49,12 +57,34 @@ impl Package for Code {
 #[tokio::test]
 async fn shutdown_fences_actor_admission_and_preserves_effect_services_until_drained() -> TestResult
 {
+    check_retirement(Stop::Explicit).await
+}
+
+#[tokio::test]
+async fn retirement_is_owned_for_every_shutdown_entrypoint() -> TestResult {
+    for stop in [Stop::Cancelled, Stop::Unpolled, Stop::Drop] {
+        check_retirement(stop).await?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Stop {
+    Explicit,
+    Cancelled,
+    Unpolled,
+    Drop,
+}
+
+async fn check_retirement(stop: Stop) -> TestResult {
     let (entered, draining) = oneshot::channel();
     let (release, released) = oneshot::channel();
+    let (retired, retirement) = oneshot::channel();
     let mut registry = Registry::default();
     registry.package(Arc::new(Code(Arc::new(Guest {
         entered: Mutex::new(Some(entered)),
         release: Mutex::new(released),
+        retired: Some(retired),
     }))))?;
     let server = Server::start(
         Arc::new(acyclic_stream::MemoryStream::default()),
@@ -79,8 +109,24 @@ async fn shutdown_fences_actor_admission_and_preserves_effect_services_until_dra
             ..Default::default()
         })
         .await?;
-    let stopping = tokio::spawn(server.shutdown());
+    let mut stopping = match stop {
+        Stop::Explicit | Stop::Cancelled => Some(tokio::spawn(server.shutdown())),
+        Stop::Unpolled => {
+            drop(server.shutdown());
+            None
+        }
+        Stop::Drop => {
+            drop(server);
+            None
+        }
+    };
     draining.await?;
+    if matches!(stop, Stop::Cancelled) {
+        let observer = stopping.take().ok_or("missing shutdown observer")?;
+        observer.abort();
+        let cancelled = observer.await.err().ok_or("shutdown observer completed")?;
+        assert!(cancelled.is_cancelled());
+    }
     let request = wire::InvokeActorRequest {
         account_id: vec![1],
         namespace: Some("scope".into()),
@@ -89,8 +135,13 @@ async fn shutdown_fences_actor_admission_and_preserves_effect_services_until_dra
         url: "http://localhost/".into(),
         ..Default::default()
     };
+    let closed = actors
+        .invoke_actor(request)
+        .await
+        .err()
+        .ok_or("closed server admitted more work")?;
     assert_eq!(
-        actors.invoke_actor(request).await.unwrap_err().code(),
+        closed.code(),
         tonic::Code::Unavailable,
         "negative control: an open connection cannot admit more work after the fence"
     );
@@ -106,6 +157,11 @@ async fn shutdown_fences_actor_admission_and_preserves_effect_services_until_dra
     release.send(()).map_err(|()| "drain owner disappeared")?;
     drop(actors);
     drop(fs);
-    stopping.await??;
+    if let Some(stopping) = stopping {
+        stopping.await??;
+    }
+    // The package and its registry must physically retire after the drain,
+    // including when no public shutdown future remains to observe completion.
+    retirement.await?;
     Ok(())
 }

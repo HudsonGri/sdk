@@ -252,13 +252,12 @@ struct Actors {
     request_admissions: Arc<tokio::sync::RwLock<()>>,
 }
 
-/// Owns the listener and all request tasks. Explicit shutdown drains the server;
-/// dropping it cancels the server task rather than orphaning a listener.
+/// Owns admission to the listener. Explicit shutdown, a dropped shutdown waiter,
+/// and dropping the server all request the same independently owned drain.
 pub struct Server {
     address: SocketAddr,
     stop: Option<oneshot::Sender<()>>,
-    task: Option<JoinHandle<Result<(), tonic::transport::Error>>>,
-    actors: Actors,
+    finished: oneshot::Receiver<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 }
 impl Server {
     /// Bind one ephemeral loopback port and serve all three canonical services.
@@ -297,7 +296,7 @@ impl Server {
         }
         let listener = TcpListener::bind(address).await?;
         let address = listener.local_addr()?;
-        let (stop, stopped) = oneshot::channel();
+        let (transport_stop, transport_stopped) = oneshot::channel();
         let actors = Actors {
             registry: Arc::new(registry),
             catalog: Arc::new(Mutex::new(Catalog::default())),
@@ -310,12 +309,21 @@ impl Server {
                 stream, acyclic_stream::session::testing::authority(), "local".into(), Default::default())))
             .add_service(acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(filesystem))
             .add_service(wire::actors_service_server::ActorsServiceServer::new(actors.clone()))
-            .serve_with_incoming_shutdown(incoming(listener), async { let _ = stopped.await; }));
+            .serve_with_incoming_shutdown(incoming(listener), async { let _ = transport_stopped.await; }));
+        let (stop, stopped) = oneshot::channel();
+        let (complete, finished) = oneshot::channel();
+        // Install the retirement owner before publishing the server. The
+        // request sender's destruction is itself the shutdown request, so no
+        // destructor needs to allocate, spawn or abort in-flight package work.
+        tokio::spawn(async move {
+            let _ = stopped.await;
+            let result = Self::drain(actors, transport_stop, task).await;
+            let _ = complete.send(result);
+        });
         Ok(Self {
             address,
             stop: Some(stop),
-            task: Some(task),
-            actors,
+            finished,
         })
     }
     /// Endpoint shared by Streams, filesystem and Actors.
@@ -324,15 +332,23 @@ impl Server {
     }
     /// Stop admission and await all transport-owned work.
     pub async fn shutdown(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.stop.take();
+        self.finished.await?
+    }
+    async fn drain(
+        actors: Actors,
+        stop: oneshot::Sender<()>,
+        task: JoinHandle<Result<(), tonic::transport::Error>>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let guests: Vec<_> = {
-            let mut catalog = self.actors.catalog.lock().await;
+            let mut catalog = actors.catalog.lock().await;
             catalog.closing = true;
             catalog.namespaces.values().cloned().collect()
         };
         // A workflow RPC retains a lease until its snapshot is registered.
         // Closing the catalog before taking the writer makes the drain's actor
         // set complete, including an initial placement that was still in flight.
-        let _settled = self.actors.request_admissions.write().await;
+        let _settled = actors.request_admissions.write().await;
         // Close Actors admission while keeping shared Streams/fs available to
         // already admitted effects. Transport retirement follows their drain.
         let results = futures::future::join_all(guests.iter().map(|deployment| async move {
@@ -360,22 +376,12 @@ impl Server {
             }
         }))
         .await;
-        self.stop.take();
-        if let Some(task) = self.task.take() {
-            task.await??;
-        }
+        drop(stop);
+        task.await??;
         for result in results {
             result?;
         }
         Ok(())
-    }
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.stop.take();
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
     }
 }
 fn invalid(error: impl std::fmt::Display) -> Status {
