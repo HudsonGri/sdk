@@ -96,7 +96,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Stages missing directory prefixes and new files as one batch. Any
+    /// existing file binding refuses the entire batch, including equal bytes.
+    pub async fn create_batch<W: crate::facade::FsWork>(
+        &mut self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .stage_file_batch::<true, true>(directories, files, &mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     async fn write_batch_with_accounting<const RESET: bool>(
+        &mut self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        self.stage_file_batch::<RESET, false>(directories, files, accounting, cancellation)
+            .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn stage_file_batch<const RESET: bool, const CREATE_ONLY: bool>(
         &mut self,
         directories: &[&str],
         files: &[(&str, acyclic_stream::OwnedBytes)],
@@ -109,7 +138,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 != crate::model::CaseSensitivity::Sensitive
         {
             return self
-                .write_batch_serial(directories, files, accounting, cancellation)
+                .write_batch_serial::<CREATE_ONLY>(directories, files, accounting, cancellation)
                 .await;
         }
         let (paths, directory_count) =
@@ -117,7 +146,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let mut kinds = self
             .batch_kinds(&paths.value, accounting, cancellation)
             .await?;
-        classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
+        classify_batch_paths::<CREATE_ONLY>(&paths.value, directory_count, &mut kinds.value, accounting)?;
         let capacity = directory_count
             .checked_add(
                 files
@@ -200,7 +229,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn write_batch_serial(
+    async fn write_batch_serial<const CREATE_ONLY: bool>(
         &mut self,
         directories: &[&str],
         files: &[(&str, acyclic_stream::OwnedBytes)],
@@ -219,9 +248,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 .await?;
         }
         for (path, bytes) in files {
-            candidate
+            if CREATE_ONLY {
+                candidate.mutate_with_accounting(path, |path| Ok(AuthoredMutation::CreateFile {
+                    path,
+                    bytes: bytes.clone(),
+                    metadata: FileMetadata::default(),
+                }), accounting, cancellation).await?;
+            } else {
+                candidate
                 .write_with_accounting(path, bytes.clone(), accounting, cancellation)
                 .await?;
+            }
         }
         self.checkout = candidate.checkout;
         Ok(())
@@ -547,7 +584,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn classify_batch_paths(
+fn classify_batch_paths<const CREATE_ONLY: bool>(
     paths: &[NamespacePath],
     directory_count: usize,
     kinds: &mut [Option<FileKind>],
@@ -562,6 +599,9 @@ fn classify_batch_paths(
             items_examined: 1,
             ..Default::default()
         })?;
+        if CREATE_ONLY && index >= directory_count && kind.is_some() {
+            return Err(FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into());
+        }
         if kind.is_some_and(|kind| {
             kind != if index < directory_count {
                 FileKind::Directory
@@ -600,6 +640,9 @@ fn classify_batch_paths(
             })?;
             if previous.key != current.key {
                 continue;
+            }
+            if CREATE_ONLY && current.ordinal >= directory_count {
+                return Err(FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into());
             }
             let kind = kinds.get_mut(current.ordinal).ok_or(FsError::InvalidDiff)?;
             *kind = Some(if current.ordinal < directory_count {
@@ -641,3 +684,7 @@ mod batch_index_properties;
 #[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_rebase.rs"]
 mod batch_rebase;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_create_batch_tests.rs"]
+mod create_batch_tests;

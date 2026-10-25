@@ -1,9 +1,9 @@
-//! One replacement staging path for measured and unmetered content publication.
+//! One staging path for measured and unmetered content publication.
 use super::*;
 use crate::{core::reserve_copy_vector, store::history::HistoryIo, wire_codec::CodecQuota};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    pub(super) async fn stage_replacement_batch(
+    pub(super) async fn stage_publication_batch(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
         publication: FilePublication<'_>,
@@ -11,8 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<bool> {
         crate::model::charge_items(io, mutations.len() as u64)?;
-        if matches!(publication, FilePublication::CreateOnly)
-            || mutations
+        if mutations
                 .iter()
                 .any(|mutation| matches!(mutation, WorkspaceMutation::Remove { .. }))
         {
@@ -52,32 +51,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Invalid,
-                        "replacement batch contains a removal",
+                        "publication batch contains a removal",
                     ));
                 }
             }
         }
+        let create_only = matches!(publication, FilePublication::CreateOnly);
         let result = if let Some(io) = io {
-            io.sdk(
-                transaction
-                    .write_batch(&directories, &files, io, cancellation)
-                    .await,
-            )
+            let (result, recorded) = Self::stage_file_batch(transaction, &directories, &files, create_only, io, cancellation).await;
+            io.sdk((result.map_err(|error| {
+                if create_only { creation_error(error, Some(io)) } else { map_error(error) }
+            }), recorded))
         } else {
-            transaction
-                .write_batch(
+            Self::stage_file_batch(transaction,
                     &directories,
                     &files,
+                    create_only,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     cancellation,
                 )
                 .await
-                .map_err(|failure| map_error(failure.error))
+                .map_err(|failure| {
+                    if create_only { creation_error(failure.error, None) } else { map_error(failure.error) }
+                })
                 .map(|_| ())
         };
         drop((files, directories));
         drop(quota);
         result.map(|()| true)
+    }
+
+    async fn stage_file_batch<W: acyclic_fs::facade::FsWork>(
+        transaction: &mut acyclic_fs::Transaction<A, O>,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        create_only: bool,
+        work: W,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> W::Output<(), acyclic_fs::WorkspaceError> {
+        if create_only {
+            transaction.create_batch(directories, files, work, cancellation).await
+        } else {
+            transaction.write_batch(directories, files, work, cancellation).await
+        }
     }
 }
 

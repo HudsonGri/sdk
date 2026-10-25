@@ -348,7 +348,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         let batched = !invalidate_metadata
-            && Self::stage_replacement_batch(
+            && Self::stage_publication_batch(
                 transaction,
                 mutations,
                 publication,
@@ -662,7 +662,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(work) = io.original_native_work() {
                     verify_native_publication(preparation, work).await?;
                 }
-                if Self::stage_replacement_batch(
+                if Self::stage_publication_batch(
                     transaction,
                     mutations,
                     publication,

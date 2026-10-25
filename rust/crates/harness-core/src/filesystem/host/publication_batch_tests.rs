@@ -312,7 +312,8 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
 }
 
 #[tokio::test]
-async fn immutable_records_cannot_enter_the_replacement_batch() -> Result<()> {
+async fn immutable_record_batches_refuse_existing_and_duplicate_bindings_for_every_adapter() -> Result<()> {
+    for adapter in 0..3 {
     let provider = ProviderRef::new(
         "immutable-batch".into(),
         "filesystem".into(),
@@ -328,41 +329,55 @@ async fn immutable_records_cannot_enter_the_replacement_batch() -> Result<()> {
         .map_err(|failure| map_error(failure.error))?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let workspace = workspace_ref(provider, "records")?;
-    let io = PreparationIo::from_budget(budget, &cancellation)?;
-    let first = [WorkspaceMutation::PutFile {
-        path: "/sealed".into(),
+    let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = match adapter {
+        0 => None,
+        1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+        _ => Some(PreparationIo::from_native_work(&native)?),
+    };
+    let first = [WorkspaceMutation::CreateDirectory { path: "/records/nested".into() }, WorkspaceMutation::PutFile {
+        path: "/records/nested/sealed".into(),
         bytes: b"original".to_vec().into(),
     }];
     host.create_records(
         &workspace,
         &first,
         IdempotencyKey::new("create-original")?,
-        Some(&io),
+        io.as_ref(),
         None,
     )?
     .await?;
     let before = host.resolve(&workspace, None).await?;
-    let forged = [WorkspaceMutation::PutFile {
-        path: "/sealed".into(),
+    for duplicate in [false, true] {
+    let forged = [WorkspaceMutation::CreateDirectory { path: "/uncommitted".into() }, WorkspaceMutation::PutFile {
+        path: "/uncommitted/first".into(),
+        bytes: b"first".to_vec().into(),
+    }, WorkspaceMutation::PutFile {
+        path: if duplicate { "/uncommitted/first" } else { "/records/nested/sealed" }.into(),
         bytes: b"forged".to_vec().into(),
     }];
-    assert!(
+    assert!(matches!(
         host.create_records(
             &workspace,
             &forged,
             IdempotencyKey::new("overwrite-sealed")?,
-            Some(&io),
+            io.as_ref(),
             None
         )?
-        .await
-        .is_err()
-    );
+        .await,
+        Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+    ));
     assert_eq!(host.resolve(&workspace, None).await?, before);
     assert_eq!(
-        host.read(&workspace, None, "/sealed", 64, None)
+        host.read(&workspace, None, "/records/nested/sealed", 64, None)
             .await?
             .as_ref(),
         b"original"
     );
+    assert!(matches!(host.read(&workspace, None, "/uncommitted/first", 64, None).await,
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound));
+    }
+    }
     Ok(())
 }
