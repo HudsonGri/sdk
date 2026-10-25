@@ -49,7 +49,9 @@ qualification, including when a late child summary reports success.
 Set `E2E_SCRATCH_ROOT` to an absolute owned directory before any Windows
 invocation; this lane uses `D:/lane-scratch/e2e-gate/`. Windows has no system-temp
 fallback. The old independent `E2E_WORKSPACE_ROOT` and `E2E_NTFS_ROOT` selectors
-are rejected. Fixture profiles, temporary files, helper workers, Git and the
+are rejected. On every OS the root must be outside the source checkout, including
+through symlinks or junctions: installed-host packaging cannot write into source.
+Fixture profiles, temporary files, helper workers, Git and the
 mock all use the same scratch ownership boundary. `E2E_OUTPUT` can separately
 select a durable evidence directory. Remove the owned scratch after retaining
 the reports and retiring every process/mount. Helper scratch is removed at its

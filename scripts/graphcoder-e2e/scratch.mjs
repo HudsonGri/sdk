@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // One explicit root owns every temporary directory in a Windows invocation.
 // Never discover a real user profile or silently fall back to the system drive.
@@ -11,7 +12,12 @@ export function scratchDirectory(prefix, env = process.env, platform = process.p
   const parent = env.E2E_SCRATCH_ROOT ?? (platform === "win32" ? undefined : tmpdir());
   assert.ok(parent && isAbsolute(parent), "E2E_SCRATCH_ROOT must name an absolute scratch directory on Windows");
   mkdirSync(parent, { recursive: true });
-  return mkdtempSync(join(realpathSync(parent), prefix));
+  const canonical = realpathSync(parent);
+  const repository = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
+  const within = relative(repository, canonical);
+  assert.ok(within && (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within)),
+    "acceptance scratch must be outside the source checkout, including through aliases");
+  return mkdtempSync(join(canonical, prefix));
 }
 
 // This same profile reaches the shipping program, PTY transport, host-test

@@ -3,8 +3,25 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { Processes } from "./process.mjs";
+
+test("scratch roots cannot overlap the source checkout through direct paths or aliases", () => {
+  const repository = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
+  const root = mkdtempSync(join(tmpdir(), "scratch-source-contract-"));
+  try {
+    const alias = join(root, "source-alias");
+    symlinkSync(repository, alias, process.platform === "win32" ? "junction" : "dir");
+    for (const parent of [repository, join(repository, "scripts"), alias]) {
+      let unexpected;
+      try {
+        assert.throws(() => { unexpected = scratchDirectory("source-overlap-control-", { E2E_SCRATCH_ROOT: parent }); },
+          /outside the source checkout/);
+      } finally { if (unexpected) rmSync(unexpected, { recursive: true, force: true }); }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("fixture descendants cannot inherit a temporary directory outside their lease", async () => {
   const root = mkdtempSync(join(tmpdir(), "scratch-contract-")), processes = new Processes();
