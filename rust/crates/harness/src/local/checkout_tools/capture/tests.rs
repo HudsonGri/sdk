@@ -363,7 +363,6 @@ async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
             &mut cursor,
             &mut checkout,
             batch,
-            &tools.workspace,
             (&tools.capture_options, &tools.capture_policy),
             &cancellation,
         )

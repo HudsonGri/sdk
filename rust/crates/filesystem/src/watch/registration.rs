@@ -31,7 +31,8 @@ impl NativeWatch {
     pub fn watch_tree(&mut self, excluded: &[&str]) -> Result<(), NativeWatchError> {
         let root = NamespacePath::new(Vec::new(), self.limits)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-        self.register_tree(&root, &CapturePolicy::default(), &mut u32::MAX, excluded)
+        let mut remaining = u32::MAX;
+        self.register_tree(&root, &CapturePolicy::default(), &mut remaining, excluded)
     }
 
     fn register_tree(

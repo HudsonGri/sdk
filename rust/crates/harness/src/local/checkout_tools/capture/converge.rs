@@ -107,33 +107,16 @@ pub(super) async fn capture(
                     optional_before_images && rescans == 1,
                 )
                 .await?;
-            if !replay(
-                cursor,
-                checkout,
-                batch,
-                physical,
-                configuration,
-                cancellation,
-            )
-            .await?
-            {
+            if !replay(cursor, checkout, batch, configuration, cancellation).await? {
                 continue;
             }
         } else if let Some(batch) = initial.take()
-            && !replay(
-                cursor,
-                checkout,
-                batch,
-                physical,
-                configuration,
-                cancellation,
-            )
-            .await?
+            && !replay(cursor, checkout, batch, configuration, cancellation).await?
         {
             baseline = true;
             continue;
         }
-        if drain(cursor, checkout, physical, configuration, cancellation).await? {
+        if drain(cursor, checkout, configuration, cancellation).await? {
             return Ok(());
         }
         baseline = true;
@@ -143,7 +126,6 @@ pub(super) async fn capture(
 async fn drain(
     cursor: &mut Cursor,
     checkout: &mut Candidate,
-    physical: &LocalWorkspace,
     configuration: (&CaptureOptions, &CapturePolicy),
     cancellation: &CancellationToken,
 ) -> Result<bool> {
@@ -166,16 +148,7 @@ async fn drain(
             }
             WatchBatch::RescanRequired { .. } => false,
         };
-        if !replay(
-            cursor,
-            checkout,
-            batch,
-            physical,
-            configuration,
-            cancellation,
-        )
-        .await?
-        {
+        if !replay(cursor, checkout, batch, configuration, cancellation).await? {
             return Ok(false);
         }
         // Recheck invalidation after replay, including an empty batch. Do not
@@ -194,7 +167,6 @@ pub(super) async fn replay(
     cursor: &mut Cursor,
     checkout: &mut Candidate,
     batch: WatchBatch,
-    physical: &LocalWorkspace,
     (options, policy): (&CaptureOptions, &CapturePolicy),
     cancellation: &CancellationToken,
 ) -> Result<bool> {
