@@ -65,9 +65,15 @@ def check_complete(text, phase):
         return True
     # A completed red matrix still qualifies its known failing selections.
     # A cut-off matrix (missing per-selection results) supplies no baseline.
-    checked = len(re.findall(r'^GATE_FEATURE_CHECK feature check: ', native, re.M))
-    failed = len(re.findall(r'^GATE_FEATURES FAILED cargo ', native, re.M))
-    return bool(int(wall[1]) > 0 and checked == int(matrix[2]) and failed == int(matrix[2]) - int(matrix[1]))
+    # One completion follows both --lib and --all-targets for a selection.
+    # Failed commands are not failed sets: either command can fail, and the
+    # producer repeats each failure in its final summary. Their count cannot
+    # establish whether the matrix finished. Require every distinct selection
+    # instead; duplicate completion lines cannot hide a missing selection.
+    completed = re.findall(r'^GATE_FEATURE_CHECK feature check: worker=\d+ seconds=[0-9.]+ rebuilt=\d+ manifest=(.+) flags=(.+)$', native, re.M)
+    passed, total = map(int, matrix.groups())
+    return bool(int(wall[1]) > 0 and 0 <= passed <= total
+                and len(completed) == len(set(completed)) == total)
 
 
 def select(checkout, base, directory, alerts, phase='tests', exact=False):
