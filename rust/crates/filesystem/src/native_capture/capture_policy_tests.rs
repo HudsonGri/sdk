@@ -194,7 +194,8 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         .read_metadata(record.file_id, &work, &cancellation)
         .await?;
 
-    // Setting the access time advances it as a read does and, on Unix, advances the status-change time as an unrepresented named attribute does.
+    // Setting the access time advances it as a read does. The host may also
+    // advance its status-change time, but both operations can share one tick.
     let captured = std::fs::metadata(&file)?;
     let accessed = captured.accessed()? + std::time::Duration::from_secs(3_600);
     std::fs::File::options()
@@ -203,16 +204,8 @@ async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn s
         .set_times(std::fs::FileTimes::new().set_accessed(accessed))?;
     // Negative control: the host stamps now differ from the recorded ones, so whole-record equality alone would stage the file again.
     let accessed_ns = i64::try_from(accessed.duration_since(std::time::UNIX_EPOCH)?.as_nanos())?;
+    assert_eq!(std::fs::metadata(&file)?.accessed()?, accessed);
     assert_ne!(prior.accessed_ns, MetadataField::Value(accessed_ns));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let changed = std::fs::metadata(&file)?;
-        assert_ne!(
-            prior.changed_ns,
-            MetadataField::Value(changed.ctime() * 1_000_000_000 + changed.ctime_nsec())
-        );
-    }
     let mut unchanged = rescan(&initial)?;
     let receipt = capture_subtrees_with_native_work(
         &mut unchanged,
