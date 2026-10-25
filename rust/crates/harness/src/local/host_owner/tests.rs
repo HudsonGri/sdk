@@ -136,7 +136,11 @@ async fn native_completion_fences_physical_custody_through_every_host(
     };
     let error = match fixture.session("physical", action.clone()).await {
         Err(error) => error,
-        Ok(result) => panic!("a JSON result cannot release a live physical owner: {result}"),
+        Ok(result) => {
+            return Err(Error::Conflict(format!(
+                "a JSON result cannot release a live physical owner: {result}"
+            )));
+        }
     };
     assert!(
         error
