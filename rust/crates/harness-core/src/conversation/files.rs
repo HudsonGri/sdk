@@ -168,8 +168,8 @@ pub struct FileRef {
     pub(super) volume: VolumeRef,
     #[serde(deserialize_with = "deserialize_path")]
     pub(super) path: String,
-    #[serde(deserialize_with = "deserialize_label")]
-    pub(super) version: String,
+    #[serde(deserialize_with = "deserialize_version")]
+    pub(super) version: Box<str>,
     pub(super) descriptor: FileDescriptor,
     #[serde(deserialize_with = "deserialize_label")]
     pub(super) display_name: String,
@@ -177,7 +177,7 @@ pub struct FileRef {
     #[cfg(feature = "filesystem")]
     #[serde(skip)]
     #[schemars(skip)]
-    publication: Option<crate::filesystem::PublicationWitness>,
+    publication: Option<std::sync::Arc<crate::filesystem::PublicationWitness>>,
 }
 
 impl PartialEq for FileRef {
@@ -194,13 +194,13 @@ impl Eq for FileRef {}
 impl FileRef {
     #[cfg(feature = "filesystem")]
     pub(crate) fn publication_witness(&self) -> Option<&crate::filesystem::PublicationWitness> {
-        self.publication.as_ref()
+        self.publication.as_deref()
     }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn with_publication_witness(
         mut self,
-        witness: crate::filesystem::PublicationWitness,
+        witness: std::sync::Arc<crate::filesystem::PublicationWitness>,
     ) -> Self {
         self.publication = Some(witness);
         self
@@ -221,7 +221,7 @@ impl FileRef {
     #[cfg(feature = "objects")]
     pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
         validate_label(&version, &mut None)?;
-        self.version = version;
+        self.version = version.into_boxed_str();
         #[cfg(feature = "filesystem")]
         {
             self.publication = None;
@@ -241,7 +241,7 @@ impl FileRef {
         let value = Self {
             volume,
             path,
-            version,
+            version: version.into_boxed_str(),
             descriptor,
             display_name,
             #[cfg(feature = "filesystem")]
@@ -289,7 +289,7 @@ impl FileRef {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         validate_label(&version, work)?;
-        self.version = version;
+        self.version = version.into_boxed_str();
         #[cfg(feature = "filesystem")]
         {
             self.publication = None;
@@ -330,7 +330,7 @@ impl FileRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         [
             self.path.capacity(),
-            self.version.capacity(),
+            self.version.len(),
             self.descriptor.media_type.capacity(),
             self.display_name.capacity(),
         ]
@@ -409,7 +409,7 @@ impl FileRef {
         self.validate(quota.work())?;
         let volume = self.volume.clone_in_quota(quota)?;
         let path = crate::core::copy_text(&self.path, quota)?;
-        let version = crate::core::copy_text(&self.version, quota)?;
+        let version = crate::core::copy_boxed_text(&self.version, quota)?;
         Ok(Self {
             volume,
             path,
@@ -439,9 +439,8 @@ impl crate::core::ownership::OwnedBytes for FileRef {
             version,
             descriptor,
             display_name,
-            // The inline witness is covered by FileRef's enclosing slot. Its
-            // shared domain retains its own original allocation custody;
-            // cloning its Arc does not allocate another domain.
+            // The shared evidence owns its separate allocation custody.
+            // Cloning this Arc does not allocate another proof or domain.
             #[cfg(feature = "filesystem")]
                 publication: _,
         } = self;
@@ -453,4 +452,10 @@ impl crate::core::ownership::OwnedBytes for FileRef {
             display_name.owned_heap_bytes()?,
         ])
     }
+}
+
+fn deserialize_version<'de, D: Deserializer<'de>>(
+    decoder: D,
+) -> std::result::Result<Box<str>, D::Error> {
+    deserialize_label(decoder).map(String::into_boxed_str)
 }

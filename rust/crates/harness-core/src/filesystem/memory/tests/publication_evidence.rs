@@ -149,7 +149,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_publication_witness_retains_only_its_domain_after_host_drop() -> Result<()> {
+async fn native_publication_witness_retires_independently_of_host_metadata() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
     let file = storage
         .stage(
@@ -170,7 +170,7 @@ async fn native_publication_witness_retains_only_its_domain_after_host_drop() ->
         file.volume().provider(),
         Some(&io),
     )?;
-    let reference = host.seal_publication(file, None)?;
+    let reference = host.seal_publication(file, Some(&io))?;
     let with_host = work.live_allocation_bytes();
     assert!(with_host > baseline);
     assert_eq!(
@@ -190,7 +190,59 @@ async fn native_publication_witness_retains_only_its_domain_after_host_drop() ->
         with_witness < with_host,
         "host metadata retires independently"
     );
+    let copy = reference.clone();
+    assert_eq!(work.live_allocation_bytes(), with_witness);
     drop(reference);
+    assert_eq!(work.live_allocation_bytes(), with_witness);
+    drop(copy);
     assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn publication_witness_failure_releases_every_allocation_boundary() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let file = storage.stage(OperationId::new(), "proof", b"data", "text/plain", "proof").await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = FINITE_CONTENT_BUDGET;
+    for native in [false, true] {
+        let ledger = |budget| {
+            if native {
+                let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                crate::filesystem::PreparationIo::from_native_work(&work)
+            } else {
+                crate::filesystem::PreparationIo::from_budget(budget, &cancellation)
+            }
+        };
+        let probe = ledger(budget)?;
+        probe.retain_owned(17)?;
+        let setup = budget.allocation_operations - probe.remaining()?.allocation_operations;
+        let setup_peak = probe.receipt().peak_allocation_bytes;
+        drop(storage.host.seal_publication(file.clone(), Some(&probe))?);
+        let required = budget.allocation_operations - setup - probe.remaining()?.allocation_operations;
+        assert!(required > 0);
+        let peak = probe.receipt().peak_allocation_bytes;
+        assert!(peak > setup_peak);
+        let mut cuts = Vec::new();
+        for operations in 0..required {
+            let mut limited = budget;
+            limited.allocation_operations = setup + operations;
+            cuts.push(limited);
+        }
+        for bytes in [setup_peak, setup_peak + (peak - setup_peak) / 2, peak - 1] {
+            let mut limited = budget;
+            limited.peak_allocation_bytes = bytes;
+            cuts.push(limited);
+        }
+        for limited in cuts {
+            let io = ledger(limited)?;
+            io.retain_owned(17)?;
+            assert!(storage.host.seal_publication(file.clone(), Some(&io)).is_err());
+            assert_eq!(io.owned_bytes()?, 17, "native={native}");
+            io.release(17)?;
+        }
+    }
     Ok(())
 }

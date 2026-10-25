@@ -1,10 +1,12 @@
 use super::*;
 
 /// Local evidence tied to the issuing deployment and complete immutable identity.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct PublicationWitness {
     domain: Arc<PublicationDomain>,
     identity: [u8; 32],
+    #[cfg(not(target_arch = "wasm32"))]
+    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Debug)]
@@ -231,10 +233,21 @@ impl<A, O> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        Ok(reference.with_publication_witness(PublicationWitness {
-            domain: Arc::clone(&self.publication_domain),
-            identity,
-        }))
+        crate::executor::with_history_io(io, |work| {
+            let bytes = (std::mem::size_of::<PublicationWitness>()
+                + 2 * std::mem::size_of::<usize>()) as u64;
+            let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+            if quota.work().is_some() {
+                quota.observer()?.allocation_attempt(bytes)?;
+            }
+            let _custody = quota.into_custody()?;
+            Ok(reference.with_publication_witness(Arc::new(PublicationWitness {
+                domain: Arc::clone(&self.publication_domain),
+                identity,
+                #[cfg(not(target_arch = "wasm32"))]
+                _custody,
+            })))
+        })
     }
 
     pub(in crate::filesystem) fn published_here(

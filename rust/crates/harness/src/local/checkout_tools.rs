@@ -112,10 +112,11 @@ impl CheckoutTools {
         {
             let mut state = lock_owned(StateArc::clone(&shared)).await;
             if !state.initialized {
-                let (active, _) = workspace.selected_view().await?;
+                let (active, pending) = workspace.selected_view().await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
+                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) }).await?;
                 state.watcher = if workspace.fresh {
                     Some(capture::Cursor::initial(&workspace, &capture_policy)?)
                 } else {
@@ -174,19 +175,14 @@ impl CheckoutTools {
                 invocation.name == "fs",
             )
             .await?;
-            let inspection = fs
-                .as_ref()
-                .is_some_and(|parsed| crate::tools::git::is_read_only(&parsed.arguments));
-            if !inspection {
-                if reconciliation::recover(&workspace, view, &|| async {
-                    owner.verify_owner(None)?.await
-                })
-                .await?
-                {
-                    state.watcher = None;
-                }
-                workspace::volumes::sync(&state.mounts).await?;
+            if reconciliation::recover(&workspace, view, &|| async {
+                owner.verify_owner(None)?.await
+            })
+            .await?
+            {
+                state.watcher = None;
             }
+            workspace::volumes::sync(&state.mounts).await?;
             if let Some(parsed) = fs {
                 self.fs(parsed, context, &mut state, &workspace).await
             } else {

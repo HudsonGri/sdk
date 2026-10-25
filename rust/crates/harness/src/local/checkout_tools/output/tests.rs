@@ -6,7 +6,6 @@ use futures::StreamExt;
 mod cancellation;
 mod health;
 mod mount_owner;
-mod status_cost;
 
 #[tokio::test]
 async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result<()> {

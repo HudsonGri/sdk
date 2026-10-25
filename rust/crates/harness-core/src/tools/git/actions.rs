@@ -177,11 +177,6 @@ where
         to: &GitTreeRef,
         tracked_paths: &BTreeSet<String>,
     ) -> Result<GitFilesystemResult, Error> {
-        if self.read_only {
-            return self
-                .diff_read_only(from, to, tracked_paths, readonly::DiffBefore::Committed)
-                .await;
-        }
         let to = self.generation(*to).await?;
         let value = if let Some(from) = from {
             let from = self.generation(*from).await?;
@@ -544,9 +539,6 @@ where
         // before they were kept out of the repository view.
         if self.ignore.reserves(path) {
             return Err(Error::NotFound(path.to_owned()));
-        }
-        if self.read_only {
-            return self.show_file_read_only(*tree, path).await;
         }
         let generation = self.generation(*tree).await?;
         let shown = format!("/{path}");

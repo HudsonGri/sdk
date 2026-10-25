@@ -16,9 +16,6 @@ pub enum Failure {
     /// Managed tree capture failure.
     #[error(transparent)]
     Capture(#[from] GitCaptureError),
-    /// Disposable native tree inspection failure.
-    #[error(transparent)]
-    Inspection(#[from] acyclic_fs::NativeGitInspectionError),
     /// Lazy tree authentication failure.
     #[error(transparent)]
     CaptureAuthentication(#[from] GitCaptureAuthenticationError<LocalCoreStateStoreError>),
@@ -31,14 +28,6 @@ pub enum Failure {
     /// Durable git state failure.
     #[error(transparent)]
     State(#[from] LocalCoreStateStoreError),
-}
-
-impl From<acyclic_fs::NativeGitInspectionError> for Error {
-    fn from(source: acyclic_fs::NativeGitInspectionError) -> Self {
-        Self::NativeGit {
-            source: Box::new(Failure::Inspection(source)),
-        }
-    }
 }
 
 impl From<OperationWindowError<StreamOperationWindowStoreError>> for Error {

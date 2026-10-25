@@ -1,9 +1,6 @@
 use super::*;
 
 impl LazyWorkspaceStore for LocalCoreStateStore {
-    fn for_inspection(&self) -> Self {
-        self.inspecting()
-    }
     async fn load_lazy_workspace(
         &self,
         id: WorkspaceId,

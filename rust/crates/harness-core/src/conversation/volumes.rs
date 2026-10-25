@@ -433,7 +433,7 @@ impl ContentGrant {
                 return Ok(Boundary {
                     volume,
                     operation: VolumeOperation::Read,
-                    exact_file: Some((path, version, descriptor, display_name)),
+                    exact_file: Some((path, version.into_string(), descriptor, display_name)),
                     directory_prefix: None,
                 });
             }
@@ -648,7 +648,7 @@ impl ContentGrant {
             Ok(Boundary {
                 volume,
                 operation: VolumeOperation::Read,
-                exact_file: Some((path, version, descriptor, display_name)),
+                exact_file: Some((path, version.into_string(), descriptor, display_name)),
                 directory_prefix: None,
             })
         })
