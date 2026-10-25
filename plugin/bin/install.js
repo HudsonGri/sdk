@@ -30,19 +30,14 @@ function syncDirectory(path) {
 }
 
 function durableRename(from, to, helper, replace) {
-  if (process.platform === "win32" && process.env.NODE_ENV !== "test") {
-    const result = spawnSync(helper, ["__installer-rename", from, to, replace ? "replace" : "no-replace"], {
-      stdio: "inherit",
-      windowsHide: true,
-    });
-    if (result.error || result.status !== 0) {
-      throw new Error(`durable Acyclic rename failed${result.error ? `: ${result.error.message}` : ""}`);
-    }
-    return;
+  const args = ["__installer-rename", from, to, replace ? "replace" : "no-replace"];
+  const result = spawnSync(helper, args, {
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`step=durably rename installed artifact${result.error ? `: ${result.error.message}` : ""}; recovery argv: ${JSON.stringify([helper, ...args])}`);
   }
-  renameSync(from, to);
-  syncDirectory(dirname(to));
-  if (dirname(from) !== dirname(to)) syncDirectory(dirname(from));
 }
 
 function durableRemove(path, helper) {
@@ -367,4 +362,5 @@ function ensureInstalled() {
   }
 }
 
-ensureInstalled();
+if (require.main === module) ensureInstalled();
+module.exports = { durableRename };
