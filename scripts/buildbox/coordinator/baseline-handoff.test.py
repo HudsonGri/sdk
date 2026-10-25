@@ -40,6 +40,14 @@ class BaselineHandoffTests(unittest.TestCase):
                 self.assertEqual(queue.members(state/'baseline-pending.txt'), [])
                 self.assertEqual(queue.baseline_generation(state), observed+1)
                 self.assertEqual(queue.park_baseline(state, observed+1, [3]), 'baseline-pending')
+                self.assertTrue(queue.publish_baseline(state, 'captured-evidence'),
+                                'unchanged evidence still wakes unconsumed pending custody')
+                with queue.locked(state):
+                    claimed = queue.take(state, ['pending'])
+                self.assertTrue(queue.publish_baseline(state, 'captured-evidence'),
+                                'a dispatcher killed after claiming still leaves durable custody')
+                with queue.locked(state):
+                    queue.acknowledge(state, claimed)
                 self.assertFalse(queue.publish_baseline(state, 'captured-evidence'))
                 self.assertEqual(queue.members(state/'baseline-pending.txt'), [3])
 
@@ -67,8 +75,8 @@ class BaselineHandoffTests(unittest.TestCase):
         self.assertEqual(main.count('\n  notify_baseline\n'), 1)
         self.assertEqual(main.count('\n    notify_baseline\n'), 1)
         self.assertLess(main.index('PR baseline retained:'), main.rindex('\n    notify_baseline\n'))
-        for negative in [False, True]:
-            with self.subTest(former_green_only=negative), tempfile.TemporaryDirectory() as tmp:
+        for negative, killed in [(False, False), (True, False), (False, True), (True, True)]:
+            with self.subTest(former_behavior=negative, killed_before_dispatch=killed), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); repo = root/'repo'; repo.mkdir()
                 env = {k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
                 def git(*args):
@@ -84,22 +92,50 @@ class BaselineHandoffTests(unittest.TestCase):
                 log.write_text(captured)
                 alerts = root/'alerts'; alerts.write_text(f'MAIN_WIDE RED {head}: captured\n')
                 state = root/'state'; queue.park_baseline(state, 0, [1])
-                wake = root/'wake.sh'; wake.write_text(f'echo WAKE >> "{root / "wakes"}"\n')
+                selected_queue = HERE/'gate-queue.py'
+                if negative and killed:
+                    selected_queue = root/'old-queue.py'
+                    source = (HERE/'gate-queue.py').read_text()
+                    old = source.replace('if previous == identity:\n            return bool(members(pending) or members(active))',
+                                         'if previous == identity:\n            return False')
+                    self.assertNotEqual(old, source)
+                    selected_queue.write_text(old)
+                wake = root/'wake.sh'
+                wake.write_text(f'echo WAKE >> "{root / "wakes"}"\n'
+                    f'claimed=$({shlex.quote(sys.executable)} "{HERE / "gate-queue.py"}" "{state}" take pending) || exit $?\n'
+                    f'{shlex.quote(sys.executable)} "{HERE / "gate-queue.py"}" "{state}" ack active $claimed\n')
                 selected = block.replace('python Q:/lanes/gate-baseline.py',
                     f'{shlex.quote(sys.executable)} {shlex.quote(str(HERE / "gate-baseline.py"))} --directory "{logs}" --alerts "{alerts}"')
                 selected = selected.replace('python Q:/lanes/gate-queue.py Q:/lanes/pr-gate',
-                    f'{shlex.quote(sys.executable)} {shlex.quote(str(HERE / "gate-queue.py"))} "{state}"')
+                    f'{shlex.quote(sys.executable)} {shlex.quote(str(selected_queue))} "{state}"')
                 selected = selected.replace('bash Q:/lanes/gate-drain.sh', f'bash "{wake}"').replace(
                     'Q:/lanes/pr-gate/baseline-resume.out', f'"{root / "resume.out"}"')
-                selected += '\nif [ "$rc" = 0 ]; then notify_baseline; fi\n' if negative else '\nnotify_baseline\n'
+                boundary = 'elif [ "$dispatch_needed" = 1 ]; then'
+                self.assertIn(boundary, selected)
+                selected = selected.replace(boundary, boundary+'\n'
+                    '    if [ "${KILL_BEFORE_DISPATCH:-}" = 1 ]; then echo BASELINE_COMMITTED; read -r release; fi')
+                selected += '\nif [ "$rc" = 0 ]; then notify_baseline; fi\n' if negative and not killed else '\nnotify_baseline\n'
                 script = f'W="{repo}"; tip={head}; log="{log}"; rc=1\n'+selected+'\nwait\n'
                 def run():
                     result = subprocess.run(['bash', '-c', script], capture_output=True, text=True, env=env)
                     self.assertEqual(result.returncode, 0, result.stderr)
+                if killed:
+                    child = subprocess.Popen(['bash', '-c', script], stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        env={**env, 'KILL_BEFORE_DISPATCH':'1'})
+                    try:
+                        self.assertEqual(child.stdout.readline().strip(), 'BASELINE_COMMITTED')
+                        self.assertEqual(queue.baseline_generation(state), 1)
+                        self.assertEqual(queue.members(state/'pending.txt'), [1])
+                        self.assertFalse((root/'wakes').exists())
+                    finally:
+                        child.kill(); child.communicate()
+                    self.assertEqual(child.returncode, -9)
                 run()
-                self.assertEqual(queue.baseline_generation(state), 0 if negative else 1)
-                self.assertEqual(queue.members(state/'pending.txt'), [] if negative else [1])
+                self.assertEqual(queue.baseline_generation(state), 0 if negative and not killed else 1)
+                self.assertEqual(queue.members(state/'pending.txt'), [1] if negative and killed else [])
                 if negative:
+                    self.assertFalse((root/'wakes').exists(), 'former code loses the wake-up')
                     continue
                 queue.park_baseline(state, 1, [2])
                 run()

@@ -114,20 +114,28 @@ def park_baseline(state, observed, prs):
 
 
 def publish_baseline(state, identity):
+    """Publish changed evidence and report durable, still-unconsumed work.
+
+    Pending admission and active claims are the dispatch outbox. They survive
+    coordinator death before launch, dispatcher death before claiming, and
+    death after claiming but before acknowledgement. Unchanged evidence never
+    transfers parked scopes; it only wakes custody already in that outbox.
+    """
     if not identity:
         raise ValueError('baseline publication requires an evidence identity')
     with locked(state) as current:
         generation, previous = baseline_state(current)
-        if previous == identity:
-            return False
-        waiting = queue_path(state, 'baseline-pending')
         pending = queue_path(state, 'pending')
+        active = queue_path(state, 'active')
+        if previous == identity:
+            return bool(members(pending) or members(active))
+        waiting = queue_path(state, 'baseline-pending')
         # Persist destination custody before clearing the parked queue. Both
         # orders of completion versus parking share this same transaction.
         publish(pending, [*members(pending), *members(waiting)])
         publish(waiting, [])
         current.execute('UPDATE baseline_ready SET generation=?, identity=?', (generation+1, identity))
-        return True
+        return bool(members(pending) or members(active))
 
 
 def dispatch(state, script):

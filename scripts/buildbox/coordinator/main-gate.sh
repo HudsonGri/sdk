@@ -11,13 +11,16 @@ remember_input(){ printf '%s\n' "$tip" > "$L/.last-input.$$" && mv -f "$L/.last-
 # test failure. Publish a durable evidence generation even when no PR has
 # parked yet; the queue closes the completion-before-parking race.
 notify_baseline(){
-  local clippy_log feature_log changed ready_rc
+  local clippy_log feature_log dispatch_needed ready_rc
   clippy_log=$(python Q:/lanes/gate-baseline.py "$W" "$tip" --phase clippy --exact 2>/dev/null) || return 0
   feature_log=$(python Q:/lanes/gate-baseline.py "$W" "$tip" --phase features --exact 2>/dev/null) || return 0
-  changed=$(python Q:/lanes/gate-queue.py Q:/lanes/pr-gate baseline-ready "$tip" "$clippy_log" "$feature_log"); ready_rc=$?
+  dispatch_needed=$(python Q:/lanes/gate-queue.py Q:/lanes/pr-gate baseline-ready "$tip" "$clippy_log" "$feature_log"); ready_rc=$?
   if [ "$ready_rc" != 0 ]; then
     echo "preparation-INFRA: baseline handoff step failed; recovery command: python Q:/lanes/gate-queue.py Q:/lanes/pr-gate baseline-ready $tip $clippy_log $feature_log"
-  elif [ "$changed" = 1 ]; then
+  elif [ "$dispatch_needed" = 1 ]; then
+    # Pending membership and active claims retain this wake-up across death
+    # before launch or before dispatch acknowledgement. Unchanged evidence
+    # never transfers parked work back into those queues.
     ( trap - EXIT; exec bash Q:/lanes/gate-drain.sh ) >> Q:/lanes/pr-gate/baseline-resume.out 2>&1 < /dev/null &
   fi
 }
