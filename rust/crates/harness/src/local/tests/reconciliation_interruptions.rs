@@ -86,7 +86,8 @@ async fn assert_published(harness: &LocalHarness, expected: &[(String, String)])
     for ((path, expected), identity) in expected.iter().zip(identities) {
         let path = format!("/{path}");
         assert_eq!(
-            after.stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            after
+                .stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
                 .map_err(super::super::storage)?
                 .value
@@ -94,13 +95,17 @@ async fn assert_published(harness: &LocalHarness, expected: &[(String, String)])
             identity
         );
         assert_eq!(
-            after.read_range_if_unchanged(
-                &head,
-                &path,
-                acyclic_fs::ByteRange { offset: 0, length: expected.len() as u64 },
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            after
+                .read_range_if_unchanged(
+                    &head,
+                    &path,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: expected.len() as u64
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(super::super::storage)?
                 .value
@@ -136,7 +141,9 @@ async fn sweep(texts: &[String]) -> Result<()> {
     let mut effects = 0;
     let mut cut = 0;
     loop {
-        let expected: Vec<_> = texts.iter().enumerate()
+        let expected: Vec<_> = texts
+            .iter()
+            .enumerate()
             .map(|(index, text)| (format!("upstream-{index}.txt"), format!("{text}-{cut}")))
             .collect();
         let checkout = harness.workspace().unwrap();
@@ -371,7 +378,8 @@ async fn negative_control(text: &str) -> Result<()> {
     // head. The same complete crash invariant used by the positive sweep must
     // detect this deliberately broken variant; preservation cannot hold here.
     let failure = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(assert_published(
-        &harness, &[("upstream.txt".into(), expected.clone())],
+        &harness,
+        &[("upstream.txt".into(), expected.clone())],
     )))
     .await
     .expect_err("the crash invariant missed premature acknowledgement");
@@ -408,7 +416,8 @@ fn reopen_never_captures_over_an_unpublished_rebase() {
         .unwrap();
     runner
         .run(&cases, |texts| {
-            runtime.block_on(sweep(&texts))
+            runtime
+                .block_on(sweep(&texts))
                 .map_err(|error| TestCaseError::fail(error.to_string()))
         })
         .unwrap();
