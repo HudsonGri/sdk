@@ -344,6 +344,22 @@ fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) 
 }
 
 impl Guard {
+    pub(super) const fn needs_kill(&self) -> bool {
+        self.active && !self.termination_sent
+    }
+
+    pub(super) fn kill(&mut self) -> io::Result<()> {
+        if !self.active || self.termination_sent {
+            return Ok(());
+        }
+        // SAFETY: the exclusively owned live Job contains this tree.
+        if unsafe { TerminateJobObject(self.job, 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.termination_sent = true;
+        Ok(())
+    }
+
     const fn empty(cleanup_on_drop: bool) -> Self {
         Self {
             job: std::ptr::null_mut(),
@@ -444,12 +460,7 @@ impl Guard {
         }
         if !self.termination_sent {
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: the exclusively owned live Job contains this tree.
-                if unsafe { TerminateJobObject(self.job, 1) } == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                self.termination_sent = true;
-                Ok(())
+                self.kill()
             })?;
         }
         let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
@@ -523,6 +534,9 @@ impl Guard {
         Ok(())
     }
 }
+
+// Kill the Job, kill an unassigned partial child, and release the Job handle.
+pub(super) const RETIREMENT_WRITES: u64 = 3;
 
 impl Drop for Guard {
     fn drop(&mut self) {

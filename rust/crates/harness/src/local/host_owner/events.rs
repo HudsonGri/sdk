@@ -78,6 +78,12 @@ impl HostWorkspaceOwner {
             );
         }
         if matches!(event, "Stop" | "SessionEnd") {
+            // A managed child is captured only by the physical process owner,
+            // after its host and every descendant exit. Its Stop hook itself
+            // still runs inside that tree and cannot prove process retirement.
+            if self.require_native(task).await?.is_some() {
+                return Ok(json!({}));
+            }
             let attached = self.attached(task)?;
             attached
                 .workspace

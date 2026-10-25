@@ -1,19 +1,22 @@
 //! MCP coordination shim. Native CLIs own agent loops, tools and policy.
 use super::*;
 use acyclic_harness::{
-    local::host_owner::SessionAction,
+    local::{
+        host_owner::SessionAction,
+        host_process::{HostProcessLease, HostSessionProcess},
+    },
     task_volume::{ChildTurnClaim, Component, Control},
 };
-use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTreeStorage};
+use acyclic_native_runtime::{FileLock, FileLockMode};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write as _,
-    sync::{Arc, mpsc},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
 struct Running {
-    tree: ProcessTreeStorage,
+    process: HostSessionProcess,
     claim: ChildTurnClaim,
     failure: Option<String>,
     events: EventLines,
@@ -22,10 +25,10 @@ struct Running {
 }
 impl Running {
     fn finish_input(&mut self) -> Result<()> {
-        self.tree.require_stdin_complete().map_err(Into::into)
+        self.process.require_stdin_complete().map_err(Into::into)
     }
     fn check_input(&mut self) -> Result<()> {
-        self.tree.pump_stdin().map(|_| ()).map_err(Into::into)
+        self.process.pump_stdin().map(|_| ()).map_err(Into::into)
     }
 }
 struct EventLines(acyclic_native_runtime::lines::LineBuffer);
@@ -49,9 +52,9 @@ struct Sessions {
     cwd: PathBuf,
     parent: TaskId,
     flags: Vec<String>,
-    custody: Arc<ProcessCustody>,
     children: BTreeMap<String, Running>,
     after: Option<Component>,
+    work: acyclic_fs::NativeMaterializationWork,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
 }
@@ -71,19 +74,22 @@ impl Sessions {
             &PathBuf::from(".acyclic-sdk/host-processes").join(parent.to_string()),
         )?;
         let ownership = FileLock::try_acquire(
-            root.open_file(Path::new("owner.lock"), true)?,
+            root.open_file(Path::new("manager.lock"), true)?,
             FileLockMode::Exclusive,
         )?;
-        // Fence the preceding owner and all its processes before recovering files.
-        let custody = ProcessCustody::acquire(root.path())?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 65_536),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
         Ok(Self {
             host: host.into(),
             cwd,
             parent,
             flags,
-            custody,
             children: BTreeMap::new(),
             after: None,
+            work,
             _ownership: ownership,
             _root: root,
         })
@@ -99,7 +105,7 @@ impl Sessions {
         )?)
     }
     fn start(&mut self, reference: &str, observed: &Value) -> Result<()> {
-        if self.children.contains_key(reference) || self.children.len() >= 16 {
+        if self.children.contains_key(reference) {
             return Ok(());
         }
         // Retained references include completed sessions. Observing an empty,
@@ -110,10 +116,10 @@ impl Sessions {
         if observed.pointer("/status/settled").and_then(Value::as_bool) == Some(false) {
             self.recover(reference)?;
         }
-        let turn = self.request(reference, SessionAction::Next)?;
-        if turn.is_null() {
+        let Some((lease, turn)) = HostProcessLease::claim_child(&self.cwd, self.parent, reference)?
+        else {
             return Ok(());
-        }
+        };
         let task: TaskId =
             serde_json::from_value(turn.get("task").cloned().ok_or("child task absent")?)?;
         let claim: ChildTurnClaim =
@@ -144,17 +150,11 @@ impl Sessions {
         command
             .env("ACYCLIC_WORKSPACE", &cwd)
             .env("ACYCLIC_TASK", task.to_string());
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(65_536, 65_536),
-            &cancellation,
-        )
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
-        let tree = ProcessTreeStorage::new(&work.runtime_meter())?;
+        let process = lease.process(&self.work)?;
         // Install the stable owner before spawn can acquire any physical work.
         // Even a partial spawn or stdin failure stays here until it is reaped.
         let running = self.children.entry(reference.into()).or_insert(Running {
-            tree,
+            process,
             claim,
             failure: None,
             events: EventLines::default(),
@@ -162,9 +162,9 @@ impl Sessions {
             session: None,
         });
         if let Err(error) = running
-            .tree
-            .spawn(&mut command, Some(&self.custody))
-            .and_then(|()| running.tree.queue_stdin(prompt))
+            .process
+            .spawn(&mut command)
+            .and_then(|()| running.process.queue_stdin(prompt))
         {
             running.failure = Some(error.to_string());
         }
@@ -180,7 +180,7 @@ impl Sessions {
         let mut chunk = [0u8; 8192];
         // Bound each pass so a busy child cannot starve cancellation or peers.
         for _ in 0..16 {
-            let Some(count) = running.tree.read_stdout(&mut chunk)? else {
+            let Some(count) = running.process.read_stdout(&mut chunk)? else {
                 break;
             };
             if count == 0 {
@@ -286,7 +286,7 @@ impl Sessions {
             .and_then(Value::as_str)
             .is_some_and(|state| state != "resume")
         {
-            running.tree.terminate_descendants()?;
+            running.process.terminate_descendants()?;
             let _ = self.output(reference, running);
             return self
                 .complete(reference, running, acyclic_harness::Outcome::Cancelled)
@@ -298,11 +298,11 @@ impl Sessions {
             running
                 .check_input()
                 .and_then(|()| self.output(reference, running))
-                .and_then(|_| running.tree.try_wait().map_err(Into::into))
+                .and_then(|_| running.process.try_wait().map_err(Into::into))
         };
         if matches!(&exited, Ok(Some(_))) {
-            running.tree.terminate_descendants()?;
-            match running.tree.pump_stdin() {
+            running.process.terminate_descendants()?;
+            match running.process.pump_stdin() {
                 Ok(false) => return Ok(None),
                 Ok(true) => {}
                 Err(error) => exited = Err(error.into()),
@@ -338,10 +338,7 @@ impl Sessions {
         running: &mut Running,
         outcome: acyclic_harness::Outcome<acyclic_harness::executor::TurnOutput>,
     ) -> Result<Value> {
-        running.tree.terminate()?;
-        if !running.tree.is_reaped() {
-            return Err("native containment has not quiesced".into());
-        }
+        running.process.release()?;
         let outcome = match (running.finish_input(), outcome) {
             (_, acyclic_harness::Outcome::Cancelled) => acyclic_harness::Outcome::Cancelled,
             (_, outcome @ acyclic_harness::Outcome::Failed { .. }) | (Ok(()), outcome) => outcome,
@@ -361,7 +358,7 @@ impl Sessions {
         self.request(reference, SessionAction::Control { control })?;
         if let Some(mut running) = self.children.remove(reference) {
             let result = (|| -> Result<()> {
-                running.tree.terminate_descendants()?;
+                running.process.terminate_descendants()?;
                 let _ = self.output(reference, &mut running);
                 self.complete(reference, &mut running, acyclic_harness::Outcome::Cancelled)
                     .map(|_| ())

@@ -161,13 +161,11 @@ type CaptureResult = std::io::Result<
 /// What the spawn turn left: a finished result, or a running capture.
 enum Started<T, H> {
     Finished(CaptureResult, T),
-    Running {
-        tree: acyclic_native_runtime::ProcessTree,
-        schedule: acyclic_native_runtime::CaptureSchedule,
-        maximum_output: usize,
-        input: Option<acyclic_native_runtime::OwnedCaptureInput>,
-        handler: H,
-    },
+    Running(
+        acyclic_native_runtime::TaskHandle<
+            std::io::Result<acyclic_native_runtime::CaptureOutcome<H>>,
+        >,
+    ),
 }
 
 #[doc(hidden)]
@@ -183,6 +181,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
     // blocking pool, so they run on main's independent native host service.
     // Spawning runs there too; the running child then holds no worker: the
     // capture awaits readiness between its turns.
+    let spawner = acyclic_native_runtime::TaskSpawner::current();
     let started = acyclic_native_runtime::run_blocking_io(
         move || {
             let mut handler = Handler {
@@ -193,18 +192,22 @@ pub async fn capture_with_custody<T: Send + 'static>(
                 _hold: None,
             };
             match start(&invocation, &mut handler) {
-                Ok(Ok((tree, input))) => Started::Running {
-                    tree,
-                    schedule: acyclic_native_runtime::CaptureSchedule::new(Duration::from_millis(
-                        u64::from(invocation.timeout_ms),
-                    ))
+                Ok(Ok((tree, input))) => {
+                    let schedule = acyclic_native_runtime::CaptureSchedule::new(
+                        Duration::from_millis(u64::from(invocation.timeout_ms)),
+                    )
                     .checking_every(Duration::from_millis(u64::from(
                         invocation.cancellation_poll_ms,
-                    ))),
-                    maximum_output: invocation.maximum_output_bytes,
-                    input,
-                    handler,
-                },
+                    )));
+                    // Transfer physical custody before returning from the
+                    // worker. Losing the waiter cannot drop an unsubmitted tree.
+                    Started::Running(spawner.spawn(tree.capture(
+                        schedule,
+                        invocation.maximum_output_bytes,
+                        input,
+                        handler,
+                    )))
+                }
                 Ok(Err(output)) => Started::Finished(Ok(output), handler.custody),
                 Err(error) => Started::Finished(Err(error), handler.custody),
             }
@@ -216,24 +219,10 @@ pub async fn capture_with_custody<T: Send + 'static>(
     .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
     let (output, custody) = match started {
         Started::Finished(output, custody) => (output, custody),
-        Started::Running {
-            tree,
-            schedule,
-            maximum_output,
-            input,
-            handler,
-        } => {
+        Started::Running(capture) => {
             // Ownership stays with the spawned capture until process cleanup
             // finishes, even if its awaiting task is cancelled.
-            let outcome = acyclic_native_runtime::spawn(tree.capture(
-                schedule,
-                maximum_output,
-                input,
-                handler,
-            ))
-            .await
-            .and_then(|outcome| outcome)
-            .map_err(|error| {
+            let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
                 Error::Storage(format!("native process observer interrupted: {error}"))
             })?;
             (Ok(outcome.result), outcome.handler.custody)

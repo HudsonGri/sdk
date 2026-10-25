@@ -17,14 +17,46 @@ use std::sync::Arc;
 /// }
 /// ```
 pub struct ProcessTreeStorage {
-    slot: ReadBuffer<Option<ProcessTree>>,
+    slot: ReadBuffer<ProcessSlot>,
+}
+
+struct ProcessSlot {
+    tree: Option<ProcessTree>,
+    retirement: Option<Retirement>,
+}
+
+/// Concrete kill and wait SDK calls are withheld before physical admission.
+/// Cancellation cannot consume the credit needed to stop an abandoned owner.
+pub(super) struct Retirement {
+    pub(super) writes: crate::NativeOperationReservation<Arc<dyn crate::NativeReadMeter>>,
+    pub(super) wait: crate::NativeOperationReservation<Arc<dyn crate::NativeReadMeter>>,
+}
+
+impl Retirement {
+    fn new(meter: &Arc<dyn crate::NativeReadMeter>) -> io::Result<Self> {
+        Ok(Self {
+            writes: crate::NativeOperationReservation::new(
+                Arc::clone(meter),
+                crate::NativeOperationKind::Write,
+                platform::RETIREMENT_WRITES,
+            )?,
+            wait: crate::NativeOperationReservation::new(
+                Arc::clone(meter),
+                crate::NativeOperationKind::Read,
+                1,
+            )?,
+        })
+    }
 }
 
 impl ProcessTreeStorage {
     /// Funds the exact slot on the original invocation before allocating it.
     pub fn new(meter: &Arc<dyn crate::NativeReadMeter>) -> io::Result<Self> {
         let mut slot = ReadBuffer::new(1, meter)?;
-        slot.data.push(None);
+        slot.data.push(ProcessSlot {
+            tree: None,
+            retirement: None,
+        });
         Ok(Self { slot })
     }
 
@@ -36,7 +68,14 @@ impl ProcessTreeStorage {
         custody: Option<&ProcessCustody>,
     ) -> io::Result<()> {
         let meter = Arc::clone(self.slot.meter());
-        let slot = self.slot_mut()?;
+        let [state] = self.slot.data.as_mut_slice() else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        if state.tree.is_some() || state.retirement.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        state.retirement = Some(Retirement::new(&meter)?);
+        let slot = &mut state.tree;
         match custody {
             Some(custody) => ProcessTree::spawn_in_custody_controlled(
                 command,
@@ -90,7 +129,7 @@ impl ProcessTreeStorage {
     /// This observation alone does not authenticate a harness child-turn claim.
     #[must_use]
     pub fn is_reaped(&self) -> bool {
-        matches!(self.slot.data.as_slice(), [slot] if slot.as_ref().is_none_or(ProcessTree::is_reaped))
+        matches!(self.slot.data.as_slice(), [slot] if slot.tree.as_ref().is_none_or(ProcessTree::is_reaped))
     }
 
     /// Queues one native prompt on the retained process without giving away its pipe.
@@ -107,7 +146,12 @@ impl ProcessTreeStorage {
 
     /// Refuses completion until all queued input has been delivered.
     pub fn require_stdin_complete(&self) -> io::Result<()> {
-        let [Some(tree)] = self.slot.data.as_slice() else {
+        let [
+            ProcessSlot {
+                tree: Some(tree), ..
+            },
+        ] = self.slot.data.as_slice()
+        else {
             return Err(io::ErrorKind::NotFound.into());
         };
         tree.require_stdin_complete()
@@ -143,7 +187,27 @@ impl ProcessTreeStorage {
         let [slot] = self.slot.data.as_mut_slice() else {
             return Err(io::ErrorKind::InvalidData.into());
         };
-        Ok(slot)
+        Ok(&mut slot.tree)
+    }
+}
+
+impl Drop for ProcessTreeStorage {
+    fn drop(&mut self) {
+        let [
+            ProcessSlot {
+                tree: Some(tree),
+                retirement: Some(retirement),
+            },
+        ] = self.slot.data.as_mut_slice()
+        else {
+            return;
+        };
+        if !tree.is_reaped() {
+            // The original work funds actual kill/wait attempts even after a
+            // cancellation or exhausted allowance. Keep the durable record:
+            // only the shared custody fence may declare descendants quiescent.
+            tree.retire_owner(retirement);
+        }
     }
 }
 

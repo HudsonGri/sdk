@@ -532,6 +532,30 @@ fn retire<T>(
 }
 
 impl Guard {
+    pub(super) const fn needs_kill(&self) -> bool {
+        self.active
+    }
+
+    /// One process-group kill; no enumeration or allocation is needed to
+    /// notify a custodied warden that its program must be drained.
+    pub(super) fn kill(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        // SAFETY: the owned, unreaped leader reserves this exact group ID.
+        if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
+            self.active = false;
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            self.active = false;
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
     fn group_gone(
         &self,
         error: &io::Error,
@@ -582,14 +606,7 @@ impl Guard {
         }
         let signal =
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: a negative, nonzero pid addresses exactly this owned
-                // process group; SIGKILL requires no shared memory or signal data.
-                if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
-                    self.active = false;
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
-                }
+                self.kill()
             });
         let Err(error) = signal else {
             return Ok(());
@@ -602,6 +619,8 @@ impl Guard {
         }
     }
 }
+
+pub(super) const RETIREMENT_WRITES: u64 = 1;
 
 /// Members a group check lists without allocating; two listings and one
 /// probe per member stay within [`super::ProcessTree::TERMINATION_OBSERVATIONS`].

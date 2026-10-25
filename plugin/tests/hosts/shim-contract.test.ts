@@ -59,6 +59,21 @@ test("host manifests and shims fit the native hook budget without tool ledgers",
   assert(!source("../../.mcp.json").includes("XDG_STATE_HOME"));
 });
 
+test("qualification calls shared native lifecycle instead of the deleted Pi operator", () => {
+  const commands = ["bun run --cwd plugin/tests/hosts test:shim",
+    "cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4",
+    "cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4"];
+  const verify = (source: string) => {
+    for (const command of commands) assert(source.includes(command), command);
+    assert.doesNotMatch(source, /test:pi-(context|bootstrap|session|service|native-recursive|builtin-paths)/);
+  };
+  for (const name of ["qualify-ci.sh", "qualify-ci.ps1"]) {
+    const source = readFileSync(new URL(`../../../scripts/${name}`, import.meta.url), "utf8");
+    verify(source);
+    for (const command of commands) assert.throws(() => verify(source.replace(command, "true")));
+  }
+});
+
 test("release packaging validates without state access or authentication", () => {
   const directory = mkdtempSync(join(tmpdir(), "shim-package-"));
   const script = (name: string) => fileURLToPath(new URL(`../../scripts/${name}`, import.meta.url));

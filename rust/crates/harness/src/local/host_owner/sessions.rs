@@ -396,6 +396,18 @@ impl HostWorkspaceOwner {
                 "native completion selects another child".into(),
             ));
         }
+        let attached = self.attached(session.child)?;
+        let workspace = self
+            .local
+            .workspace_path()
+            .ok_or_else(|| Error::Invalid("native completion has no workspace".into()))?;
+        let quiescence = super::super::host_process::HostProcessLease::acquire(
+            workspace,
+            session.child,
+            attached.workspace.path(),
+        )?
+        .quiescent();
+        quiescence.verify(claim.task(), attached.workspace.path())?;
         match self.claim_session(claim.operation(), session).await? {
             Some(ChildTurn::InFlight { claim: original }) if &original == claim => {
                 let attached = self.attached(session.child)?;

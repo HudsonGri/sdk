@@ -5,11 +5,13 @@ Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
 import json, os, pathlib, selectors, signal, subprocess, sys, tempfile, time, traceback
+from native_events import native_event_fixture
 if len(sys.argv) != 5:
  raise SystemExit(__doc__)
 acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:4])
 scenario=sys.argv[4]
 assert scenario in ('lifecycle','recursive','resume')
+fixture_path, native_session_id = native_event_fixture('codex')
 started=time.monotonic()
 def interrupted(signum, frame):
  traceback.print_stack(frame)
@@ -17,7 +19,7 @@ def interrupted(signum, frame):
 signal.signal(signal.SIGTERM,interrupted)
 with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary:
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
- env={'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied')}
+ env={'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied')}
  for key in ('HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','XDG_STATE_HOME','XDG_CONFIG_HOME','XDG_DATA_HOME'):
   directory=root/key.lower();directory.mkdir();env[key]=str(directory)
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
@@ -50,7 +52,7 @@ if first=='B':
 prompt=first+sys.stdin.read()
 assert prompt in ('failed','cancelled','recursive','first','resumed')
 (cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
-print(json.dumps({'type':'thread.started','thread_id':'fixture-native-id'}),flush=True)
+sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 base=[os.environ['FIXTURE_CODEX'],'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c','sandbox_workspace_write.writable_roots='+json.dumps([args[args.index('--add-dir')+1]]),'--']
 if prompt=='resumed': assert (cwd/'.volumes/scratch/native-private.txt').read_text()=='first'
 checked=subprocess.run(base+['sh','-c',
@@ -82,8 +84,10 @@ if prompt=='cancelled':
  (cwd/'ready').write_text('ready')
  time.sleep(30)
 if prompt=='failed': sys.exit(17)
-if prompt=='resumed': assert args[args.index('resume')+1]=='fixture-native-id'
-print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'native done'}}),flush=True)
+if prompt=='resumed':
+ event=json.loads(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text())
+ assert args[args.index('resume')+1]==event['thread_id']
+
 ''');fake.chmod(0o755)
  owner=None;bridge=None;pending=b'';responses={};sequence=0
  def start_owner():
@@ -180,7 +184,7 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
    close_bridge();stop_owner();start_owner();start_bridge(parent)
    resumed=tool('resume','retained','resumed');tool('wait','retained')
    assert resumed['cwd']!=old_view,'retained view was not recreated'
-   launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and 'fixture-native-id' in launch['args']
+   launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and native_session_id in launch['args']
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS resume-recreated-view-merge',flush=True)

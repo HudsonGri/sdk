@@ -42,6 +42,8 @@ pub mod host_files;
 #[cfg(feature = "native-execution")]
 pub mod host_owner;
 #[cfg(feature = "native-execution")]
+pub mod host_process;
+#[cfg(feature = "native-execution")]
 pub(crate) mod host_task;
 #[cfg(feature = "native-execution")]
 pub mod host_workspace;

@@ -60,6 +60,80 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn native_completion_fences_physical_custody_through_every_host() -> Result<()> {
+    use super::super::host_process::HostProcessLease;
+    for host in ["codex", "claude-code", "pi"] {
+        let mut fixture = Fixture::for_host(host).await?;
+        let observed = fixture
+            .session(
+                "physical",
+                SessionAction::Spawn {
+                    prompt: "physical process ownership".into(),
+                },
+            )
+            .await?;
+        let child: TaskId = serde_json::from_value(observed["task"].clone()).map_err(storage)?;
+        let view = PathBuf::from(observed["cwd"].as_str().unwrap());
+        let lease = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?;
+        let claimed = fixture.session("physical", SessionAction::Next).await?;
+        let claim = serde_json::from_value(claimed["claim"].clone()).map_err(storage)?;
+        native_write(&view.join("partial.txt"), b"write before failure")?;
+        let action = SessionAction::Complete {
+            claim,
+            outcome: Outcome::Failed {
+                message: "native tool failed after writing".into(),
+            },
+        };
+        let error = fixture
+            .session("physical", action.clone())
+            .await
+            .expect_err("a JSON result cannot release a live physical owner");
+        assert!(
+            error
+                .to_string()
+                .contains("step=acquire native process custody"),
+            "{error}"
+        );
+        assert!(
+            fixture
+                .session("physical", SessionAction::Recover)
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .owner
+                .dispatch(OperationId::new(), HostAction::Capture { task: child })
+                .await
+                .is_err()
+        );
+        let status = fixture.session("physical", SessionAction::Observe).await?;
+        assert_eq!(status.pointer("/status/settled"), Some(&json!(false)));
+        drop(lease);
+        fixture.session("physical", action).await?;
+        fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Fs {
+                    task: fixture.parent,
+                    command: "merge agents/physical".into(),
+                },
+            )
+            .await?;
+        assert_eq!(
+            std::fs::read(fixture.checkout.path().join("partial.txt")).map_err(storage)?,
+            b"write before failure"
+        );
+        let proof = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?.quiescent();
+        assert!(proof.verify(fixture.parent, &view).is_err());
+        assert!(proof.verify(child, fixture.checkout.path()).is_err());
+        proof.verify(child, &view)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_claim_fence_and_read_only_observation_cover_every_host() -> Result<()> {
     for host in ["codex", "claude-code", "pi"] {
         let mut fixture = Fixture::for_host(host).await?;

@@ -30,7 +30,7 @@ fn process_storage_is_small_and_matches_the_original_heap_credit() {
     );
     assert_eq!(
         usize::try_from(physical.bytes_current).unwrap(),
-        std::mem::size_of::<Option<ProcessTree>>()
+        std::mem::size_of::<ProcessSlot>()
     );
     let HostState::Running(slot) = &state else {
         panic!("missing funded slot")
@@ -123,7 +123,8 @@ fn failed_spawn_keeps_the_partial_tree_and_its_storage_on_the_original_owner() {
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
     // On Windows this fails the physical record's recording; on Unix it
     // fails the armed spawn's recording. Both return an owned partial slot.
-    meter.fail_recorded_operation = Some(if cfg!(windows) { 1 } else { 2 });
+    meter.fail_recorded_operation =
+        Some(platform::RETIREMENT_WRITES + 1 + if cfg!(windows) { 1 } else { 2 });
     let original = Arc::new(meter);
     let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
@@ -143,5 +144,45 @@ fn failed_spawn_keeps_the_partial_tree_and_its_storage_on_the_original_owner() {
     );
     assert_eq!(original.memory.load(Ordering::Acquire), retained);
     drop(slot);
+    assert_eq!(original.memory.load(Ordering::Acquire), 0);
+}
+
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn dropping_cancelled_original_owner_stops_and_reaps_before_releasing_credit() {
+    let root = tempfile::tempdir().unwrap();
+    let custody = ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let original = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
+    let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
+    let mut slot = ProcessTreeStorage::new(&observer).unwrap();
+    slot.spawn(
+        &mut super::super::tests::command("child", root.path()),
+        Some(&custody),
+    )
+    .unwrap();
+    super::super::tests::ready(root.path(), "tree-ready", || {
+        slot.try_wait().unwrap().is_some()
+    });
+    let pid = slot.tree_mut().unwrap().child.as_ref().unwrap().id();
+    let watch = super::super::custody_tests::Watch::new(pid).unwrap();
+    assert!(!watch.exited());
+    original.cancelled.store(true, Ordering::Release);
+    assert_eq!(
+        slot.terminate().unwrap_err().kind(),
+        io::ErrorKind::Interrupted
+    );
+    assert!(original.memory.load(Ordering::Acquire) > 0);
+    drop(slot);
+    assert!(
+        watch.exited(),
+        "the old owner drops its credit with the child still running"
+    );
+    custody.fence_stale().unwrap();
+    assert_eq!(
+        std::fs::read_dir(root.path().join("custody"))
+            .unwrap()
+            .count(),
+        0
+    );
     assert_eq!(original.memory.load(Ordering::Acquire), 0);
 }
