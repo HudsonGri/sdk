@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Exact external host inputs for Acyclic qualification",
   "scripts": {
-    "test:shim": "bun test shim-contract.test.ts"
+    "test:shim": "bun test shim-contract.test.ts && bun test pi-bridge.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.278",
