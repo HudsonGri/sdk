@@ -92,24 +92,9 @@ impl HostWorkspaceOwner {
 
     pub(super) async fn locate(&mut self, cwd: &Path) -> Result<Value> {
         let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-        let snapshot = self
-            .local
-            .task_files
-            .snapshot(&Query::TaskOverviews, 4096)
-            .await
-            .map_err(storage)?;
-        for file in snapshot.files {
-            let FileKey::Task { task, .. } = file.key else {
-                continue;
-            };
-            let task = serde_json::from_value(json!(task.as_str())).map_err(storage)?;
-            if self.require_native(task).await.is_ok() {
-                match self.attach(task).await {
-                    Ok(()) | Err(Error::Unauthorized(_) | Error::Conflict(_)) => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
+        // A native session enters only after its view has been attached. Cwd
+        // discovery observes those held admissions; it must never reconstruct
+        // the task tree or acquire unrelated views as a side effect of a read.
         let mut selected = self
             .views
             .iter()
@@ -131,6 +116,12 @@ impl HostWorkspaceOwner {
                 "multiple native sessions select this directory; use --task".into(),
             ));
         }
+        if cwd.starts_with(first.workspace.path().join(host_workspace::HOST_VIEW_ROOT)) {
+            return Err(Error::NotFound(
+                "native cwd selects no held agent view".into(),
+            ));
+        }
+        first.workspace.verify(&first.context).await?;
         self.location(**task)
     }
 
