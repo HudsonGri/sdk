@@ -292,7 +292,7 @@ def main():
     records.mkdir(parents=True)
     if os.environ.get('WIN_TEST_TARGET_DIR') or os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK'):
         fail('Windows builds require build-slot job-owned targets; custom targets/source clocks are prohibited')
-    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-artifacts.py'):
+    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)
@@ -325,8 +325,8 @@ def consume(root, records, runtime):
         fail('Windows export records must be an existing owned directory')
     admission = runner_module(root / 'scripts/windows-artifacts.py')
     archive, checksum = admission.fetch_export(records, (records / 'build.log').read_text(encoding='utf-8'))
-    manifest = admission.admit_archive(records, archive, checksum)
-    return run_tests(records, manifest, runtime)
+    admitted = admission.admit_archive(records, archive, checksum)
+    return run_tests(admitted.directory, admitted.manifest, runtime)
 
 
 def run_tests(records, manifest, runtime):

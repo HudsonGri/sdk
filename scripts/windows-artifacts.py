@@ -6,28 +6,30 @@ does not build, select Cargo artifacts, own processes or run product tests.
 OpenAI Codex <noreply@openai.com>.
 """
 
+from collections import namedtuple
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+import os
+from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
 import tarfile
+from types import ModuleType
 import uuid
+
+
+materializer = ModuleType("acyclic_materializer")
+materializer.__file__ = str(Path(__file__).with_name("graphcoder-e2e") / "materialize.py")
+exec(compile(Path(materializer.__file__).read_bytes(), materializer.__file__, "exec"),
+     materializer.__dict__)
+AdmittedExport = namedtuple("AdmittedExport", "directory manifest")
 
 
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def relative(name):
-    path = PurePosixPath(name)
-    if (not path.parts or path.is_absolute() or ".." in path.parts
-            or "\\" in name or ":" in name or path.as_posix() != name):
-        raise ValueError("Unsafe archive/source path: " + name)
-    return path
 
 
 def require_capacity(directory, needed):
@@ -59,14 +61,15 @@ def fetch_export(records, build_log):
                "t=tarfile.open(p); print(json.dumps(dict(bytes=p.stat().st_size,"
                "expanded_bytes=sum(m.size for m in t if m.isfile()))))")
     command = ["python3", "-c", inspect, remote]
-    transport = ["wsl.exe", "-d", "Ubuntu", "-e"]
+    transport = ["wsl.exe", "-d", "Ubuntu", "-e"] if os.name == "nt" else []
     config = ["-F", "/home/var/.ssh/buildbox/config", "-o", "BatchMode=yes"]
     sizes = json.loads(subprocess.check_output(
         [*transport, "ssh", *config, "bb2", shlex.join(command)], text=True))
     require_capacity(records, sizes["bytes"] + sizes["expanded_bytes"])
     incoming = records / ("incoming-" + uuid.uuid4().hex + ".tar.gz")
     incoming.touch(exist_ok=False)
-    target = "/mnt/" + incoming.drive[0].lower() + incoming.as_posix()[2:]
+    target = ("/mnt/" + incoming.drive[0].lower() + incoming.as_posix()[2:]
+              if os.name == "nt" else str(incoming))
     # A failed transfer is retained at its exclusive path. A later --consume
     # uses this same immutable producer; it cannot rerun Cargo or overwrite it.
     subprocess.run([*transport, "scp", *config, "bb2:" + remote, target], check=True)
@@ -85,7 +88,7 @@ def fetch_export(records, build_log):
 
 
 def destination(records, name):
-    path = records.joinpath(*relative(name).parts)
+    path = records.joinpath(*materializer.member_path(name).parts)
     # A retained partial extraction must never redirect subsequent admission.
     for part in (path, *path.parents):
         if part.is_symlink() or part.is_junction():
@@ -96,11 +99,12 @@ def destination(records, name):
 
 
 def admit_archive(records, archive, expected_sha256):
-    """Verify the whole immutable export before writing, then resume its files.
+    """Return an owned, fully reserved export closure and its admitted manifest.
 
-    Complete matching files are reused. Incomplete files retain their original
-    bytes in failed-transfers; only an admitted replacement becomes executable.
-    The archive is retained so a completed build is never repeated for a fetch.
+    A complete closure is verified and reused. Incomplete historical extraction
+    bytes stay untouched; consumers use only the returned directory. The shared
+    materializer reserves every destination extent before the first payload
+    write, and publishes no fixture if capacity admission fails.
     """
     records, archive = Path(records), Path(archive)
     if not re.fullmatch("[0-9a-f]{64}", expected_sha256) or digest(archive) != expected_sha256:
@@ -111,7 +115,7 @@ def admit_archive(records, archive, expected_sha256):
         if len(names) != len({name.casefold() for name in names}) or names.count("manifest.json") != 1:
             raise ValueError("Duplicate member or missing export manifest")
         for member in members:
-            relative(member.name)
+            materializer.member_path(member.name)
             if not member.isfile():
                 raise ValueError("Unexpected non-file archive member: " + member.name)
         manifest = json.load(tar.extractfile("manifest.json"))
@@ -132,7 +136,7 @@ def admit_archive(records, archive, expected_sha256):
             raise ValueError("Incomplete artifact/fixture fetch")
         if "process_host" in manifest and json.load(tar.extractfile("host-receipt.json")) != manifest["process_host"]["receipt"]:
             raise ValueError("Process host receipt differs from the export manifest")
-        planned, needed, reused = [], 0, 0
+        inventory = {}
         for member in members:
             name = member.name
             if name != "manifest.json" and name not in allowed and not re.fullmatch(
@@ -142,33 +146,22 @@ def admit_archive(records, archive, expected_sha256):
                 actual = hashlib.file_digest(stream, "sha256").hexdigest()
             if name in allowed and actual != allowed[name]:
                 raise ValueError("Fetched file SHA-256 mismatch: " + name)
-            path = destination(records, name)
-            if path.exists() and not path.is_file():
-                raise ValueError("Archive destination is not a regular file: " + name)
-            complete = path.is_file() and path.stat().st_size == member.size and digest(path) == actual
-            if complete:
-                reused += 1
-            else:
-                needed += member.size
-            planned.append((member, path, actual, complete))
-        require_capacity(records, needed)
-        for member, path, actual, complete in planned:
-            if complete:
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.exists():
-                failed = records / "failed-transfers" / uuid.uuid4().hex
-                failed.mkdir(parents=True)
-                path.rename(failed / path.name)
-                (failed / "receipt.json").write_text(json.dumps({
-                    "path": member.name, "retained_sha256": digest(failed / path.name),
-                    "expected_sha256": actual, "archive_sha256": expected_sha256,
-                }, indent=2), encoding="utf-8")
-            # Exclusive creation cannot silently replace another consumer's file.
-            with tar.extractfile(member) as src, path.open("xb") as output:
-                shutil.copyfileobj(src, output)
-            if digest(path) != actual:
-                raise ValueError("Admitted file changed while extracting: " + member.name)
+            inventory[name] = dict(sha256=actual, bytes=member.size)
+    # Recovery validates a complete immutable closure; it never adopts a
+    # partially written file or resumes payload writes without reservation.
+    for closure in sorted(records.glob("closure-*")):
+        if not re.fullmatch(r"closure-[a-f0-9]{32}", closure.name):
+            continue
+        if closure.is_symlink() or closure.is_junction() or not closure.is_dir():
+            raise ValueError("Export closure is not an owned directory: " + str(closure))
+        if all((path := destination(closure, name)).is_file()
+               and path.stat().st_size == row["bytes"] and digest(path) == row["sha256"]
+               for name, row in inventory.items()):
+            print("WIN_TEST_FETCH_VERIFIED", len(manifest["artifacts"]), "executables,",
+                  len(manifest["source"]), "source/fixture files; retained complete closure", flush=True)
+            return AdmittedExport(closure, manifest)
+    require_capacity(records, sum(row["bytes"] for row in inventory.values()))
+    closure = materializer.materialize(archive, expected_sha256, inventory, records)
     print("WIN_TEST_FETCH_VERIFIED", len(manifest["artifacts"]), "executables,",
-          len(manifest["source"]), "source/fixture files;", reused, "retained files", flush=True)
-    return manifest
+          len(manifest["source"]), "source/fixture files; fully reserved closure", flush=True)
+    return AdmittedExport(closure, manifest)

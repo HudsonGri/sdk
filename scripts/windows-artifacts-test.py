@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real Windows export admission and interrupted-transfer regression controls."""
 
+import errno
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ from unittest.mock import patch
 path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("windows-artifacts.py")
 sys.argv[1:] = []
 api = ModuleType("windows_artifacts")
+api.__file__ = str(path)
 exec(compile(path.read_bytes(), str(path), "exec"), api.__dict__)
 
 
@@ -93,10 +95,10 @@ class AdmissionTests(unittest.TestCase):
 
     def test_owned_host_is_part_of_the_admitted_export(self):
         archive, checksum, data = self.export(host="valid")
-        manifest = api.admit_archive(self.records, archive, checksum)
-        self.assertEqual((self.records / "bin/host.exe").read_bytes(), data)
-        self.assertEqual(json.loads((self.records / "host-receipt.json").read_text()),
-                         manifest["process_host"]["receipt"])
+        admitted = api.admit_archive(self.records, archive, checksum)
+        self.assertEqual((admitted.directory / "bin/host.exe").read_bytes(), data)
+        self.assertEqual(json.loads((admitted.directory / "host-receipt.json").read_text()),
+                         admitted.manifest["process_host"]["receipt"])
 
     def test_host_source_must_match_the_exported_graph(self):
         self.assert_rejected_without_writes(host="changed-source")
@@ -122,12 +124,10 @@ class AdmissionTests(unittest.TestCase):
         partial = self.records / "bin/probe.exe"
         partial.parent.mkdir()
         partial.write_bytes(b"incomplete transfer")
-        api.admit_archive(self.records, archive, checksum)
-        self.assertEqual(partial.read_bytes(), data)
-        receipts = list((self.records / "failed-transfers").glob("*/receipt.json"))
-        self.assertEqual(len(receipts), 1)
-        self.assertEqual((receipts[0].parent / "probe.exe").read_bytes(), b"incomplete transfer")
-        self.assertEqual(json.loads(receipts[0].read_text())["archive_sha256"], checksum)
+        admitted = api.admit_archive(self.records, archive, checksum)
+        self.assertEqual((admitted.directory / "bin/probe.exe").read_bytes(), data)
+        self.assertEqual(partial.read_bytes(), b"incomplete transfer")
+        self.assertNotEqual(admitted.directory, self.records)
 
     def test_complete_resume_preserves_existing_file(self):
         archive, checksum, _ = self.export()
@@ -135,6 +135,57 @@ class AdmissionTests(unittest.TestCase):
         paths = {p: p.stat().st_mtime_ns for p in self.records.rglob("*") if p.is_file()}
         api.admit_archive(self.records, archive, checksum)
         self.assertEqual({p: p.stat().st_mtime_ns for p in paths}, paths)
+
+    def test_all_extents_are_reserved_before_any_payload_write(self):
+        archive, checksum, _ = self.export()
+        reserved = []
+        reserve, write = api.materializer._reserve_file, api.materializer._write_member
+
+        def allocation(path, size):
+            reserve(path, size)
+            reserved.append(path)
+
+        def consume(*args):
+            self.assertEqual(len(reserved), 2, "payload precedes complete physical admission")
+            return write(*args)
+
+        with (patch.object(api.materializer, "_reserve_file", allocation),
+              patch.object(api.materializer, "_write_member", consume)):
+            admitted = api.admit_archive(self.records, archive, checksum)
+        self.assertEqual(len(reserved), 2)
+        self.assertTrue(admitted.directory.is_dir())
+
+    def test_physical_capacity_refusal_copies_no_payload(self):
+        archive, checksum, _ = self.export()
+        reserved = []
+        reserve = api.materializer._reserve_file
+
+        def exhausted(path, size):
+            reserved.append(path)
+            if len(reserved) == 2:
+                raise OSError(errno.ENOSPC, "controlled physical admission refusal")
+            return reserve(path, size)
+
+        with (patch.object(api.materializer, "_reserve_file", exhausted),
+              patch.object(api.materializer, "_write_member",
+                           side_effect=AssertionError("payload copied before full reservation")),
+              patch.object(api.shutil, "copyfileobj",
+                           side_effect=AssertionError("legacy streaming copied before reservation"))):
+            with self.assertRaises(OSError):
+                api.admit_archive(self.records, archive, checksum)
+        self.assertEqual(len(reserved), 2)
+        self.assertEqual(list(self.records.iterdir()), [])
+
+    def test_incomplete_closure_is_retained_and_never_adopted(self):
+        archive, checksum, data = self.export()
+        partial = self.records / ("closure-" + "a" * 32)
+        (partial / "bin").mkdir(parents=True)
+        (partial / "bin/probe.exe").write_bytes(data)
+        (partial / "manifest.json").write_bytes(b"interrupted manifest")
+        admitted = api.admit_archive(self.records, archive, checksum)
+        self.assertNotEqual(admitted.directory, partial)
+        self.assertEqual((partial / "manifest.json").read_bytes(), b"interrupted manifest")
+        self.assertEqual((admitted.directory / "bin/probe.exe").read_bytes(), data)
 
     def test_existing_exact_archive_does_not_fetch(self):
         archive, checksum, _ = self.export()
