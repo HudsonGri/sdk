@@ -59,226 +59,271 @@ impl Fixture {
     }
 }
 
+// Each host runs every fence against one admitted root. Reusing that root
+// avoids repeating durable harness/mount setup for independent mailbox checks;
+// each invariant still owns a distinct child and retains its negative controls.
 #[tokio::test]
-async fn native_completion_fences_physical_custody_through_every_host() -> Result<()> {
+async fn codex_native_coordination_contract() -> Result<()> {
+    native_fence_contract("codex").await
+}
+#[tokio::test]
+async fn claude_native_coordination_contract() -> Result<()> {
+    native_fence_contract("claude-code").await
+}
+#[tokio::test]
+async fn pi_native_coordination_contract() -> Result<()> {
+    native_fence_contract("pi").await
+}
+async fn native_fence_contract(host: &str) -> Result<()> {
+    let started = std::time::Instant::now();
+    let mut fixture = Fixture::for_host(host).await?;
+    eprintln!("native contract {host}: admitted {:?}", started.elapsed());
+    native_claim_fence_and_read_only_observation_cover_every_host(&mut fixture).await?;
+    eprintln!(
+        "native contract {host}: claim fence {:?}",
+        started.elapsed()
+    );
+    native_completion_fences_physical_custody_through_every_host(&mut fixture).await?;
+    eprintln!(
+        "native contract {host}: physical fence {:?}",
+        started.elapsed()
+    );
+    split_status_without_an_atomic_claim_cannot_authorize_recovery(&mut fixture).await?;
+    eprintln!(
+        "native contract {host}: atomic mailbox {:?}",
+        started.elapsed()
+    );
+    shared_native_session_lifecycle(&mut fixture, host).await?;
+    eprintln!(
+        "native contract {host}: resumed lifecycle {:?}",
+        started.elapsed()
+    );
+    failed_and_cancelled_tools_leave_mergeable_views(&mut fixture, host).await?;
+    eprintln!(
+        "native contract {host}: failed/cancelled writes {:?}",
+        started.elapsed()
+    );
+    live_observation_keeps_latest_result_and_retains_shared_history(&mut fixture).await
+}
+async fn native_completion_fences_physical_custody_through_every_host(
+    fixture: &mut Fixture,
+) -> Result<()> {
     use super::super::host_process::HostProcessLease;
-    for host in ["codex", "claude-code", "pi"] {
-        let mut fixture = Fixture::for_host(host).await?;
-        let observed = fixture
-            .session(
-                "physical",
-                SessionAction::Spawn {
-                    prompt: "physical process ownership".into(),
-                },
-            )
-            .await?;
-        let child: TaskId = serde_json::from_value(observed["task"].clone()).map_err(storage)?;
-        let view = PathBuf::from(observed["cwd"].as_str().unwrap());
-        let lease = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?;
-        let claimed = fixture.session("physical", SessionAction::Next).await?;
-        let claim = serde_json::from_value(claimed["claim"].clone()).map_err(storage)?;
-        native_write(&view.join("partial.txt"), b"write before failure")?;
-        let action = SessionAction::Complete {
-            claim,
-            outcome: Outcome::Failed {
-                message: "native tool failed after writing".into(),
+
+    let observed = fixture
+        .session(
+            "physical",
+            SessionAction::Spawn {
+                prompt: "physical process ownership".into(),
             },
-        };
-        let error = fixture
-            .session("physical", action.clone())
+        )
+        .await?;
+    let child: TaskId = serde_json::from_value(observed["task"].clone()).map_err(storage)?;
+    let view = PathBuf::from(
+        observed["cwd"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("physical child cwd absent".into()))?,
+    );
+    let lease = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?;
+    let claimed = fixture.session("physical", SessionAction::Next).await?;
+    let claim = serde_json::from_value(claimed["claim"].clone()).map_err(storage)?;
+    native_write(&view.join("partial.txt"), b"write before failure")?;
+    let action = SessionAction::Complete {
+        claim,
+        outcome: Outcome::Failed {
+            message: "native tool failed after writing".into(),
+        },
+    };
+    let error = match fixture.session("physical", action.clone()).await {
+        Err(error) => error,
+        Ok(result) => panic!("a JSON result cannot release a live physical owner: {result}"),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("step=acquire native process custody"),
+        "{error}"
+    );
+    assert!(
+        fixture
+            .session("physical", SessionAction::Recover)
             .await
-            .expect_err("a JSON result cannot release a live physical owner");
-        assert!(
-            error
-                .to_string()
-                .contains("step=acquire native process custody"),
-            "{error}"
-        );
-        assert!(
-            fixture
-                .session("physical", SessionAction::Recover)
-                .await
-                .is_err()
-        );
-        assert!(
-            fixture
-                .owner
-                .dispatch(OperationId::new(), HostAction::Capture { task: child })
-                .await
-                .is_err()
-        );
-        let status = fixture.session("physical", SessionAction::Observe).await?;
-        assert_eq!(status.pointer("/status/settled"), Some(&json!(false)));
-        drop(lease);
-        fixture.session("physical", action).await?;
+            .is_err()
+    );
+    assert!(
         fixture
             .owner
-            .dispatch(
-                OperationId::new(),
-                HostAction::Fs {
-                    task: fixture.parent,
-                    command: "merge agents/physical".into(),
-                },
-            )
-            .await?;
-        assert_eq!(
-            std::fs::read(fixture.checkout.path().join("partial.txt")).map_err(storage)?,
-            b"write before failure"
-        );
-        let proof = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?.quiescent();
-        assert!(proof.verify(fixture.parent, &view).is_err());
-        assert!(proof.verify(child, fixture.checkout.path()).is_err());
-        proof.verify(child, &view)?;
-    }
+            .dispatch(OperationId::new(), HostAction::Capture { task: child })
+            .await
+            .is_err()
+    );
+    let status = fixture.session("physical", SessionAction::Observe).await?;
+    assert_eq!(status.pointer("/status/settled"), Some(&json!(false)));
+    drop(lease);
+    fixture.session("physical", action).await?;
+    fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Fs {
+                task: fixture.parent,
+                command: "merge agents/physical".into(),
+            },
+        )
+        .await?;
+    assert_eq!(
+        std::fs::read(fixture.checkout.path().join("partial.txt")).map_err(storage)?,
+        b"write before failure"
+    );
+    let proof = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?.quiescent();
+    assert!(proof.verify(fixture.parent, &view).is_err());
+    assert!(proof.verify(child, fixture.checkout.path()).is_err());
+    proof.verify(child, &view)?;
     Ok(())
 }
 
-#[tokio::test]
-async fn native_claim_fence_and_read_only_observation_cover_every_host() -> Result<()> {
-    for host in ["codex", "claude-code", "pi"] {
-        let mut fixture = Fixture::for_host(host).await?;
-        let parent = fixture.owner.attached(fixture.parent)?;
+async fn native_claim_fence_and_read_only_observation_cover_every_host(
+    fixture: &mut Fixture,
+) -> Result<()> {
+    let parent = fixture.owner.attached(fixture.parent)?;
+    fixture
+        .owner
+        .local
+        .admit_host_child(&parent.context, "unentered")
+        .await?;
+    let before = fixture
+        .owner
+        .local
+        .task_files
+        .inner
+        .head()
+        .await
+        .map_err(storage)?;
+    let located = fixture.owner.locate(fixture.checkout.path()).await?;
+    assert_eq!(located["task"], json!(fixture.parent));
+    assert_eq!(
+        fixture.owner.views.len(),
+        1,
+        "cwd discovery attached an unentered task"
+    );
+    assert_eq!(
+        before,
         fixture
-            .owner
-            .local
-            .admit_host_child(&parent.context, "unentered")
-            .await?;
-        let before = fixture
             .owner
             .local
             .task_files
             .inner
             .head()
             .await
-            .map_err(storage)?;
-        let located = fixture.owner.locate(fixture.checkout.path()).await?;
-        assert_eq!(located["task"], json!(fixture.parent));
-        assert_eq!(
-            fixture.owner.views.len(),
-            1,
-            "cwd discovery attached an unentered task"
-        );
-        assert_eq!(
-            before,
-            fixture
-                .owner
-                .local
-                .task_files
-                .inner
-                .head()
-                .await
-                .map_err(storage)?
-        );
-        let unknown = fixture
-            .checkout
-            .path()
-            .join(host_workspace::HOST_VIEW_ROOT)
-            .join("unadmitted");
-        std::fs::create_dir(&unknown).map_err(storage)?;
-        assert!(
-            fixture.owner.locate(&unknown).await.is_err(),
-            "unknown agent cwd fell back to its parent"
-        );
-        fixture
-            .session(
-                "worker",
-                SessionAction::Spawn {
-                    prompt: "initial".into(),
-                },
-            )
-            .await?;
-        let child = fixture.session("worker", SessionAction::Observe).await?;
-        let cwd = Path::new(
-            child["cwd"]
-                .as_str()
-                .ok_or_else(|| Error::Invalid("child cwd absent".into()))?,
-        );
-        assert_eq!(fixture.owner.locate(cwd).await?["task"], child["task"]);
-        let files = fixture.owner.files(fixture.parent).await?;
-        let before = files.inner.head().await.map_err(storage)?;
-        fixture.session("worker", SessionAction::Observe).await?;
-        assert_eq!(
-            before,
-            files.inner.head().await.map_err(storage)?,
-            "observation published or re-admitted a child"
-        );
-        let next = fixture.session("worker", SessionAction::Next).await?;
-        let original = serde_json::from_value(next["claim"].clone()).map_err(storage)?;
-        let mut forged = next["claim"].clone();
-        forged["operation"] = serde_json::to_value(OperationId::new()).map_err(storage)?;
-        let before = files.inner.head().await.map_err(storage)?;
-        assert!(
-            fixture
-                .session(
-                    "worker",
-                    SessionAction::Complete {
-                        claim: serde_json::from_value(forged).map_err(storage)?,
-                        outcome: Outcome::Cancelled,
-                    }
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            before,
-            files.inner.head().await.map_err(storage)?,
-            "foreign claim changed the mailbox"
-        );
+            .map_err(storage)?
+    );
+    let unknown = fixture
+        .checkout
+        .path()
+        .join(host_workspace::HOST_VIEW_ROOT)
+        .join("unadmitted");
+    std::fs::create_dir(&unknown).map_err(storage)?;
+    assert!(
+        fixture.owner.locate(&unknown).await.is_err(),
+        "unknown agent cwd fell back to its parent"
+    );
+    fixture
+        .session(
+            "worker",
+            SessionAction::Spawn {
+                prompt: "initial".into(),
+            },
+        )
+        .await?;
+    let child = fixture.session("worker", SessionAction::Observe).await?;
+    let cwd = Path::new(
+        child["cwd"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("child cwd absent".into()))?,
+    );
+    assert_eq!(fixture.owner.locate(cwd).await?["task"], child["task"]);
+    let files = fixture.owner.files(fixture.parent).await?;
+    let before = files.inner.head().await.map_err(storage)?;
+    fixture.session("worker", SessionAction::Observe).await?;
+    assert_eq!(
+        before,
+        files.inner.head().await.map_err(storage)?,
+        "observation published or re-admitted a child"
+    );
+    let next = fixture.session("worker", SessionAction::Next).await?;
+    let original = serde_json::from_value(next["claim"].clone()).map_err(storage)?;
+    let mut forged = next["claim"].clone();
+    forged["operation"] = serde_json::to_value(OperationId::new()).map_err(storage)?;
+    let before = files.inner.head().await.map_err(storage)?;
+    assert!(
         fixture
             .session(
                 "worker",
                 SessionAction::Complete {
-                    claim: original,
+                    claim: serde_json::from_value(forged).map_err(storage)?,
                     outcome: Outcome::Cancelled,
-                },
+                }
             )
-            .await?;
-    }
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        before,
+        files.inner.head().await.map_err(storage)?,
+        "foreign claim changed the mailbox"
+    );
+    fixture
+        .session(
+            "worker",
+            SessionAction::Complete {
+                claim: original,
+                outcome: Outcome::Cancelled,
+            },
+        )
+        .await?;
     Ok(())
 }
 
-#[tokio::test]
-async fn split_status_without_an_atomic_claim_cannot_authorize_recovery() -> Result<()> {
-    for host in ["codex", "claude-code", "pi"] {
-        let mut fixture = Fixture::for_host(host).await?;
-        let child = fixture
-            .session(
-                "worker",
-                SessionAction::Spawn {
-                    prompt: "initial".into(),
+async fn split_status_without_an_atomic_claim_cannot_authorize_recovery(
+    fixture: &mut Fixture,
+) -> Result<()> {
+    let child = fixture
+        .session(
+            "split-worker",
+            SessionAction::Spawn {
+                prompt: "initial".into(),
+            },
+        )
+        .await?;
+    let task = serde_json::from_value(child["task"].clone()).map_err(storage)?;
+    fixture
+        .owner
+        .publish(
+            fixture.parent,
+            FileValue::new(
+                FileKey::Child {
+                    reference: Component::new("split-worker").map_err(storage)?,
+                    file: ChildFile::Status,
                 },
-            )
-            .await?;
-        let task = serde_json::from_value(child["task"].clone()).map_err(storage)?;
+                serde_json::to_vec(&ChildStatus {
+                    task,
+                    state: ChildState::Running,
+                    settled: false,
+                    inputs: 1,
+                })
+                .map_err(storage)?,
+            ),
+        )
+        .await?;
+    let files = fixture.owner.files(fixture.parent).await?;
+    let before = files.inner.head().await.map_err(storage)?;
+    assert!(
         fixture
-            .owner
-            .publish(
-                fixture.parent,
-                FileValue::new(
-                    FileKey::Child {
-                        reference: Component::new("worker").map_err(storage)?,
-                        file: ChildFile::Status,
-                    },
-                    serde_json::to_vec(&ChildStatus {
-                        task,
-                        state: ChildState::Running,
-                        settled: false,
-                        inputs: 1,
-                    })
-                    .map_err(storage)?,
-                ),
-            )
-            .await?;
-        let files = fixture.owner.files(fixture.parent).await?;
-        let before = files.inner.head().await.map_err(storage)?;
-        assert!(
-            fixture
-                .session("worker", SessionAction::Recover)
-                .await
-                .is_err()
-        );
-        assert_eq!(before, files.inner.head().await.map_err(storage)?);
-    }
+            .session("split-worker", SessionAction::Recover)
+            .await
+            .is_err()
+    );
+    assert_eq!(before, files.inner.head().await.map_err(storage)?);
     Ok(())
 }
 
@@ -314,33 +359,18 @@ async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -
 
 // Negative control: this same lifecycle on the previous per-tool ledger leaves
 // a pending write with no PostToolUse and refuses SessionEnd/capture/merge.
-#[tokio::test]
-async fn codex_failed_and_cancelled_tools_leave_mergeable_views() -> Result<()> {
-    failed_and_cancelled_tools_leave_mergeable_views("codex").await
-}
-
-#[tokio::test]
-async fn claude_failed_and_cancelled_tools_leave_mergeable_views() -> Result<()> {
-    failed_and_cancelled_tools_leave_mergeable_views("claude-code").await
-}
-
-#[tokio::test]
-async fn pi_failed_and_cancelled_tools_leave_mergeable_views() -> Result<()> {
-    failed_and_cancelled_tools_leave_mergeable_views("pi").await
-}
-
-async fn failed_and_cancelled_tools_leave_mergeable_views(host: &str) -> Result<()> {
-    let mut fixture = Fixture::for_host(host).await?;
+async fn failed_and_cancelled_tools_leave_mergeable_views(
+    fixture: &mut Fixture,
+    host: &str,
+) -> Result<()> {
+    // Continue the admitted native session across both outcomes. A failed or
+    // cancelled write must not require allocating a replacement child/view.
+    let observed = fixture.session("child", SessionAction::Observe).await?;
+    let retained = serde_json::from_value(observed["task"].clone()).map_err(storage)?;
     for reference in ["failed-write", "cancelled-write"] {
         let location = fixture
             .owner
-            .dispatch(
-                OperationId::new(),
-                HostAction::Fork {
-                    parent: fixture.parent,
-                    reference: reference.into(),
-                },
-            )
+            .dispatch(OperationId::new(), HostAction::Reopen { task: retained })
             .await?;
         let child = serde_json::from_value(location["task"].clone()).map_err(storage)?;
         let cwd = PathBuf::from(
@@ -363,7 +393,7 @@ async fn failed_and_cancelled_tools_leave_mergeable_views(host: &str) -> Result<
                 &parent.context,
                 &attached.context,
                 &attached.workspace,
-                reference,
+                "child",
             )
             .await?;
         let nested = fixture
@@ -440,7 +470,7 @@ async fn failed_and_cancelled_tools_leave_mergeable_views(host: &str) -> Result<
                 OperationId::new(),
                 HostAction::Fs {
                     task: fixture.parent,
-                    command: format!("merge agents/{reference}"),
+                    command: "merge agents/child".into(),
                 },
             )
             .await?;
@@ -457,23 +487,7 @@ async fn failed_and_cancelled_tools_leave_mergeable_views(host: &str) -> Result<
     Ok(())
 }
 
-#[tokio::test]
-async fn codex_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
-    shared_native_session_lifecycle("codex").await
-}
-
-#[tokio::test]
-async fn claude_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
-    shared_native_session_lifecycle("claude-code").await
-}
-
-#[tokio::test]
-async fn pi_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation() -> Result<()> {
-    shared_native_session_lifecycle("pi").await
-}
-
-async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
-    let mut fixture = Fixture::for_host(host).await?;
+async fn shared_native_session_lifecycle(fixture: &mut Fixture, host: &str) -> Result<()> {
     std::fs::write(
         fixture.checkout.path().join("instructions.md"),
         b"discovered in child view",
@@ -587,8 +601,8 @@ async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
         )
         .await?;
     let local = Arc::clone(&fixture.owner.local);
-    drop(fixture.owner);
-    fixture.owner = HostWorkspaceOwner::new(local)?;
+    let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
+    drop(previous);
     fixture
         .owner
         .dispatch(OperationId::new(), HostAction::Reopen { task: child })
@@ -713,24 +727,10 @@ async fn native_claim_recovery_does_not_replay_unacknowledged_input_or_replace_r
     Ok(())
 }
 
-#[tokio::test]
-async fn native_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
-    live_observation_keeps_latest_result_and_retains_shared_history("pi").await
-}
-
-#[tokio::test]
-async fn codex_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
-    live_observation_keeps_latest_result_and_retains_shared_history("codex").await
-}
-
-#[tokio::test]
-async fn claude_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
-    live_observation_keeps_latest_result_and_retains_shared_history("claude-code").await
-}
-
-async fn live_observation_keeps_latest_result_and_retains_shared_history(host: &str) -> Result<()> {
+async fn live_observation_keeps_latest_result_and_retains_shared_history(
+    fixture: &mut Fixture,
+) -> Result<()> {
     const TURNS: u64 = 3;
-    let mut fixture = Fixture::for_host(host).await?;
     fixture
         .session(
             "history",
