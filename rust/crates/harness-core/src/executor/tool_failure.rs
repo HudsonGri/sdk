@@ -157,7 +157,7 @@ impl fmt::Display for RefusalText<'_> {
                 formatter,
                 "tool `{name}` refused the call ({}): {context}: {}",
                 class.label(),
-                CauseText(*error)
+                CauseText(error)
             );
         }
         match reason {
@@ -168,13 +168,13 @@ impl fmt::Display for RefusalText<'_> {
             ToolFailureKind::InvalidInput => write!(
                 formatter,
                 "tool `{name}` rejected its arguments: {}",
-                CauseText(*error)
+                CauseText(error)
             ),
             _ => write!(
                 formatter,
                 "tool `{name}` refused the call ({}): {}",
                 class.label(),
-                CauseText(*error)
+                CauseText(error)
             ),
         }
     }
