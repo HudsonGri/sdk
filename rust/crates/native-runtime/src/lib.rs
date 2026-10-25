@@ -66,6 +66,14 @@ pub(crate) use file::{
     NativeFilePayload, is_uncertain_io_error, validate_prepared_read_range, validate_write_batch,
     with_file_admission, with_file_scope, write_bounded_in_place,
 };
+mod claim;
+pub use claim::{ClaimCheck, StoreClaim, StoreHandle};
+mod descriptor;
+pub use descriptor::{
+    ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
+    DescriptorCost, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
+    cached_descriptor_capacity, cached_descriptors,
+};
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;

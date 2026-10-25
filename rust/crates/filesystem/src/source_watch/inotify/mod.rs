@@ -12,7 +12,7 @@ use crate::native_host::NativeHostWork;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use std::ffi::{CString, OsStr};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -75,7 +75,11 @@ struct Shared {
     /// The hub owns the descriptor; a watch withdraws its registrations
     /// instead of closing it.
     inotify: AtomicI32,
+    /// A duplicate of the root's descriptor, else -1: held only for a root
+    /// opened directly. A root reopened from the process-wide descriptor
+    /// cache is kept as `cached_root` instead, holding no descriptor.
     root: AtomicI32,
+    cached_root: Mutex<Option<crate::native_host::CachedRoot>>,
     /// This watch's identity in the hub's routing tables.
     subscriber: u64,
     this: std::sync::Weak<Shared>,
@@ -178,7 +182,11 @@ impl Shared {
     /// Locks the read cursor, waiting for its holder.
     fn reading(&self) -> ReadingGuard<'_> {
         ReadingGuard {
-            raw: self.reading.raw.lock().unwrap_or_else(PoisonError::into_inner),
+            raw: self
+                .reading
+                .raw
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
             _served: OwedService(self),
         }
     }
