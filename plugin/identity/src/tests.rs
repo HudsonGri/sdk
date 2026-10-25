@@ -206,6 +206,10 @@ async fn bearer_is_private_redacted_and_never_overwrites_an_existing_file() {
         fs::read_to_string(&output).expect("output"),
         "private.token.signature"
     );
+    assert!(
+        private_file::is_private(&private_file::open(&output, false).expect("private bearer"))
+            .expect("bearer permissions")
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -680,6 +684,14 @@ fn credentials_are_exclusive_origin_bound_and_private() {
         assert_eq!(
             fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
             0o600
+        );
+    }
+    for private_path in [&path, &sidecar(&path, ".lock")] {
+        assert!(
+            private_file::is_private(
+                &private_file::open(private_path, false).expect("private credential entry")
+            )
+            .expect("credential permissions")
         );
     }
     drop(store);
@@ -1173,6 +1185,7 @@ fn fresh_login_replaces_unusable_oauth_credentials_but_preserves_agent_keys() {
         serde_json::from_value(json!({"device_code": "device", "user_code": "code",
         "verification_uri": endpoint, "expires_in": 60}))
         .expect("device");
+    drop(private_file::create(&path).expect("private credential fixture"));
     for value in [
         json!({"endpoint": "https://other.test", "session": {}}),
         json!({"endpoint": endpoint, "session": "broken", "agent": null}),
@@ -1303,3 +1316,128 @@ async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
 
 // Advances only production device-poll timers that actually become pending.
 pub(super) mod poll_clock;
+
+#[cfg(unix)]
+#[test]
+fn public_credential_permissions_are_rejected_before_decode() {
+    let directory = tempfile::tempdir().expect("directory");
+    let path = directory.path().join("identity.json");
+    let file = fs::File::create(&path).expect("inherited fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(fs::Permissions::from_mode(0o644))
+            .expect("public fixture");
+    }
+    assert!(!private_file::is_private(&file).expect("inherited permissions"));
+    drop(file);
+    // Negative control: ordinary reads accept the unprotected entry. Store must
+    // reject it before parsing even an empty credential record.
+    assert!(fs::read(&path).expect("unchecked read").is_empty());
+    assert!(Store::open(&path).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn legacy_credentials_and_sidecars_upgrade_without_changing_original_identity() {
+    let directory = tempfile::tempdir().expect("directory");
+    let parent = directory.path().join("private");
+    private_file::create_directory_all(&parent).expect("private directory");
+    let path = parent.join("identity.json");
+    let original = serde_json::to_vec(&agent_credentials("https://example.test"))
+        .expect("original credentials");
+    // Reproduce the previous Windows writer for every retained pathname.
+    fs::write(&path, &original).expect("ordinary credential writer");
+    for suffix in [".lock", ".next"] {
+        fs::write(sidecar(&path, suffix), b"original legacy sidecar")
+            .expect("ordinary sidecar writer");
+    }
+    assert!(
+        private_file::open(&path, false).is_err(),
+        "old strict guard"
+    );
+    let live_reader = fs::File::open(&path).expect("live original reader");
+    assert!(Store::open(&path).is_err(), "migration must be exclusive");
+    drop(live_reader);
+    let alias = parent.join("alias");
+    fs::hard_link(&path, &alias).expect("alias");
+    assert!(
+        Store::open(&path).is_err(),
+        "aliased credentials must be refused"
+    );
+    fs::remove_file(alias).expect("remove fixture alias");
+    for suffix in [".lock", ".next"] {
+        let live_sidecar = fs::File::open(sidecar(&path, suffix)).expect("live legacy sidecar");
+        assert!(
+            Store::open(&path).is_err(),
+            "live {suffix} must prevent migration"
+        );
+        drop(live_sidecar);
+    }
+    let store = Store::open(&path).expect("guarded legacy migration");
+    assert_eq!(
+        serde_json::to_vec(
+            &store
+                .credentials("https://example.test")
+                .expect("credentials")
+        )
+        .expect("retained identity"),
+        original,
+    );
+    assert_eq!(fs::read(&path).expect("unchanged original bytes"), original);
+    for entry in [&path, &sidecar(&path, ".lock")] {
+        assert!(
+            private_file::is_private(
+                &private_file::open(entry, false).expect("private migrated entry")
+            )
+            .expect("private descriptor")
+        );
+    }
+    assert!(!sidecar(&path, ".next").exists());
+    assert_eq!(
+        Store::open(&path).err().expect("same lock").code,
+        "credentials_busy"
+    );
+    drop(store);
+    let reopened = Store::open(&path).expect("private reopen");
+    assert_eq!(
+        serde_json::to_vec(
+            &reopened
+                .credentials("https://example.test")
+                .expect("original identity")
+        )
+        .expect("encoded identity"),
+        original
+    );
+}
+
+#[test]
+fn interrupted_credential_publication_recovers_only_after_exclusive_ownership() {
+    let directory = tempfile::tempdir().expect("directory");
+    let path = directory.path().join("identity.json");
+    let store = Store::open(&path).expect("original owner");
+    store
+        .save(&agent_credentials("https://example.test"))
+        .expect("original record");
+    let original = fs::read(&path).expect("original bytes");
+    let temporary = sidecar(&path, ".next");
+    let mut partial = private_file::create(&temporary).expect("interrupted staging");
+    partial
+        .write_all(b"incomplete secret")
+        .expect("partial write");
+    drop(partial);
+    // Negative control: creation alone cannot recover a stale fixed sidecar.
+    assert!(private_file::create(&temporary).is_err());
+    assert!(
+        Store::open(&path).is_err(),
+        "a live publisher must keep staging ownership"
+    );
+    assert!(temporary.exists());
+    drop(store);
+    let reopened = Store::open(&path).expect("new exclusive owner recovers staging");
+    assert!(!temporary.exists());
+    assert_eq!(fs::read(&path).expect("complete record"), original);
+    reopened
+        .save(&agent_credentials("https://example.test"))
+        .expect("publish after recovery");
+}
