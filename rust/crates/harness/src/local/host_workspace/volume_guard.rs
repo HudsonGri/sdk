@@ -17,11 +17,8 @@ pub(super) fn options(
     root: Arc<HeldRoot>,
     read_only: bool,
 ) -> Result<acyclic_fs::MountOptions> {
-    let cancellation = acyclic_fs::CancellationToken::new();
-    // Retain the mount constructor's existing allowance, rather than funding
-    // a new context for each callback or publication.
-    let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    // Policy refresh and lifetime custody share the original admission ledger.
+    let work = options.require_native_work()?.clone();
     let custody = work.claim(
         std::mem::size_of::<Guard>() as u64,
         1,
