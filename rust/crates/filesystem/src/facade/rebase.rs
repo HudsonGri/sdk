@@ -237,17 +237,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             probe: &probe.0,
             working: self.root.file_table,
         };
-        let classified = crate::kernel::classify_rebase_settling_with_accounting(
-            &working,
+        // Classification awaits the whole probe and object read stack, so it
+        // runs in its own heap frame: every caller's future, through every
+        // read, write and live refresh, holds a pointer to it rather than
+        // nesting its state past the compiler's layout depth.
+        let (base, candidate) = (
             GenerationId::new(self.root.base.digest),
             GenerationId::new(candidate_object.digest),
-            &dependencies,
-            maximum_conflicts,
-            accounting,
-            cancellation,
-        )
-        .await
-        .map_err(|error| match error {
+        );
+        let mut frame = crate::kernel::in_heap_owned(accounting, |accounting| {
+            crate::kernel::classify_rebase_settling_with_accounting(
+                &working,
+                base,
+                candidate,
+                &dependencies,
+                maximum_conflicts,
+                accounting,
+                cancellation,
+            )
+        })?;
+        let classified = frame.value.as_mut().await;
+        drop(frame);
+        let classified = classified.map_err(|error| match error {
             crate::kernel::ClassifyRebaseFailure::Probe(error)
             | crate::kernel::ClassifyRebaseFailure::Accounting(error) => error,
             crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit => {

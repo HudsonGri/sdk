@@ -250,6 +250,29 @@ pub(crate) struct ReadOwned<T> {
     pub(crate) custody: KernelOwnedAllocation,
 }
 
+/// Builds `create`'s future in a heap frame of its own, owned by the native
+/// ledger when there is one. The caller's future then holds a pointer, not
+/// the callee's state: a deep kernel operation stays out of every caller's
+/// future type and poll frame.
+pub(crate) fn in_heap_owned<'a, 'accounting, F: std::future::Future>(
+    accounting: &'a mut KernelAccounting<'accounting>,
+    create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
+) -> Result<ReadOwned<std::pin::Pin<Box<F>>>, FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let custody = if accounting.native_work().is_some() {
+        let bytes = usize_to_u64(size_of::<F>());
+        accounting.claim_owned(bytes, u64::from(bytes != 0))?
+    } else {
+        KernelOwnedAllocation::Standalone
+    };
+    #[cfg(target_arch = "wasm32")]
+    let custody = KernelOwnedAllocation::Standalone;
+    Ok(ReadOwned {
+        value: crate::heap_future::in_heap(|| create(accounting)),
+        custody,
+    })
+}
+
 impl<T> From<(T, KernelOwnedAllocation)> for ReadOwned<T> {
     fn from((value, custody): (T, KernelOwnedAllocation)) -> Self {
         Self { value, custody }
