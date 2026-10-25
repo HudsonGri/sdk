@@ -210,12 +210,47 @@ async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWo
     let cancellation = CancellationToken::new();
     CallbackRuntime::create()?;
     let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    // A physical retirement fixture needs an actual birth-paid watch. Keep its
+    // startup ledger separate from the authored source's exhausted poll bank,
+    // so this test cannot replenish the very credit whose exhaustion it proves.
+    let startup = original
+        .map(|_| {
+            crate::NativeMaterializationWork::new(
+                crate::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)
+        })
+        .transpose()?;
+    let root = "/".to_owned();
+    let (root_allocation, mut source_allocation) = match &startup {
+        Some(startup) => (
+            Some(startup.claim(root.capacity() as u64, 1, crate::WorkCounters::UNCHARGED)?),
+            Some(startup.claim(
+                std::mem::size_of::<
+                    LazyMountSource<
+                        crate::facade::MemoryAuthorityBackend,
+                        crate::facade::MemoryObjectBackend,
+                        D,
+                        S,
+                    >,
+                >() as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )?),
+        ),
+        None => (None, None),
+    };
+    let carrier = match &startup {
+        Some(startup) => adapter::NativeDemandCarrier::Native(startup),
+        None => adapter::NativeDemandCarrier::Borrowed(&mut work),
+    };
     Ok(LazyMountSource::new(
         lazy,
         authored,
-        "/".to_owned(),
-        adapter::NativeDemandCarrier::Borrowed(&mut work),
-        None,
+        root,
+        carrier,
+        root_allocation.zip(source_allocation.as_mut()),
     )?)
 }
 
