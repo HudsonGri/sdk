@@ -10,6 +10,7 @@ import re
 import shutil
 import shlex
 import subprocess
+import sys
 import uuid
 
 SCRATCHPAD = "C:/Users/varun/AppData/Local/Temp/claude/Q--sdk/c4cf6543-01de-41fc-994d-e3b8096f4e8d/scratchpad"
@@ -259,6 +260,12 @@ def failure_is_single_pr(reason, pr):
     return True, "single-PR failure verdict"
 
 
+def refusal(step, error, recovery):
+    """One nonempty diagnostic contract for every routing boundary."""
+    detail = ' '.join(str(error).split()) or type(error).__name__
+    return f'kind=ROUTE_ERROR step={step} detail={shlex.quote(detail)} recovery={shlex.quote(shlex.join(recovery))}'
+
+
 def gate_evidence(reason, lanes):
     sections = [reason]
     match = re.search(r"\blog=([^\s;]+\.log)", reason)
@@ -272,14 +279,19 @@ def gate_evidence(reason, lanes):
         # label alone may name a different run from the actual Clippy baseline.
         phases = re.search(r"^GATE_CHECKS_BASELINE clippy=(\S+) features=(\S+)$", text, re.M)
         arguments = [baseline[1], *(phases.groups() if phases else ())]
-        result = subprocess.run([BASH, (lanes / "gate-checks-verdict.sh").as_posix(), log.as_posix(), *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        invocation = [BASH, (lanes / "gate-checks-verdict.sh").as_posix(), log.as_posix(), *arguments]
+        try:
+            result = subprocess.run(invocation, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        except OSError as error:
+            # A missing verifier cannot erase the already-recorded source panic.
+            result = subprocess.CompletedProcess(invocation, 127, '', str(error))
         if result.returncode not in (0, 1):
             # Routing consumes an already-final per-PR verdict. Missing check
             # evidence must not discard that verdict's test panic/conflict.
             # Preserve both streams and the exact recovery command, without
             # presenting an unqualified comparison as a source finding.
-            recovery = shlex.join([BASH, (lanes / "gate-checks-verdict.sh").as_posix(), log.as_posix(), *arguments])
-            sections.append(f"Check evidence unavailable: step=route-check-evidence rc={result.returncode} recovery={shlex.quote(recovery)}\n" + result.stdout + result.stderr)
+            detail = (result.stdout + result.stderr).strip() or f'verifier exited {result.returncode} without diagnostics'
+            sections.append(f"Check evidence unavailable: step=route-check-evidence rc={result.returncode}\n" + refusal('route-check-evidence', detail, invocation) + '\n' + result.stdout + result.stderr)
         else:
             sections.append("Exact clippy/feature verdict:\n" + result.stdout + result.stderr)
     else:
@@ -303,7 +315,7 @@ def gate_evidence(reason, lanes):
     return "\n\n".join(sections)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("event", choices=("BLOCKED", "GATE_FAIL", "GATE_CONFLICT"))
     parser.add_argument("pr", type=int)
@@ -312,7 +324,8 @@ def main():
     parser.add_argument("--repo", type=Path, default=Path("Q:/sdk"))
     parser.add_argument("--alerts", type=Path, default=Path.home() / ".codex-fleet/alerts.log")
     parser.add_argument("--prepare-only", action="store_true", help="write evidence without resuming a lane")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    recovery = [sys.executable, '-B', str(Path(__file__).resolve()), *(sys.argv[1:] if argv is None else argv)]
 
     def alert(status, detail):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -320,17 +333,23 @@ def main():
             target.write(f"{timestamp} pr-gate {status} #{args.pr} {args.event} {detail}\n")
 
     claim = None
+    step = 'read-reason'
     try:
         # Capture the verdict before potentially lengthy ownership/API lookups.
         reason = args.reason_file.read_text(encoding="utf-8", errors="replace")
+        if not reason.strip():
+            raise ValueError('empty verdict reason file: '+str(args.reason_file))
         if args.event == "GATE_FAIL":
             applicable, why = failure_is_single_pr(reason, args.pr)
             if not applicable:
                 alert("ROUTE_DEFERRED", why)
                 return 0
+        step = 'collect-gate-evidence'
         evidence = gate_evidence(reason, Path(__file__).resolve().parent)
+        step = 'read-pr-head'
         pr = json.loads(command("gh", "pr", "view", str(args.pr), "--repo", "acyclic-labs/sdk", "--json", "headRefName,headRefOid"))
         cx = args.scratchpad / "cx"
+        step = 'identify-lane-owner'
         lane, why = lane_for_branch(cx, pr["headRefName"], args.pr)
         if not lane:
             alert("UNROUTED", pr["headRefName"] + ": " + why)
@@ -341,6 +360,7 @@ def main():
             alert("UNROUTED", f"{lane}: no Codex session id for resume-after.sh")
             return 0
         if args.event == "BLOCKED":
+            step = 'read-review-threads'
             data = json.loads(command("gh", "api", "graphql", "-f", "query=" + THREADS, "-F", f"n={args.pr}"))
             if data.get("errors"):
                 raise RuntimeError(json.dumps(data["errors"]))
@@ -357,6 +377,7 @@ def main():
         # Repeated identical alerts still invoke the router, but do not queue
         # multiple resumes of one session for the same head and exact evidence.
         key = hashlib.sha256((args.event + str(args.pr) + pr["headRefOid"] + evidence).encode()).hexdigest()
+        step = 'write-steer'
         routed = cx / "gate-routes"
         routed.mkdir(exist_ok=True)
         claim = routed / ("prepared-" + uuid.uuid4().hex if args.prepare_only else key)
@@ -372,6 +393,7 @@ def main():
             print(steer)
             return 0
         output = (claim / "resume.out").open("ab")
+        step = 'launch-resume'
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
         process = subprocess.Popen([BASH, Path(__file__).with_name("route-resume.sh").as_posix(), cx.as_posix(), lane, steer.as_posix()], cwd=args.repo, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, **options)
         output.close()
@@ -379,9 +401,14 @@ def main():
         return 0
     except Exception as error:
         # An evidence collection/routing failure never changes a gate verdict.
-        if claim and claim.exists():
-            (claim / "route-error.txt").write_text(str(error), encoding="utf-8")
-        alert("ROUTE_ERROR", str(error).replace("\n", " "))
+        diagnostic = refusal(step, error, recovery)
+        try:
+            if claim and claim.exists():
+                (claim / "route-error.txt").write_text(diagnostic, encoding="utf-8")
+            alert("ROUTE_ERROR", diagnostic)
+        except OSError as delivery:
+            diagnostic += '\n' + refusal('record-route-error', delivery, recovery)
+        print(diagnostic, file=sys.stderr)
         return 1
 
 
