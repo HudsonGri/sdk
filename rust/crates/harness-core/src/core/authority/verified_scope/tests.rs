@@ -185,7 +185,11 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
     drop((grant, custody));
     assert_eq!(io.owned_bytes()?, scope.workload.len() as u64);
     drop((verifier, issuer));
-    assert_eq!(io.owned_bytes()?, 0, "retired authority leaked wire custody");
+    assert_eq!(
+        io.owned_bytes()?,
+        0,
+        "retired authority leaked wire custody"
+    );
     Ok(())
 }
 
@@ -306,7 +310,11 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
     assert!(required > 3, "grant did not reach the metadata copies");
     let custody = probe.guard_owned(grant.logical_owned_bytes()?)?;
     drop((grant, custody, verifier, issuer));
-    assert_eq!(probe.owned_bytes()?, 0, "retired grant and authority leaked custody");
+    assert_eq!(
+        probe.owned_bytes()?,
+        0,
+        "retired grant and authority leaked custody"
+    );
     for operations in 0..required {
         // Each attempt starts cold, including the authority's wire allocation.
         let (issuer, verifier, scope, volume) = fixture()?;
