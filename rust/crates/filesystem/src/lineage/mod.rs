@@ -7,7 +7,6 @@ use crate::{
 };
 use acyclic_stream::{ProviderPlatform, ProviderTask};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::future::Future;
 use thiserror::Error;
 
@@ -42,13 +41,6 @@ pub struct WorkspaceLineageRecord {
     pub fork_generation: GenerationId,
     /// Exact first generation in the child workspace, used for local diffs.
     pub initial_generation: GenerationId,
-}
-
-fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
-    use crate::facade::FsWork as _;
-    let cancellation = CancellationToken::new();
-    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-    lineage_shape_accounted(record, &mut accounting).unwrap_or(false)
 }
 
 fn lineage_shape_accounted(
@@ -517,23 +509,40 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         self.required(workspace).await
     }
 
+    /// Walks one record at a time on the caller's original allocation ledger.
+    /// The starting workspace is included; `maximum` bounds its ancestors.
+    /// A zero bound rejects even the starting record.
+    pub fn walk(&self, workspace: WorkspaceId, maximum: u32) -> WorkspaceLineageCursor<'_, S> {
+        WorkspaceLineageCursor {
+            graph: self,
+            next: Some(workspace),
+            anchor: workspace,
+            remaining: if maximum == 0 {
+                0
+            } else {
+                u64::from(maximum) + 1
+            },
+            power: 1,
+            span: 0,
+        }
+    }
+
     /// Returns the direct-parent chain, nearest parent first.
     pub async fn ancestors(
         &self,
         workspace: WorkspaceId,
         maximum: u32,
     ) -> Result<Vec<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
-        let mut next = Some(workspace);
-        let mut seen = BTreeSet::new();
+        use crate::facade::FsWork as _;
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let mut cursor = self.walk(workspace, maximum);
         let mut records = Vec::new();
-        while let Some(id) = next {
-            if !seen.insert(id) || records.len() >= maximum as usize {
-                return Err(WorkspaceLineageError::TraversalLimit);
-            }
-            let record = self.required(id).await?;
-            next = record.parent_workspace_id;
-            if id != workspace {
-                records.push(record);
+        while let Some(record) = cursor.next_record(&mut accounting).await? {
+            if record.value.workspace_id != workspace {
+                // This convenience result has an ordinary owner. Native callers
+                // consume each owned cursor record before advancing instead.
+                records.push(record.value);
             }
         }
         Ok(records)
@@ -543,19 +552,14 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let record = self
-            .store
-            .load(workspace_id)
-            .await
-            .map_err(WorkspaceLineageError::Store)?
-            .ok_or(WorkspaceLineageError::IncompatibleState)?;
-        if record.workspace_id != workspace_id || !lineage_shape_is_valid(&record) {
-            return Err(WorkspaceLineageError::IncompatibleState);
-        }
-        if !record.ready {
-            return Err(WorkspaceLineageError::IncompatibleState);
-        }
-        Ok(record)
+        use crate::facade::FsWork as _;
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        self.walk(workspace_id, 1)
+            .next_record(&mut accounting)
+            .await?
+            .map(|record| record.value)
+            .ok_or(WorkspaceLineageError::IncompatibleState)
     }
 
     async fn register(
@@ -609,6 +613,72 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         } else {
             Err(WorkspaceLineageError::ConflictingRegistration)
         }
+    }
+}
+
+/// An allocation-free traversal state over immutable direct-parent records.
+/// Each returned record retains its own original allocation custody. Retire it
+/// on the same ledger before requesting the next record.
+pub struct WorkspaceLineageCursor<'a, S> {
+    graph: &'a WorkspaceGraph<S>,
+    next: Option<WorkspaceId>,
+    anchor: WorkspaceId,
+    remaining: u64,
+    power: u64,
+    span: u64,
+}
+
+impl<S: WorkspaceLineageStore> WorkspaceLineageCursor<'_, S> {
+    /// Reads and validates the next record with the supplied original work.
+    /// Brent's cycle detector needs constant state rather than an ancestry set.
+    pub async fn next_record(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Owned<WorkspaceLineageRecord>>, WorkspaceLineageError<S::Error>> {
+        let Some(id) = self.next else {
+            return Ok(None);
+        };
+        if self.remaining == 0 {
+            return Err(WorkspaceLineageError::TraversalLimit);
+        }
+        accounting.check()?;
+        let record = self
+            .graph
+            .store
+            .load_accounted(id, accounting)
+            .await?
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        let valid = lineage_shape_accounted(&record.value, accounting)
+            .map(|valid| valid && record.value.workspace_id == id && record.value.ready);
+        let valid = match valid {
+            Ok(valid) => valid,
+            Err(error) => {
+                record.retire(accounting)?;
+                return Err(error.into());
+            }
+        };
+        if !valid {
+            record.retire(accounting)?;
+            return Err(WorkspaceLineageError::IncompatibleState);
+        }
+        self.remaining -= 1;
+        self.next = record.value.parent_workspace_id;
+        self.span += 1;
+        if self.next == Some(self.anchor) {
+            record.retire(accounting)?;
+            self.next = None;
+            return Err(WorkspaceLineageError::TraversalLimit);
+        }
+        if self.span == self.power {
+            if let Some(next) = self.next {
+                self.anchor = next;
+            }
+            // At most u32::MAX + 1 records are admitted, so the next
+            // power of two fits in u64 even at the maximum walk bound.
+            self.power *= 2;
+            self.span = 0;
+        }
+        Ok(Some(record))
     }
 }
 

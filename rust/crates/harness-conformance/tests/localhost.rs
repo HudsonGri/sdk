@@ -31,9 +31,37 @@ impl Substrate for Corrupted {
 }
 
 #[tokio::test]
+async fn complete_corpus_has_identical_results_on_both_hosts() -> TestResult {
+    let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
+    let host = Arc::new(substrate::localhost::Localhost::start().await?);
+    let (reference, deployed) = futures::join!(
+        runner::run(&root, Arc::new(substrate::InProcess), None, 4),
+        runner::run(&root, host.clone(), None, 4),
+    );
+    let reference = reference?;
+    let deployed = deployed?;
+    assert!(
+        reference.success(),
+        "{}",
+        serde_json::to_string(&reference)?
+    );
+    assert!(deployed.success(), "{}", serde_json::to_string(&deployed)?);
+    // Compare every discovered case and capability result, not just aggregate
+    // pass counts. Both hosts use the original corpus and the same oracle.
+    assert_eq!(
+        serde_json::to_value(&deployed)?,
+        serde_json::to_value(&reference)?
+    );
+    Arc::into_inner(host)
+        .ok_or("host still borrowed")?
+        .shutdown()
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn differing_localhost_observation_fails_the_shared_oracle() -> TestResult {
-    let root =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/scenarios");
+    let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
     let original = runner::run(
         &root,
         Arc::new(substrate::InProcess),

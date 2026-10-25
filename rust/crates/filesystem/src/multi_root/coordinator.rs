@@ -267,9 +267,9 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                 .finish_conflict(operation_id, *root_id, root, projected)
                 .await
                 .map_err(MultiRootPublicationError::Publisher)?;
-            applied
-                .projected_roots
-                .insert(*root_id, finished.generation);
+            // Keep the original conflict projection for abort. The finished
+            // head can include later, unrelated edits; it is a publication
+            // receipt, never the set of paths this operation may undo.
             applied
                 .published_generations
                 .insert(*root_id, finished.generation);
@@ -399,7 +399,13 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
             }
             if let Some(projected_generation) = journal.projected_roots.get(&root_id).copied() {
                 self.publisher
-                    .abort_conflict(operation_id, root_id, &root, projected_generation)
+                    .abort_conflict(
+                        operation_id,
+                        root_id,
+                        &root,
+                        projected_generation,
+                        journal.conflicts.get(&root_id),
+                    )
                     .await
                     .map_err(MultiRootPublicationError::Publisher)?;
             }

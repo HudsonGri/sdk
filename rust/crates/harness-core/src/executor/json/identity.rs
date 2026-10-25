@@ -75,16 +75,24 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<u64> {
     let Some(observer) = work.as_deref_mut() else {
-        return count_json_bytes_trusted(
+        return acyclic_json::count(
             value,
             JsonBounds {
                 maximum_bytes: maximum,
                 maximum_items: maximum,
                 maximum_depth,
             },
-            None,
-            &mut |_| Ok(()),
-        );
+        )
+        .map_err(|error| match error {
+            // This API admits a declared input/projection bound. Encoding
+            // sinks retain their distinct "admitted output" diagnostic.
+            acyclic_json::EncodeError::Admission(acyclic_json::Admission::Bytes) => {
+                boundary("JSON exceeds declared byte bound", None)
+            }
+            acyclic_json::EncodeError::Admission(error) => admission_error(error, None),
+            acyclic_json::EncodeError::Serialization(error) => records::decode_error(error, None),
+            acyclic_json::EncodeError::Output(error) => Error::Invalid(error.to_string()),
+        });
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let native_code = observer

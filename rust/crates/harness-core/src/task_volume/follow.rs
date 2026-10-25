@@ -326,11 +326,15 @@ pub fn record_changes(
                 }
                 let settled = if matches!(query, Query::PendingApprovals(_)) {
                     super::approval_query::Pending::prepare(&file.key)
-                        .filter(|(_, open)| !open).map(|(key, _)| key)
-                } else { None };
+                        .filter(|(_, open)| !open)
+                        .map(|(key, _)| key)
+                } else {
+                    None
+                };
                 if let Some(key) = settled {
                     removed.push(key);
-                } else if query == Query::ActiveAgents && !super::ChildStatus::parse(&file.bytes)?.active()
+                } else if query == Query::ActiveAgents
+                    && !super::ChildStatus::parse(&file.bytes)?.active()
                 {
                     removed.push(file.key);
                 } else {

@@ -3,6 +3,21 @@ use super::*;
 use acyclic_harness::package::ActorPackage;
 use futures::FutureExt;
 
+#[tokio::test]
+async fn every_accepted_service_socket_disables_packet_coalescing() -> std::io::Result<()> {
+    use futures::StreamExt;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let connected = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+    let mut sockets = incoming(listener);
+    let accepted = sockets
+        .next()
+        .await
+        .ok_or(std::io::ErrorKind::UnexpectedEof)??;
+    assert!(accepted.nodelay()?);
+    drop(connected);
+    Ok(())
+}
+
 struct Uncalled;
 impl ActorRuntime for Uncalled {
     fn install(

@@ -376,7 +376,11 @@ impl StreamProvider for MemoryStream {
                 // Same guarantee as StreamProvider::watermarks: memory has
                 // accepted visibility but does not claim durable persistence.
                 crate::NativeStreamOutput::new(
-                    crate::StreamWatermarks { accepted, durable: 0 }, allocation,
+                    crate::StreamWatermarks {
+                        accepted,
+                        durable: 0,
+                    },
+                    allocation,
                 )
             }))
         })

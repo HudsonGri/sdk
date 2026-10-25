@@ -343,7 +343,9 @@ async fn a_child_without_its_creation_identity_cannot_authorize_publication() {
         fork_generation: generation(1),
         initial_generation: generation(2),
     };
-    assert!(lineage_shape_is_valid(&record));
+    let cancellation = CancellationToken::new();
+    let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+    assert!(lineage_shape_accounted(&record, &mut accounting).unwrap());
     // The old schema accepted a child based only on names and generations.
     // Loading it directly models a durable record, not caller validation.
     for invalid in [
@@ -1100,4 +1102,116 @@ async fn promotion_cas_loser_accepts_only_the_single_legal_terminal_transition()
             1
         );
     }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn lineage_cursor_matches_finite_chains_and_rejects_every_cycle(
+        links in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..32)
+    ) {
+        futures::executor::block_on(async {
+            let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+            let id = |index: usize| WorkspaceId::from_bytes([index as u8 + 1; 16]);
+            let mut parents = Vec::new();
+            for (index, link) in links.iter().enumerate() {
+                let parent = usize::from(*link) % (links.len() + 1);
+                let parent = (parent < links.len() && parent != index).then_some(parent);
+                parents.push(parent);
+                let record = WorkspaceLineageRecord {
+                    version: LINEAGE_VERSION, revision: 1, ready: true,
+                    workspace_id: id(index), workspace_name: format!("walk-{index}"),
+                    parent_workspace_id: parent.map(id),
+                    parent_workspace_name: parent.map(|p| format!("walk-{p}")),
+                    creation_operation: parent.map(|_| crate::OperationId::from_bytes([1; 16])),
+                    fork_generation: generation(1), initial_generation: generation(1),
+                };
+                assert!(graph.store().compare_and_swap(id(index), 0, record).await.unwrap());
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            let mut next = Some(0);
+            let mut cycle = false;
+            let mut expected = Vec::new();
+            while let Some(index) = next {
+                if !seen.insert(index) { cycle = true; break; }
+                expected.push(id(index));
+                next = parents[index];
+            }
+            let cancellation = CancellationToken::new();
+            let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+            let mut cursor = graph.walk(id(0), links.len() as u32 + 1);
+            let mut observed = Vec::new();
+            let outcome = loop {
+                match cursor.next_record(&mut accounting).await {
+                    Ok(Some(record)) => {
+                        observed.push(record.value.workspace_id);
+                        record.retire(&mut accounting).unwrap();
+                    }
+                    Ok(None) => break Ok(()),
+                    Err(error) => break Err(error),
+                }
+                assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+            };
+            if cycle {
+                proptest::prop_assert!(matches!(outcome, Err(WorkspaceLineageError::TraversalLimit)));
+            } else {
+                proptest::prop_assert!(outcome.is_ok());
+                proptest::prop_assert_eq!(observed, expected);
+            }
+            proptest::prop_assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+            Ok(())
+        })?;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn lineage_cursor_cannot_copy_a_record_outside_its_original_allocation_budget() {
+    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+    let record = WorkspaceLineageRecord {
+        version: LINEAGE_VERSION,
+        revision: 1,
+        ready: true,
+        workspace_id: workspace("walk-funded"),
+        workspace_name: "walk-funded".into(),
+        parent_workspace_id: None,
+        parent_workspace_name: None,
+        creation_operation: None,
+        fork_generation: generation(1),
+        initial_generation: generation(1),
+    };
+    assert!(
+        graph
+            .store()
+            .compare_and_swap(record.workspace_id, 0, record.clone())
+            .await
+            .unwrap()
+    );
+    let cancellation = CancellationToken::new();
+    let setup =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let operations = setup.receipt().allocation_operations;
+    drop(setup);
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget {
+            allocation_operations: operations,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .unwrap();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let result = graph
+        .walk(record.workspace_id, 1)
+        .next_record(&mut accounting)
+        .await;
+    assert!(
+        result.is_err(),
+        "the ordinary load path bypassed the original allocation budget"
+    );
+    assert_eq!(original.receipt().allocation_operations, operations);
+    assert_eq!(
+        original.live_allocation_bytes(),
+        crate::NativeMaterializationWork::accounting_state_bytes()
+    );
 }

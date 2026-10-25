@@ -25,6 +25,11 @@ use tokio::{
 use tonic::{Request, Response, Status};
 
 mod actors;
+// Custom incoming streams bypass tonic Server's accepted-socket settings.
+// All services share this one transport adapter and its immediate emission.
+fn incoming(listener: TcpListener) -> tonic::transport::server::TcpIncoming {
+    tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true))
+}
 pub mod client;
 #[cfg(feature = "native-harness")]
 pub mod harness;
@@ -305,7 +310,7 @@ impl Server {
                 stream, acyclic_stream::session::testing::authority(), "local".into(), Default::default())))
             .add_service(acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(filesystem))
             .add_service(wire::actors_service_server::ActorsServiceServer::new(actors.clone()))
-            .serve_with_incoming_shutdown(tokio_stream::wrappers::TcpListenerStream::new(listener), async { let _ = stopped.await; }));
+            .serve_with_incoming_shutdown(incoming(listener), async { let _ = stopped.await; }));
         Ok(Self {
             address,
             stop: Some(stop),

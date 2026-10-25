@@ -140,6 +140,7 @@ where
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
+        conflicts: Option<&crate::MergePlan>,
     ) -> Result<GenerationId, Self::Error> {
         let cancellation = CancellationToken::new();
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -200,7 +201,7 @@ where
             .map_err(|failure| failure.error)?
             .value
             .0;
-        let paths = changed
+        let mut paths = changed
             .iter()
             .map(|change| {
                 portable_namespace_path(&change.path).ok_or_else(|| {
@@ -209,10 +210,20 @@ where
                     )
                 })
             })
+            // A held conflict can have no projected delta. Its user's later
+            // resolution still belongs to this merge and must be undone.
+            .chain(conflicts.into_iter().flat_map(|plan| plan.conflicts.iter()).map(|conflict| {
+                conflict.path.as_ref().map(|path| format!("/{}", path.trim_start_matches('/'))).ok_or_else(|| {
+                    WorkspaceMultiRootPublisherError::Candidate(
+                        "conflict abort cannot represent an unresolved identity without a portable path".to_owned(),
+                    )
+                })
+            }))
             .collect::<Result<Vec<_>, _>>()?;
+        paths.sort_unstable();
+        paths.dedup();
         if paths.is_empty() {
-            // The conflicted projection changed no path in the target (every
-            // conflicting record was held back), so there is nothing to undo.
+            // Neither the projection nor its durable conflict set owns a path.
             return Ok(current.id());
         }
         let reservation = self
@@ -224,7 +235,12 @@ where
             .await?;
         let outcome = target
             .apply_paths_from(
-                Some(&projected),
+                // Abort explicitly undoes the projected paths, including any
+                // conflict resolutions authored there. Use the fenced current
+                // head as the comparison base; the immutable projection above
+                // determines which paths belong to this operation, so later
+                // edits at unrelated paths remain outside the inverse delta.
+                Some(&current),
                 Some(&original),
                 &paths,
                 current.id(),

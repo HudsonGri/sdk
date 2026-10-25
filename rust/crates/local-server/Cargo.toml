@@ -34,3 +34,13 @@ tempfile = "3.27.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+acyclic-native-runtime = { path = "../native-runtime" }
+acyclic-test-support = { path = "../test-support" }
+
+[[test]]
+name = "command"
+path = "tests/command.rs"
+required-features = ["native-harness"]

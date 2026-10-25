@@ -126,7 +126,8 @@ impl Interleaved {
                 committed_at_micros: 0,
             })
             .ok()?
-            .into_iter().next()
+            .into_iter()
+            .next()
         })?;
         match write.key {
             FileKey::Task {

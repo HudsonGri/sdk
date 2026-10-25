@@ -247,7 +247,7 @@ pub use lazy_workspace::{
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
-    WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStorage,
+    WorkspaceLineageCursor, WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStorage,
     WorkspaceLineageStorageError, WorkspaceLineageStore,
 };
 pub use materializer::{

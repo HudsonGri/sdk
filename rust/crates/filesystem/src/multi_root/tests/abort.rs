@@ -147,7 +147,7 @@ async fn interrupted_continue_can_abort_and_restore_premerge_generation()
         WorkspaceMultiRootPublisher::new(resolver).with_merge_drivers(std::sync::Arc::new(drivers)),
         Allow,
     );
-    let Publication::Conflicted(mut journal) = aborting.publish(abort_candidate).await? else {
+    let Publication::Conflicted(journal) = aborting.publish(abort_candidate).await? else {
         return Err("expected conflicted publication".into());
     };
     let mut unrelated = parent
@@ -161,6 +161,7 @@ async fn interrupted_continue_can_abort_and_restore_premerge_generation()
     unrelated
         .write_text("/unrelated.txt", "preserved\n")
         .await?;
+    unrelated.write_text("/file.txt", "resolved\n").await?;
     let TransactionCommit::Committed(_) = unrelated
         .commit(
             None,
@@ -179,39 +180,43 @@ async fn interrupted_continue_can_abort_and_restore_premerge_generation()
     else {
         return Err("unrelated edit did not commit".into());
     };
-    // Continue can finish a root and persist its retained generation before the
-    // final Applied decision. Resume abort from that exact durable cut.
-    let root = journal
-        .candidate
-        .plan
-        .roots
-        .get(&root_id)
-        .ok_or("missing root")?;
-    let projected = *journal
-        .projected_roots
-        .get(&root_id)
-        .ok_or("missing projection")?;
-    let finished = aborting
-        .publisher
-        .finish_conflict(abort_operation, root_id, root, projected)
+    // Drive the real coordinator through finish, then interrupt its final
+    // durable decision. Recovery must retain the initial projection separately
+    // from the finished head, which also contains an unrelated user edit.
+    let projected = journal.projected_roots[&root_id];
+    aborting
+        .declare_conflicted_paths(
+            abort_operation,
+            WorkspaceContextId::from_bytes([76; 16]),
+            root_id,
+            &["file.txt".to_owned()],
+        )
         .await?;
-    journal.projected_roots.insert(root_id, finished.generation);
-    journal
-        .published_generations
-        .insert(root_id, finished.generation);
-    journal
-        .fences
-        .insert(root_id, MultiRootRetainedFence::Finished(finished.fence));
-    super::super::validation::validate_journal(&journal)
-        .map_err(|()| "invalid continuation cut")?;
-    let revision = journal.revision;
-    journal.revision += 1;
-    assert!(
+    aborting
+        .store
+        .fail_applied_once
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(matches!(
         aborting
-            .store
-            .compare_and_swap(abort_operation, revision, journal)
-            .await?
+            .continue_conflicted(abort_operation, WorkspaceContextId::from_bytes([76; 16]))
+            .await,
+        Err(MultiRootPublicationError::Store(_))
+    ));
+    let journal = aborting
+        .store
+        .load(abort_operation)
+        .await?
+        .ok_or("missing interrupted journal")?;
+    assert_eq!(journal.phase, MultiRootPublicationPhase::Conflicted);
+    assert!(matches!(
+        journal.fences[&root_id],
+        MultiRootRetainedFence::Finished(_)
+    ));
+    assert_eq!(
+        journal.projected_roots[&root_id], projected,
+        "a finished receipt must never replace the projection used to undo this operation"
     );
+    assert_ne!(journal.published_generations[&root_id], projected);
     let aborting = MultiRootPublicationCoordinator::new(aborting.store, aborting.publisher, Allow);
     aborting
         .abort_conflicted(abort_operation, WorkspaceContextId::from_bytes([76; 16]))
@@ -249,9 +254,20 @@ async fn interrupted_continue_can_abort_and_restore_premerge_generation()
 #[tokio::test]
 async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
 -> Result<(), Box<dyn std::error::Error>> {
+    abort_unprojected_conflict(false).await
+}
+
+#[tokio::test]
+async fn aborting_unprojected_conflict_restores_resolutions_without_reverting_unrelated_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    abort_unprojected_conflict(true).await
+}
+
+async fn abort_unprojected_conflict(resolved: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Both sides add the same path with different bytes and no merge
     // driver: the projection holds the record back, so it differs from the
-    // pre-merge target in no path. Abort must still clear the operation.
+    // pre-merge target in no path. The durable conflict identity must also
+    // retain ownership of a later user resolution, independent of that delta.
     let fs = Fs::memory();
     let parent = fs
         .create_workspace(
@@ -396,6 +412,40 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
         coordinator.publish(candidate).await?,
         Publication::Conflicted(_)
     ));
+    if resolved {
+        let mut edited = parent
+            .begin_transaction(
+                IdempotencyKey::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
+        edited.write_text("/added.txt", "user resolution\n").await?;
+        edited
+            .write_text("/keep.txt", "unrelated later edit\n")
+            .await?;
+        assert!(matches!(
+            edited
+                .commit(
+                    None,
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                    |_| async {
+                        Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                            crate::OperationReceipt {
+                                value: (),
+                                work: crate::WorkCounters::UNCHARGED,
+                            },
+                        )
+                    },
+                )
+                .await?
+                .value,
+            TransactionCommit::Committed(_)
+        ));
+    }
     coordinator
         .abort_conflicted(operation, parent_context)
         .await?;
@@ -423,7 +473,11 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
             .await?
             .value
             .as_ref(),
-        b"base\n"
+        if resolved {
+            b"unrelated later edit\n".as_slice()
+        } else {
+            b"base\n".as_slice()
+        }
     );
     assert!(coordinator.pending_operations().await?.is_empty());
     Ok(())

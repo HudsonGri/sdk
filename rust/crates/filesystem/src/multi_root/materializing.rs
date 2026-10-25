@@ -70,6 +70,7 @@ where
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
+        conflicts: Option<&crate::MergePlan>,
     ) -> Result<GenerationId, Self::Error> {
         let workspace = self
             .publisher
@@ -86,7 +87,7 @@ where
             .id();
         let to = self
             .publisher
-            .abort_conflict(operation_id, root_id, root, projected_generation)
+            .abort_conflict(operation_id, root_id, root, projected_generation, conflicts)
             .await?;
         self.materializer
             .materialize(

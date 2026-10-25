@@ -259,13 +259,16 @@ pub trait MultiRootPublisher: ProviderPlatform {
         fence: &MultiRootFence,
     ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
-    /// Restores one projected root to its exact pre-merge generation.
+    /// Restores the projection and every durable conflict path to its pre-merge
+    /// state, retaining later edits outside those paths. A held conflict need
+    /// not have changed the projected generation.
     fn abort_conflict(
         &self,
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
+        conflicts: Option<&crate::MergePlan>,
     ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Validates explicitly staged conflict paths and returns their exact keys.
@@ -696,6 +699,8 @@ pub struct MemoryMultiRootPublicationStore {
     parents: Mutex<BTreeMap<WorkspaceContextId, OperationId>>,
     #[cfg(test)]
     fail_claim_once: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_applied_once: std::sync::atomic::AtomicBool,
 }
 
 /// Memory store synchronization failure.
@@ -721,6 +726,14 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
         expected_revision: u64,
         replacement: MultiRootPublication,
     ) -> Result<bool, Self::Error> {
+        #[cfg(test)]
+        if replacement.phase == MultiRootPublicationPhase::Applied
+            && self
+                .fail_applied_once
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Err(MemoryMultiRootPublicationStoreError);
+        }
         self.records
             .compare_and_swap(operation_id, expected_revision, replacement)
             .map_err(|_| MemoryMultiRootPublicationStoreError)

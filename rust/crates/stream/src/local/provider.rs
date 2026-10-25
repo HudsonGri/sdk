@@ -7,8 +7,14 @@ impl LocalStream {
         // Only this path's frame positions determine its durable prefix.
         // Compaction can hold the journal across I/O; observation does not.
         let synced = *self.inner.synced.borrow();
-        let mut tails = self.inner.durable_tails.lock().map_err(|_| StreamError::Unavailable)?;
-        let durable = tails.get_mut(path).map_or(accepted, |cuts| cuts.through(synced));
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails
+            .get_mut(path)
+            .map_or(accepted, |cuts| cuts.through(synced));
         Ok(crate::StreamWatermarks { accepted, durable })
     }
 }
@@ -243,17 +249,24 @@ impl StreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             self.accepted(async {
-                let result = self.inner.provider.native_tail(path.clone(), Arc::clone(&meter)).await?;
+                let result = self
+                    .inner
+                    .provider
+                    .native_tail(path.clone(), Arc::clone(&meter))
+                    .await?;
                 match result {
                     Ok(output) => {
                         let (accepted, allocation) = output.into_parts();
                         meter.examine(1, 0)?;
-                        Ok(self.observed_watermarks(&path, accepted)
+                        Ok(self
+                            .observed_watermarks(&path, accepted)
                             .map(|value| crate::NativeStreamOutput::new(value, allocation)))
                     }
                     Err(error) => Ok(Err(error)),
                 }
-            }).await.unwrap_or_else(|error| Ok(Err(error)))
+            })
+            .await
+            .unwrap_or_else(|error| Ok(Err(error)))
         })
     }
 

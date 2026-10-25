@@ -141,7 +141,7 @@ fn valid_conflict_progress(
             MultiRootRetainedFence::Prepared(_) => true,
             MultiRootRetainedFence::Finished(_) => {
                 journal.projected_roots.contains_key(root)
-                    && journal.published_generations.get(root) == journal.projected_roots.get(root)
+                    && journal.published_generations.contains_key(root)
             }
         })
         && roots

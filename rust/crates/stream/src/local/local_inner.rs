@@ -63,10 +63,20 @@ struct PendingCut {
 
 impl PendingCut {
     fn prepare(work: Option<&crate::memory::Work>) -> Result<Box<Self>, StreamError> {
-        let allocation = work.map(|work| work.record(
-            acyclic_native_runtime::ReadAllocation::new(&work.meter, std::mem::size_of::<Self>())
-        )).transpose()?;
-        Ok(Box::new(Self { sequence: 0, tail: 0, next: None, _allocation: allocation }))
+        let allocation = work
+            .map(|work| {
+                work.record(acyclic_native_runtime::ReadAllocation::new(
+                    &work.meter,
+                    std::mem::size_of::<Self>(),
+                ))
+            })
+            .transpose()?;
+        Ok(Box::new(Self {
+            sequence: 0,
+            tail: 0,
+            next: None,
+            _allocation: allocation,
+        }))
     }
 }
 
@@ -84,7 +94,11 @@ impl PendingCuts {
                 self.front = Some(node);
             }
         }
-        if self.front.as_ref().is_none_or(|node| node.sequence > synced) {
+        if self
+            .front
+            .as_ref()
+            .is_none_or(|node| node.sequence > synced)
+        {
             return None;
         }
         let mut node = self.front.take()?;

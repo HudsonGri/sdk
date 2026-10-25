@@ -93,6 +93,7 @@ impl MultiRootPublisher for Publisher {
         _root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         _projected_generation: GenerationId,
+        _conflicts: Option<&crate::MergePlan>,
     ) -> Result<GenerationId, Self::Error> {
         Ok(root.target_generation)
     }

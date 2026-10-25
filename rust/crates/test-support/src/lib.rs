@@ -6,7 +6,7 @@
 //! [`counting_allocator!`] once at its crate root.
 pub mod differential;
 mod fixtures;
-pub use fixtures::source_path;
+pub use fixtures::{binary_path, source_path};
 pub mod module_cases;
 /// Compiler observations made on the build host for every module path case.
 /// Target tests compare their actual source traversal with this independent proof.
