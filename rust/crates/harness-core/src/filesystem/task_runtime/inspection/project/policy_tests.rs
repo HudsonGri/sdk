@@ -244,10 +244,11 @@ impl Source {
             handle,
             Limits::default(),
             io,
+            Default::default(),
         )
         .await?;
         let mut effective: Capability =
-            serde_json::from_slice(include_bytes!("../../../access/legacy-read.json"))?;
+            Capability::whole_volume(None, acyclic_fs::access::ActionSet::SourceRead.actions());
         effective.layers.extend(ceiling.layers);
         effective.expires_at = ceiling.expires_at;
         Ok((reader, effective))
@@ -320,9 +321,16 @@ async fn late_selected_verification(protected: bool) -> TestResult {
     // still outstanding. Its journal remains valid; only the volume cut changed.
     source.deny_secret().await?;
     let result = if protected {
-        Reader::finish_verification(&reader.workspace, &reader.owner, &view.0, &reader.io).await
+        Reader::finish_verification(
+            &reader.workspace,
+            &reader.owner,
+            &view.0,
+            &reader.io,
+            &reader.owner_work,
+        )
+        .await
     } else {
-        Reader::verify_owner(&reader.owner, &reader.io).await?;
+        Reader::verify_owner(&reader.owner, &reader.io, &reader.owner_work).await?;
         crate::filesystem::access::require_unrestricted(
             &view.0,
             &[Action::List, Action::Read],

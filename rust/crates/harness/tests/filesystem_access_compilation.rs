@@ -40,9 +40,7 @@ fn input(pattern: &str) -> Result<(Policy, Capability), Box<dyn std::error::Erro
         .first_mut()
         .ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?
         .push(deny);
-    let capability = serde_json::from_slice(include_bytes!(
-        "../../harness-core/src/filesystem/access/legacy-read.json"
-    ))?;
+    let capability = Capability::whole_volume(None, ActionSet::SourceRead.actions());
     Ok((policy, capability))
 }
 
@@ -176,7 +174,7 @@ proptest! {
             (0..15_usize).prop_map(|depth| format!("**/a{}", "/?".repeat(depth))),
         ],
         work in 0..100_001_usize,
-        refuse_dfa in any::<bool>(),
+        refuse_stage in 0..5_usize,
         folded in any::<bool>(),
     ) {
         let (policy, capability) = input(&pattern).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
@@ -192,13 +190,19 @@ proptest! {
             compiled = Some(PathTrie::compile_with_work(&policy, &caller, resource, context, &capability,
                 &mut remaining, |bytes| {
                     stages += 1;
-                    if refuse_dfa && stages == 2 { return Err(InvalidPolicy("unfunded DFA")); }
+                    if stages == refuse_stage { return Err(InvalidPolicy("unfunded compiler stage")); }
                     reserved += bytes;
                     Ok(())
                 }));
         });
         prop_assert!(remaining <= work);
-        prop_assert!(stages <= 2);
+        // Shared preparation/DFA, caller facts, and the whole-volume ceiling
+        // each require admission. Exercise refusal at every one of those cuts.
+        prop_assert!(stages <= 4);
+        if refuse_stage != 0 && stages == refuse_stage {
+            prop_assert!(matches!(compiled.as_ref(), Some(Err(InvalidPolicy("unfunded compiler stage")))));
+            prop_assert_eq!(measured.bytes_current, 0);
+        }
         prop_assert!(measured.bytes_max <= reserved as u64, "{} live bytes exceed {} reserved for {}", measured.bytes_max, reserved, pattern);
         if let Some(Ok(trie)) = compiled {
             prop_assert_eq!(trie.logical_owned_bytes(), measured.bytes_current.cast_unsigned());

@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) type ControlDispatchResponse = (Value, Option<acyclic_fs::NativeAllocation>);
 pub(crate) type ControlEncodedResponse = (
-    Vec<u8>,
+    ControlFrame,
     Option<acyclic_fs::NativeAllocation>,
     Option<acyclic_harness::Error>,
 );
@@ -22,7 +22,10 @@ pub(crate) const CONTROL_PROBE_WAIT: std::time::Duration = std::time::Duration::
 pub(crate) const CONTROL_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 pub(crate) const CONTROL_COMMAND_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, acyclic_harness::HeapLayout,
+)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ControlCommand {
     Ping,
@@ -47,7 +50,8 @@ impl ControlCommand {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 pub(crate) struct ControlRequest {
     pub(crate) version: u32,
     pub(crate) command: ControlCommand,
@@ -57,7 +61,8 @@ pub(crate) struct ControlRequest {
     pub(crate) arguments: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, acyclic_harness::HeapLayout)]
+#[heap_layout(crate = acyclic_harness)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct CliRouting {
     pub(crate) selected_cwd: PathBuf,
@@ -503,21 +508,18 @@ pub(crate) fn unix_control_socket_path(data: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-#[allow(
-    unsafe_code,
-    reason = "geteuid has no preconditions and reads no memory"
-)]
-pub(crate) fn unix_control_runtime_directory() -> PathBuf {
-    // SAFETY: geteuid has no preconditions and reads no memory.
-    let uid = unsafe { libc::geteuid() };
-    PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
+pub(crate) fn prepare_unix_control_runtime_directory() -> Result<PathBuf, String> {
+    let directory = unix_control_runtime_directory();
+    match acyclic_native_runtime::private_file::create_directory(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(display(error)),
+    }
+    acyclic_native_runtime::private_file::validate_directory(&directory).map_err(display)?;
+    Ok(directory)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-#[allow(
-    unsafe_code,
-    reason = "geteuid has no preconditions and reads no memory"
-)]
 pub(crate) fn prepare_unix_control_socket(data: &Path) -> Result<PathBuf, String> {
     let directory = prepare_unix_control_runtime_directory()?;
 
@@ -535,33 +537,10 @@ pub(crate) fn prepare_unix_control_socket(data: &Path) -> Result<PathBuf, String
     unsafe_code,
     reason = "geteuid has no preconditions and reads no memory"
 )]
-pub(crate) fn prepare_unix_control_runtime_directory() -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
-
-    let directory = unix_control_runtime_directory();
-    match fs::symlink_metadata(&directory) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let mut builder = fs::DirBuilder::new();
-            builder.mode(0o700);
-            match builder.create(&directory) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(display(error)),
-            }
-        }
-        Err(error) => return Err(display(error)),
-    }
-    let metadata = fs::symlink_metadata(&directory).map_err(display)?;
+pub(crate) fn unix_control_runtime_directory() -> PathBuf {
     // SAFETY: geteuid has no preconditions and reads no memory.
     let uid = unsafe { libc::geteuid() };
-    if !metadata.file_type().is_dir() || metadata.uid() != uid {
-        return Err("Acyclic workspace directory is not owned by the current user".to_owned());
-    }
-    if metadata.permissions().mode() & 0o777 != 0o700 {
-        return Err("Acyclic runtime directory permissions must be 0700".to_owned());
-    }
-    Ok(directory)
+    PathBuf::from("/tmp").join(format!("acyclic-{uid}"))
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -913,7 +892,9 @@ pub(crate) async fn dispatch_control_envelope(
             Err(acyclic_harness::Error::Storage(error)),
             original_native_work.as_ref(),
         ),
-        Ok(LedgerDecision::Completed(response)) => Ok((response, None, None)),
+        Ok(LedgerDecision::Completed(response)) => {
+            Ok((ControlFrame::encoded(response), None, None))
+        }
         Ok(LedgerDecision::Execute) => {
             let result =
                 dispatch_control_request(control, envelope.request.clone(), original_native_work)
@@ -924,6 +905,15 @@ pub(crate) async fn dispatch_control_envelope(
             let failure = encoded.2;
             let allocation = encoded.1;
             let response = encoded.0;
+            if response.reply_failed() {
+                // The operation took effect but its reply was never funded.
+                // Its outcome is recorded indeterminate, so a retry is refused
+                // rather than replayed as a failure, and it ages out with the
+                // normal retention window. Should that record fail, the
+                // operation stays started and a restart records it the same.
+                let _ = ledger.interrupt(&envelope);
+                return Ok((response, allocation, failure));
+            }
             match ledger.complete(&envelope, &response) {
                 Ok(()) => Ok((response, allocation, failure)),
                 Err(error) => {

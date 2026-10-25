@@ -3,6 +3,15 @@ use super::*;
 /// Fail-closed embedded facade errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum FsError {
+    /// A malformed, missing or over-complex access policy cannot authorize work.
+    #[error("invalid access policy")]
+    InvalidAccessPolicy,
+    /// The policy needs facts that this authenticated caller cannot supply.
+    #[error("unauthenticated principal facts")]
+    UnauthenticatedAccessFacts,
+    /// Retained policy handles occupy the host's bounded policy-cache budget.
+    #[error("access policy cache capacity exhausted")]
+    AccessPolicyCacheCapacity,
     /// Operation was cancelled before further facade work began.
     #[error(transparent)]
     Cancelled(#[from] CancellationError),
