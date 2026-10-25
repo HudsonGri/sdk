@@ -269,7 +269,11 @@ mod tests {
             }
         }
         assert!(retried, "a busy sibling starved the held view");
-        assert!(now - start <= HELD_RETRY * 2, "retried late: {:?}", now - start);
+        assert!(
+            now - start <= HELD_RETRY * 2,
+            "retried late: {:?}",
+            now - start
+        );
     }
 
     #[test]
