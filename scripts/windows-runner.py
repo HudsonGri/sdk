@@ -6,7 +6,7 @@ belongs to the admitted external process host; this module never owns a Job or
 uses PID-based tree killing. OpenAI Codex <noreply@openai.com>.
 """
 
-import ctypes
+import codecs
 import hashlib
 import json
 import os
@@ -31,8 +31,12 @@ def admitted_host(source, executable, receipt):
         raise ValueError("E2E_PROCESS_HOST must name an absolute cross-built executable")
     if receipt["exit"] != 0 or receipt["executable_sha256"] != digest(executable):
         raise ValueError("process host executable differs from its successful build receipt")
-    if receipt["source_sha256"] != digest(source / "scripts/graphcoder-e2e/owned-process.cs"):
-        raise ValueError("process host needs a fresh bb2 build for this source")
+    for name, checksum in receipt["source_inputs"].items():
+        path = Path(name)
+        if path.is_absolute() or ".." in path.parts or digest(source / path) != checksum:
+            raise ValueError("process host needs a fresh bb2 build for " + name)
+    if not receipt["source_inputs"]:
+        raise ValueError("process host source admission is empty")
     return executable.resolve()
 
 
@@ -46,8 +50,7 @@ class Commands:
             raise ValueError("Windows runner records must stay under D:/lane-scratch")
         self.host = Path(host).resolve()
         self.binary = None if binary is None else Path(binary).resolve()
-        self.kernel = None
-        self.mutex = None
+        self.session = None
         self.acquired = False
         self.lease_wait_seconds = 0
         self.results = []
@@ -57,34 +60,38 @@ class Commands:
             raise OSError("this runtime adapter requires Windows")
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
-        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-        self.kernel.CreateMutexW.restype = ctypes.c_void_p
-        self.kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        self.kernel.ReleaseMutex.argtypes = [ctypes.c_void_p]
-        self.kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        self.mutex = self.kernel.CreateMutexW(None, False, "Global\\AcyclicWindowsTestRun")
-        if not self.mutex:
-            raise ctypes.WinError(ctypes.get_last_error())
+        # The record creator owns admission before READY, through final drain.
+        # A caller death closes stdin; it cannot release the host's lease early.
         print("WIN_TEST_WAITING_FOR_GLOBAL_MUTEX", flush=True)
-        # This is a blocking lease acquisition, never a readiness poll.
-        wait_started = time.monotonic()
-        status = self.kernel.WaitForSingleObject(self.mutex, 0xFFFFFFFF)
-        self.lease_wait_seconds = time.monotonic() - wait_started
-        if status not in (0, 0x80):
-            self.kernel.CloseHandle(self.mutex)
-            self.mutex = None
-            raise ctypes.WinError(ctypes.get_last_error())
-        self.acquired = True
-        return self
+        self.session = subprocess.Popen(
+            [str(self.host), "--fleet-session", "D:/lane-scratch/windows/process-custody"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="strict",
+        )
+        try:
+            ready = json.loads(self.session.stdout.readline())
+            if ready.get("ready") is not True:
+                raise RuntimeError("process host did not fence and acquire admission")
+            self.lease_wait_seconds = ready["lease_wait_seconds"]
+            self.acquired = True
+            return self
+        except BaseException:
+            self.__exit__()
+            raise
 
     def __exit__(self, *_):
-        if self.acquired:
-            self.kernel.ReleaseMutex(self.mutex)
+        if self.session is not None:
+            self.session.stdin.close()
+            # Consume final output so a host draining after interruption cannot
+            # block on its control pipe. Mutex release belongs to that host.
+            for _ in self.session.stdout:
+                pass
+            rc = self.session.wait()
+            self.session.stdout.close()
+            self.session = None
             self.acquired = False
-        if self.mutex:
-            self.kernel.CloseHandle(self.mutex)
-            self.mutex = None
+            if rc:
+                raise RuntimeError("process host drain failed: " + str(rc))
 
     def _environment(self):
         identity = uuid.uuid4().hex
@@ -136,28 +143,34 @@ class Commands:
         start = time.monotonic()
         summaries = []
         log_path = self.records / (identity + ".log")
-        proc = None
+        packet = dict(argv=argv, cwd=str(cwd), env=env, log=str(log_path))
+        self.session.stdin.write(json.dumps(packet) + "\n")
+        self.session.stdin.flush()
+        pending = ["", ""]
+        decoders = [codecs.getincrementaldecoder("utf-8")("replace") for _ in range(2)]
         try:
-            with log_path.open("x", encoding="utf-8") as log:
-                proc = subprocess.Popen(
-                    [str(self.host), *argv], cwd=cwd, env=env,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                )
-                for line in proc.stdout:
-                    log.write(line)
-                    log.flush()
-                    print(line, end="", flush=True)
+            while True:
+                line = self.session.stdout.readline()
+                if not line:
+                    raise RuntimeError("process host exited before physical drain")
+                event = json.loads(line)
+                if "exit" in event:
+                    rc = event["exit"]
+                    break
+                stream = event["stream"]
+                pending[stream] += decoders[stream].decode(bytes(event["output"]))
+                while "\n" in pending[stream]:
+                    line, pending[stream] = pending[stream].split("\n", 1)
+                    print(line, flush=True)
                     if "test result:" in line:
                         summaries.append(line.strip())
-                rc = proc.wait()
-        finally:
-            if proc is not None:
-                # EOF asks the existing host to terminate and drain its tree.
-                # Keep the fleet lease while it drains, including on exceptions.
-                proc.stdin.close()
-                proc.stdin = None
-                proc.communicate()
+            for stream, decoder in enumerate(decoders):
+                remaining = pending[stream] + decoder.decode(b"", final=True)
+                if remaining:
+                    print(remaining, end="", flush=True)
+        except BaseException:
+            self.__exit__()
+            raise
         elapsed = time.monotonic() - start
         verification_error = None
         if libtest and rc == 0 and "--list" not in argv:
@@ -183,11 +196,23 @@ class Commands:
 def run_tests(records, manifest, runtime):
     """The libtest adapter over the same generic command custody API."""
     source = records / "source"
-    fixtures = [row for row in manifest["artifacts"] if not row["test"]]
+    fixtures = [row for row in manifest["artifacts"] if not row["test"] and row.get("role") != "process_host"]
     if len(fixtures) > 1:
         raise ValueError("ambiguous normal executable fixture")
     binary = records / "bin" / fixtures[0]["name"] if fixtures else None
-    host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
+    hosts = [row for row in manifest["artifacts"] if row.get("role") == "process_host"]
+    if len(hosts) != 1:
+        raise ValueError("exactly one source-admitted native process host is required")
+    row = hosts[0]
+    receipt = records / "process-host-build.json"
+    receipt.write_text(json.dumps(dict(
+        exit=0, executable_sha256=row["sha256"],
+        source_inputs={name: checksum for name, checksum in manifest["source"].items()
+            if name.startswith("rust/crates/native-runtime/") or name in ("Cargo.toml", "Cargo.lock")},
+    )), encoding="utf-8")
+    host = admitted_host(source, records / "bin" / row["name"], receipt)
+    os.environ["E2E_PROCESS_HOST"] = str(host)
+    os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"] = str(receipt)
     with Commands(records, source, host, binary) as commands:
         for row in manifest["artifacts"]:
             if row["test"]:

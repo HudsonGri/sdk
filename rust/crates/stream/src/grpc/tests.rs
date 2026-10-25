@@ -409,7 +409,10 @@ async fn persistent_unknown_expires_at_the_operation_deadline() -> TestResult {
         .await
         .and_then(|response| decode_response(response, Ok));
     assert_eq!(result, Err(StreamError::Unavailable));
-    assert_eq!(tokio::time::Instant::now() - started, OPERATION_DEADLINE);
+    let elapsed = tokio::time::Instant::now() - started;
+    assert!(elapsed <= OPERATION_DEADLINE);
+    // The final attempt consumes the residual budget, without opening a fresh deadline.
+    assert!(elapsed >= OPERATION_DEADLINE - RETRY_DELAY);
     Ok(())
 }
 

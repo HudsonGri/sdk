@@ -77,7 +77,30 @@ pub struct ProcessTree {
     custody: Option<custody::Record>,
 }
 
+/// An owned kernel exit notification. It never reopens a possibly reused PID.
+pub struct ProcessExit(platform::ExitWatch);
+
+impl ProcessExit {
+    /// Blocks on physical process exit, without a polling interval or deadline.
+    pub fn await_exit(&self) -> io::Result<()> {
+        self.0.await_exit()
+    }
+}
+
 impl ProcessTree {
+    /// Retains a kernel notification while this tree still pins its direct child.
+    pub fn exit_notification(&self) -> io::Result<ProcessExit> {
+        platform::ExitWatch::new(self.owned_child_id()?).map(ProcessExit)
+    }
+
+    /// Observes direct-child exit without releasing descendant containment.
+    /// The caller must still terminate/drain the tree before admitting a successor.
+    pub fn await_exit(&mut self) -> io::Result<ExitStatus> {
+        #[cfg(windows)]
+        return self.child.as_mut().ok_or(io::ErrorKind::NotFound)?.wait();
+        #[cfg(unix)]
+        platform::await_exit_id(self.owned_child_id()?, None)
+    }
     /// Maximum observation time for each physical termination phase.
     pub const TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -360,8 +383,8 @@ impl ProcessTree {
         }
     }
 
-    #[cfg(unix)]
-    fn owned_child_id(&self) -> io::Result<libc::id_t> {
+    fn owned_child_id(&self) -> io::Result<u32> {
+        #[cfg(unix)]
         match self.native_child {
             Some(pid) => libc::id_t::try_from(pid).map_err(io::Error::other),
             None => self
@@ -370,6 +393,11 @@ impl ProcessTree {
                 .map(Child::id)
                 .ok_or_else(|| io::ErrorKind::Other.into()),
         }
+        #[cfg(windows)]
+        self.child
+            .as_ref()
+            .map(Child::id)
+            .ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 
     fn select_control_meter(&mut self, meter: Option<&dyn crate::NativeReadMeter>) {

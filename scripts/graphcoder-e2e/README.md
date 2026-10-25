@@ -5,10 +5,10 @@ Windows MSVC executables must be cross-built on bb2; run Windows suites serially
 ConPTY preparation has no local PowerShell compiler entry point: cross-build
 `scripts/graphcoder-conpty.cs` on bb2 and supply its executable as
 `E2E_CONPTY_HOST` before running a Windows PTY case.
-The Windows `owned-process.cs` host must also be cross-compiled on bb2 and
-its absolute executable supplied as `E2E_PROCESS_HOST`. External acceptance
-commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
-exit and suite cancellation drain their service descendants before returning.
+Build `acyclic-native-runtime --features process-host --bin acyclic-process-host`
+on the target OS (Windows on bb2), and supply its absolute executable as
+`E2E_PROCESS_HOST`. Every external command uses this same Rust process-tree
+owner. Normal exit and EOF cancellation drain service descendants before return.
 Linux external acceptance also leases its fresh fixture directory. After all
 descendants exit, the supervisor normally unmounts its FUSE registrations and
 checks that their mount IDs have disappeared. Failed retirement fails the
@@ -16,7 +16,7 @@ acceptance command; unrelated fixtures and pre-existing mounts are never adopted
 The runner passes that same root as `ACYCLIC_TEST_FIXTURE_ROOT`; installed Pi
 fixtures create their service state below it and bind provider imports to the
 installed modules before moving provider files outside the repository.
-POSIX cleanup requires Python 3 and macOS `ps`; exit waits use Linux pidfds or
+The fixture-directory adapter requires Python 3; exit waits use Linux pidfds or
 macOS kqueue notifications. Separate service process groups stay owned. Shipping GraphCoder processes retain their own recovery
 oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.

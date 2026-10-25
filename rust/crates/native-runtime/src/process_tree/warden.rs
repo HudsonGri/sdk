@@ -11,6 +11,9 @@ use libc::{c_int, pid_t};
 use std::ffi::CStr;
 use std::io;
 
+#[cfg(target_vendor = "apple")]
+pub(super) mod session;
+
 /// Bytes of boot identity a record holds.
 pub(super) const BOOT_BYTES: usize = 64;
 
@@ -205,6 +208,8 @@ fn write_full(file: c_int, mut bytes: &[u8]) -> io::Result<()> {
 /// Runs in the forked direct child, which already leads its own process
 /// group. Returns only in the program's process, which then execs.
 pub(super) fn enter(directory: c_int, owner: pid_t) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    session::enter(owner)?;
     // An inherited host handler must not run in the warden.
     // SAFETY: resetting one disposition to its default.
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
@@ -266,7 +271,11 @@ pub(super) fn enter(directory: c_int, owner: pid_t) -> io::Result<()> {
         unlink();
         return Err(error);
     }
-    if leave_group().is_ok() {
+    #[cfg(target_os = "linux")]
+    let admitted_group = leave_group().is_ok();
+    #[cfg(target_vendor = "apple")]
+    let admitted_group = true;
+    if admitted_group {
         // A failed write leaves the program unadmitted, which fails the spawn.
         let _ = write_full(admit, &[1]);
     }
@@ -357,6 +366,7 @@ fn await_watch(watch: c_int) {
 /// Moves the warden out of the tree's process group into a group of its
 /// own, so a kill of the tree's group never reaches the warden, while the
 /// warden's live PID keeps the tree's group ID from naming any other group.
+#[cfg(target_os = "linux")]
 fn leave_group() -> io::Result<()> {
     // A new group needs a leader to name it: a short-lived child.
     let anchor = spawn_anchor()?;
@@ -536,7 +546,10 @@ fn supervise(
     // the program's standard streams, close here.
     close_except([directory, record, watch], warden);
     let status = await_exit(watch, owner, program);
-    let status = drain(watch, warden, program, status);
+    let Ok(status) = drain(watch, warden, program, status) else {
+        // A failed containment query must retain the record for the next fence.
+        exit_as(None);
+    };
     // SAFETY: the record this warden created.
     unsafe { libc::unlinkat(directory, name.as_ptr(), 0) };
     exit_as(status)
@@ -615,10 +628,15 @@ fn reap(program: pid_t) -> Option<c_int> {
 /// orphaned descendant becomes this warden's child, so an empty wait means
 /// the whole tree is gone.
 #[cfg(target_os = "linux")]
-fn drain(_watch: c_int, warden: pid_t, program: pid_t, mut status: Option<c_int>) -> Option<c_int> {
+fn drain(
+    _watch: c_int,
+    warden: pid_t,
+    program: pid_t,
+    mut status: Option<c_int>,
+) -> io::Result<Option<c_int>> {
     let mut path = [0_u8; 64];
     let Some(children) = children_path(warden, &mut path) else {
-        return status;
+        return Err(io::ErrorKind::InvalidData.into());
     };
     loop {
         // The warden left this group, and its live PID keeps the group's ID
@@ -627,7 +645,7 @@ fn drain(_watch: c_int, warden: pid_t, program: pid_t, mut status: Option<c_int>
         unsafe { libc::kill(-warden, libc::SIGKILL) };
         if !kill_children(children) {
             // Without the children listing, the tree still dies as a group.
-            return status;
+            return Err(io::ErrorKind::NotFound.into());
         }
         let mut raw = 0;
         // SAFETY: writable status storage.
@@ -636,7 +654,7 @@ fn drain(_watch: c_int, warden: pid_t, program: pid_t, mut status: Option<c_int>
             status = status.or(Some(raw));
         }
         if reaped < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return status;
+            return Ok(status);
         }
     }
 }
@@ -693,37 +711,15 @@ fn kill_children(path: &CStr) -> bool {
 
 /// Kills the tree's process group and waits for each member to exit.
 #[cfg(target_vendor = "apple")]
-fn drain(queue: c_int, warden: pid_t, program: pid_t, mut status: Option<c_int>) -> Option<c_int> {
-    let mut members = [0 as pid_t; 256];
-    loop {
-        // The warden left this group, and its live PID keeps the group's ID
-        // from naming any other group: one signal reaches exactly the tree,
-        // never a listed PID that may since have been reused.
-        // SAFETY: signalling the tree's process group.
-        unsafe { libc::kill(-warden, libc::SIGKILL) };
-        reap_ready(program, &mut status);
-        let Ok(count) = group_members(warden, &mut members) else {
-            return status;
-        };
-        let mut live = false;
-        for member in members.iter().take(count).copied() {
-            if member <= 0 {
-                continue;
-            }
-            // A listed PID may since have been reused; only a watch that
-            // still names a member counts. No process joins the group now.
-            // SAFETY: getpgid only reads the named process's group.
-            live |= watch_exit(queue, member).unwrap_or(false)
-                && unsafe { libc::getpgid(member) } == warden;
-        }
-        if !live {
-            reap_ready(program, &mut status);
-            return status;
-        }
-        if next_exit(queue).is_err() {
-            return status;
-        }
-    }
+fn drain(
+    queue: c_int,
+    warden: pid_t,
+    program: pid_t,
+    mut status: Option<c_int>,
+) -> io::Result<Option<c_int>> {
+    session::drain(queue, warden)?;
+    reap_ready(program, &mut status);
+    Ok(status)
 }
 
 /// Lists the PIDs of process group `group`.

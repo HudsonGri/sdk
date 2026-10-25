@@ -423,7 +423,17 @@ impl RecordCursor {
                     return None;
                 }
                 Some(Err(_)) | None => {
-                    tokio::time::sleep(RETRY_DELAY).await;
+                    let mut retry = Backoff::new(
+                        Policy {
+                            attempts: 1,
+                            base_delay: RETRY_DELAY,
+                            max_delay: RETRY_DELAY,
+                        },
+                        self.path.as_str().as_bytes(),
+                    );
+                    if let Some(wait) = retry.next(None, Duration::MAX) {
+                        tokio::time::sleep(wait).await;
+                    }
                     self.active = None;
                 }
             }

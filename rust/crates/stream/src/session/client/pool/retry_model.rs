@@ -13,7 +13,7 @@ impl Executor for Clock {
         let release = Arc::clone(&self.release);
         let broken = self.broken;
         Box::pin(async move {
-            if milliseconds == 10 {
+            if (1..=10).contains(&milliseconds) {
                 if !broken {
                     release.changed(false).await.unwrap();
                 }

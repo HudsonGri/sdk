@@ -586,3 +586,16 @@ fn denied_admission_still_observes_unassigned_child_exit() {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(!temporary.path().join("tree-ready").exists());
 }
+
+/// The sole stable Win32 process identity/exit implementation.
+pub(super) struct ExitWatch(crate::process_identity::ProcessProbe);
+impl ExitWatch {
+    pub(super) fn new(id: u32) -> io::Result<Self> {
+        crate::process_identity::ProcessProbe::open(id)?
+            .map(Self)
+            .ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+    pub(super) fn await_exit(&self) -> io::Result<()> {
+        self.0.await_exit()
+    }
+}

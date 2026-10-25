@@ -93,7 +93,7 @@ start=time.monotonic()
 base=['cargo','xwin','test','--no-run','--locked','--target','x86_64-pc-windows-msvc','-p',p['name'],'--message-format=json-render-diagnostics']
 all_artifacts=[]
 logs=[]
-def build(cmd,label):
+def build(cmd,label,package_id=None):
     log=root/(c['stem']+'-'+label+'.jsonl')
     logs.append(log)
     print('WIN_TEST_BUILD',json.dumps(cmd),flush=True)
@@ -103,7 +103,7 @@ def build(cmd,label):
             output.write(line)
             try: v=json.loads(line)
             except ValueError: continue
-            if v.get('reason')=='compiler-artifact' and v.get('package_id')==p['id']:
+            if v.get('reason')=='compiler-artifact' and v.get('package_id')==(package_id or p['id']):
                 all_artifacts.append((v,log))
         rc=proc.wait()
     assert rc==0, 'Cross-build failed with exit '+str(rc)+'; no Windows tests were run'
@@ -133,15 +133,21 @@ def stage(label, artifacts, is_test):
     for spec in specifications:
         value=selected[spec['name']]
         assert Path(value['source']).suffix.lower()=='.exe', 'Cargo artifact is not a Windows executable'
-        row=dict(remote=value['path'],cargo_path=value['source'],name=spec['name'],target=spec['target'],test=is_test,sha256=value['sha256'])
+        row=dict(remote=value['path'],cargo_path=value['source'],name=spec['name'],target=spec['target'],test=is_test,sha256=value['sha256'],role='process_host' if label=='process-host' else 'command')
         rows.append(row)
         print('WIN_TEST_REMOTE_EXE',json.dumps(row),flush=True)
 
+# The one native host is compiled and frozen in this same SDK/source graph.
+# Callers cannot supply an unrelated local supervisor or compile one locally.
+host_package=next(value for value in metadata['packages'] if value['name']=='acyclic-native-runtime')
+build(['cargo','xwin','build','--locked','--target','x86_64-pc-windows-msvc','-p','acyclic-native-runtime','--features','process-host','--bin','acyclic-process-host','--message-format=json-render-diagnostics'],'process-host',host_package['id'])
+stage('process-host',all_artifacts,False)
+all_artifacts.clear()
 keys={arg.split('=',1)[0] for arg in c['cargo']}
 unit_selection=bool(keys & {'--lib','--bin','--bins','--example','--examples','--bench','--benches'})
 integration_selection=bool(keys & {'--test','--tests','--all-targets'}) or not unit_selection
 bins=[t for t in p['targets'] if 'bin' in t['kind']]
-if integration_selection and bins:
+if integration_selection and bins and p['name']!='acyclic-native-runtime':
     assert len(bins)==1, 'Ambiguous normal executable fixture: '+repr([t['name'] for t in bins])
     shared=[];i=0
     value_flags={'--features','-F','--profile','--config','-j','--jobs','--color'}
@@ -160,11 +166,13 @@ build(base+c['cargo'],'tests')
 stage('tests',all_artifacts,True)
 assert any(r['test'] for r in rows), 'No test executables survived artifact selection'
 files={}
-# All tracked runtime fixtures, including corpora, source-policy inputs and scripts.
-tracked=subprocess.check_output(['git','ls-files','-z'],text=True).split('\0')
+# Include uploaded new production sources as well as tracked runtime fixtures.
+# Lane-only build/export inputs never become consumer source fixtures.
+tracked=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z'],text=True).split('\0')
 for name in tracked+c['fixtures']:
     if not name:continue
     path=Path(name)
+    if any(part.startswith('.bb-') for part in path.parts):continue
     assert not path.is_absolute() and '..' not in path.parts, name
     if path.is_dir():
         candidates=[x for x in path.rglob('*') if x.is_file()]
@@ -268,8 +276,6 @@ def main():
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)
-    shared_runner = runner_module(root / 'scripts/windows-runner.py')
-    shared_runner.admitted_host(root, os.environ['E2E_PROCESS_HOST'], os.environ['WIN_TEST_PROCESS_HOST_RECEIPT'])
     config = dict(crate=sys.argv[1], cargo=cargo, stem=stem, fixtures=fixtures)
     payload, program = remote_invocation(config)
     import shlex

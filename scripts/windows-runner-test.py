@@ -155,6 +155,7 @@ def main():
                         assert kernel.WaitForSingleObject(handle, 0xFFFFFFFF) == 0
                     finally:
                         assert kernel.CloseHandle(handle)
+            commands.__enter__()
             assert commands.run([python, "-c", probe], cwd=source, name="after-drain", sha256=checksum) == 0
         assert len({result["fixture"] for result in commands.results}) == len(commands.results)
         plan = dict(source=str(source), records=str(records / "cli"), commands=[dict(

@@ -21,8 +21,7 @@ use std::os::windows::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
-    WAIT_FAILED,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus,
@@ -33,9 +32,9 @@ use windows_sys::Win32::System::JobObjects::{
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, GetProcessTimes, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    RegisterWaitForSingleObject, UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
+    CREATE_NO_WINDOW, ExitProcess, GetCurrentProcess, GetProcessId, INFINITE, OpenProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, RegisterWaitForSingleObject,
+    UnregisterWaitEx, WT_EXECUTEONLYONCE, WaitForSingleObject,
 };
 
 /// The environment variable that makes a process a custodian.
@@ -117,20 +116,12 @@ fn identity(process: HANDLE) -> io::Result<String> {
     if pid == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(format!("{pid}-{}", creation_time(process)?))
-}
-
-fn creation_time(process: HANDLE) -> io::Result<u64> {
-    let mut times = [FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    }; 4];
-    let [creation, exit, kernel, user] = &mut times;
-    // SAFETY: a live process handle and four writable times.
-    if unsafe { GetProcessTimes(process, creation, exit, kernel, user) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
+    // SAFETY: this caller holds the live process handle for the query.
+    let borrowed = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(process.cast()) };
+    Ok(format!(
+        "{pid}-{}",
+        crate::process_identity::process_started(&borrowed)?
+    ))
 }
 
 /// Waits for the custodian of `identity`, as a record names it, if it still
@@ -142,29 +133,21 @@ pub(super) fn await_custodian(identity: &str) -> io::Result<()> {
     else {
         return Err(io::ErrorKind::InvalidData.into());
     };
-    // SAFETY: opening a handle to the recorded PID; owned below.
-    let process = unsafe {
-        OpenProcess(
-            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
+    use crate::process_identity::{
+        IncarnationState, ProcessIncarnation, ProcessObservation, ProcessProbe,
     };
-    if process.is_null() {
+    let owner = ProcessIncarnation::new(pid, created).ok_or(io::ErrorKind::InvalidData)?;
+    let Some(process) = ProcessProbe::open(owner.pid())? else {
         return Ok(());
+    };
+    match owner.observe(ProcessObservation::Present {
+        started: process.started()?,
+        exited: false,
+    }) {
+        IncarnationState::Running => process.await_exit(),
+        IncarnationState::Replaced | IncarnationState::Exited | IncarnationState::Absent => Ok(()),
+        IncarnationState::Unknown => Err(io::ErrorKind::InvalidData.into()),
     }
-    let waited = creation_time(process).and_then(|time| {
-        // Another process with a reused PID is no custodian of this tree.
-        // SAFETY: the owned process handle.
-        if time == created && unsafe { WaitForSingleObject(process, INFINITE) } == WAIT_FAILED {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    });
-    // SAFETY: the handle opened above.
-    unsafe { CloseHandle(process) };
-    waited
 }
 
 /// Duplicates `source` into `target`, returning its value there.
