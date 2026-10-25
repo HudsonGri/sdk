@@ -149,7 +149,22 @@ impl HostWorkspaceOwner {
 
     /// Dispatches a claimed workspace request. Calling this never executes a
     /// model, a native host, a shell command or another harness tool.
-    pub async fn dispatch(&mut self, operation: OperationId, action: HostAction) -> Result<Value> {
+    pub fn dispatch(
+        &mut self,
+        operation: OperationId,
+        action: HostAction,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<Value>> {
+        // Every caller, including read-only observations, crosses the same
+        // erased boundary. A caller's future cannot embed the complete task,
+        // filesystem and publication state machines in its own layout.
+        Box::pin(self.dispatch_action(operation, action))
+    }
+
+    async fn dispatch_action(
+        &mut self,
+        operation: OperationId,
+        action: HostAction,
+    ) -> Result<Value> {
         match action {
             #[cfg(feature = "test-support")]
             HostAction::ResourceProbe {

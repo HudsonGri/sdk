@@ -286,28 +286,19 @@ async fn process_request(
     .map_err(storage)?;
     let outcome = commands
         .consume(&file, |operation, _, resolution| {
-            let owner = &mut *owner;
-            // Keep the workspace action behind one future boundary. The shared
-            // consumer's recovery state must not embed every filesystem action
-            // in the native GraphCoder entrypoint's future layout.
-            let action: acyclic_stream::BoxProviderFuture<'_, Result<Value>> =
-                Box::pin(async move {
-                    let CommandResolution::Sdk { command, arguments } = resolution else {
-                        return Err(Error::Invalid(
-                            "native request is not workspace coordination".into(),
-                        ));
-                    };
-                    if command != "workspace" {
-                        return Err(Error::Unsupported(command));
-                    }
-                    owner
-                        .dispatch(
-                            operation,
-                            serde_json::from_str(&arguments).map_err(storage)?,
-                        )
-                        .await
-                });
-            action
+            let action = match resolution {
+                CommandResolution::Sdk { command, arguments } if command == "workspace" => {
+                    serde_json::from_str(&arguments).map_err(storage)
+                }
+                CommandResolution::Sdk { command, .. } => Err(Error::Unsupported(command)),
+                _ => Err(Error::Invalid(
+                    "native request is not workspace coordination".into(),
+                )),
+            };
+            match action {
+                Ok(action) => owner.dispatch(operation, action),
+                Err(error) => Box::pin(std::future::ready(Err(error))),
+            }
         })
         .await;
     let result = local
