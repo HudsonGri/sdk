@@ -141,6 +141,46 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
 type MemoryHost =
     FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
+#[tokio::test]
+async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()> {
+    for native_adapter in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let workspace = Fs::memory()
+            .create_workspace("typed-staging-error", budget, &cancellation)
+            .await
+            .map_err(|failure| map_error(failure.error))?
+            .value;
+        let mut transaction = workspace
+            .begin_transaction(acyclic_fs::IdempotencyKey::new(), budget, &cancellation)
+            .await
+            .map_err(|failure| map_error(failure.error))?
+            .value;
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native_adapter {
+            PreparationIo::from_native_work(&native)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let error = MemoryHost::stage_publication_batch(
+            &mut transaction,
+            &[WorkspaceMutation::PutFile {
+                path: "/".into(),
+                bytes: b"forged root".to_vec().into(),
+            }],
+            FilePublication::Replace(None),
+            Some(&io),
+            &cancellation,
+        )
+        .await
+        .expect_err("a directory cannot become a regular file");
+        assert!(matches!(error, Error::NativeWorkspace { source, .. }
+            if matches!(*source, WorkspaceError::NotRegularFile)));
+    }
+    Ok(())
+}
+
 struct InternalPublicationCase<'a> {
     host: &'a MemoryHost,
     volume: &'a VolumeRef,

@@ -72,7 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     if create_only {
                         creation_error(error, Some(io))
                     } else {
-                        map_error(error)
+                        error.into()
                     }
                 }),
                 recorded,
