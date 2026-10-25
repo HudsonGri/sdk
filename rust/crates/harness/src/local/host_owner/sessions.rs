@@ -52,6 +52,29 @@ struct Session {
     reference: Component,
     observation: ChildObservation,
 }
+
+#[cfg(test)]
+pub(super) async fn assert_lifecycle_projection(
+    owner: &mut HostWorkspaceOwner,
+    parent: TaskId,
+    reference: &str,
+) -> Result<()> {
+    let admitted = owner
+        .admit_session(
+            OperationId::new(),
+            parent,
+            &Component::new(reference).map_err(storage)?,
+            &SessionAction::Next,
+        )
+        .await?;
+    assert!(
+        admitted.observation.results.is_empty(),
+        "claim admission must not project the previous answer"
+    );
+    assert!(admitted.observation.status.is_some());
+    Ok(())
+}
+
 impl Session {
     fn key(&self, file: ChildFile) -> FileKey {
         FileKey::Child {
@@ -124,7 +147,9 @@ impl HostWorkspaceOwner {
                 return self.session_value(&session);
             }
         }
-        let current = self.read_session(parent, session.reference).await?;
+        let current = self
+            .read_session(parent, session.reference, ChildResultWindow::Latest)
+            .await?;
         self.session_value(&current)
     }
 
@@ -136,7 +161,15 @@ impl HostWorkspaceOwner {
         action: &SessionAction,
     ) -> Result<Session> {
         if !matches!(action, SessionAction::Spawn { .. }) {
-            let session = self.read_session(parent, reference.clone()).await?;
+            // Mutations need the coherent lifecycle/claim cut, not a copy and
+            // validation of the previous answer. Only observations expose it;
+            // mutation replies project the new answer after publication.
+            let window = if matches!(action, SessionAction::Observe | SessionAction::Recover) {
+                ChildResultWindow::Latest
+            } else {
+                ChildResultWindow::None
+            };
+            let session = self.read_session(parent, reference.clone(), window).await?;
             self.attach_retained(session.child, true).await?;
             return Ok(session);
         }
@@ -202,14 +235,20 @@ impl HostWorkspaceOwner {
                 reference.as_str(),
             )
             .await?;
-        self.read_session(parent, reference.clone()).await
+        self.read_session(parent, reference.clone(), ChildResultWindow::Latest)
+            .await
     }
 
-    async fn read_session(&self, parent: TaskId, reference: Component) -> Result<Session> {
+    async fn read_session(
+        &self,
+        parent: TaskId,
+        reference: Component,
+        window: ChildResultWindow,
+    ) -> Result<Session> {
         let files = self.files(parent).await?;
         let (child, observation) = self
             .local
-            .observe_admitted_child(&files, &reference, parent, ChildResultWindow::Latest, 1)
+            .observe_admitted_child(&files, &reference, parent, window, 1)
             .await?;
         Ok(Session {
             parent,
@@ -311,7 +350,11 @@ impl HostWorkspaceOwner {
         )
         .await?;
         let current = self
-            .read_session(session.parent, session.reference.clone())
+            .read_session(
+                session.parent,
+                session.reference.clone(),
+                ChildResultWindow::None,
+            )
             .await?;
         if let Some(claim) = unstarted {
             self.complete_session(operation, &current, &claim, Outcome::Cancelled)

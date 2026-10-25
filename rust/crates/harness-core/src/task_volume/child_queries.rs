@@ -4,6 +4,8 @@ use super::*;
 /// Selects a bounded range in the existing ordered child-result index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChildResultWindow {
+    /// Lifecycle and claim metadata only; no answer body is projected.
+    None,
     /// Results strictly after this completed turn, in increasing order.
     After(u64),
     /// The most recent results, in increasing order within the returned page.
@@ -218,6 +220,7 @@ fn result_page(
     maximum: usize,
 ) -> Vec<FileValue> {
     let first = match window {
+        ChildResultWindow::None => return Vec::new(),
         ChildResultWindow::After(after) => match after.checked_add(1) {
             Some(first) => first,
             None => return Vec::new(),
@@ -230,6 +233,7 @@ fn result_page(
     };
     let range = index.files.range(key(first)..=key(u64::MAX));
     match window {
+        ChildResultWindow::None => Vec::new(),
         ChildResultWindow::After(_) => range
             .take(maximum)
             .map(|(_, stored)| stored.file.clone())
@@ -482,6 +486,11 @@ mod tests {
         let latest = observation(&index, &reference, ChildResultWindow::Latest, 1)?;
         assert_eq!(latest.results.len(), 1);
         assert_eq!(ChildTurnResult::parse(&latest.results[0].bytes)?.turn, 8);
+        let lifecycle = observation(&index, &reference, ChildResultWindow::None, 1)?;
+        assert!(lifecycle.results.is_empty());
+        assert_eq!(lifecycle.status, latest.status);
+        assert_eq!(lifecycle.delivered, latest.delivered);
+        assert_eq!(lifecycle.pending_inputs, latest.pending_inputs);
         assert!(result_page(&index, &reference, ChildResultWindow::After(u64::MAX), 4).is_empty());
 
         // Restore the former all-files projection before filtering the child.

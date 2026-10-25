@@ -84,6 +84,8 @@ async fn native_fence_contract(host: &str) -> Result<()> {
         started.elapsed()
     );
     native_completion_fences_physical_custody_through_every_host(&mut fixture, host).await?;
+    super::sessions::assert_lifecycle_projection(&mut fixture.owner, fixture.parent, "physical")
+        .await?;
     eprintln!(
         "native contract {host}: physical fence {:?}",
         started.elapsed()
