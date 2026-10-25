@@ -51,7 +51,7 @@ def locked(state, name=".queue-lock.sqlite3", timeout=5):
     # second per-OS implementation. No command is retried on failure.
     with sqlite3.connect(state/name, timeout=timeout) as lock:
         lock.execute('BEGIN IMMEDIATE')
-        yield
+        yield lock
 
 
 def queue_path(state, name):
@@ -87,6 +87,45 @@ def acknowledge(state, prs):
     publish(claim, set(members(claim)) - set(prs))
 
 
+def dispatch(state, script):
+    lease = locked(state, '.drain-lock.sqlite3', timeout=0)
+    owned = False
+    try:
+        # Admission and final lease release use the same queue transaction.
+        # A late producer either wakes this owner or acquires the released lease.
+        with locked(state) as current:
+            current.execute('CREATE TABLE IF NOT EXISTS dispatch_wake (requested INTEGER NOT NULL)')
+            current.execute('INSERT INTO dispatch_wake SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM dispatch_wake)')
+            try:
+                lease.__enter__()
+            except sqlite3.OperationalError as error:
+                if getattr(error, 'sqlite_errorcode', None) != sqlite3.SQLITE_BUSY:
+                    raise
+                current.execute('UPDATE dispatch_wake SET requested=1')
+                print('GATE_DRAIN_BUSY wake-up retained for owner', file=sys.stderr)
+                return 0
+            owned = True
+            current.execute('UPDATE dispatch_wake SET requested=0')
+        shell = shutil.which('bash')
+        if shell is None:
+            raise FileNotFoundError('Bash is not available on PATH')
+        while True:
+            result = subprocess.call([shell, script, '--owned-by-dispatch'])
+            with locked(state) as current:
+                again = current.execute('SELECT requested FROM dispatch_wake').fetchone()[0]
+                if again:
+                    current.execute('UPDATE dispatch_wake SET requested=0')
+                else:
+                    # No producer can enter between this decision and release.
+                    lease.__exit__(None, None, None)
+                    owned = False
+            if not again:
+                return result
+    finally:
+        if owned:
+            lease.__exit__(None, None, None)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('state', type=Path)
@@ -98,17 +137,7 @@ def main():
         if args.operation == 'dispatch':
             if args.values:
                 raise ValueError('dispatch accepts one drain script')
-            # Separate long lease: queue producers remain independent. The
-            # OS/database releases it on exit; directory removal cannot admit
-            # a second reader of the shared worktree while this drain runs.
-            try:
-                with locked(args.state, '.drain-lock.sqlite3', timeout=0):
-                    return subprocess.call([shutil.which('bash') or 'bash', args.queue, '--owned-by-dispatch'])
-            except sqlite3.OperationalError as error:
-                if getattr(error, 'sqlite_errorcode', None) == sqlite3.SQLITE_BUSY:
-                    print('GATE_DRAIN_BUSY owner is still running', file=sys.stderr)
-                    return 0
-                raise
+            return dispatch(args.state, args.queue)
         if args.operation == 'add':
             add(args.state, args.queue, list(map(int, args.values)))
             return 0
