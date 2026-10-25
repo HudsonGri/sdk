@@ -6,7 +6,7 @@ use crate::{
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
 
-mod bootstrap;
+use crate::local::tests::bootstrap;
 mod pre_dispatch;
 
 // Interrupt the actual production publication future at each admission await
@@ -98,10 +98,19 @@ async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_on
     ) -> Result<Vec<Option<bool>>> {
         let mut cases = Vec::new();
         for after_admission in order {
-            let (root, provider) = bootstrap.restore()?;
-            let directory = root.directory.path().join("root");
-            let harness =
-                LocalHarness::open(bootstrap.config(&directory, provider.clone())?).await?;
+            let directory = bootstrap.restore()?;
+            let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                "done".into(),
+            )]));
+            let config = || {
+                Ok::<_, Error>(
+                    bootstrap
+                        .config(directory.path(), provider.clone())?
+                        .compaction(CompactionPolicy::Disabled)
+                        .goal_continuations(None),
+                )
+            };
+            let harness = LocalHarness::open(config()?).await?;
             assert_eq!(harness.signed.agent(), bootstrap.agent);
             assert!(harness.current_turn().await?.0.is_none());
             assert!(provider.requests().is_empty());
@@ -124,8 +133,7 @@ async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_on
             );
             drop(old_attach);
             drop(harness);
-            let harness =
-                LocalHarness::open(bootstrap.config(&directory, provider.clone())?).await?;
+            let harness = LocalHarness::open(config()?).await?;
             assert_eq!(harness.signed.agent(), bootstrap.agent);
             assert_eq!(harness.resume(task).await?.text, "done");
             assert_eq!(harness.resume(task).await?.text, "done");

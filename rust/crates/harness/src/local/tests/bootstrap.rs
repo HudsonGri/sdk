@@ -2,7 +2,10 @@
 use super::super::admission::snapshot::Snapshot;
 use super::*;
 
-pub(super) struct Bootstrap {
+#[derive(Debug, PartialEq)]
+pub(in crate::local) struct VolumeInitialized;
+
+pub(in crate::local) struct Bootstrap {
     source: tempfile::TempDir,
     filesystem: Snapshot,
     state: Snapshot,
@@ -14,10 +17,16 @@ impl Bootstrap {
     pub async fn new() -> Result<Self> {
         let source = tempfile::tempdir().map_err(super::super::storage)?;
         let project = volume(source.path()).await?;
-        let harness = LocalHarness::open(
-            volume_config(source.path(), project.clone(), scripted([]))?.without_default_tools(),
-        )
-        .await?;
+        let config =
+            volume_config(source.path(), project.clone(), scripted([]))?.without_default_tools();
+        let state = config
+            .state_directory
+            .as_ref()
+            .expect("explicit fixture state");
+        assert!(state.starts_with(source.path()));
+        assert_eq!(&config.resolved_state_directory()?, state);
+        assert!(super::super::owner::user_state_root().is_err());
+        let harness = LocalHarness::open(config).await?;
         let agent = harness.signed.agent();
         harness.close().await?;
         Self::capture(source, project, agent)

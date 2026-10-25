@@ -17,7 +17,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
-mod bootstrap;
+pub(in crate::local) mod bootstrap;
 mod compact;
 mod compaction;
 mod context;
@@ -203,6 +203,7 @@ pub(super) fn volume_config(
 }
 
 pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
+    acyclic_test_support::differential::record(bootstrap::VolumeInitialized);
     acyclic_native_runtime::initialize_native_io_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let provider = ProviderRef::new(
