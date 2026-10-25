@@ -1,5 +1,23 @@
 use super::*;
 
+struct ImportEndpoints<A, O> {
+    source: Workspace<A, O>,
+    target: Workspace<A, O>,
+    source_generation: Generation<A, O>,
+    target_generation: Generation<A, O>,
+    io: PreparationIo,
+}
+
+struct SelectedImport<'a, P> {
+    source: &'a VolumeRef,
+    generation: &'a GenerationRef,
+    target: Option<&'a GenerationRef>,
+    handle: &'a crate::source_authorization::ProjectSourceReadHandle,
+    owner: &'a Arc<crate::durable_host::TaskJournalOwner<P>>,
+    context: &'a crate::runtime::TaskContext,
+    operation: crate::OperationId,
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ParentProjectController<'_, A, O>
 {
@@ -43,6 +61,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             std::future::ready(Ok(()))
         })
         .await
+    }
+
+    /// Authorizes and pins import endpoints without constructing a join plan.
+    pub async fn inspect_project_import(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+    ) -> Result<GenerationId> {
+        let endpoints = self
+            .project_import_endpoints(source, generation, None, false, &mut || {
+                std::future::ready(Ok(()))
+            })
+            .await?;
+        Ok(endpoints.target_generation.id())
     }
 
     /// Reconstructs exact import endpoints under the original operation identity.
@@ -108,7 +140,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         handle.grant().require(source, VolumeOperation::Read, io)
     }
 
-    /// Plans the exact approved source at an optional original target cut.
+    /// Plans an approved source, recovering the original operation when its target is pinned.
     pub async fn prepare_project_import_from_selected_source<P: acyclic_stream::StreamProvider>(
         &self,
         source: &VolumeRef,
@@ -119,6 +151,65 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         context: &crate::runtime::TaskContext,
         operation: crate::OperationId,
     ) -> Result<ParentMergePlan<A, O>> {
+        self.with_selected_import_endpoints(
+            SelectedImport {
+                source,
+                generation,
+                target,
+                handle,
+                owner,
+                context,
+                operation,
+            },
+            |endpoints| self.plan_project_import(source, endpoints, target.map(|_| operation)),
+        )
+        .await
+    }
+
+    /// Pins the approved source and destination without planning their merge.
+    pub async fn inspect_project_import_from_selected_source<P: acyclic_stream::StreamProvider>(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        handle: &crate::source_authorization::ProjectSourceReadHandle,
+        owner: &Arc<crate::durable_host::TaskJournalOwner<P>>,
+        context: &crate::runtime::TaskContext,
+        operation: crate::OperationId,
+    ) -> Result<GenerationId> {
+        self.with_selected_import_endpoints(
+            SelectedImport {
+                source,
+                generation,
+                target: None,
+                handle,
+                owner,
+                context,
+                operation,
+            },
+            |endpoints| std::future::ready(Ok(endpoints.target_generation.id())),
+        )
+        .await
+    }
+
+    async fn with_selected_import_endpoints<P, T, F, Fut>(
+        &self,
+        selection: SelectedImport<'_, P>,
+        finish: F,
+    ) -> Result<T>
+    where
+        P: acyclic_stream::StreamProvider,
+        F: FnOnce(ImportEndpoints<A, O>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let SelectedImport {
+            source,
+            generation,
+            target,
+            handle,
+            owner,
+            context,
+            operation,
+        } = selection;
         #[cfg(not(target_arch = "wasm32"))]
         let io = self
             .native_custody
@@ -140,26 +231,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             operation,
             io.as_ref(),
         )?;
-        self.prepare_project_import_checked(source, generation, target, true, None, || async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = &io {
-                return owner
-                    .verify_project_source_handle(
-                        context,
-                        handle,
-                        Some(
-                            io.original_native_work().ok_or_else(|| {
+        let mut guard =
+            || async {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = &io {
+                    return owner
+                        .verify_project_source_handle(
+                            context,
+                            handle,
+                            Some(io.original_native_work().ok_or_else(|| {
                                 io.invalid("native controller has no original work")
-                            })?,
-                        ),
-                    )
-                    .await;
-            }
-            owner
-                .verify_project_source_handle(context, handle, None)
-                .await
-        })
-        .await
+                            })?),
+                        )
+                        .await;
+                }
+                owner
+                    .verify_project_source_handle(context, handle, None)
+                    .await
+            };
+        let endpoints = self
+            .project_import_endpoints(source, generation, target, true, &mut guard)
+            .await?;
+        let result = finish(endpoints).await?;
+        guard().await?;
+        Ok(result)
     }
 
     pub(crate) async fn prepare_project_import_checked<F, Fut>(
@@ -171,6 +266,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         replay: Option<crate::OperationId>,
         mut guard: F,
     ) -> Result<ParentMergePlan<A, O>>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let endpoints = self
+            .project_import_endpoints(source, generation, selected_target, selected, &mut guard)
+            .await?;
+        let result = self.plan_project_import(source, endpoints, replay).await?;
+        guard().await?;
+        Ok(result)
+    }
+
+    async fn project_import_endpoints<F, Fut>(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        selected_target: Option<&GenerationRef>,
+        selected: bool,
+        guard: &mut F,
+    ) -> Result<ImportEndpoints<A, O>>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<()>>,
@@ -203,8 +318,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         #[cfg(target_arch = "wasm32")]
         let native_io: Option<PreparationIo> = None;
         let cancellation = acyclic_fs::CancellationToken::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = native_io.is_some();
         let io = if let Some(io) = native_io {
             io
         } else {
@@ -245,6 +358,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.sdk(target_workspace.head(&io, io.cancellation()).await)?
         };
         guard().await?;
+        Ok(ImportEndpoints {
+            source: source_workspace,
+            target: target_workspace,
+            source_generation,
+            target_generation,
+            io,
+        })
+    }
+
+    async fn plan_project_import(
+        &self,
+        source: &VolumeRef,
+        endpoints: ImportEndpoints<A, O>,
+        replay: Option<crate::OperationId>,
+    ) -> Result<ParentMergePlan<A, O>> {
+        let ImportEndpoints {
+            source: source_workspace,
+            target: target_workspace,
+            source_generation,
+            target_generation,
+            io,
+        } = endpoints;
         let join = source_workspace.join_into(&target_workspace);
         io.remaining()?;
         let plan = io.sdk(match replay {
@@ -269,7 +404,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
         })?;
         io.remaining()?;
-        guard().await?;
         let (child_project, parent_project, parent_scope) =
             crate::executor::with_history_io(Some(&io), |work| -> Result<_> {
                 Ok((
@@ -278,10 +412,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     self.scope.copy(work)?,
                 ))
             })?;
-        drop(source_ref);
-        drop(target_ref);
         #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = if native {
+        let native_custody = if io.original_native_work().is_some() {
             let scope_owned = parent_scope.logical_owned_bytes()?;
             let retained = child_project
                 .logical_owned_bytes()?

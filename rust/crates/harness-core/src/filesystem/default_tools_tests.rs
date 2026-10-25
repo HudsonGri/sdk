@@ -269,6 +269,141 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn import_inspection_pins_endpoints_without_spending_join_planning_work() -> Result<()> {
+    let fixture = fixture().await?;
+    let mut costs = Vec::new();
+    let mut targets = Vec::new();
+    for inspect in [true, false] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let controller = ParentProjectController::new(
+            &fixture.host,
+            fixture.parent.reducer(),
+            &fixture.issuer.verifier(&mut None)?,
+            &fixture.scope,
+            &fixture.project,
+            Some(&io),
+        )?;
+        let before = work.receipt();
+        let target = if inspect {
+            controller
+                .inspect_project_import(&fixture.source, &fixture.source_generation)
+                .await?
+        } else {
+            controller
+                .prepare_project_import(&fixture.source, &fixture.source_generation, None)
+                .await?
+                .target_head()
+        };
+        targets.push(target);
+        costs.push(work.receipt().items_examined - before.items_examined);
+    }
+    assert_eq!(targets[0], targets[1]);
+    assert!(
+        costs[0] < costs[1],
+        "inspection spent join planning work: inspection={} planning={}",
+        costs[0],
+        costs[1]
+    );
+    Ok(())
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+async fn import_inspection_keeps_source_and_destination_access_checks() -> Result<()> {
+    let fixture = fixture().await?;
+    let required = [
+        "project:merge".to_owned(),
+        fixture
+            .project
+            .capability(VolumeOperation::Write, &mut None)?,
+        fixture
+            .source
+            .capability(VolumeOperation::Read, &mut None)?,
+    ];
+    for denied in 0..required.len() {
+        let scope = fixture.issuer.issue(
+            "inspection-owner",
+            &Capabilities::new(
+                required
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != denied)
+                    .map(|(_, grant)| grant.clone()),
+            ),
+            fixture.scope.agent(),
+            None,
+            &mut None,
+        )?;
+        let controller = ParentProjectController::new(
+            &fixture.host,
+            fixture.parent.reducer(),
+            &fixture.issuer.verifier(&mut None)?,
+            &scope,
+            &fixture.project,
+            None,
+        )?;
+        assert!(
+            controller
+                .inspect_project_import(&fixture.source, &fixture.source_generation)
+                .await
+                .is_err(),
+            "inspection accepted missing grant {}",
+            required[denied]
+        );
+    }
+    Ok(())
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+async fn import_recovery_reopens_the_original_target_after_publication() -> Result<()> {
+    let fixture = fixture().await?;
+    let controller = fixture.controller()?;
+    let initial = controller
+        .prepare_project_import(&fixture.source, &fixture.source_generation, None)
+        .await?;
+    let expected = fixture
+        .host
+        .generation_ref_id(initial.target_head(), None)?;
+    let operation = OperationId::from_bytes([92; 16]);
+    let (published, _) = controller
+        .apply_project_merge(&initial, operation, BTreeMap::new())
+        .await?;
+    assert!(matches!(published, acyclic_fs::JoinOutcome::Applied(_)));
+    // The former execution path cannot reopen its pinned target once published.
+    assert!(
+        controller
+            .prepare_project_import(&fixture.source, &fixture.source_generation, Some(&expected))
+            .await
+            .is_err()
+    );
+    let recovered = controller
+        .prepare_project_import_at(
+            &fixture.source,
+            &fixture.source_generation,
+            &expected,
+            operation,
+        )
+        .await?;
+    assert_eq!(recovered.target_head(), initial.target_head());
+    let (replayed, _) = controller
+        .apply_project_merge(&recovered, operation, BTreeMap::new())
+        .await?;
+    assert!(matches!(
+        replayed,
+        acyclic_fs::JoinOutcome::AlreadyApplied(_)
+    ));
+    Ok(())
+}
+
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn fork_initialization_retains_raw_child_message_and_independent_source_choice() -> Result<()> {

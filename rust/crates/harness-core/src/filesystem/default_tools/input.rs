@@ -378,13 +378,12 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             &binding.metadata.project,
             io,
         )?;
-        let inspected = match &binding.source_read {
+        let target_head = match &binding.source_read {
             Some(handle) => {
                 controller
-                    .prepare_project_import_from_selected_source(
+                    .inspect_project_import_from_selected_source(
                         &binding.metadata.source_project,
                         &binding.source_generation,
-                        None,
                         handle,
                         journal_owner,
                         context.task(),
@@ -394,17 +393,16 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             }
             None => {
                 controller
-                    .prepare_project_import(
+                    .inspect_project_import(
                         &binding.metadata.source_project,
                         &binding.source_generation,
-                        None,
                     )
                     .await?
             }
         };
         let expected_target_generation = crate::filesystem::fork_preparer_io::generation_ref(
             binding.metadata.project.provider(),
-            inspected.target_head(),
+            target_head,
             io,
         )?;
         let destination = match io {

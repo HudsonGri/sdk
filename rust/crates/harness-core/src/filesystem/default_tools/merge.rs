@@ -108,10 +108,11 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             }
             None => {
                 controller
-                    .prepare_project_import(
+                    .prepare_project_import_at(
                         &merge.source_project,
                         &merge.source_generation,
-                        Some(&merge.expected_target_generation),
+                        &merge.expected_target_generation,
+                        context.operation_id(),
                     )
                     .await?
             }
