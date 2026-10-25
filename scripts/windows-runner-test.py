@@ -148,7 +148,13 @@ def main():
             finally:
                 del module.print
                 for handle in handles:
-                    assert kernel.CloseHandle(handle)
+                    # A negative control may detect early release. Its teardown
+                    # still waits for the existing host's EOF-driven drain before
+                    # another qualification process can acquire the fleet lease.
+                    try:
+                        assert kernel.WaitForSingleObject(handle, 0xFFFFFFFF) == 0
+                    finally:
+                        assert kernel.CloseHandle(handle)
             assert commands.run([python, "-c", probe], cwd=source, name="after-drain", sha256=checksum) == 0
         assert len({result["fixture"] for result in commands.results}) == len(commands.results)
         plan = dict(source=str(source), records=str(records / "cli"), commands=[dict(
