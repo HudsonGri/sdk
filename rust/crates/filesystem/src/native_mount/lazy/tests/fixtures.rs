@@ -13,8 +13,17 @@ pub(in crate::native_mount) fn native_retirement_source(
     root: &Path,
     original: &crate::NativeMaterializationWork,
 ) -> Result<RetirementSource, Box<dyn std::error::Error>> {
-    let mut view = shared_runtime()?.block_on(mounted_view(root, "physical-retirement"))?;
-    view.authored = adapter::tests::native_source_io_control(&view.authored, original)?;
+    let view = shared_runtime()?.block_on(async {
+        let demand =
+            Arc::new(native_source(root, crate::model::FilesystemProfile::Portable).await?);
+        mounted_view_of_with_authored_work(
+            demand,
+            "physical-retirement",
+            crate::MemoryLazyWorkspaceStore::default(),
+            Some(original),
+        )
+        .await
+    })?;
     let authored = Arc::clone(&view.authored);
     let view = Arc::new(view);
     let lease = view.native_source_io_lease()?;
@@ -129,6 +138,23 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
     >,
     Box<dyn std::error::Error>,
 > {
+    mounted_view_of_with_authored_work(demand, name, store, None).await
+}
+
+async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWorkspaceStore>(
+    demand: Arc<D>,
+    name: &str,
+    store: S,
+    original: Option<&crate::NativeMaterializationWork>,
+) -> Result<
+    LazyMountSource<
+        crate::facade::MemoryAuthorityBackend,
+        crate::facade::MemoryObjectBackend,
+        D,
+        S,
+    >,
+    Box<dyn std::error::Error>,
+> {
     use crate::Fs;
     use crate::model::{CheckoutMode, GenerationSelector};
     use crate::native_mount::{MountPublication, SharedCheckout};
@@ -175,6 +201,12 @@ pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceS
         vec![],
         None,
     )?);
+    // Bind the native authored owner before the source-watch recorder captures
+    // its weak identity. Never swap a live view's owner after registration.
+    let authored = match original {
+        Some(original) => adapter::tests::native_source_io_control(&authored, original)?,
+        None => authored,
+    };
     let cancellation = CancellationToken::new();
     CallbackRuntime::create()?;
     let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);

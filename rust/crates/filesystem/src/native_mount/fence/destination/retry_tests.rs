@@ -111,7 +111,12 @@ impl Fixture {
         let result = if shared {
             legacy_remove(self.packet.destination_guard.as_mut().unwrap())
         } else {
-            self.packet.retire(None).map(|_| ())
+            self.packet
+                .retire(
+                    None,
+                    crate::native_mount::retirement::SourceRetirementWait::Caller,
+                )
+                .map(|_| ())
         };
         std::fs::remove_file(&self.destination)?;
         std::fs::rename(saved, &self.destination)?;
@@ -260,7 +265,10 @@ fn failed_cleanup_retries_keep_registry_release_funded_after_cancellation()
             );
             assert!(!fixture.exact_retired(1, 0));
         } else {
-            assert!(fixture.packet.retire(None)?);
+            assert!(fixture.packet.retire(
+                None,
+                crate::native_mount::retirement::SourceRetirementWait::Caller
+            )?);
             assert!(fixture.registry_is_unlocked()?);
             assert!(fixture.exact_retired(1, 0));
         }
@@ -279,7 +287,10 @@ fn insufficient_retry_budget_fails_before_registry_acquisition_and_can_be_refund
     fixture.cancellation.cancel();
     fixture.failed_remove(false)?;
     assert!(matches!(
-        fixture.packet.retire(None),
+        fixture.packet.retire(
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Caller
+        ),
         Err(NativeMountError::Materialization(
             crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
         ))
@@ -295,7 +306,10 @@ fn insufficient_retry_budget_fails_before_registry_acquisition_and_can_be_refund
             .is_some()
     );
     drop(held);
-    assert!(fixture.packet.retire(None)?);
+    assert!(fixture.packet.retire(
+        None,
+        crate::native_mount::retirement::SourceRetirementWait::Caller
+    )?);
     assert!(fixture.registry_is_unlocked()?);
     assert!(fixture.exact_retired(1, 0));
     Ok(())
@@ -315,12 +329,12 @@ proptest::proptest! {
             let saved = fence.with_extension("retained");
             std::fs::rename(&fence, &saved).unwrap();
             std::fs::create_dir(&fence).unwrap();
-            assert!(fixture.packet.retire(None).is_err());
+            assert!(fixture.packet.retire(None, crate::native_mount::retirement::SourceRetirementWait::Caller).is_err());
             assert!(fixture.registry_is_unlocked().unwrap());
             std::fs::remove_dir(&fence).unwrap();
             std::fs::rename(saved, &fence).unwrap();
         }
-        assert!(fixture.packet.retire(None).unwrap());
+        assert!(fixture.packet.retire(None, crate::native_mount::retirement::SourceRetirementWait::Caller).unwrap());
         assert!(fixture.registry_is_unlocked().unwrap());
         assert!(fixture.exact_retired(removes, unlinks));
     }
