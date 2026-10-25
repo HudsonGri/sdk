@@ -1,8 +1,8 @@
 //! Native session mailboxes use the same files as `GraphCoder` child agents.
 use super::*;
 use crate::task_volume::{
-    ChildFile, ChildRequest, ChildState, ChildStatus, ChildTurn, ChildTurnClaim,
-    ChildTurnPublication, Component, Control, FileKey, FileValue, Generation,
+    ChildFile, ChildObservation, ChildRequest, ChildResultWindow, ChildStatus, ChildTurn,
+    ChildTurnClaim, ChildTurnPublication, Component, Control, FileKey, FileValue,
 };
 use crate::{Outcome, executor::TurnOutput};
 
@@ -50,10 +50,7 @@ struct Session {
     parent: TaskId,
     child: TaskId,
     reference: Component,
-    status: Option<ChildStatus>,
-    state: ChildState,
-    generation: Generation,
-    claim_operation: Option<OperationId>,
+    observation: ChildObservation,
 }
 impl Session {
     fn key(&self, file: ChildFile) -> FileKey {
@@ -74,10 +71,10 @@ impl HostWorkspaceOwner {
     ) -> Result<Value> {
         self.attach(parent).await?;
         let reference = Component::new(reference).map_err(storage)?;
-        let child = self
+        let session = self
             .admit_session(operation, parent, &reference, &action)
             .await?;
-        let session = self.read_session(parent, child, reference).await?;
+        let child = session.child;
         match action {
             SessionAction::Send { prompt } => {
                 if prompt.is_empty() || prompt.len() > 32_768 {
@@ -103,9 +100,15 @@ impl HostWorkspaceOwner {
                 self.complete_session(operation, &session, &claim, outcome)
                     .await?;
             }
-            SessionAction::Recover if session.status.is_some_and(|status| !status.settled) => {
+            SessionAction::Recover
+                if session
+                    .observation
+                    .status
+                    .is_some_and(|status| !status.settled) =>
+            {
                 let original = session
-                    .claim_operation
+                    .observation
+                    .status_publication
                     .ok_or_else(|| Error::Conflict("native status has no atomic claim".into()))?;
                 let Some(ChildTurn::InFlight { claim }) =
                     self.claim_session(original, &session).await?
@@ -117,9 +120,12 @@ impl HostWorkspaceOwner {
                 self.complete_session(operation, &session, &claim, Outcome::Cancelled)
                     .await?;
             }
-            SessionAction::Spawn { .. } | SessionAction::Observe | SessionAction::Recover => {}
+            SessionAction::Spawn { .. } | SessionAction::Observe | SessionAction::Recover => {
+                return self.session_value(&session);
+            }
         }
-        self.observe_session(&session).await
+        let current = self.read_session(parent, session.reference).await?;
+        self.session_value(&current)
     }
 
     async fn admit_session(
@@ -128,17 +134,13 @@ impl HostWorkspaceOwner {
         parent: TaskId,
         reference: &Component,
         action: &SessionAction,
-    ) -> Result<TaskId> {
-        let files = self.files(parent).await?;
+    ) -> Result<Session> {
         if !matches!(action, SessionAction::Spawn { .. }) {
-            let child = self
-                .local
-                .admitted_child(&files, reference, parent)
-                .await?
-                .ok_or_else(|| Error::NotFound("native child is not admitted".into()))?;
-            self.attach_retained(child, true).await?;
-            return Ok(child);
+            let session = self.read_session(parent, reference.clone()).await?;
+            self.attach_retained(session.child, true).await?;
+            return Ok(session);
         }
+        let files = self.files(parent).await?;
         let key = FileKey::Child {
             reference: reference.clone(),
             file: ChildFile::Request,
@@ -200,50 +202,20 @@ impl HostWorkspaceOwner {
                 reference.as_str(),
             )
             .await?;
-        Ok(child)
+        self.read_session(parent, reference.clone()).await
     }
 
-    async fn read_session(
-        &self,
-        parent: TaskId,
-        child: TaskId,
-        reference: Component,
-    ) -> Result<Session> {
+    async fn read_session(&self, parent: TaskId, reference: Component) -> Result<Session> {
         let files = self.files(parent).await?;
-        let snapshot = files
-            .inner
-            .child_lifecycle(Some(&reference))
-            .await
-            .map_err(storage)?;
-        let find = |kind: ChildFile| {
-            snapshot.files.iter().find(|file| {
-                file.key
-                    == FileKey::Child {
-                        reference: reference.clone(),
-                        file: kind.clone(),
-                    }
-            })
-        };
-        let status = find(ChildFile::Status)
-            .map(|file| ChildStatus::parse(&file.bytes))
-            .transpose()
-            .map_err(storage)?;
-        let control = find(ChildFile::Control)
-            .map(|file| Control::parse(&file.bytes))
-            .transpose()
-            .map_err(storage)?;
-        let state = control.map_or(ChildState::Running, |control| {
-            ChildState::Running.apply(control)
-        });
-        let claim_operation = find(ChildFile::Status).and_then(|file| file.publication);
+        let (child, observation) = self
+            .local
+            .observe_admitted_child(&files, &reference, parent, ChildResultWindow::Latest, 1)
+            .await?;
         Ok(Session {
             parent,
             child,
             reference,
-            status,
-            state,
-            generation: snapshot.generation,
-            claim_operation,
+            observation,
         })
     }
 
@@ -283,7 +255,7 @@ impl HostWorkspaceOwner {
             .ok_or_else(|| Error::Unauthorized("native owner absent".into()))?;
         let (condition, deadline) = owner.file_publication_condition().await?;
         Ok(ChildTurnPublication {
-            expected: session.generation,
+            expected: session.observation.generation,
             conditions: vec![condition],
             deadline,
             work: None,
@@ -316,7 +288,7 @@ impl HostWorkspaceOwner {
     ) -> Result<()> {
         // An unstarted input owns no process. Claim it atomically before control
         // blocks new claims; its immutable cancelled outcome uses that same claim.
-        let unstarted = if session.status.is_none()
+        let unstarted = if session.observation.status.is_none()
             && matches!(
                 control,
                 Control::Interrupt | Control::Cancel | Control::Archive
@@ -339,18 +311,18 @@ impl HostWorkspaceOwner {
         )
         .await?;
         let current = self
-            .read_session(session.parent, session.child, session.reference.clone())
+            .read_session(session.parent, session.reference.clone())
             .await?;
         if let Some(claim) = unstarted {
             self.complete_session(operation, &current, &claim, Outcome::Cancelled)
                 .await?;
-        } else if let Some(status) = session.status.filter(|value| value.settled) {
+        } else if let Some(status) = session.observation.status.filter(|value| value.settled) {
             self.publish(
                 session.parent,
                 FileValue::new(
                     session.key(ChildFile::Status),
                     serde_json::to_vec(&ChildStatus {
-                        state: current.state,
+                        state: current.observation.state,
                         ..status
                     })
                     .map_err(storage)?,
@@ -399,50 +371,16 @@ impl HostWorkspaceOwner {
         )
     }
 
-    async fn observe_session(&self, session: &Session) -> Result<Value> {
-        let files = self.files(session.parent).await?;
-        let snapshot = files
-            .inner
-            .child_lifecycle(Some(&session.reference))
-            .await
-            .map_err(storage)?;
-        let status = snapshot
-            .files
+    fn session_value(&self, session: &Session) -> Result<Value> {
+        let observation = &session.observation;
+        let results = observation
+            .results
             .iter()
-            .find(|file| file.key == session.key(ChildFile::Status))
-            .map(|file| ChildStatus::parse(&file.bytes))
-            .transpose()
-            .map_err(storage)?;
-        let control = snapshot
-            .files
-            .iter()
-            .find(|file| file.key == session.key(ChildFile::Control))
-            .map(|file| Control::parse(&file.bytes))
-            .transpose()
-            .map_err(storage)?;
-        let results = snapshot
-            .files
-            .iter()
-            .filter(|file| {
-                matches!(
-                    file.key,
-                    FileKey::Child {
-                        file: ChildFile::Result(_),
-                        ..
-                    }
-                )
-            })
             .map(|file| serde_json::from_slice::<Value>(&file.bytes))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(storage)?;
-        let pending = files
-            .inner
-            .child_input_count(&session.reference)
-            .await
-            .map_err(storage)?
-            .saturating_sub(status.map_or(0, |value| value.inputs));
         Ok(
-            json!({"task":session.child,"cwd":self.attached(session.child)?.workspace.path(),"status":status,"control":control,"results":results,"pending":pending}),
+            json!({"task":session.child,"cwd":self.attached(session.child)?.workspace.path(),"status":observation.status,"control":observation.control,"results":results,"pending":observation.pending_inputs}),
         )
     }
 
