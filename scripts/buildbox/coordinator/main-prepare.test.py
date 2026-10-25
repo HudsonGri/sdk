@@ -42,17 +42,19 @@ class MainPreparation(unittest.TestCase):
   self.runner.unlink()
   with self.assertRaises(FileNotFoundError):self.prepare()
   self.assertFalse((self.state/'.main-prepared.json').exists())
- def shell(self,negative=False,cut_off=False):
+ def shell(self,negative=False,cut_off=False,missing_clippy=False,without_adapter=False):
   lanes=self.root/'lanes';lanes.mkdir(exist_ok=True);state=lanes/'main-gate';state.mkdir(exist_ok=True)
   for name in ['main-prepare.py','gate-prepare.py']:shutil.copyfile(HERE/name,lanes/name)
+  if not missing_clippy:shutil.copyfile(HERE/'gate-clippy.py',lanes/'gate-clippy.py')
   for name,text in {'gate-checks.sh':'fixture runner\n','gate-pkgs.sh':'echo --workspace\n','hangs.txt':'','failed-tests.sh':'exit 0\n','gate-baseline.py':'def eligible(text):return True\n'}.items():(lanes/name).write_text(text)
   tools=self.root/'bin';tools.mkdir(exist_ok=True)
-  pwsh=tools/'pwsh';pwsh.write_text('#!/bin/bash\necho ran >> '+str(self.root/'dispatch')+'\nprintf "test result: ok. 1 passed; 0 failed\\nGATE_DONE rc=0\\n"\n');pwsh.chmod(0o755)
+  pwsh=tools/'pwsh';pwsh.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> '+str(self.root/'dispatch-argv')+'\necho ran >> '+str(self.root/'dispatch')+'\nprintf "test result: ok. 1 passed; 0 failed\\nGATE_DONE rc=0\\n"\n');pwsh.chmod(0o755)
   if cut_off:pwsh.write_text('#!/bin/bash\necho ran >> '+str(self.root/'dispatch')+'\necho partial; exit 9\n')
   python=tools/'python'
   if not python.exists():python.symlink_to(sys.executable)
   home=self.root/'home';(home/'.codex-fleet').mkdir(parents=True,exist_ok=True)
   source=(HERE/'main-gate.sh').read_text().replace('Q:/wt/main-gate',str(self.work)).replace('Q:/sdk',str(self.repo)).replace('Q:/lanes',str(lanes)).replace('while :; do','for cycle in 1; do').replace('sleep 300','true')
+  if without_adapter:source=source.replace('python3 .gate-clippy.py run bash .gate-checks.sh','bash .gate-checks.sh')
   if negative:
    start=source.index('    if ! python '+str(lanes)+'/main-prepare.py');end=source.index('    # Keep Windows native streams',start)
    source=source[:start]+source[end:]
@@ -84,5 +86,17 @@ class MainPreparation(unittest.TestCase):
   alerts=(self.root/'home/.codex-fleet/alerts.log').read_text();self.assertEqual(alerts.count('preparation-INFRA'),1)
   git.unlink();self.shell();self.assertFalse((self.root/'dispatch').exists())
   (state/'.rerun').touch();self.shell();self.assertTrue((self.root/'dispatch').exists())
+
+ def test_main_uses_the_same_admitted_diagnostic_adapter_and_refuses_missing_copy(self):
+  state=self.shell(missing_clippy=True)
+  self.assertFalse((self.root/'dispatch').exists())
+  self.assertEqual(len(list((state/'infra').glob('*.log'))),1)
+  (state/'.rerun').touch();self.shell()
+  self.assertEqual((self.work/'.gate-clippy.py').read_bytes(),(HERE/'gate-clippy.py').read_bytes())
+  self.assertIn('python3 .gate-clippy.py run bash .gate-checks.sh',(self.root/'dispatch-argv').read_text())
+  # Execute the actual former dispatch shape as the negative control.
+  invocation='python3 .gate-clippy.py run bash .gate-checks.sh'
+  (state/'.rerun').touch();self.shell(without_adapter=True)
+  self.assertNotIn(invocation,(self.root/'dispatch-argv').read_text().splitlines()[-1])
 
 if __name__=='__main__':unittest.main(verbosity=2)

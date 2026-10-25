@@ -90,6 +90,14 @@ class BaselineHandoffTests(unittest.TestCase):
                 log = logs/'wide'/(head+'.log')
                 captured = CAPTURED.read_text().replace('da7eee5758388031eb27ec958582cab95bb78651', head)
                 log.write_text(captured)
+                # Phase evidence is captured separately in production too:
+                # the older RED matrix log predates diagnostic receipts.
+                # Reuse the real complete Clippy capture, never attest the
+                # older log's unverified presentation in the test fixture.
+                (logs/'clippy').mkdir()
+                clippy_log = logs/'clippy'/(head+'.log')
+                clippy_log.write_text((HERE/'fixtures/main-32b799-complete-clippy.txt').read_text().replace(
+                    '32b79969bc504e875bb6e9f65611bf0d02ea45e9', head))
                 alerts = root/'alerts'; alerts.write_text(f'MAIN_WIDE RED {head}: captured\n')
                 state = root/'state'; queue.park_baseline(state, 0, [1])
                 selected_queue = HERE/'gate-queue.py'
