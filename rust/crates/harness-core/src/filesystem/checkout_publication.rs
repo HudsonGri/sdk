@@ -113,6 +113,28 @@ impl CheckoutPublication {
         state: &LocalCoreStateStore,
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
+        guard: F,
+    ) -> Result<MaterializationJournal>
+    where
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<()>> + Send,
+    {
+        // Publication is one shared asynchronous native operation. Retain its
+        // frame under the original ledger and erase its concrete future before
+        // embedding it into any host adapter's continuation.
+        crate::NativeFutureBundle::new(work, || {
+            self.publish_inner(from, to, state, options, work, guard)
+        })?
+        .await
+    }
+
+    async fn publish_inner<F, Fut>(
+        &self,
+        from: &LocalGeneration,
+        to: &LocalGeneration,
+        state: &LocalCoreStateStore,
+        options: &MaterializeOptions,
+        work: &NativeMaterializationWork,
         mut guard: F,
     ) -> Result<MaterializationJournal>
     where
