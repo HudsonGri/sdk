@@ -53,10 +53,8 @@ async fn commit(
 
 async fn publish(transaction: &mut MemoryTransaction) {
     assert!(matches!(
-        commit(transaction)
-            .await
-            .expect("fixture publication must succeed"),
-        TransactionCommit::Committed(_)
+        commit(transaction).await,
+        Ok(TransactionCommit::Committed(_))
     ));
 }
 
