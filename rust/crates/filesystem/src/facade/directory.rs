@@ -57,21 +57,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     ) -> W::OwnedOutput<DirectoryRecordPage> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            let (page, allocation) = list_directory_records_to_file_root_with_accounting(
-                &self.volume,
-                &self.root,
-                path,
-                after,
-                maximum_entries,
-                &mut accounting,
-                cancellation,
-            )
-            .await?;
-            Ok((page, allocation))
+            let mut frame =
+                crate::heap_future::with_accounting(&mut accounting, |accounting| async move {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = accounting.native_work() {
+                        self.validate_native_work(original)?;
+                    }
+                    let (page, allocation) = list_directory_records_to_file_root_with_accounting(
+                        &self.volume,
+                        &self.root,
+                        path,
+                        after,
+                        maximum_entries,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                    Ok((page, allocation))
+                })?;
+            let result = frame.value.as_mut().await;
+            drop(frame);
+            result
         }
         .await;
         work.finish_owned(result, &accounting)

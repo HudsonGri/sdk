@@ -111,6 +111,7 @@ impl<S: MaterializationJournalStore>
                     Before => {
                         state
                             .before(
+                                work,
                                 authorized.expect("effect authorization"),
                                 |journal| async {
                                     self.check_plan(&journal.plan).map_err(E::from)?;
@@ -123,18 +124,21 @@ impl<S: MaterializationJournalStore>
                                     })
                                 },
                                 invalid,
+                                |error| E::from(crate::MaterializeError::from(error)),
                             )
                             .await?;
                     }
                     Completed => {
                         state
                             .completed(
+                                work,
                                 |completion| async {
                                     completion.await.map_err(|error| {
                                         E::from(MaterializationError::Store(error))
                                     })
                                 },
                                 invalid,
+                                |error| E::from(crate::MaterializeError::from(error)),
                             )
                             .await?;
                     }

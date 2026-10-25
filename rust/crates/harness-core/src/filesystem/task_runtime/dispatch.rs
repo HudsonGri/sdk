@@ -65,12 +65,12 @@ where
                                 reason: "native command context differs from original task lease",
                             });
                         }
-                        let body = shared
-                            .read_file(
+                        let body = crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                            shared.read_file(
                                 &command.payload,
                                 Some(&crate::executor::PreparationIo::from_native_work(work)?),
-                            )
-                            .await?;
+                            ).await
+                        })?.await?;
                         let payload = crate::filesystem::retain_decoded(io.decode(
                             std::marker::PhantomData::<Value>,
                             &body,

@@ -58,33 +58,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-        acyclic_differential::record(("read", maximum_bytes));
-        let owned;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &owned
-        };
-        let workspace = self.open(reference, Some(io)).await?;
-        let bytes = match generation {
-            Some(reference) => io.sdk(
-                self.generation(&workspace, reference, Some(io))
-                    .await?
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-            None => io.sdk(
-                workspace
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-        };
-        if io.original_native_work().is_none() {
-            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-        }
-        Ok(bytes)
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+            acyclic_differential::record(("read", maximum_bytes));
+            let owned;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
+            };
+            let workspace = self.open(reference, Some(io)).await?;
+            let bytes = match generation {
+                Some(reference) => io.sdk(
+                    self.generation(&workspace, reference, Some(io))
+                        .await?
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?,
+                None => io.sdk(
+                    workspace
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?,
+            };
+            if io.original_native_work().is_none() {
+                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+            }
+            Ok(bytes)
+        })?
+        .await
     }
 
     /// Stats one path at the current head or an exact generation.
@@ -1001,4 +1004,21 @@ mod workload_tests {
         );
         Ok(())
     }
+}
+
+#[cfg(test)]
+#[test]
+fn public_read_future_stays_bounded() {
+    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<(
+        &FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
+        &WorkspaceRef,
+    )> = None;
+    let bytes = future_bytes(|| {
+        let (host, reference) = arguments.unwrap();
+        host.read(reference, None, "/a", 1024, None)
+    });
+    assert!(bytes <= 4096, "public file read future is {bytes} bytes");
 }

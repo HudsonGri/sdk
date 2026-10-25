@@ -49,12 +49,11 @@ where
                 .await?,
             ),
             crate::distributed::WorkPull::Unresolved { error, .. } => {
-                if local
-                    .task_runtime()
-                    .task_host()
-                    .outcome(task)
-                    .await?
-                    .is_none()
+                if crate::conversation::BoundedContentFuture::new(None, || {
+                    local.task_runtime().task_host().outcome(task)
+                })?
+                .await?
+                .is_none()
                 {
                     return Err(error);
                 }
@@ -94,7 +93,9 @@ where
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    if !continue_work().await? {
+                    if !crate::conversation::BoundedContentFuture::new(None, &continue_work)?
+                        .await?
+                    {
                         break;
                     }
                     // Only an authenticated wake makes a passive command claimable.
@@ -113,7 +114,8 @@ where
                 _ => break,
             }
         }
-        local.refresh_command_task(task).await?;
+        crate::conversation::BoundedContentFuture::new(None, || local.refresh_command_task(task))?
+            .await?;
         Ok(())
     })
 }

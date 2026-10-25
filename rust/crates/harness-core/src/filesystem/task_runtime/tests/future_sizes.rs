@@ -58,6 +58,14 @@ async fn execution_and_worker_futures_stay_bounded() -> Result<()> {
     assert_bounded("model step", execution.model_step(&input, 0, &[]));
     let commands = runtime.commands();
     assert_bounded("run task", runtime.run_task(lease.clone(), &commands, 2));
+    assert_bounded(
+        "command suspension",
+        runtime.suspend_command(task, &fence, 0, turn, false, None),
+    );
+    assert_bounded(
+        "owner observation",
+        runtime.owner_observed(task, &fence, false, None),
+    );
     let worker_context =
         WorkerContext::Ordinary(Arc::new(runtime.task_context(task, fence.clone()).await?));
     assert_bounded(

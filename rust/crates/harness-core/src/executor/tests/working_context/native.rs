@@ -207,3 +207,193 @@ async fn denied_or_cancelled_native_working_cuts_leave_no_cached_authority() -> 
     }
     Ok(())
 }
+
+// A native counter funds the returned token DTO on the caller's original work.
+// Generation is deliberately ordinary-only: the cancellation must stop before it.
+struct NativeCompactionCounter(ScriptedModelProvider);
+
+impl crate::model::ModelProvider for NativeCompactionCounter {
+    fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+        self.0.context_capacity(model)
+    }
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
+        self.0.count_tokens(request)
+    }
+    fn generate<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+        self.0.generate(request, dispatch)
+    }
+    fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+    fn context_capacity_with_native_work(
+        &self,
+        model: &Model,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::context::ModelContextCapacity> {
+        work.remaining()?;
+        self.0.context_capacity(model)
+    }
+    fn count_tokens_with_native_work<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        crate::NativeFutureBundle<
+            'a,
+            (
+                crate::context::ModelTokenCount,
+                acyclic_fs::NativeAllocation,
+            ),
+        >,
+    > {
+        crate::NativeFutureBundle::new(work, || async move {
+            let bytes = std::mem::size_of::<crate::context::ModelTokenCount>() as u64
+                + request.request().messages.len() as u64 * 4;
+            let custody = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+            Ok((self.0.count_tokens(request).await?, custody))
+        })
+    }
+}
+
+#[tokio::test]
+async fn fresh_compaction_keeps_cancellation_on_the_original_owner() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let trigger = cancellation.clone();
+    let counts = Arc::new(AtomicUsize::new(0));
+    let observed = counts.clone();
+    let capacity = crate::context::ModelContextCapacity {
+        context_tokens: 20_000,
+        output_tokens: Some(4_096),
+    };
+    let provider = Arc::new(NativeCompactionCounter(
+        ScriptedModelProvider::new([ScriptedTurn::Text("bounded summary".into())])
+            .with_context_capacity(capacity)
+            .with_token_counter(move |request| {
+                // Cancel inside fresh compaction, after its caller selects the owner.
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    trigger.cancel();
+                }
+                let tokens = request
+                    .request()
+                    .messages
+                    .iter()
+                    .map(|message| match &message.content {
+                        ModelContent::Text(text) => u32::try_from(text.len()).unwrap(),
+                        _ => 0,
+                    })
+                    .collect();
+                Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    100,
+                    tokens,
+                ))
+            }),
+    ));
+    let executor = StockExecutor::new(
+        Model::new(
+            "synthetic".into(),
+            "counter".into(),
+            "1".into(),
+            Value::Null,
+        )?,
+        provider,
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
+        crate::context::ThresholdCompaction {
+            response_reserve_tokens: 4_096,
+            recent_tokens: 1,
+            ..Default::default()
+        },
+    ));
+    let messages = vec![
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("q".repeat(8_000)),
+        },
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Text("a".repeat(3_000)),
+        },
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("x".repeat(8_000)),
+        },
+    ];
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: messages.last().unwrap().content.clone(),
+        selected_context: Some(SelectedModelContext {
+            selection: crate::conversation::ModelContextSelection {
+                conversation_revision: 3,
+                message_ids: (1..=3).map(uuid::Uuid::from_u128).collect(),
+                checkpoint: None,
+            },
+            messages,
+        }),
+        max_steps: 2,
+    };
+    let budget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 4 * 1024 * 1024);
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let execution = StockExecution {
+        io: Some(&io),
+        ..StockExecution::ordinary(&executor)
+    };
+    // Enter the fresh-compaction decision with an already captured projection.
+    // Journal writes and native task leases are separate from this decision.
+    let context = crate::context::Context {
+        messages: input.selected_context.as_ref().unwrap().messages.clone(),
+        current_input_index: Some(2),
+        ..Default::default()
+    };
+    let prepared = crate::model::PreparedModelRequest::prepare(
+        execution.request_from_context(&context)?,
+        executor.limits,
+        Some(&io),
+    )?;
+    let count = crate::context::ModelTokenCount::from_upper_bounds(
+        prepared.request_digest(),
+        100,
+        vec![8_000, 3_000, 8_000],
+    );
+    let projection = ResponseProjection {
+        model: executor.model.clone(),
+        context,
+        canonical: None,
+        checkpoint: None,
+        working: None,
+    };
+    let journal = Journal::default();
+    let outcome = execution
+        .resolve_response_accounting(
+            &journal,
+            (&input, 0, &[]),
+            (projection, Some(ContextAccounting { capacity, count })),
+            prepared,
+            &[],
+            &mut DispatchPhase::new(),
+        )
+        .await;
+    assert_eq!(
+        counts.load(Ordering::SeqCst),
+        1,
+        "fresh compaction continued beyond its original owner's cancellation: {:?}",
+        outcome.as_ref().err()
+    );
+    assert!(
+        outcome.is_err(),
+        "fresh compaction ignored its original owner"
+    );
+    Ok(())
+}

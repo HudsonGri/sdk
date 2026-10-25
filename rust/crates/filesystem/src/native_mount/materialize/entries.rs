@@ -463,45 +463,54 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    let (reader, cancellation) = source;
-    let target = read_source!(reader, receipt, remaining, value,
-        reader.read_symbolic_link(path, receipt.custody.work(), cancellation) => value,
-        reader.read_symbolic_link(path, remaining, cancellation) => {
-            receipt.adopt(value.len())?;
-            value
-        },
-    );
-    if target.len() as u64 != target_bytes {
-        return Err(MaterializeError::Engine("symbolic-link length mismatch").into());
-    }
-    generation_action(
-        before_effect,
-        NativeMaterializationActionPhase::Before,
-        receipt.custody.work(),
-    )
-    .await?;
-    create_symlink(host_root, &target, host_path, receipt)?;
-    generation_action(
-        before_effect,
-        NativeMaterializationActionPhase::Completed,
-        receipt.custody.work(),
-    )
-    .await?;
-    drop(target);
-    if !reader.validate_native_work(receipt.custody.work()).is_ok() {
-        receipt
-            .custody
-            .release(target_bytes)
-            .map_err(MaterializeError::from)?;
-    }
-    receipt.value.symbolic_links = receipt
-        .value
-        .symbolic_links
-        .checked_add(1)
-        .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-    account_materialization(receipt, 0)?;
+    let native = receipt.custody.work().clone();
+    let mut accounting = crate::kernel::KernelAccounting::native(&native, native.cancellation());
+    let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+        let (reader, cancellation) = source;
+        let target = read_source!(reader, receipt, remaining, value,
+            reader.read_symbolic_link(path, receipt.custody.work(), cancellation) => value,
+            reader.read_symbolic_link(path, remaining, cancellation) => {
+                receipt.adopt(value.len())?;
+                value
+            },
+        );
+        if target.len() as u64 != target_bytes {
+            return Err(MaterializeError::Engine("symbolic-link length mismatch").into());
+        }
+        generation_action(
+            before_effect,
+            NativeMaterializationActionPhase::Before,
+            receipt.custody.work(),
+        )
+        .await?;
+        create_symlink(host_root, &target, host_path, receipt)?;
+        generation_action(
+            before_effect,
+            NativeMaterializationActionPhase::Completed,
+            receipt.custody.work(),
+        )
+        .await?;
+        drop(target);
+        if !reader.validate_native_work(receipt.custody.work()).is_ok() {
+            receipt
+                .custody
+                .release(target_bytes)
+                .map_err(MaterializeError::from)?;
+        }
+        receipt.value.symbolic_links = receipt
+            .value
+            .symbolic_links
+            .checked_add(1)
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+        account_materialization(receipt, 0)?;
 
-    Ok(())
+        Ok(())
+    })
+    .map_err(MaterializeError::from)
+    .map_err(E::from)?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 async fn materialize_special<E, F, Fut>(

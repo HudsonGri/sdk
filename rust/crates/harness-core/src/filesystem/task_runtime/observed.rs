@@ -134,36 +134,39 @@ where
         settlement: bool,
         _native_io: Option<&PreparationIo>,
     ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_native_io) = _native_io {
-            let work = _native_io
-                .original_native_work()
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "worker owner requires original native work",
-                })?;
-            let owner = self
-                .host
-                .journal_owner(
-                    task,
-                    fence,
-                    Some(&crate::executor::PreparationIo::from_native_work(work)?),
-                )
-                .await?;
-            return owner
-                .verify(
-                    settlement,
-                    &mut Some(&mut crate::store::HistoryWork::new(
-                        crate::filesystem::PreparationIo::from_native_work(work)?,
-                    )),
-                )
-                .await;
-        }
-        if settlement {
-            self.host.verify_execution_owner(task, fence, None)?.await
-        } else {
-            self.host.verify_dispatch_owner(task, fence, None)?.await
-        }
+        crate::conversation::BoundedContentFuture::new(_native_io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(_native_io) = _native_io {
+                let work = _native_io
+                    .original_native_work()
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "worker owner requires original native work",
+                    })?;
+                let owner = self
+                    .host
+                    .journal_owner(
+                        task,
+                        fence,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
+                    .await?;
+                return owner
+                    .verify(
+                        settlement,
+                        &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(work)?,
+                        )),
+                    )
+                    .await;
+            }
+            if settlement {
+                self.host.verify_execution_owner(task, fence, None)?.await
+            } else {
+                self.host.verify_dispatch_owner(task, fence, None)?.await
+            }
+        })?
+        .await
     }
 }
 

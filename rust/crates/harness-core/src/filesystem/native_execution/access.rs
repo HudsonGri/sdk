@@ -365,27 +365,30 @@ pub async fn require_unrestricted_volume_access<A: AsyncAuthorityStore, O: Async
     ceiling: &crate::Capabilities,
     surface: &'static str,
 ) -> Result<()> {
-    use crate::filesystem::{PreparationIo, access};
-    let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-    for grants in [ceiling, signed.capabilities()] {
-        if crate::core::filesystem_scope_label(grants, &mut None)?.is_none()
-            && (!grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
-                || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?))
-        {
+    crate::conversation::BoundedContentFuture::new(None, || async move {
+        use crate::filesystem::{PreparationIo, access};
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        for grants in [ceiling, signed.capabilities()] {
+            if crate::core::filesystem_scope_label(grants, &mut None)?.is_none()
+                && (!grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
+                    || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?))
+            {
+                return Err(Error::FilesystemAccessConfiguration(surface));
+            }
+        }
+        let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
+        let payload = match label {
+            Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
+            None => include_bytes!("../access/legacy-checkout.json"),
+        };
+        let compiled =
+            access::access_view(workspace, signed, None, payload, Some(ceiling), &io).await?;
+        if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
             return Err(Error::FilesystemAccessConfiguration(surface));
         }
-    }
-    let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
-    let payload = match label {
-        Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
-        None => include_bytes!("../access/legacy-checkout.json"),
-    };
-    let compiled =
-        access::access_view(workspace, signed, None, payload, Some(ceiling), &io).await?;
-    if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
-        return Err(Error::FilesystemAccessConfiguration(surface));
-    }
-    access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
+        access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
+    })?
+    .await
 }
 
 /// Verify a scope before exposing read-only raw checkout context.

@@ -34,30 +34,33 @@ impl<'a> StockExecution<'a> {
         prior: usize,
         request: crate::model::PreparedModelRequest,
     ) -> Result<()> {
-        let Some(identity) = journal.cache_identity() else {
-            return Ok(());
-        };
-        let mut cache = self.request_cache.lock().await;
-        if !cache.enabled {
-            return Ok(());
-        }
-        let prior = self.absolute_prior_count(prior).await?;
-        #[cfg(feature = "filesystem")]
-        let hold = self
-            .io
-            .map(|io| io.guard_owned(request.preparation_owned_bytes(io)?))
-            .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let hold = None;
-        cache.retained = Some(RetainedRequest {
-            operation: input.operation_id,
-            journal: identity,
-            step,
-            prior,
-            request,
-            hold,
-        });
-        Ok(())
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            let Some(identity) = journal.cache_identity() else {
+                return Ok(());
+            };
+            let mut cache = self.request_cache.lock().await;
+            if !cache.enabled {
+                return Ok(());
+            }
+            let prior = self.absolute_prior_count(prior).await?;
+            #[cfg(feature = "filesystem")]
+            let hold = self
+                .io
+                .map(|io| io.guard_owned(request.preparation_owned_bytes(io)?))
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let hold = None;
+            cache.retained = Some(RetainedRequest {
+                operation: input.operation_id,
+                journal: identity,
+                step,
+                prior,
+                request,
+                hold,
+            });
+            Ok(())
+        })?
+        .await
     }
 
     pub(super) async fn continue_response_request(

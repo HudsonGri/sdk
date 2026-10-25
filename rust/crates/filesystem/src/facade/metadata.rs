@@ -114,16 +114,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     ) -> W::Output<FileMetadata, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let record = self
-                .resolve_file(path, &mut accounting, cancellation)
-                .await?;
-            read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                record,
-                &mut accounting,
-                cancellation,
-            )
-            .await
+            let mut frame =
+                crate::heap_future::with_accounting(&mut accounting, |accounting| async move {
+                    let record = self.resolve_file(path, accounting, cancellation).await?;
+                    read_record_metadata_to_file_root_with_accounting(
+                        &self.volume,
+                        record,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
+                })?;
+            let result = frame.value.as_mut().await;
+            drop(frame);
+            result
         }
         .await;
         budget.finish(result, &accounting)

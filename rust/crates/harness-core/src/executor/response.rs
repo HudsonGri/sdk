@@ -297,7 +297,7 @@ impl StockExecution<'_> {
         Ok(None)
     }
 
-    async fn resolve_response_accounting(
+    pub(super) async fn resolve_response_accounting(
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32, &[ModelMessage]),

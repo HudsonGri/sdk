@@ -11,16 +11,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     ) -> Result<Option<FileRecord>, FsError> {
         self.validate_native_work(work)?;
         let mut accounting = KernelAccounting::native(work, cancellation);
-        let lookup = lookup_path_async_with_accounting(
-            &self.volume.fs.inner.objects,
-            &self.root,
-            path,
-            self.volume.config,
-            &mut accounting,
-            cancellation,
-            None,
-        )
-        .await?;
+        let mut frame =
+            crate::heap_future::with_accounting(&mut accounting, |accounting| async move {
+                lookup_path_async_with_accounting(
+                    &self.volume.fs.inner.objects,
+                    &self.root,
+                    path,
+                    self.volume.config,
+                    accounting,
+                    cancellation,
+                    None,
+                )
+                .await
+            })?;
+        let lookup = frame.value.as_mut().await;
+        drop(frame);
+        let lookup = lookup?;
         Ok(lookup.record)
     }
 
@@ -123,55 +129,60 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         capture_terminal: bool,
     ) -> Result<(PathLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
-        accounting.check()?;
-        let before = readonly_standalone_live(accounting);
-        let result = async {
-            self.synchronize_live_with_accounting(accounting, cancellation)
-                .await?;
-            let mut lookup = self
-                .lookup_no_follow_at_current_with_accounting(
-                    path,
-                    accounting,
-                    cancellation,
-                    capture_terminal,
-                )
-                .await?;
-            if lookup.0.record.is_none()
-                && self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-            {
-                accounting.check()?;
-                if !path.is_root()
-                    && let Some((value, allocation)) = self
-                        .canonicalize_path_components(
-                            path.components(),
-                            &[],
-                            accounting,
-                            cancellation,
-                        )
-                        .await?
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            accounting.check()?;
+            let before = readonly_standalone_live(accounting);
+            let result = async {
+                self.synchronize_live_with_accounting(accounting, cancellation)
+                    .await?;
+                let mut lookup = self
+                    .lookup_no_follow_at_current_with_accounting(
+                        path,
+                        accounting,
+                        cancellation,
+                        capture_terminal,
+                    )
+                    .await?;
+                if lookup.0.record.is_none()
+                    && self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
                 {
-                    let corrected = (value, allocation);
-                    let retried = self
-                        .lookup_no_follow_at_current_with_accounting(
-                            &corrected.0,
-                            accounting,
-                            cancellation,
-                            capture_terminal,
-                        )
-                        .await?;
-                    drop(corrected);
-                    lookup = retried;
+                    accounting.check()?;
+                    if !path.is_root()
+                        && let Some((value, allocation)) = self
+                            .canonicalize_path_components(
+                                path.components(),
+                                &[],
+                                accounting,
+                                cancellation,
+                            )
+                            .await?
+                    {
+                        let corrected = (value, allocation);
+                        let retried = self
+                            .lookup_no_follow_at_current_with_accounting(
+                                &corrected.0,
+                                accounting,
+                                cancellation,
+                                capture_terminal,
+                            )
+                            .await?;
+                        drop(corrected);
+                        lookup = retried;
+                    }
                 }
+                lookup.0.work = accounting.spent();
+                Ok::<_, FsError>(lookup)
             }
-            lookup.0.work = accounting.spent();
-            Ok::<_, FsError>(lookup)
-        }
-        .await;
-        readonly_cleanup_standalone(accounting, before, 0)?;
-        result.map(|(mut lookup, allocation)| {
-            lookup.work = accounting.spent();
-            (lookup, allocation)
-        })
+            .await;
+            readonly_cleanup_standalone(accounting, before, 0)?;
+            result.map(|(mut lookup, allocation)| {
+                lookup.work = accounting.spent();
+                (lookup, allocation)
+            })
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     pub(crate) async fn lookup_no_follow_at_current_with_accounting(
@@ -504,4 +515,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         readonly_cleanup_standalone(accounting, before, 0)?;
         result.map(|(record, _allocation)| record)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn namespace_lookup_keeps_its_original_accounting_frame_bounded() {
+    type View = Checkout<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<(
+        &mut View,
+        &NamespacePath,
+        &mut KernelAccounting<'_>,
+        &CancellationToken,
+    )> = None;
+    let bytes = future_bytes(|| {
+        let (view, path, work, cancellation) = arguments.unwrap();
+        view.lookup_no_follow_with_accounting(path, work, cancellation, false)
+    });
+    assert!(bytes <= 4096, "namespace lookup future is {bytes} bytes");
 }

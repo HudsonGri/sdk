@@ -39,7 +39,6 @@ proptest! {
     }
 }
 
-
 #[tokio::test]
 async fn effect_callbacks_bound_their_frame_on_original_native_custody()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -53,25 +52,42 @@ async fn effect_callbacks_bound_their_frame_on_original_native_custody()
     };
     for cancelled in [false, true] {
         let cancellation = CancellationToken::new();
-        let budget = if cancelled { WorkBudget::UNBOUNDED } else {
-            WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }
+        let budget = if cancelled {
+            WorkBudget::UNBOUNDED
+        } else {
+            WorkBudget {
+                allocation_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            }
         };
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let work = original.native_volume_work(budget)?;
-        if cancelled { cancellation.cancel(); }
+        if cancelled {
+            cancellation.cancel();
+        }
         let mut control = Some(&mut callback);
-        let future = generation_action(&mut control, NativeMaterializationActionPhase::Before, &work);
+        let future = generation_action(
+            &mut control,
+            NativeMaterializationActionPhase::Before,
+            &work,
+        );
         let bytes = std::mem::size_of_val(&future);
         eprintln!("EFFECT_CALLBACK_FRAME {bytes}");
         assert!(bytes <= 4096, "effect callback frame is {bytes} bytes");
         assert!(future.await.is_err());
         assert_eq!(entered.get(), 0);
     }
-    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .map_err(|(error, _)| error)?;
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes();
-    generation_action(&mut Some(&mut callback), NativeMaterializationActionPhase::Before, &work).await?;
+    generation_action(
+        &mut Some(&mut callback),
+        NativeMaterializationActionPhase::Before,
+        &work,
+    )
+    .await?;
     assert_eq!(entered.get(), 1);
     assert!(work.receipt().allocation_operations > 0);
     assert_eq!(work.live_allocation_bytes(), baseline);
@@ -81,7 +97,8 @@ async fn effect_callbacks_bound_their_frame_on_original_native_custody()
 #[test]
 fn materialization_children_keep_bounded_frames() {
     type Reader = PinnedReader<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
-    type Control = fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>;
+    type Control =
+        fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>;
     struct Inputs<'a> {
         reader: &'a Reader,
         root: &'a Arc<(HostRoot, crate::NativeAllocation)>,
@@ -97,17 +114,94 @@ fn materialization_children_keep_bounded_frames() {
         std::mem::size_of::<F>()
     }
     let arguments: Option<Inputs<'_>> = None;
+    let lookup = future_bytes(|| {
+        let input = arguments.unwrap();
+        input.reader.lookup_record_with_native_work(
+            input.path,
+            input.receipt.custody.work(),
+            input.cancellation,
+        )
+    });
+    assert!(
+        lookup <= 4096,
+        "original namespace future is {lookup} bytes"
+    );
+    let arguments: Option<Inputs<'_>> = None;
     let metadata = future_bytes(|| {
         let input = arguments.unwrap();
-        apply_metadata(input.reader, input.root, input.path, input.host,
-            None, input.receipt, input.control)
+        apply_metadata(
+            input.reader,
+            input.root,
+            input.path,
+            input.host,
+            None,
+            input.receipt,
+            input.control,
+        )
     });
     let arguments: Option<Inputs<'_>> = None;
     let sparse = future_bytes(|| {
         let input = arguments.unwrap();
-        materialize_sparse_file(input.reader, input.path, input.file, 0,
-            input.options, input.cancellation, input.receipt, input.control)
+        materialize_sparse_file(
+            input.reader,
+            input.path,
+            input.file,
+            0,
+            input.options,
+            input.cancellation,
+            input.receipt,
+            input.control,
+        )
     });
+    let arguments: Option<Inputs<'_>> = None;
+    let reader_metadata = future_bytes(|| {
+        let input = arguments.unwrap();
+        input
+            .reader
+            .read_metadata(input.path, input.receipt.custody.work(), input.cancellation)
+    });
+    let arguments: Option<Inputs<'_>> = None;
+    let root: Option<crate::ObjectId> = None;
+    let reader_attributes = future_bytes(|| {
+        let input = arguments.unwrap();
+        input.reader.read_named_attributes(
+            root.unwrap(),
+            input.receipt.custody.work(),
+            input.cancellation,
+        )
+    });
+    let arguments: Option<Inputs<'_>> = None;
+    let reader_directory = future_bytes(|| {
+        let input = arguments.unwrap();
+        input.reader.list_directory_records(
+            input.path,
+            None,
+            256,
+            input.receipt.custody.work(),
+            input.cancellation,
+        )
+    });
+    for (name, bytes) in [
+        ("reader metadata", reader_metadata),
+        ("reader attributes", reader_attributes),
+        ("reader directory", reader_directory),
+    ] {
+        assert!(bytes <= 4096, "{name} future is {bytes} bytes");
+    }
+    let arguments: Option<Inputs<'_>> = None;
+    let symlink = future_bytes(|| {
+        let input = arguments.unwrap();
+        materialize_symlink::<_, _, MaterializeError, _, _>(
+            (input.reader, input.cancellation),
+            input.path,
+            &input.root.0,
+            &input.host.0,
+            0,
+            input.receipt,
+            input.control,
+        )
+    });
+    assert!(symlink <= 4096, "symlink future is {symlink} bytes");
     assert!(metadata <= 4096, "metadata future is {metadata} bytes");
     assert!(sparse <= 4096, "sparse future is {sparse} bytes");
 }

@@ -300,44 +300,47 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         rejection: ToolCallRejection,
     ) -> Result<crate::model::ToolResultContent> {
-        let (reason, error) = rejection.into_failure(self.io);
-        let (_, records) = self
-            .tool_records(journal, operation_id, step, &invocation.call_id)
-            .await?;
-        match RecordedCall::classify(&records)
-            .map_err(|reason| stock_boundary(self.io, Invalid, reason))?
-        {
-            RecordedCall::Failed {
-                started: None,
-                reason: recorded,
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            let (reason, error) = rejection.into_failure(self.io);
+            let (_, records) = self
+                .tool_records(journal, operation_id, step, &invocation.call_id)
+                .await?;
+            match RecordedCall::classify(&records)
+                .map_err(|reason| stock_boundary(self.io, Invalid, reason))?
+            {
+                RecordedCall::Failed {
+                    started: None,
+                    reason: recorded,
+                    cause,
+                } if recorded == reason => return tool_failure_content(reason, cause, self.io),
+                RecordedCall::Unstarted if self.stock.reconciliation_only => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                RecordedCall::Unstarted => {}
+                // A refusal never settles a dispatched call or replaces another settlement.
+                RecordedCall::Failed { .. }
+                | RecordedCall::Completed { .. }
+                | RecordedCall::Started(_) => {
+                    return Err(stock_boundary(
+                        self.io,
+                        Conflict,
+                        "tool refusal changed on replay",
+                    ));
+                }
+            }
+            let cause = with_history_io(self.io, |work| {
+                ToolFailureCause::refusal(&invocation.name, reason, &error, work)
+            })?;
+            self.settle_tool_cause(
+                journal,
+                operation_id,
+                step,
+                &invocation.call_id,
+                reason,
                 cause,
-            } if recorded == reason => return tool_failure_content(reason, cause, self.io),
-            RecordedCall::Unstarted if self.stock.reconciliation_only => {
-                return Err(Error::Indeterminate(operation_id));
-            }
-            RecordedCall::Unstarted => {}
-            // A refusal never settles a dispatched call or replaces another settlement.
-            RecordedCall::Failed { .. }
-            | RecordedCall::Completed { .. }
-            | RecordedCall::Started(_) => {
-                return Err(stock_boundary(
-                    self.io,
-                    Conflict,
-                    "tool refusal changed on replay",
-                ));
-            }
-        }
-        let cause = with_history_io(self.io, |work| {
-            ToolFailureCause::refusal(&invocation.name, reason, &error, work)
-        })?;
-        self.settle_tool_cause(
-            journal,
-            operation_id,
-            step,
-            &invocation.call_id,
-            reason,
-            cause,
-        )
+            )
+            .await
+        })?
         .await
     }
 
@@ -393,73 +396,82 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         started: bool,
     ) -> Result<Option<PolicyStop>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(stop) = self
-            .settle_native_tool_policy(journal, operation_id, invocation, &tool.definition, started)
-            .await?
-        {
-            return Ok(Some(stop));
-        }
-        if !stock_is_native(self.io) {
-            let scope = &self.stock.tool_scope;
-            if let Some(policy) = &self.stock.policy {
-                if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
-                    return Err(Error::Conflict("stock policy changed after binding".into()));
-                }
-                let decision = policy.evaluate(invocation, scope, None)?.await?.0;
-                if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
-                    return Err(Error::Conflict(
-                        "stock policy changed during evaluation".into(),
-                    ));
-                }
-                match decision {
-                    ToolPolicyDecision::Allow => {}
-                    // A denial before dispatch is the call's result; the pinned policy
-                    // re-derives it on replay. After a recorded start it is a conflict.
-                    ToolPolicyDecision::Deny { reason } if !started => {
-                        return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(stop) = self
+                .settle_native_tool_policy(
+                    journal,
+                    operation_id,
+                    invocation,
+                    &tool.definition,
+                    started,
+                )
+                .await?
+            {
+                return Ok(Some(stop));
+            }
+            if !stock_is_native(self.io) {
+                let scope = &self.stock.tool_scope;
+                if let Some(policy) = &self.stock.policy {
+                    if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
+                        return Err(Error::Conflict("stock policy changed after binding".into()));
                     }
-                    ToolPolicyDecision::Deny { reason } => {
-                        return Err(Error::Unauthorized(reason));
+                    let decision = policy.evaluate(invocation, scope, None)?.await?.0;
+                    if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
+                        return Err(Error::Conflict(
+                            "stock policy changed during evaluation".into(),
+                        ));
                     }
-                    ToolPolicyDecision::RequireApproval { prompt } => {
-                        if !scope.grants().contains(capability::INTERACTION_ROUTE) {
-                            return Err(Error::Unauthorized(
-                                "stock tool approval requires interaction:route".into(),
-                            ));
+                    match decision {
+                        ToolPolicyDecision::Allow => {}
+                        // A denial before dispatch is the call's result; the pinned policy
+                        // re-derives it on replay. After a recorded start it is a conflict.
+                        ToolPolicyDecision::Deny { reason } if !started => {
+                            return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
                         }
-                        let task = self.stock.task.as_ref().map_or(
-                            TaskId::from_bytes(operation_id.into_bytes()),
-                            |(_, task, _)| *task,
-                        );
-                        let ((approval_operation, request), _hold) = tool_approval_request(
-                            task,
-                            self.stock.policy_identity.as_ref().ok_or_else(|| {
-                                Error::Conflict("stock policy identity is missing".into())
-                            })?,
-                            &tool.definition,
-                            invocation,
-                            (prompt, None),
-                            None,
-                        )?;
-                        if let Some(progress) = self
-                            .settle_approval(
-                                journal,
-                                operation_id,
-                                approval_operation,
-                                &request,
+                        ToolPolicyDecision::Deny { reason } => {
+                            return Err(Error::Unauthorized(reason));
+                        }
+                        ToolPolicyDecision::RequireApproval { prompt } => {
+                            if !scope.grants().contains(capability::INTERACTION_ROUTE) {
+                                return Err(Error::Unauthorized(
+                                    "stock tool approval requires interaction:route".into(),
+                                ));
+                            }
+                            let task = self.stock.task.as_ref().map_or(
+                                TaskId::from_bytes(operation_id.into_bytes()),
+                                |(_, task, _)| *task,
+                            );
+                            let ((approval_operation, request), _hold) = tool_approval_request(
+                                task,
+                                self.stock.policy_identity.as_ref().ok_or_else(|| {
+                                    Error::Conflict("stock policy identity is missing".into())
+                                })?,
+                                &tool.definition,
                                 invocation,
-                                started,
-                            )
-                            .await?
-                        {
-                            return Ok(Some(PolicyStop::Progress(progress)));
+                                (prompt, None),
+                                None,
+                            )?;
+                            if let Some(progress) = self
+                                .settle_approval(
+                                    journal,
+                                    operation_id,
+                                    approval_operation,
+                                    &request,
+                                    invocation,
+                                    started,
+                                )
+                                .await?
+                            {
+                                return Ok(Some(PolicyStop::Progress(progress)));
+                            }
                         }
                     }
                 }
             }
-        }
-        Ok(None)
+            Ok(None)
+        })?
+        .await
     }
     async fn execute_tool_invocation(
         &self,
@@ -1165,4 +1177,56 @@ mod cancellation_tests {
             Ok(Some(7))
         ));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn tool_admission_children_keep_bounded_frames() {
+    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<(&StockExecution<'_>, &dyn ExecutionJournal, &ToolInvocation)> = None;
+    let refusal = future_bytes(|| {
+        let (execution, journal, invocation) = arguments.unwrap();
+        execution.settle_tool_refusal(
+            journal,
+            OperationId::from_bytes([1; 16]),
+            0,
+            invocation,
+            ToolCallRejection::Unavailable,
+        )
+    });
+    let arguments: Option<(
+        &StockExecution<'_>,
+        &dyn ExecutionJournal,
+        &ToolInvocation,
+        &crate::tool::Tool,
+    )> = None;
+    let policy = future_bytes(|| {
+        let (execution, journal, invocation, tool) = arguments.unwrap();
+        execution.require_tool_policy(
+            journal,
+            OperationId::from_bytes([1; 16]),
+            invocation,
+            tool,
+            false,
+        )
+    });
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        let arguments: Option<(&StockExecution<'_>, &ToolInvocation)> = None;
+        let hooks = future_bytes(|| {
+            let (execution, invocation) = arguments.unwrap();
+            execution.tool_hook_output(
+                OperationId::from_bytes([1; 16]),
+                crate::hooks::HookSite::BeforeTool,
+                invocation,
+                None,
+                false,
+            )
+        });
+        assert!(hooks <= 4096, "tool hooks future is {hooks} bytes");
+    }
+    assert!(refusal <= 4096, "tool refusal future is {refusal} bytes");
+    assert!(policy <= 4096, "tool policy future is {policy} bytes");
 }

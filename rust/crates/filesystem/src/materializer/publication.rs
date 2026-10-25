@@ -129,7 +129,7 @@ where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
-    let result = async {
+    let result = publication_step(&work, || async {
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
         materializer
@@ -139,7 +139,7 @@ where
                 &mut before_effect,
             )
             .await
-    }
+    })
     .await;
     result
         .map(|value| crate::OperationReceipt {
@@ -170,7 +170,7 @@ where
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
     publication_step(work, || async move {
-        before_effect().await?;
+        publication_step(work, &mut *before_effect).await?;
         if work.budget() != request.budget || from.id() != request.from || to.id() != request.to {
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
         }
@@ -182,7 +182,9 @@ where
         let operation = operation.0;
         let actual = publication_root_identity(&root, &operation, &request, work)?;
         let store = state.materialization(work.clone());
-        let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
+        let mut journal = if let Some(journal) =
+            publication_step(work, || store.load(request.operation_id)).await?
+        {
             validate_generation_journal(&journal, &request)?;
             check_native_plan(&journal.plan, work)?;
             work.set_original_work(journal.work);
@@ -190,11 +192,13 @@ where
         } else {
             let (plan, custody) =
                 publication_step(work, || generation_plan(from, to, &request, work)).await?;
-            let parent = super::directory_preparation::prepare_publication_parent(
-                &operation,
-                work,
-                before_effect,
-            )
+            let parent = publication_step(work, || {
+                super::directory_preparation::prepare_publication_parent(
+                    &operation,
+                    work,
+                    before_effect,
+                )
+            })
             .await?;
             let journal = MaterializationJournal {
                 version: JOURNAL_VERSION,
@@ -213,9 +217,10 @@ where
                 work: work.journal_work()?,
                 custody: Some(custody),
             };
-            let (stored, journal) = store
-                .compare_and_swap(request.operation_id, 0, journal)
-                .await?;
+            let (stored, journal) = publication_step(work, || {
+                store.compare_and_swap(request.operation_id, 0, journal)
+            })
+            .await?;
             if !stored {
                 return Err(NativeWorkspacePublicationError::MismatchedJournal);
             }
@@ -237,13 +242,15 @@ where
         let backend =
             NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
         let materializer = JournaledMaterializer::new(store, backend);
-        materializer.verify_allocation(&journal).await?;
+        publication_step(work, || materializer.verify_allocation(&journal)).await?;
         if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
-            before_effect().await?;
-            materializer.verify_effect_context(&journal).await?;
-            let completion = materializer.store.prepare_action(journal).await?;
-            let identity = materializer.backend.reset_target_directory("").await?;
-            journal = completion.await?;
+            publication_step(work, &mut *before_effect).await?;
+            publication_step(work, || materializer.verify_effect_context(&journal)).await?;
+            let completion =
+                publication_step(work, || materializer.store.prepare_action(journal)).await?;
+            let identity =
+                publication_step(work, || materializer.backend.reset_target_directory("")).await?;
+            journal = publication_step(work, || completion).await?;
             let (_storage, selections) = install_selections(&journal, work)?;
             if !selections.is_empty() {
                 let (destination, _allocation) = materializer.backend.staging_path("")?;
@@ -351,4 +358,30 @@ pub enum NativeWorkspacePublicationError {
     /// Stage completion was not acknowledged.
     #[error(transparent)]
     NativeStageUncertain(#[from] NativeStageUncertainty<NativeWorkspacePublicationError>),
+}
+
+#[cfg(test)]
+#[test]
+fn generation_publication_keeps_its_original_work_frame_bounded() {
+    type Generation = crate::Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+    fn future_bytes<F: Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<(
+        &Generation,
+        &Generation,
+        &crate::LocalCoreStateStore,
+        NativeWorkspacePublication<'_>,
+        NativeMaterializationWork,
+    )> = None;
+    let bytes = future_bytes(|| {
+        let (from, to, state, publication, work) = arguments.unwrap();
+        publish_native_generation_transition(from, to, state, publication, work, || {
+            std::future::ready(Ok(()))
+        })
+    });
+    assert!(
+        bytes <= 4096,
+        "generation publication future is {bytes} bytes"
+    );
 }

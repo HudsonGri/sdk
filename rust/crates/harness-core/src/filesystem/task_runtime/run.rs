@@ -15,20 +15,42 @@ where
         guard_execution: bool,
         _native_io: Option<&super::super::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_native_io) = _native_io {
-            let work = _native_io.original_native_work().ok_or_else(|| {
-                observed::boundary(
-                    Some(_native_io),
-                    crate::wire::ErrorCode::Unsupported,
-                    "native suspension requires original observer",
-                )
-            })?;
-            return if guard_execution {
-                self.execution_journal_with_native_work(task, fence, command, work)
+        crate::conversation::BoundedContentFuture::new(_native_io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(_native_io) = _native_io {
+                let work = _native_io.original_native_work().ok_or_else(|| {
+                    observed::boundary(
+                        Some(_native_io),
+                        crate::wire::ErrorCode::Unsupported,
+                        "native suspension requires original observer",
+                    )
+                })?;
+                return if guard_execution {
+                    self.execution_journal_with_native_work(task, fence, command, work)
+                        .await?
+                        .0
+                        .suspend_workflow_command_if_quiescent(revision, command, Some(_native_io))
+                        .await
+                } else {
+                    self.host
+                        .suspend_workflow(
+                            task,
+                            fence,
+                            (revision, Some(command)),
+                            None,
+                            None,
+                            &mut Some(
+                                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                                    .map(crate::store::HistoryWork::new)?,
+                            ),
+                        )
+                        .await
+                };
+            }
+            if guard_execution {
+                self.execution_journal(task, fence.clone(), command)
                     .await?
-                    .0
-                    .suspend_workflow_command_if_quiescent(revision, command, Some(_native_io))
+                    .suspend_workflow_command_if_quiescent(revision, command, None)
                     .await
             } else {
                 self.host
@@ -38,31 +60,12 @@ where
                         (revision, Some(command)),
                         None,
                         None,
-                        &mut Some(
-                            &mut crate::filesystem::PreparationIo::from_native_work(work)
-                                .map(crate::store::HistoryWork::new)?,
-                        ),
+                        &mut None,
                     )
                     .await
-            };
-        }
-        if guard_execution {
-            self.execution_journal(task, fence.clone(), command)
-                .await?
-                .suspend_workflow_command_if_quiescent(revision, command, None)
-                .await
-        } else {
-            self.host
-                .suspend_workflow(
-                    task,
-                    fence,
-                    (revision, Some(command)),
-                    None,
-                    None,
-                    &mut None,
-                )
-                .await
-        }
+            }
+        })?
+        .await
     }
 
     /// Drives an already-claimed lease through the registered machine.

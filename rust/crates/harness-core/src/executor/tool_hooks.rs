@@ -50,56 +50,63 @@ impl StockExecution<'_> {
         response: Option<&ToolResult>,
         retained_only: bool,
     ) -> Result<Option<HookOutput>> {
-        let Some(hooks) = &self.stock.hooks else {
-            return Ok(Some(HookOutput::default()));
-        };
-        let event = HookEvent::only(site)?;
-        let input = HookInput::Tool {
-            invocation,
-            response,
-            session_id: self.stock.task.as_ref().map(|(_, task, _)| *task),
-        };
-        if hooks
-            .rules
-            .commands(event, input, &self.stock.tools)?
-            .next()
-            .is_none()
-        {
-            return Ok(Some(HookOutput::default()));
-        }
-        if self.io.is_some() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Unsupported,
-                "hooks require ordinary task execution",
-            ));
-        }
-        let (task, _) = self
-            .context
-            .ok_or_else(|| Error::Unauthorized("tool hook has no issued task context".into()))?;
-        let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
-            Error::Unsupported("tool hook workspace execution is not bound".into())
-        })?;
-        let phase = phase_operation(invocation.operation_id, event);
-        let context =
-            crate::runtime::ToolContext::new(Arc::clone(task), phase, &invocation.call_id, None)?;
-        match executor
-            .run_hooks(
-                (&hooks.rules, hooks.manifest),
-                event,
-                input,
-                &self.stock.tools,
-                context,
-                retained_only || self.stock.reconciliation_only,
-            )
-            .await?
-        {
-            Some(output) => {
-                crate::hooks::report(event, &output);
-                Ok(Some(output))
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            let Some(hooks) = &self.stock.hooks else {
+                return Ok(Some(HookOutput::default()));
+            };
+            let event = HookEvent::only(site)?;
+            let input = HookInput::Tool {
+                invocation,
+                response,
+                session_id: self.stock.task.as_ref().map(|(_, task, _)| *task),
+            };
+            if hooks
+                .rules
+                .commands(event, input, &self.stock.tools)?
+                .next()
+                .is_none()
+            {
+                return Ok(Some(HookOutput::default()));
             }
-            None => Ok(None),
-        }
+            if self.io.is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "hooks require ordinary task execution",
+                ));
+            }
+            let (task, _) = self.context.ok_or_else(|| {
+                Error::Unauthorized("tool hook has no issued task context".into())
+            })?;
+            let executor = task.harness.workspace_tools.as_ref().ok_or_else(|| {
+                Error::Unsupported("tool hook workspace execution is not bound".into())
+            })?;
+            let phase = phase_operation(invocation.operation_id, event);
+            let context = crate::runtime::ToolContext::new(
+                Arc::clone(task),
+                phase,
+                &invocation.call_id,
+                None,
+            )?;
+            match executor
+                .run_hooks(
+                    (&hooks.rules, hooks.manifest),
+                    event,
+                    input,
+                    &self.stock.tools,
+                    context,
+                    retained_only || self.stock.reconciliation_only,
+                )
+                .await?
+            {
+                Some(output) => {
+                    crate::hooks::report(event, &output);
+                    Ok(Some(output))
+                }
+                None => Ok(None),
+            }
+        })?
+        .await
     }
 
     pub(super) async fn hook_approval(

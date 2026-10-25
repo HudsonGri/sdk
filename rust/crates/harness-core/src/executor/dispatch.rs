@@ -261,28 +261,33 @@ impl StockExecution<'_> {
         replayed_empty: bool,
         phase: &mut DispatchPhase,
     ) -> Result<phase::ProviderAttempt> {
-        if replayed_empty && !self.stock.reconciliation_only && !super::unsettled_resume::enabled()
-        {
-            // Only an owned task can authorize reissuing the retained
-            // request under its existing dispatch and current fence.
-            // An unowned callback has no such recovery authority.
-            if self.stock.task.is_none() {
-                return Err(Error::Indeterminate(operation));
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            if replayed_empty
+                && !self.stock.reconciliation_only
+                && !super::unsettled_resume::enabled()
+            {
+                // Only an owned task can authorize reissuing the retained
+                // request under its existing dispatch and current fence.
+                // An unowned callback has no such recovery authority.
+                if self.stock.task.is_none() {
+                    return Err(Error::Indeterminate(operation));
+                }
+                self.claim_task_model(dispatch).await?;
+                Ok(phase.start())
+            } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
+                // An incomplete response has not dispatched any of its tool calls.
+                // When the provider cannot recover its prefix, fail definitively
+                // instead of retaining a reservation that can never make progress.
+                // Keep the recorded prefix and never generate a different suffix.
+                Err(Error::ModelUnavailable {
+                    failure: crate::ModelTransportFailure::Interrupted,
+                    excerpt: String::new(),
+                })
+            } else {
+                Err(Error::Indeterminate(operation))
             }
-            self.claim_task_model(dispatch).await?;
-            Ok(phase.start())
-        } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
-            // An incomplete response has not dispatched any of its tool calls.
-            // When the provider cannot recover its prefix, fail definitively
-            // instead of retaining a reservation that can never make progress.
-            // Keep the recorded prefix and never generate a different suffix.
-            Err(Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                excerpt: String::new(),
-            })
-        } else {
-            Err(Error::Indeterminate(operation))
-        }
+        })?
+        .await
     }
 
     async fn resolve_model_request(
@@ -335,30 +340,33 @@ impl StockExecution<'_> {
         dispatch: crate::model::ModelDispatch,
         replayed: &[ModelEvent],
     ) -> Result<Option<Vec<ModelEvent>>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let io = self.io;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let continuation = if let Some(work) = self.native_work() {
-            let (continuation, custody) = self
-                .stock
-                .provider
-                .reconcile_with_native_work(dispatch, replayed, work)?
-                .await?;
-            io.ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Storage,
-                    "native stock session lacks its original IO",
-                )
-            })?
-            .absorb_native_custody(custody)?;
-            continuation
-        } else {
-            self.stock.provider.reconcile(dispatch, replayed).await?
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let continuation = self.stock.provider.reconcile(dispatch, &replayed).await?;
-        Ok(continuation)
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let io = self.io;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let continuation = if let Some(work) = self.native_work() {
+                let (continuation, custody) = self
+                    .stock
+                    .provider
+                    .reconcile_with_native_work(dispatch, replayed, work)?
+                    .await?;
+                io.ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "native stock session lacks its original IO",
+                    )
+                })?
+                .absorb_native_custody(custody)?;
+                continuation
+            } else {
+                self.stock.provider.reconcile(dispatch, replayed).await?
+            };
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let continuation = self.stock.provider.reconcile(dispatch, &replayed).await?;
+            Ok(continuation)
+        })?
+        .await
     }
 
     async fn claim_model_dispatch(
@@ -370,71 +378,81 @@ impl StockExecution<'_> {
         dispatch: crate::model::ModelDispatch,
         phase: &mut DispatchPhase,
     ) -> Result<phase::ProviderAttempt> {
-        let (step, purpose, purpose_key) = turn;
-        let io = self.io;
-        let request_digest = request.request_digest();
-        if self.stock.reconciliation_only {
-            return Err(Error::Indeterminate(input.operation_id));
-        }
-        let (tail, current) = self
-            .model_records(journal, input.operation_id, step, purpose)
-            .await?;
-        if let Some(existing) = current.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ModelStarted {
-                step: recorded,
-                request_digest,
-                ..
-            } if *recorded == step => Some(*request_digest),
-            _ => None,
-        }) {
-            if existing != request_digest {
-                return Err(Error::Conflict(
-                    "model attempt identity is bound to another request".into(),
-                ));
-            }
-            return Err(Error::Indeterminate(input.operation_id));
-        }
-        let request_key = with_history_io(io, |work| {
-            preparation_format(format_args!("{purpose_key}:{step}:request"), work)
-        })?;
-        let claim_key = with_history_io(io, |work| {
-            preparation_format(
-                format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()),
-                work,
-            )
-        })?;
-        let reference = if purpose == ModelPurpose::Response {
-            self.stage_response_request(journal, input, step, &request_key, request)
-                .await?
-        } else {
-            transcript::stage_request(journal, input.operation_id, &request_key, request, None, io)
-                .await?
-        };
-        let attempt = phase.start();
-        self.claim_task_model(dispatch).await?;
-        match journal
-            .append_if_tail(
-                input.operation_id,
-                tail,
-                &claim_key,
-                &ExecutionEvent::ModelStarted {
-                    step,
-                    purpose,
-                    request_digest,
-                    request: reference,
-                },
-                io,
-            )?
-            .await
-        {
-            Ok(true) => {}
-            Err(error) if stock_is_native(io) => return Err(error),
-            Err(error) if !error.leaves_effect_uncertain() => return Err(error),
-            Ok(false) | Err(_) => {
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            let (step, purpose, purpose_key) = turn;
+            let io = self.io;
+            let request_digest = request.request_digest();
+            if self.stock.reconciliation_only {
                 return Err(Error::Indeterminate(input.operation_id));
             }
-        }
-        Ok(attempt)
+            let (tail, current) = self
+                .model_records(journal, input.operation_id, step, purpose)
+                .await?;
+            if let Some(existing) = current.iter().find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    step: recorded,
+                    request_digest,
+                    ..
+                } if *recorded == step => Some(*request_digest),
+                _ => None,
+            }) {
+                if existing != request_digest {
+                    return Err(Error::Conflict(
+                        "model attempt identity is bound to another request".into(),
+                    ));
+                }
+                return Err(Error::Indeterminate(input.operation_id));
+            }
+            let request_key = with_history_io(io, |work| {
+                preparation_format(format_args!("{purpose_key}:{step}:request"), work)
+            })?;
+            let claim_key = with_history_io(io, |work| {
+                preparation_format(
+                    format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()),
+                    work,
+                )
+            })?;
+            let reference = if purpose == ModelPurpose::Response {
+                self.stage_response_request(journal, input, step, &request_key, request)
+                    .await?
+            } else {
+                transcript::stage_request(
+                    journal,
+                    input.operation_id,
+                    &request_key,
+                    request,
+                    None,
+                    io,
+                )
+                .await?
+            };
+            let attempt = phase.start();
+            self.claim_task_model(dispatch).await?;
+            match journal
+                .append_if_tail(
+                    input.operation_id,
+                    tail,
+                    &claim_key,
+                    &ExecutionEvent::ModelStarted {
+                        step,
+                        purpose,
+                        request_digest,
+                        request: reference,
+                    },
+                    io,
+                )?
+                .await
+            {
+                Ok(true) => {}
+                Err(error) if stock_is_native(io) => return Err(error),
+                Err(error) if !error.leaves_effect_uncertain() => return Err(error),
+                Ok(false) | Err(_) => {
+                    return Err(Error::Indeterminate(input.operation_id));
+                }
+            }
+            Ok(attempt)
+        })?
+        .await
     }
 
     async fn claim_task_model(&self, dispatch: crate::model::ModelDispatch) -> Result<()> {
@@ -709,5 +727,55 @@ fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
     match purpose {
         ModelPurpose::Response => "model",
         ModelPurpose::Summary => "summary",
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn model_dispatch_children_keep_bounded_frames() {
+    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let execution: Option<&StockExecution<'_>> = None;
+    let dispatch = crate::model::ModelDispatch {
+        operation_id: OperationId::from_bytes([1; 16]),
+        step: 0,
+        request_digest: [0; 32],
+    };
+    let phase: Option<&mut DispatchPhase> = None;
+    let resume = future_bytes(|| {
+        execution.unwrap().resume_model_attempt(
+            dispatch.operation_id,
+            dispatch,
+            true,
+            phase.unwrap(),
+        )
+    });
+    let execution: Option<&StockExecution<'_>> = None;
+    let reconcile = future_bytes(|| execution.unwrap().reconcile_model_events(dispatch, &[]));
+    let arguments: Option<(
+        &StockExecution<'_>,
+        &dyn ExecutionJournal,
+        &TurnInput,
+        &crate::model::PreparedModelRequest,
+        &mut DispatchPhase,
+    )> = None;
+    let claim = future_bytes(|| {
+        let (execution, journal, input, request, phase) = arguments.unwrap();
+        execution.claim_model_dispatch(
+            journal,
+            input,
+            (0, ModelPurpose::Response, "response"),
+            request,
+            dispatch,
+            phase,
+        )
+    });
+    for (name, bytes) in [
+        ("resume", resume),
+        ("reconcile", reconcile),
+        ("claim", claim),
+    ] {
+        assert!(bytes <= 4096, "model {name} future is {bytes} bytes");
     }
 }
