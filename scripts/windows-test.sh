@@ -225,6 +225,15 @@ def stage_invocation(command):
     return ['python3', '-c', STAGE_INPUT, *command[-2:]]
 
 
+def runner_module(path):
+    # Execute the admitted source directly, without importlib's bytecode cache.
+    from types import ModuleType
+    module = ModuleType('acyclic_windows_runner')
+    module.__file__ = str(path)
+    exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)
+    return module
+
+
 def main():
     if os.name != 'nt':
         fail('Launch with Git Bash on Windows: bash Q:/lanes/win-test.sh <crate> [cargo args]')
@@ -259,10 +268,7 @@ def main():
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)
-    import importlib.util
-    shared_spec = importlib.util.spec_from_file_location('acyclic_windows_runner', root / 'scripts/windows-runner.py')
-    shared_runner = importlib.util.module_from_spec(shared_spec)
-    shared_spec.loader.exec_module(shared_runner)
+    shared_runner = runner_module(root / 'scripts/windows-runner.py')
     shared_runner.admitted_host(root, os.environ['E2E_PROCESS_HOST'], os.environ['WIN_TEST_PROCESS_HOST_RECEIPT'])
     config = dict(crate=sys.argv[1], cargo=cargo, stem=stem, fixtures=fixtures)
     payload, program = remote_invocation(config)
@@ -320,14 +326,11 @@ def main():
 
 def run_tests(records, manifest, runtime):
     # Execute the exact shared runner admitted with this producer's source.
-    import importlib.util
     path = records / 'source/scripts/windows-runner.py'
     expected = manifest['source'].get('scripts/windows-runner.py')
     if not expected or digest(path) != expected:
         fail('Shared Windows runner is absent or differs from admitted source')
-    spec = importlib.util.spec_from_file_location('acyclic_windows_runner', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = runner_module(path)
     return module.run_tests(records, manifest, runtime)
 
 

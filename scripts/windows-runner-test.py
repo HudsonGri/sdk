@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real Windows runner with the installed Python, without builds."""
 
-import importlib.util
+import ast
 import ctypes
 import json
 import os
@@ -11,11 +11,13 @@ import sys
 import time
 
 
-def load(path):
-    spec = importlib.util.spec_from_file_location("windows_runner", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def load(path, helper):
+    embedded = helper.read_text(encoding="utf-8").split("<<'WIN_TEST_PY'\n", 1)[1].rsplit("\nWIN_TEST_PY", 1)[0]
+    tree = ast.parse(embedded)
+    loader = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "runner_module")
+    namespace = {}
+    exec(compile(ast.Module(body=[loader], type_ignores=[]), str(helper), "exec"), namespace)
+    return namespace["runner_module"](path)
 
 
 def main():
@@ -23,7 +25,8 @@ def main():
         raise OSError("Windows runner qualification requires real Windows")
     source = Path(__file__).resolve().parent.parent
     module_path = Path(sys.argv[2]) if len(sys.argv) > 2 else source / "scripts/windows-runner.py"
-    module = load(module_path)
+    helper = Path(sys.argv[3]) if len(sys.argv) > 3 else source / "scripts/windows-test.sh"
+    module = load(module_path, helper)
     records = Path(sys.argv[1]).resolve()
     records.mkdir(parents=True)
     host = module.admitted_host(
@@ -63,6 +66,21 @@ def main():
                 "assert k.CloseHandle(h); print('fleet exclusion passed')"
             )
             assert commands.run([python, "-c", lease], cwd=source, name="cross-command-fleet-exclusion", sha256=checksum) == 0
+            import_source = records / "import-source"
+            import_source.mkdir()
+            imported = import_source / "runner.py"
+            imported.write_bytes(module_path.read_bytes())
+            immutable_import = (
+                "import ast,pathlib,sys; sys.dont_write_bytecode=False; "
+                "path=pathlib.Path(sys.argv[1]); helper=pathlib.Path(sys.argv[2]); "
+                "embedded=helper.read_text().split(\"<<'WIN_TEST_PY'\\n\",1)[1].rsplit('\\nWIN_TEST_PY',1)[0]; "
+                "tree=ast.parse(embedded); loader=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='runner_module'); "
+                "ns={}; exec(compile(ast.Module(body=[loader],type_ignores=[]),str(helper),'exec'),ns); "
+                "ns['runner_module'](path); "
+                "assert sorted(p.name for p in path.parent.iterdir())==['runner.py'], 'import mutated admitted source'; "
+                "print('immutable runner import passed')"
+            )
+            assert commands.run([python, "-c", immutable_import, str(imported), str(helper)], cwd=source, name="immutable-source-import", sha256=checksum) == 0
             # Force the same identity: the second call must reject before a child.
             fixed = module.uuid.uuid4()
             original_uuid = module.uuid.uuid4
@@ -139,13 +157,20 @@ def main():
         plan_path = records / "command-plan.json"
         plan_path.write_text(json.dumps(plan), encoding="utf-8")
         assert subprocess.call([python, "-X", "utf8", str(module_path), str(plan_path)]) == 0
+        cli_results = json.loads((records / "cli/results.json").read_text(encoding="utf-8"))
+        lease_wait_seconds = commands.lease_wait_seconds + cli_results[0]["lease_wait_seconds"]
     finally:
         if old_key is None:
             os.environ.pop("RUNNER_PROBE_API_KEY", None)
         else:
             os.environ["RUNNER_PROBE_API_KEY"] = old_key
-    seconds = time.monotonic() - start
-    result = dict(exit=0, seconds=seconds, under_10s=seconds < 10, commands=len(commands.results), runner_sha256=module.digest(module_path))
+    wall_seconds = time.monotonic() - start
+    # Fleet admission may queue behind another lane. Preserve that latency,
+    # while measuring the suite from ownership through physical drain.
+    seconds = wall_seconds - lease_wait_seconds
+    result = dict(exit=0, seconds=seconds, wall_seconds=wall_seconds,
+                  lease_wait_seconds=lease_wait_seconds, under_10s=seconds < 10,
+                  commands=len(commands.results), runner_sha256=module.digest(module_path))
     (records / "qualification.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     assert result["under_10s"], result
     print(json.dumps(result))

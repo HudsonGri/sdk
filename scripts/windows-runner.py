@@ -49,6 +49,7 @@ class Commands:
         self.kernel = None
         self.mutex = None
         self.acquired = False
+        self.lease_wait_seconds = 0
         self.results = []
 
     def __enter__(self):
@@ -67,7 +68,9 @@ class Commands:
             raise ctypes.WinError(ctypes.get_last_error())
         print("WIN_TEST_WAITING_FOR_GLOBAL_MUTEX", flush=True)
         # This is a blocking lease acquisition, never a readiness poll.
+        wait_started = time.monotonic()
         status = self.kernel.WaitForSingleObject(self.mutex, 0xFFFFFFFF)
+        self.lease_wait_seconds = time.monotonic() - wait_started
         if status not in (0, 0x80):
             self.kernel.CloseHandle(self.mutex)
             self.mutex = None
@@ -106,6 +109,7 @@ class Commands:
             HOMEPATH=str(home)[len(home.drive):], RUST_TEST_THREADS="4",
             ACYCLIC_TEST_SOURCE_ROOT=str(self.source), GIT_CONFIG_NOSYSTEM="1",
             GIT_CONFIG_GLOBAL=str(home / ".gitconfig"), E2E_PROCESS_HOST=str(self.host),
+            PYTHONDONTWRITEBYTECODE="1",
         )
         if self.binary is not None:
             env["ACYCLIC_TEST_BINARY"] = str(self.binary)
@@ -163,6 +167,7 @@ class Commands:
             target=name, executable=str(executable), argv=argv,
             exit=1 if verification_error else rc, process_exit=rc,
             seconds=round(elapsed, 6), under_10s=elapsed < 10,
+            lease_wait_seconds=self.lease_wait_seconds,
             summaries=summaries, sha256=sha256, fixture=identity,
             log=str(log_path), process_host_sha256=digest(self.host),
             verification_error=verification_error,
