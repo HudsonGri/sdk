@@ -12,13 +12,13 @@ fn work() -> NativeMaterializationWork {
 }
 
 #[test]
-fn native_invocation_decodes_the_current_process_contract() {
+fn native_invocation_decodes_the_current_process_contract() -> Result<()> {
     let work = work();
     let root = root_path();
     let scratch = root.join("scratch");
     let binding = crate::pi_binding::tests::binding("child", 7);
     let PiScratchAllocation::Created(creation) = &binding.scratch.allocation else {
-        unreachable!()
+        return Err(invalid("fixture scratch must have its creation record"));
     };
     let manifest = NativeViewManifest {
         options: NativeViewOptions {
@@ -40,47 +40,67 @@ fn native_invocation_decodes_the_current_process_contract() {
             version: PI_NATIVE_VERSION.into(),
             executable: root.join("pi"),
             executable_prefix: if prefix {
-                vec![root.join("pi-cli.js").to_str().unwrap().into()]
+                vec![root.join("pi-cli.js").to_string_lossy().into_owned()]
             } else {
                 Vec::new()
             },
             extension: root.join("acyclic.ts"),
             provider_extension: prefix.then(|| root.join("provider.ts")),
-            environment: BTreeMap::from([("HOME".into(), root.to_str().unwrap().into())]),
+            environment: BTreeMap::from([("HOME".into(), root.to_string_lossy().into_owned())]),
         };
-        let invocation = host
-            .intent_invocation(
-                &scratch.join("child.jsonl"),
-                &scratch,
-                "fixture-provider",
-                "fixture-model",
-                "fixture prompt",
-                capture_limits(Default::default(), 65_536).unwrap(),
-                &work,
-            )
-            .unwrap();
+        let invocation = host.intent_invocation(
+            &scratch.join("child.jsonl"),
+            &scratch,
+            "fixture-provider",
+            "fixture-model",
+            "fixture prompt",
+            capture_limits(Default::default(), 65_536)?,
+            &work,
+        )?;
         let mut invocation = invocation.0;
         invocation.environment =
             BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "fixture-caller".into())]);
-        let request = invocation
-            .request_with_work(&host, &binding, &manifest, &work)
-            .expect("Pi projection must decode through the strict native process contract");
+        let request = invocation.request_with_work(&host, &binding, &manifest, &work)?;
         assert!(request.0.has_valid_capture_allowances());
         assert_eq!(
             request.0.standard_input.as_deref(),
             Some(b"fixture prompt".as_slice())
         );
         assert_eq!(request.0.view, manifest);
-        assert_eq!(request.0.environment["ACYCLIC_PI_CALLER"], "fixture-caller");
         assert_eq!(
-            request.0.argv[0],
+            request
+                .0
+                .environment
+                .get("ACYCLIC_PI_CALLER")
+                .map(String::as_str),
+            Some("fixture-caller")
+        );
+        assert_eq!(
+            request.0.argv.first().map(String::as_str),
             if prefix {
-                host.executable_prefix[0].as_str()
+                host.executable_prefix.first().map(String::as_str)
             } else {
-                "--print"
+                Some("--print")
             }
         );
+        let mut obsolete =
+            serde_json::to_value(&invocation).map_err(|error| invalid(&error.to_string()))?;
+        assert!(obsolete.get("cancellation_poll_ms").is_none());
+        obsolete["cancellation_poll_ms"] = json!(250);
+        assert!(serde_json::from_value::<PiNativeInvocation>(obsolete).is_err());
     }
+    Ok(())
+}
+
+#[test]
+fn native_capture_policy_rejects_the_removed_polling_override() -> Result<()> {
+    let limits = capture_limits(Default::default(), 65_536)?;
+    let mut obsolete =
+        serde_json::to_value(limits).map_err(|error| invalid(&error.to_string()))?;
+    assert!(obsolete.get("cancellation_poll_ms").is_none());
+    obsolete["cancellation_poll_ms"] = json!(250);
+    assert!(serde_json::from_value::<PiNativeCaptureLimits>(obsolete).is_err());
+    Ok(())
 }
 
 fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
