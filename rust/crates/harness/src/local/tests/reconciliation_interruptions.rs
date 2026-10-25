@@ -51,82 +51,76 @@ async fn generation(
         .value)
 }
 
-async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> {
+async fn assert_published(harness: &LocalHarness, expected: &[(String, String)]) -> Result<()> {
     let checkout = harness.workspace().unwrap();
-    assert_eq!(
-        std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
-        expected.as_bytes(),
-        "unpublished rebase"
-    );
     let selected = checkout.selected_view().await?.0.unwrap();
     let head = generation(&selected).await?;
-    assert_eq!(
-        head.read(
-            "/upstream.txt",
-            128,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new()
-        )
-        .await
-        .map_err(super::super::storage)?
-        .value
-        .as_ref(),
-        expected.as_bytes()
-    );
-    // Use the real pre-command capture directly, without a model turn or
-    // process per cut. Native projection can change unassignable timestamps;
-    // file identity and the entire immutable payload must remain unchanged.
-    let before = head
-        .stat(
-            "/upstream.txt",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(super::super::storage)?
-        .value;
+    let mut identities = Vec::new();
+    for (path, expected) in expected {
+        assert_eq!(
+            std::fs::read(checkout.path.join(path)).map_err(super::super::storage)?,
+            expected.as_bytes(),
+            "unpublished rebase: {path}"
+        );
+        let path = format!("/{path}");
+        assert_eq!(
+            head.read(&path, 128, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(super::super::storage)?
+                .value
+                .as_ref(),
+            expected.as_bytes()
+        );
+        identities.push(
+            head.stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(super::super::storage)?
+                .value
+                .file_id,
+        );
+    }
+    // Capture once for the whole cut, then verify every generated payload and
+    // its identity. A partial multi-file publication cannot satisfy this cut.
     capture(harness).await?;
     let after = generation(&selected).await?;
-    assert_eq!(
-        after
-            .stat(
-                "/upstream.txt",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map_err(super::super::storage)?
-            .value
-            .file_id,
-        before.file_id
-    );
-    assert_eq!(
-        after
-            .read_range_if_unchanged(
+    for ((path, expected), identity) in expected.iter().zip(identities) {
+        let path = format!("/{path}");
+        assert_eq!(
+            after.stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(super::super::storage)?
+                .value
+                .file_id,
+            identity
+        );
+        assert_eq!(
+            after.read_range_if_unchanged(
                 &head,
-                "/upstream.txt",
-                acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: expected.len() as u64,
-                },
+                &path,
+                acyclic_fs::ByteRange { offset: 0, length: expected.len() as u64 },
                 WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
+                &CancellationToken::new(),
             )
-            .await
-            .map_err(super::super::storage)?
-            .value
-            .bytes
-            .as_ref(),
-        expected.as_bytes()
-    );
+                .await
+                .map_err(super::super::storage)?
+                .value
+                .bytes
+                .as_ref(),
+            expected.as_bytes()
+        );
+    }
     Ok(())
 }
 
 async fn sweep(texts: &[String]) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let initial = (0..texts.len())
+        .map(|index| format!("printf base > upstream-{index}.txt"))
+        .collect::<Vec<_>>()
+        .join(" && ");
     let provider = scripted([
-        super::checked_commands::call(0, "shell", "printf base > upstream.txt"),
+        super::checked_commands::call(0, "shell", &initial),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
@@ -137,138 +131,138 @@ async fn sweep(texts: &[String]) -> Result<()> {
     )
     .await?;
     super::checkout_reopen::run(&harness).await?;
-    // Bootstrap the binding once; every generated payload still sweeps every
-    // durable/native cut and performs its own complete host reopen.
-    for text in texts {
-        // Learn the finite native effect boundaries on the real publication path.
-        // Later attempts change only this same file, with identical tree structure.
-        let mut effects = 0;
-        let mut cut = 0;
-        loop {
-            let expected = format!("{text}-{cut}");
-            let checkout = harness.workspace().unwrap();
-            let selected = checkout.selected_view().await?.0.unwrap();
-            let from = generation(&selected).await?;
-            let windows = acyclic_fs::OperationWindowCoordinator::new(
-                checkout.filesystem.operation_window_store(),
-            );
-            windows
-                .begin(selected.workspace().id(), from.id(), "interrupted", 0, 1)
-                .await
-                .map_err(super::super::storage)?;
+    // Learn the finite native effect boundaries on the real publication path.
+    // Every attempt changes all four files, with identical tree structure.
+    let mut effects = 0;
+    let mut cut = 0;
+    loop {
+        let expected: Vec<_> = texts.iter().enumerate()
+            .map(|(index, text)| (format!("upstream-{index}.txt"), format!("{text}-{cut}")))
+            .collect();
+        let checkout = harness.workspace().unwrap();
+        let selected = checkout.selected_view().await?.0.unwrap();
+        let from = generation(&selected).await?;
+        let windows = acyclic_fs::OperationWindowCoordinator::new(
+            checkout.filesystem.operation_window_store(),
+        );
+        windows
+            .begin(selected.workspace().id(), from.id(), "interrupted", 0, 1)
+            .await
+            .map_err(super::super::storage)?;
+        for (path, text) in &expected {
             checkout
                 .view()
                 .workspace()
-                .write_text("/upstream.txt", &expected)
+                .write_text(&format!("/{path}"), text)
                 .await
                 .map_err(super::super::storage)?;
-            reconciliation::prepare(
-                checkout,
-                acyclic_fs::OperationId::new(),
-                acyclic_fs::GitGenerationRef {
-                    workspace_id: selected.workspace().id(),
-                    generation: from.id(),
-                },
-            )
-            .await?;
-            windows
-                .observe_parent(
-                    selected.workspace().id(),
-                    generation(checkout.view()).await?.id(),
-                )
-                .await
-                .map_err(super::super::storage)?;
-            // Cut 0 measures a complete run. Cuts 1..=4 stop after the source
-            // marker, ticket claim, rebase commit, and ticket acknowledgement.
-            let ticket = if cut == 0 || cut >= 2 {
-                Some(
-                    windows
-                        .claim_reconcile(selected.workspace().id(), 2)
-                        .await
-                        .map_err(super::super::storage)?
-                        .unwrap(),
-                )
-            } else {
-                None
-            };
-            if cut == 0 || cut >= 3 {
-                let ticket = ticket.as_ref().unwrap();
-                let limits = acyclic_fs::OperationReconcileLimits::default();
-                selected
-                    .workspace()
-                    .live_rebase(
-                        acyclic_fs::IdempotencyKey::from_bytes(ticket.ticket.into_bytes()),
-                        limits.maximum_generations,
-                        limits.maximum_changes,
-                        limits.maximum_conflicts,
-                    )
-                    .await
-                    .map_err(super::super::storage)?;
-            }
-            if cut == 0 || cut >= 4 {
-                windows
-                    .complete_reconcile(selected.workspace().id(), ticket.as_ref().unwrap().ticket)
-                    .await
-                    .map_err(super::super::storage)?;
-            }
-            if cut == 0 || cut >= 5 {
-                let count = AtomicUsize::new(0);
-                let result = reconciliation::recover(checkout, &selected, &|| {
-                    let index = count.fetch_add(1, Ordering::SeqCst);
-                    async move {
-                        if cut != 0 && index == cut - 5 {
-                            Err(Error::Conflict("injected publication interruption".into()))
-                        } else {
-                            Ok(())
-                        }
-                    }
-                })
-                .await;
-                if cut == 0 {
-                    effects = count.load(Ordering::SeqCst);
-                    result?;
-                } else if cut - 5 < effects {
-                    assert!(result.is_err(), "publication ignored interruption {cut}");
-                    assert_eq!(
-                        count.load(Ordering::SeqCst),
-                        cut - 4,
-                        "publication stopped before the selected effect boundary"
-                    );
-                } else {
-                    result?;
-                }
-            }
-            // Reconstruct the exact production binding from durable selection and
-            // reconciliation records; retain unrelated scratch mounts and task I/O.
-            // No native projection or model needs restarting at these cuts.
-            {
-                let mut state = super::super::workspace::lock_owned(
-                    super::super::workspace::StateArc::clone(&checkout.state),
-                )
-                .await;
-                state.active = None;
-                state.watcher = None;
-                state.initialized = false;
-            }
-            Box::pin(super::super::checkout_tools::CheckoutTools::new(
-                Arc::clone(checkout),
-                harness.project(),
-                Arc::new(acyclic_stream::SystemUnixMillisClock),
-                &harness.signed,
-                Arc::clone(harness.task_files()),
-            ))
-            .await?;
-            assert_published(&harness, &expected).await?;
-            if cut == 5 + effects {
-                // One complete host reopen additionally checks binding and mount
-                // reconstruction after every durable interruption was recovered.
-                drop(harness);
-                harness = open(directory.path(), state_directory.path()).await?;
-                assert_published(&harness, &expected).await?;
-                break;
-            }
-            cut += 1;
         }
+        reconciliation::prepare(
+            checkout,
+            acyclic_fs::OperationId::new(),
+            acyclic_fs::GitGenerationRef {
+                workspace_id: selected.workspace().id(),
+                generation: from.id(),
+            },
+        )
+        .await?;
+        windows
+            .observe_parent(
+                selected.workspace().id(),
+                generation(checkout.view()).await?.id(),
+            )
+            .await
+            .map_err(super::super::storage)?;
+        // Cut 0 measures a complete run. Cuts 1..=4 stop after the source
+        // marker, ticket claim, rebase commit, and ticket acknowledgement.
+        let ticket = if cut == 0 || cut >= 2 {
+            Some(
+                windows
+                    .claim_reconcile(selected.workspace().id(), 2)
+                    .await
+                    .map_err(super::super::storage)?
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        if cut == 0 || cut >= 3 {
+            let ticket = ticket.as_ref().unwrap();
+            let limits = acyclic_fs::OperationReconcileLimits::default();
+            selected
+                .workspace()
+                .live_rebase(
+                    acyclic_fs::IdempotencyKey::from_bytes(ticket.ticket.into_bytes()),
+                    limits.maximum_generations,
+                    limits.maximum_changes,
+                    limits.maximum_conflicts,
+                )
+                .await
+                .map_err(super::super::storage)?;
+        }
+        if cut == 0 || cut >= 4 {
+            windows
+                .complete_reconcile(selected.workspace().id(), ticket.as_ref().unwrap().ticket)
+                .await
+                .map_err(super::super::storage)?;
+        }
+        if cut == 0 || cut >= 5 {
+            let count = AtomicUsize::new(0);
+            let result = reconciliation::recover(checkout, &selected, &|| {
+                let index = count.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if cut != 0 && index == cut - 5 {
+                        Err(Error::Conflict("injected publication interruption".into()))
+                    } else {
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+            if cut == 0 {
+                effects = count.load(Ordering::SeqCst);
+                result?;
+            } else if cut - 5 < effects {
+                assert!(result.is_err(), "publication ignored interruption {cut}");
+                assert_eq!(
+                    count.load(Ordering::SeqCst),
+                    cut - 4,
+                    "publication stopped before the selected effect boundary"
+                );
+            } else {
+                result?;
+            }
+        }
+        // Reconstruct the exact production binding from durable selection and
+        // reconciliation records; retain unrelated scratch mounts and task I/O.
+        // No native projection or model needs restarting at these cuts.
+        {
+            let mut state = super::super::workspace::lock_owned(
+                super::super::workspace::StateArc::clone(&checkout.state),
+            )
+            .await;
+            state.active = None;
+            state.watcher = None;
+            state.initialized = false;
+        }
+        Box::pin(super::super::checkout_tools::CheckoutTools::new(
+            Arc::clone(checkout),
+            harness.project(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            Arc::clone(harness.task_files()),
+        ))
+        .await?;
+        assert_published(&harness, &expected).await?;
+        if cut == 5 + effects {
+            // One complete host reopen additionally checks binding and mount
+            // reconstruction after every durable interruption was recovered.
+            drop(harness);
+            harness = open(directory.path(), state_directory.path()).await?;
+            assert_published(&harness, &expected).await?;
+            break;
+        }
+        cut += 1;
     }
     Ok(())
 }
@@ -377,7 +371,7 @@ async fn negative_control(text: &str) -> Result<()> {
     // head. The same complete crash invariant used by the positive sweep must
     // detect this deliberately broken variant; preservation cannot hold here.
     let failure = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(assert_published(
-        &harness, &expected,
+        &harness, &[("upstream.txt".into(), expected.clone())],
     )))
     .await
     .expect_err("the crash invariant missed premature acknowledgement");
@@ -400,9 +394,9 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
 
 #[test]
 fn reopen_never_captures_over_an_unpublished_rebase() {
-    // Preserve all four generated/shrinkable byte cases and every cut while
-    // sharing the expensive scripted bootstrap. The independent cases have
-    // no concurrency invariant; later sweeps additionally exercise history.
+    // Four generated/shrinkable payloads share one workspace and every cut.
+    // The sweep discovers every effect boundary of the multi-file publication;
+    // the invariant checks all files, including cuts between file effects.
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         source_file: Some(file!()),
         ..ProptestConfig::with_cases(1)
@@ -414,8 +408,7 @@ fn reopen_never_captures_over_an_unpublished_rebase() {
         .unwrap();
     runner
         .run(&cases, |texts| {
-            runtime
-                .block_on(sweep(&texts))
+            runtime.block_on(sweep(&texts))
                 .map_err(|error| TestCaseError::fail(error.to_string()))
         })
         .unwrap();
