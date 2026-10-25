@@ -20,6 +20,60 @@ pub(super) async fn native_checkout(
 }
 
 #[tokio::test]
+async fn retained_watch_interval_replays_after_a_rejected_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = NativeMaterializationWork::new(
+        crate::performance::work_budget(1_000_000, 64_000_000),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work).await?;
+    let source = tempfile::tempdir()?;
+    std::fs::write(source.path().join("file"), b"retained hint")?;
+    let options = options(source.path(), 16)?;
+    let interval = std::sync::Arc::new(WatchBatch::Changes {
+        epoch: 1,
+        first_sequence: 1,
+        next_sequence: 2,
+        changes: vec![WatchChange::Created(path("/file")?)],
+        original: Default::default(),
+    });
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(
+        capture_watch_batch(
+            &mut checkout,
+            std::sync::Arc::clone(&interval),
+            &options,
+            &CapturePolicy::default(),
+            &work,
+            &cancelled,
+        )
+        .await
+        .is_err()
+    );
+    assert!(!checkout.has_pending_mutations());
+    let receipt = capture_watch_batch(
+        &mut checkout,
+        std::sync::Arc::clone(&interval),
+        &options,
+        &CapturePolicy::default(),
+        &work,
+        work.cancellation(),
+    )
+    .await?;
+    assert_eq!(receipt.value.first_sequence, 1);
+    assert_eq!(receipt.value.next_sequence, 2);
+    assert_eq!(receipt.value.capture.changed_paths, 1);
+    assert_records(&mut checkout, &[("/file", Some(FileKind::Regular))]).await?;
+    assert!(
+        matches!(interval.as_ref(), WatchBatch::Changes { changes, .. }
+        if changes == &[WatchChange::Created(path("/file")?)])
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     let budget = crate::performance::work_budget(1_000_000, 64_000_000);

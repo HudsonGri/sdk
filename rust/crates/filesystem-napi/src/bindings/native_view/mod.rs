@@ -86,7 +86,9 @@ pub struct NativeWatcher {
 
 #[derive(Clone)]
 pub(in crate::bindings) struct PendingWatchBatch {
-    pub(in crate::bindings) batch: WatchBatch,
+    // Retrying capture shares the complete interval, including native custody.
+    // It never clones hint paths or detaches their allocation owner.
+    pub(in crate::bindings) batch: Arc<WatchBatch>,
     pub(in crate::bindings) poll_work: acyclic_fs::WorkCounters,
     pub(in crate::bindings) capture: Option<acyclic_fs::OperationReceipt<WatchCaptureReceipt>>,
     pub(in crate::bindings) operation_id: OperationId,
@@ -372,9 +374,9 @@ impl NativeWatcher {
         let batch = lock_state(&self.inner, "native watcher state")?
             .finish_rescan()
             .map_err(napi_error)?;
-        let post_baseline = encode_watch_batch(batch.clone(), acyclic_fs::WorkCounters::default())?;
+        let post_baseline = encode_watch_batch(&batch, acyclic_fs::WorkCounters::default())?;
         *lock_state(&self.pending, "native watcher state")? = Some(PendingWatchBatch {
-            batch,
+            batch: Arc::new(batch),
             poll_work: acyclic_fs::WorkCounters::default(),
             capture: None,
             operation_id: OperationId::new(),
@@ -414,7 +416,7 @@ impl NativeWatcher {
                 )
                 .map_err(napi_error)?;
             let pending = PendingWatchBatch {
-                batch: receipt.value,
+                batch: Arc::new(receipt.value),
                 poll_work: receipt.work,
                 capture: None,
                 operation_id: OperationId::new(),
@@ -543,7 +545,7 @@ fn capture_result(
 }
 
 pub(in crate::bindings) fn encode_watch_batch(
-    batch: WatchBatch,
+    batch: &WatchBatch,
     work: acyclic_fs::WorkCounters,
 ) -> Result<NativeWatchBatch> {
     match batch {
@@ -555,37 +557,37 @@ pub(in crate::bindings) fn encode_watch_batch(
             ..
         } => Ok(NativeWatchBatch {
             status: "changes".to_owned(),
-            epoch: bigint(epoch),
-            first_sequence: Some(bigint(first_sequence)),
-            next_sequence: Some(bigint(next_sequence)),
+            epoch: bigint(*epoch),
+            first_sequence: Some(bigint(*first_sequence)),
+            next_sequence: Some(bigint(*next_sequence)),
             reason: None,
-            changes: changes.into_iter().map(encode_watch_change).collect(),
+            changes: changes.iter().map(encode_watch_change).collect(),
             work_json: work_json(&work)?,
         }),
         WatchBatch::RescanRequired { epoch, reason } => Ok(NativeWatchBatch {
             status: "rescan-required".to_owned(),
-            epoch: bigint(epoch),
+            epoch: bigint(*epoch),
             first_sequence: None,
             next_sequence: None,
-            reason: Some(watch_reason(reason).to_owned()),
+            reason: Some(watch_reason(*reason).to_owned()),
             changes: Vec::new(),
             work_json: work_json(&work)?,
         }),
     }
 }
 
-pub(in crate::bindings) fn encode_watch_change(change: WatchChange) -> NativeWatchChange {
+pub(in crate::bindings) fn encode_watch_change(change: &WatchChange) -> NativeWatchChange {
     match change {
-        WatchChange::Created(path) => single_watch_change("created", &path),
-        WatchChange::Modified(path) => single_watch_change("modified", &path),
-        WatchChange::Arrived(path) => single_watch_change("arrived", &path),
-        WatchChange::MetadataChanged(path) => single_watch_change("metadata", &path),
-        WatchChange::Removed(path) => single_watch_change("removed", &path),
+        WatchChange::Created(path) => single_watch_change("created", path),
+        WatchChange::Modified(path) => single_watch_change("modified", path),
+        WatchChange::Arrived(path) => single_watch_change("arrived", path),
+        WatchChange::MetadataChanged(path) => single_watch_change("metadata", path),
+        WatchChange::Removed(path) => single_watch_change("removed", path),
         WatchChange::Renamed { from, to } => NativeWatchChange {
             kind: "renamed".to_owned(),
             path: None,
-            from: Some(encode_namespace_path(&from)),
-            to: Some(encode_namespace_path(&to)),
+            from: Some(encode_namespace_path(from)),
+            to: Some(encode_namespace_path(to)),
         },
     }
 }

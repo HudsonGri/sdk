@@ -129,7 +129,17 @@ pub enum WatchInvalidationReason {
 }
 
 /// One bounded watcher poll result.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// An interval owns native allocation custody and cannot be copied without an
+/// admitted allocation. Consumers may share the complete owner, for example
+/// in an `Arc`, and replay it by borrowing through `capture_watch_batch`.
+///
+/// ```compile_fail
+/// fn duplicate(batch: &acyclic_fs::WatchBatch) -> acyclic_fs::WatchBatch {
+///     batch.clone()
+/// }
+/// ```
+#[derive(Debug, Eq, PartialEq)]
 pub enum WatchBatch {
     /// A contiguous process-local interval of change hints.
     Changes {
@@ -162,12 +172,6 @@ pub struct WatchBatchOriginal {
     storage: Option<crate::NativeAllocation>,
 }
 
-impl Clone for WatchBatchOriginal {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
 impl PartialEq for WatchBatchOriginal {
     fn eq(&self, _other: &Self) -> bool {
         true
@@ -177,12 +181,7 @@ impl PartialEq for WatchBatchOriginal {
 impl Eq for WatchBatchOriginal {}
 
 impl WatchBatchOriginal {
-    pub(crate) fn change_has_native_payload_custody(&self, index: usize) -> bool {
-        self.allocations
-            .get(index)
-            .is_some_and(|allocations| allocations.iter().any(Option::is_some))
-    }
-
+    #[cfg(test)]
     pub(crate) fn has_native_changes_storage_custody(&self) -> bool {
         self.storage.is_some()
     }
