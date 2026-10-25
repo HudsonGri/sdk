@@ -36,7 +36,6 @@ histories at full account/namespace/actor addresses. The shipping GraphCoder
 endpoint test exercises the stock `HarnessCode` package independently of the
 scenario fixture package.
 
-
 The report has a sorted `records` array with one `case`, `status`, `reason` and
 `requires` entry per discovered JSON case, plus pass/fail/skip counts. Defaults
 files are configuration, not cases. Filtering produces explicit skips. No wall
@@ -72,8 +71,15 @@ reference host uses `InProcessRuntime` and disk-backed `LocalStream`; memory
 Streams cannot authorize durable outbox dispatch. Fixture fs durability lasts
 for its provider lifetime. Results reconcile by stable command identity.
 Executor journals use that same host Streams provider; executor files use the
-supplied fs providers. Hosts must not substitute fixture-private memory stores
-for the providers being qualified.
+supplied fs providers.
+Fixture inputs and observations share one immutable-publication adapter over the
+canonical filesystem wire service. In-process dispatch calls that same service
+directly; deployed dispatch uses its generated client. Each publication has its
+own workspace, and each executor still has its own mutable storage. The
+reciprocal adapter test reads each connection's writes through the other and
+rejects forged descriptors, providers, owners and volume classes through both.
+Hosts must not substitute fixture-private memory stores for the providers being
+qualified.
 This package qualifies operation-level executor hosting; it does not migrate
 GraphCoder's native per-step scheduler to Actors or qualify process-loss fs
 durability, live model HTTPS, production compute or workload authentication.
@@ -82,7 +88,9 @@ An endpoint URL attaches through the same public Actors and filesystem clients
 as `--substrate localhost`. It must be a numeric loopback endpoint serving the
 SDK services with the pinned conformance package registered. There is no
 conformance-specific HTTP protocol or gateway. Deployment selects that compiled
-package by digest and binds each case to a separate namespace.
+package by digest. A host deploys it once in its namespace; each case receives
+a distinct actor ID and private mutable execution storage. The parity history
+test separately exercises equal actor IDs in different accounts and namespaces.
 
 ## Capabilities
 

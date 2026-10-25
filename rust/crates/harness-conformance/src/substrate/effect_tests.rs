@@ -157,7 +157,7 @@ fn effects_are_serial_within_a_placement_and_independent_across_placements() -> 
 #[tokio::test]
 async fn effect_recovery_is_scoped_to_actor_and_namespace_but_survives_placement_changes()
 -> TestResult {
-    let volume = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?);
+    let volume = Arc::new(volume::FixtureVolume::in_process(Fs::memory())?);
     let executor = Arc::new(Executor::default());
     let bindings = fixture_bindings();
     let effects = FixtureEffects::new(volume.clone(), executor.clone(), &bindings);

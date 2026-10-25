@@ -1,7 +1,7 @@
 //! Corpus parity, contract fault injection and executable report qualification.
 mod policy_owner;
 use acyclic_harness::{
-    AgentId, Result as HarnessResult,
+    Result as HarnessResult,
     package::{
         ActorPackage, ActorRuntime, Event, Placement, Snapshot, in_process::InProcessRuntime,
     },
@@ -224,9 +224,9 @@ impl<R: ActorRuntime> ActorRuntime for DropCompletion<R> {
 async fn lost_contract_observation_fails_and_filter_never_drops_cases()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
-    let volume = Arc::new(
-        acyclic_harness::filesystem::MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?,
-    );
+    let volume = Arc::new(substrate::volume::FixtureVolume::in_process(
+        acyclic_fs::Fs::memory(),
+    )?);
     let bindings = substrate::fixture_bindings();
     let stream = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
     let executor = Arc::new(substrate::Providers {

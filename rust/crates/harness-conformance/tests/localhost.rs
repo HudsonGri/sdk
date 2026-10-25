@@ -115,7 +115,7 @@ async fn identical_epoch_cancellation_histories_and_complete_actor_addresses() -
         .first()
         .ok_or("missing actor implementation")?
         .clone();
-    let volume = Arc::new(substrate::localhost::HostedVolume::connect(&host.endpoint()).await?);
+    let volume = Arc::new(substrate::volume::FixtureVolume::connect(&host.endpoint()).await?);
     let command = WorkflowCommand {
         operation_id: OperationId::new(),
         kind: "harness.scenario.compute".into(),
@@ -250,7 +250,7 @@ fn cancellation_history(
 }
 
 async fn prove_idle_recovery(
-    volume: Arc<substrate::localhost::HostedVolume>,
+    volume: Arc<substrate::volume::FixtureVolume>,
     package: Arc<substrate::HarnessPackage>,
     actions: &[acyclic_harness::package::conformance::Action],
 ) -> TestResult {
@@ -288,7 +288,7 @@ async fn prove_idle_recovery(
 }
 
 fn fixture_runtime<P: acyclic_stream::StreamProvider>(
-    volume: Arc<substrate::localhost::HostedVolume>,
+    volume: Arc<substrate::volume::FixtureVolume>,
     stream: Arc<P>,
     bindings: acyclic_harness::package::Bindings,
 ) -> acyclic_harness::package::in_process::InProcessRuntime<P> {
