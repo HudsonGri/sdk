@@ -234,8 +234,14 @@ impl LocalHarness {
                     }
                     start = expected.stage + 1;
                     let review = crate::approvals::automatic_review(
-                        &self.approval_models, task_files, request, approver, expected, admission.limits)
-                        .await?;
+                        &self.approval_models,
+                        task_files,
+                        request,
+                        approver,
+                        expected,
+                        admission.limits,
+                    )
+                    .await?;
                     if review.verdict != RuleVerdict::Ask {
                         return Ok(Some(Stage::Automatic(review)));
                     }

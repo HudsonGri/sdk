@@ -24,8 +24,11 @@ pub async fn automatic_review<P: StreamProvider + ?Sized>(
     limits: Limits,
 ) -> Result<ApprovalReviewFile> {
     let (verdict, reason) = match approver {
-        Approver::Rules { rules, fallback, .. } => {
-            let interaction: Interaction = serde_json::from_slice(&request.bytes).map_err(storage)?;
+        Approver::Rules {
+            rules, fallback, ..
+        } => {
+            let interaction: Interaction =
+                serde_json::from_slice(&request.bytes).map_err(storage)?;
             let verdict = match &interaction {
                 Interaction::Approval { subject, .. } => {
                     super::ApprovalRule::evaluate_subject(rules, *fallback, subject)
@@ -38,21 +41,37 @@ pub async fn automatic_review<P: StreamProvider + ?Sized>(
             let (model, provider) = models.get(model).ok_or_else(|| {
                 Error::Unsupported("independent approver model is not bound".into())
             })?;
-            llm::review_model(files, request, &expected.principal,
-                             (model, provider.as_ref()), prompt, limits).await?
+            llm::review_model(
+                files,
+                request,
+                &expected.principal,
+                (model, provider.as_ref()),
+                prompt,
+                limits,
+            )
+            .await?
         }
         Approver::Human { .. } | Approver::Parent => {
-            return Err(Error::Invalid("external approver requires a signed decision".into()));
+            return Err(Error::Invalid(
+                "external approver requires a signed decision".into(),
+            ));
         }
     };
-    let review = ApprovalReviewFile { verdict, reason, ..expected };
+    let review = ApprovalReviewFile {
+        verdict,
+        reason,
+        ..expected
+    };
     if review.verdict == RuleVerdict::Ask {
         crate::task_volume::publish_durable(
             &files.inner,
-            &FileValue::new(review_key(request, &review.principal)?,
-                           serde_json::to_vec(&review).map_err(storage)?),
+            &FileValue::new(
+                review_key(request, &review.principal)?,
+                serde_json::to_vec(&review).map_err(storage)?,
+            ),
             None,
-        ).await?;
+        )
+        .await?;
     }
     Ok(review)
 }
