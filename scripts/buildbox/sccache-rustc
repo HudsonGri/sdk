@@ -1,7 +1,6 @@
-#!/bin/bash
-# Compiler clients and lazy server restarts must use the persistent cache even
-# when callers inherited an obsolete SCCACHE_DIR or supplied a Cargo [env].
-export SCCACHE_DIR=/mnt/bb/sccache SCCACHE_CACHE_SIZE=400G SCCACHE_IDLE_TIMEOUT=120
-unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_INCREMENTAL
-for a in "$@"; do case $a in incremental=*|-Cincremental=*) exec "$@";; esac; done
-exec /home/var/.cargo/bin/sccache "$@"
+#!/usr/bin/python3 -B
+"""Thin compiler adapter to the same host policy used by build admission."""
+import os
+from pathlib import Path
+import sys
+os.execv('/usr/bin/python3', ['/usr/bin/python3', '-B', str(Path(__file__).with_name('bb-cache.py')), 'compiler', *sys.argv[1:]])

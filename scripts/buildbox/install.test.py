@@ -79,8 +79,21 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(tool.read_bytes(),b'original')
             self.assertEqual(list(Path(temporary).iterdir()),[tool])
 
+    def test_cache_generation_cannot_publish_partial_consumers(self):
+        for name in installer.CACHE_TOOLS:
+            with self.assertRaisesRegex(ValueError,'step=cache-generation-publication.*recovery='):
+                installer.migration_scope(Path('/mnt/bb/tmp/qualified'),[name])
+        with installer.migration_scope(Path('/unused'),['bb_target_store.py']):pass
+        # The former selected-file publisher had no family completeness check.
+        old=(Path(installer.__file__).read_text().replace(
+            'if not CACHE_TOOLS.issubset(selected):','if False:'))
+        namespace={'__file__':installer.__file__};exec(compile(old,'partial-cache-publication-control','exec'),namespace)
+        with patch.object(installer.importlib.util,'spec_from_file_location',side_effect=RuntimeError('would load migration')):
+            with self.assertRaisesRegex(RuntimeError,'would load migration'):
+                namespace['migration_scope'](Path('/unused'),['sccache-rustc'])
+
     def test_cache_and_retirement_controls_are_mandatory_before_publication(self):
-        for suite in ['prune.test.py','cargo_cache.test.py','receipt-outcome.test.mjs','prune-admission.test.mjs','reaping.test.py']:
+        for suite in ['prune.test.py','cargo_cache.test.py','receipt-outcome.test.mjs','prune-admission.test.mjs','reaping.test.py','cache_policy.test.py']:
             with self.subTest(suite=suite):
                 calls=[]
                 def run(command,**kwargs):
@@ -92,6 +105,7 @@ class InstallTests(unittest.TestCase):
                 # The former omission admitted an otherwise failing suite.
                 old=Path(installer.__file__).read_text().replace(
                     ",\n                ['python3', '"+suite+"']",'').replace(
+                    ",\n                ['python3', '-B', '"+suite+"']",'').replace(
                     ",\n                [NODE, '--test', '"+suite+"']",'')
                 namespace={};exec(compile(old,'old-qualification','exec'),namespace)
                 with patch.object(installer.subprocess,'run',side_effect=run):namespace['qualify'](Path('/fixture'),'var')

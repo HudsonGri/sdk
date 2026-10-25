@@ -6,6 +6,8 @@ Install with sudo bb-install --source <reviewed scripts/buildbox directory>.
 The fixed test policy runs as var against a frozen candidate before any rename.
 """
 import argparse
+import contextlib
+import importlib.util
 import hashlib
 import json
 import os
@@ -14,13 +16,27 @@ import pwd
 import subprocess
 import sys
 import tempfile
+import shlex
 
 BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # Dependencies precede consumers. Every replacement remains a complete file;
 # in-flight interpreters retain their old inode and loaded module generation.
-TOOLS = ['sccache-rustc', 'admission_policy.py', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
+TOOLS = ['admission_policy.py', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
+CACHE_TOOLS = frozenset({'admission_policy.py','bb-cache.py','sccache-rustc','bb-job.py','bb-admit.py'})
+
+
+def migration_scope(stage, selected):
+    if not CACHE_TOOLS.intersection(selected):return contextlib.nullcontext()
+    if not CACHE_TOOLS.issubset(selected):
+        recovery=shlex.join(['sudo','-n','/usr/bin/python3','-B',str(Path(stage)/'bb-install.py'),
+                             '--publish',str(stage),'--only',*sorted(CACHE_TOOLS)])
+        raise ValueError('kind=CACHE_POLICY step=cache-generation-publication owner=gate-speed '
+                         'recovery='+shlex.quote(recovery))
+    spec=importlib.util.spec_from_file_location('qualified_cache_migration',Path(stage)/'bb-cache.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.migration()
 
 
 def secure_bin(alias=BIN, store=Path('/opt/buildbox/bin'), persistent=True):
@@ -84,6 +100,7 @@ def qualify(source, user):
                 ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
                 ['python3', 'prune.test.py'],
                 ['python3', 'reaping.test.py'],
+                ['python3', '-B', 'cache_policy.test.py'],
                 ['python3', 'cargo_cache.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
@@ -158,11 +175,12 @@ def publish_candidate(candidate, only=None):
             raise ValueError('installed predecessor changed; re-qualify against current tools')
         BIN.mkdir(exist_ok=True)
         store=secure_bin()
-        for name in selected:
-            data=payload[name]
-            destination=store/name; backup=store/(name+'.bak-gatespeed')
-            if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())
-            publish(destination,data)
+        with migration_scope(stage,selected):
+            for name in selected:
+                data=payload[name]
+                destination=store/name; backup=store/(name+'.bak-gatespeed')
+                if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())
+                publish(destination,data)
         # Existing launchers also cross this privilege boundary; var can
         # execute, but cannot truncate, unlink or replace a tool directly.
         for directory, dirs, files in os.walk(store, followlinks=False):

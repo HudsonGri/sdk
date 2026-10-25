@@ -19,19 +19,13 @@ import subprocess
 import sys
 import time
 import uuid
-from admission_policy import cargo_query, canonical_argv, resolve_wrapper, capture_limits, LIMIT_ENV
+from admission_policy import cargo_query, canonical_argv, resolve_wrapper, capture_limits, LIMIT_ENV, cache_authority, disk_pressure, disk_free, disk_low
+from admission_policy import process_identity as identity
 
 ROOT = Path(os.environ.get('BB_ADMIT_ROOT', '/mnt/bb/admit'))
 SOCKET = ROOT/'admit.sock'
 SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
-
-def identity(pid):
-    try:
-        stat = Path(f'/proc/{pid}/stat').read_text().split(') ')[-1].split()
-        if stat[0] == 'Z': return None
-        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()+':'+stat[19]
-    except OSError: return None
 
 def live_pidfd(pid,birth):
     if not birth or identity(pid)!=birth:return None
@@ -178,11 +172,10 @@ def serve():
         env['BB_ADMIT_TIER']=str(t['tier']); env['BB_ADMIT_TENANT']=t['tenant']
         try:
             if ROOT==Path('/mnt/bb/admit'):
-                readings=[]
-                for path in ['/','/mnt/bb']:
-                    space=os.statvfs(path)
-                    readings.append({'path':path,'free_percent':100*space.f_bavail/max(1,space.f_blocks),'free_bytes':space.f_bavail*space.f_frsize})
-                if any(x['free_percent']<10 for x in readings):
+                readings=disk_free()
+                pressure=disk_pressure(readings)
+                if pressure:os.write(t['fds'][2],pressure.encode())
+                if disk_low(readings):
                     os.write(t['fds'][2],('BB_DISK_FREE '+json.dumps(readings)+'\nBB_DISK_LOW INFRA: / and /mnt/bb require at least 10% free\n').encode())
                     alert={'at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'event':'BB_DISK_LOW','repo':env.get('BUILD_SLOT_REPO'),'lane':env.get('BUILD_SLOT_LABEL'),'pr':env.get('BUILD_SLOT_PR'),'receipt_meta':env.get('BUILD_SLOT_RECEIPT_META'),'disk_free':readings}
                     log=Path('/mnt/bb/log/alerts.jsonl');log.parent.mkdir(parents=True,exist_ok=True)
@@ -195,6 +188,9 @@ def serve():
             actual=canonical_argv(command, env)
             wrapper=resolve_wrapper(env, compiler=bool(actual and Path(actual[0]).name=='cargo'), cwd=t['cwd'])
             if wrapper: os.write(t['fds'][2],('BB_WRAPPER_ADMITTED '+json.dumps(wrapper)+'\n').encode())
+            if env.get('BB_CACHE_DISABLED')!='1' and wrapper and Path(wrapper['path'])==Path(__file__).with_name('sccache-rustc').resolve():
+                owner=cache_authority().admitted(env)
+                os.write(t['fds'][2],('BB_CACHE_ADMITTED '+json.dumps(owner)+'\n').encode())
             if env.get('BB_ADMIT_WRAPPED_COMMAND')!='1':
                 command=[sys.executable,str(Path(__file__).with_name('bb-job.py')),*command]
             child=subprocess.Popen(command,cwd=t['cwd'],env=env,stdin=t['fds'][0],stdout=t['fds'][1],stderr=t['fds'][2],start_new_session=True)
@@ -245,6 +241,7 @@ def serve():
                     c.send(json.dumps({'rc':224,'error':'invalid admission class/tier/tenant; configure tenant.<name> cap'}).encode())
                     close_client(c); continue
                 clients[c]=t; sched.add(t)
+                os.write(t['fds'][2],('BB_ADMIT_TICKET '+json.dumps({'id':t['id'],'tier':t['tier'],'tenant':t['tenant']})+'\n').encode())
             elif key.data=='done':
                 fd=key.fd; t=jobs.pop(fd); sel.unregister(fd); os.close(fd)
                 rc=t['child'].wait() if 'child' in t else 137

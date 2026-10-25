@@ -80,3 +80,40 @@ discover that producer's configuration; registry/git installation requests must
 first supply their local source. `install --list` remains a read-only query.
 The installer's mandatory proxy suite exercises root paths, escaping symlinks,
 other jobs' paths, config discovery and the former uncached-launch bypass.
+
+The shared cache policy lives only in `admission_policy.py`: 50G under
+`/mnt/bb/sccache`. `bb-job.py`, native admission and `sccache-rustc` use the
+same `bb-cache.py` authority. A caller disagreement, absent authority or unknown
+server policy is CACHE_POLICY infrastructure refusal before compiler work;
+there is no uncached fallback. The authority validates the actual Unix peer,
+executable, boot/birth identity and launch environment on every admission.
+The socket parent becomes root-owned before READY, preventing lazy restarts.
+
+Cache activation is a coordinated host migration, after the signed candidate's
+full gate proof. Advance the generated WSL `buildbox.mjs` first: removing its
+override is compatible with the existing job-owned launcher. Then publish the
+complete policy/authority/client generation through the qualified installer.
+It holds admission exclusively, drains connected clients (including queued
+tickets) and adopted leases, retires the idle daemon and birth-verified legacy
+servers, publishes all consumers, and starts the host service before releasing
+admission. Partial cache-generation publication refuses before replacing files.
+The compiler wrapper cannot switch while an old job owns its private server.
+The same migration is available for later host recovery:
+
+```
+sudo -n /usr/bin/python3 -B /home/var/bin/bb-cache.py recover
+```
+
+This owner command holds the admission upgrade lock, waits for admitted jobs,
+drains legacy servers using pidfds and verified Unix peers, and starts the
+root-supervised authority through systemd in the host PID namespace. Private
+namespace servers end with their jobs. No cache entries are deleted. The
+systemd READY notification follows actual peer/policy validation. Jobs never
+stop the host server. A noncanonical legacy endpoint refuses migration rather
+than guessing a PID. A private job namespace cannot run the host owner command.
+
+Shared server CPU is explicitly unallocated in each job receipt. Only waited
+child CPU is attributed there; cumulative shared-server statistics are never
+charged repeatedly to concurrent clients. Under 15% free, admission prints
+bounded retained quota observations with their age/source before applying the
+unchanged 10% safety floor. Those observations are not current physical usage.
