@@ -3,6 +3,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+mod monitor;
+pub use monitor::ResourceSampler;
+
 /// Process-wide OS resources at one instant.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProcessResources {

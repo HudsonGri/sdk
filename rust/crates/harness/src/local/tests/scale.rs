@@ -238,6 +238,7 @@ impl ModelProvider for ScaleProvider {
     }
 }
 
+use acyclic_native_runtime::resources::ResourceSampler;
 use acyclic_native_runtime::resources::{
     ProcessResources as Resources, process_resources as resources,
     sample_process_resources as sample,
@@ -426,24 +427,7 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
         content: None,
     });
     let baseline = resources().map_err(storage)?;
-    let peak = Arc::new(Mutex::new(baseline));
-    let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let sampler = {
-        let (peak, sampling) = (peak.clone(), sampling.clone());
-        std::thread::spawn(move || {
-            while sampling.load(std::sync::atomic::Ordering::Relaxed) {
-                let now = sample()?;
-                let mut peak = peak.lock().unwrap_or_else(PoisonError::into_inner);
-                peak.memory_bytes = peak.memory_bytes.max(now.memory_bytes);
-                peak.threads = peak.threads.max(now.threads);
-                peak.descriptors = peak.descriptors.max(now.descriptors);
-                peak.mounts = peak.mounts.max(now.mounts);
-                drop(peak);
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Ok::<_, std::io::Error>(())
-        })
-    };
+    let sampler = ResourceSampler::start(baseline, Duration::from_millis(100)).map_err(storage)?;
     let started = Instant::now();
     let mut running = tokio::task::JoinSet::new();
     for agent in 0..agents {
@@ -472,11 +456,7 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
     }
     .await;
     let elapsed = started.elapsed();
-    sampling.store(false, std::sync::atomic::Ordering::Relaxed);
-    sampler
-        .join()
-        .map_err(|_| Error::Storage("resource sampler panicked".into()))?
-        .map_err(storage)?;
+    let mut peak = sampler.finish().map_err(storage)?;
     let idle_agents = completed?;
     if crate::native_environment::variable("ACYCLIC_SCALE_DIAG").is_some() {
         diagnose(directory);
@@ -494,7 +474,6 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
             .unwrap_or_else(PoisonError::into_inner),
     );
     drop(idle_agents);
-    let mut peak = *peak.lock().unwrap_or_else(PoisonError::into_inner);
     peak.watches = idle.watches;
     Ok(Report {
         agents: agents * (1 + children as u64),
