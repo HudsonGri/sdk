@@ -232,7 +232,14 @@ impl InternalPublicationCase<'_> {
 async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()>
 {
     let mut single_records = Vec::new();
-    for adapter in 0..3 {
+    for class in [
+        InternalContentClass::Interaction,
+        InternalContentClass::Workflow,
+        InternalContentClass::Execution,
+        InternalContentClass::ModelPrefix,
+        InternalContentClass::Conversation,
+    ] {
+      for adapter in 0..3 {
         let provider =
             ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
@@ -256,18 +263,13 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
             _ => Some(PreparationIo::from_native_work(&native)?),
         };
         let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
-        for class in [
-            InternalContentClass::Interaction,
-            InternalContentClass::Workflow,
-            InternalContentClass::Execution,
-            InternalContentClass::ModelPrefix,
-            InternalContentClass::Conversation,
-        ] {
-            let case = InternalPublicationCase {
-                host: &host, volume: &volume, write: &write, read: &read, io: io.as_ref(),
-            };
-            single_records.push(case.verify(&workspace, class).await?);
-        }
+        let case = InternalPublicationCase {
+            host: &host, volume: &volume, write: &write, read: &read, io: io.as_ref(),
+        };
+        single_records.push(case.verify(&workspace, class).await.map_err(|error| {
+            Error::Storage(format!("adapter {adapter}, family {}: {error:?}", class.prefix()))
+        })?);
+      }
     }
     assert_eq!(
         single_records, [true; 15],
