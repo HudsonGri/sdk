@@ -171,7 +171,6 @@ proptest! {
                     let rejected = matches!(ordinary_rejection,
                         Err(Error::Unauthorized(ref reason)) if reason == "approval does not authorize this definition");
                     let io = crate::filesystem::PreparationIo::from_native_work(original_work).unwrap();
-                    let held = original_work.live_allocation_bytes();
                     let owned = io.owned_bytes().unwrap();
                     let native = runtime.block_on(native_journal.verify_tool_approval_with_io(
                         id, operation, [6;32], Some(&io),
@@ -182,12 +181,11 @@ proptest! {
                         reason: "approval does not authorize this definition",
                     })), "native rejection: {native:?}");
                     assert_eq!(io.owned_bytes().unwrap(), owned, "rejected approval retained observer custody");
-                    assert_eq!(original_work.live_allocation_bytes(), held, "rejected approval retained native custody");
                     let rejected = rejected && matches!(native, Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,
                         reason: "approval does not authorize this definition",
                     }))
-                        && io.owned_bytes().unwrap() == owned && original_work.live_allocation_bytes() == held;
+                        && io.owned_bytes().unwrap() == owned;
                     drop(io);
                     // Negative control restores the redundant verification on
                     // the real path, including its read, decode and allocation.
@@ -202,6 +200,13 @@ proptest! {
             prop_assert!(expected.count_total > 0);
             prop_assert_eq!(once(&trace, request, decision, expected.count_total, expected.bytes_total), !duplicate);
         }
+        // A cold verification may replace the runtime's funded authentication
+        // cache. Its wire belongs to that runtime, not to the rejected call's
+        // temporary observer. The live owner is the negative control: its
+        // retained metadata must remain charged until the owner itself retires.
+        prop_assert!(work.live_allocation_bytes() > 0);
+        drop(native);
+        prop_assert_eq!(work.live_allocation_bytes(), 0);
     }
 }
 
