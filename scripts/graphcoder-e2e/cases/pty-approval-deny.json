@@ -20,12 +20,6 @@
             }
           }
         ]
-      },
-      {
-        "when": {},
-        "text": [
-          "DENIAL_E2E_DONE"
-        ]
       }
     ]
   },
@@ -53,17 +47,19 @@
         {
           "when": {
             "contains": [
-              "DENIAL_E2E_DONE",
-              "○"
-            ]
+              "failed: declined",
+              "\u25cb"
+            ],
+            "task_failure": "declined"
           },
           "send": "\u0004"
         }
-      ]
+      ],
+      "exit": 1
     }
   ],
   "assert": {
-    "requests": 2,
+    "requests": 1,
     "absent_files": [
       "approved.txt"
     ],
@@ -73,13 +69,7 @@
           "hook_event_name": "PreToolUse"
         }
       ]
-    },
-    "tool_errors": [
-      "E2E approval policy"
-    ],
-    "tool_contains": [
-      "E2E approval policy"
-    ]
+    }
   },
   "settings": {
     ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}]}}"

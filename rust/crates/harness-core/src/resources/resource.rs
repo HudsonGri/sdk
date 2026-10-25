@@ -23,7 +23,7 @@ pub enum ResourceKind {
 
 /// Bounded opaque identity whose interpretation belongs only to its provider.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(with = "ResourceRefWire")]
 pub struct ResourceRef {
     pub(super) kind: ResourceKind,
     pub(super) provider: ProviderRef,
@@ -31,10 +31,10 @@ pub struct ResourceRef {
     pub(super) version: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ResourceRefWire {
-    kind: ResourceKind,
+pub(super) struct ResourceRefWire<K = ResourceKind> {
+    kind: K,
     provider: ProviderRef,
     key: Vec<u8>,
     version: Option<String>,

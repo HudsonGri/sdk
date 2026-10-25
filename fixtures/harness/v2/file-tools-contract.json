@@ -880,19 +880,39 @@
               "type": "object"
             },
             "GenerationRef": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/ResourceRef"
-                },
-                {
-                  "properties": {
-                    "kind": {
-                      "const": "generation"
-                    }
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
                   },
-                  "type": "object"
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "generation"
+                  ],
+                  "type": "string"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
-              ]
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key"
+              ],
+              "type": "object"
             },
             "PinnedContextPath": {
               "additionalProperties": false,
@@ -969,93 +989,15 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "Lazy source arguments. A source is a volume path, never a host filesystem path.",
+              "description": "A discovered source within its declared volume.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Copy the complete source from discovered skill metadata."
+                  "description": "Complete source copied from discovery."
                 }
               },
               "required": [
                 "source"
-              ],
-              "type": "object"
-            },
-            "ResourceKind": {
-              "description": "Semantic kind of a provider-owned reference.",
-              "oneOf": [
-                {
-                  "const": "workspace",
-                  "description": "Mutable workspace head.",
-                  "type": "string"
-                },
-                {
-                  "const": "generation",
-                  "description": "Immutable workspace generation.",
-                  "type": "string"
-                },
-                {
-                  "const": "artifact",
-                  "description": "Immutable content or machine image.",
-                  "type": "string"
-                },
-                {
-                  "const": "sandbox",
-                  "description": "Live isolated execution allocation.",
-                  "type": "string"
-                },
-                {
-                  "const": "checkpoint",
-                  "description": "Immutable sandbox checkpoint.",
-                  "type": "string"
-                },
-                {
-                  "const": "stream",
-                  "description": "Durable event stream.",
-                  "type": "string"
-                },
-                {
-                  "const": "context",
-                  "description": "Immutable model context.",
-                  "type": "string"
-                },
-                {
-                  "const": "run",
-                  "description": "Recoverable model run.",
-                  "type": "string"
-                }
-              ]
-            },
-            "ResourceRef": {
-              "additionalProperties": false,
-              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
-              "properties": {
-                "key": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "$ref": "#/$defs/ResourceKind"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "kind",
-                "provider",
-                "key"
               ],
               "type": "object"
             },
@@ -1193,14 +1135,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "An already resolved immutable file, with optional byte range."
+              "description": "Read a pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve and read a discovered private source through its owner."
+              "description": "Resolve a discovered source."
             }
           ],
-          "description": "The read tool accepts either an immutable file or a lazy discovery source.",
+          "description": "Read a pinned file or a discovered private source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -1678,38 +1620,38 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        120,
-        188,
-        109,
-        208,
-        85,
-        229,
-        87,
-        165,
-        137,
-        179,
-        183,
-        223,
-        38,
-        22,
-        104,
+        146,
+        52,
+        83,
+        225,
+        94,
+        118,
+        132,
         202,
-        159,
+        132,
+        222,
+        221,
+        254,
+        119,
+        245,
+        244,
+        33,
         218,
-        199,
-        149,
-        243,
-        23,
-        209,
-        220,
-        215,
-        28,
-        174,
-        57,
-        247,
-        122,
-        40,
-        111
+        78,
+        200,
+        54,
+        76,
+        138,
+        81,
+        99,
+        223,
+        16,
+        169,
+        110,
+        0,
+        103,
+        241,
+        181
       ],
       "variant": "exact_read_full"
     },
@@ -1799,19 +1741,39 @@
               "type": "object"
             },
             "GenerationRef": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/ResourceRef"
-                },
-                {
-                  "properties": {
-                    "kind": {
-                      "const": "generation"
-                    }
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
                   },
-                  "type": "object"
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "generation"
+                  ],
+                  "type": "string"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
-              ]
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key"
+              ],
+              "type": "object"
             },
             "PinnedContextPath": {
               "additionalProperties": false,
@@ -1888,93 +1850,15 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "Lazy source arguments. A source is a volume path, never a host filesystem path.",
+              "description": "A discovered source within its declared volume.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Copy the complete source from discovered skill metadata."
+                  "description": "Complete source copied from discovery."
                 }
               },
               "required": [
                 "source"
-              ],
-              "type": "object"
-            },
-            "ResourceKind": {
-              "description": "Semantic kind of a provider-owned reference.",
-              "oneOf": [
-                {
-                  "const": "workspace",
-                  "description": "Mutable workspace head.",
-                  "type": "string"
-                },
-                {
-                  "const": "generation",
-                  "description": "Immutable workspace generation.",
-                  "type": "string"
-                },
-                {
-                  "const": "artifact",
-                  "description": "Immutable content or machine image.",
-                  "type": "string"
-                },
-                {
-                  "const": "sandbox",
-                  "description": "Live isolated execution allocation.",
-                  "type": "string"
-                },
-                {
-                  "const": "checkpoint",
-                  "description": "Immutable sandbox checkpoint.",
-                  "type": "string"
-                },
-                {
-                  "const": "stream",
-                  "description": "Durable event stream.",
-                  "type": "string"
-                },
-                {
-                  "const": "context",
-                  "description": "Immutable model context.",
-                  "type": "string"
-                },
-                {
-                  "const": "run",
-                  "description": "Recoverable model run.",
-                  "type": "string"
-                }
-              ]
-            },
-            "ResourceRef": {
-              "additionalProperties": false,
-              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
-              "properties": {
-                "key": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "$ref": "#/$defs/ResourceKind"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "kind",
-                "provider",
-                "key"
               ],
               "type": "object"
             },
@@ -2112,14 +1996,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "An already resolved immutable file, with optional byte range."
+              "description": "Read a pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve and read a discovered private source through its owner."
+              "description": "Resolve a discovered source."
             }
           ],
-          "description": "The read tool accepts either an immutable file or a lazy discovery source.",
+          "description": "Read a pinned file or a discovered private source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -2618,38 +2502,38 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        63,
-        174,
-        204,
-        41,
-        41,
-        156,
-        14,
-        20,
-        68,
-        18,
-        147,
-        250,
+        48,
+        178,
+        239,
+        171,
+        71,
+        217,
+        17,
+        211,
+        64,
+        64,
+        208,
+        151,
+        61,
+        35,
+        171,
+        22,
+        126,
+        87,
+        15,
+        42,
+        35,
+        125,
+        226,
+        231,
+        169,
+        111,
         162,
-        190,
-        248,
-        73,
-        247,
-        186,
-        32,
-        132,
-        245,
-        90,
-        92,
-        55,
-        41,
-        84,
-        78,
-        93,
-        99,
-        175,
-        205,
-        246
+        206,
+        176,
+        77,
+        79,
+        20
       ],
       "variant": "exact_read_reference"
     },
@@ -5183,19 +5067,39 @@
               "type": "object"
             },
             "GenerationRef": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/ResourceRef"
-                },
-                {
-                  "properties": {
-                    "kind": {
-                      "const": "generation"
-                    }
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
                   },
-                  "type": "object"
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "generation"
+                  ],
+                  "type": "string"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
-              ]
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key"
+              ],
+              "type": "object"
             },
             "PinnedContextPath": {
               "additionalProperties": false,
@@ -5272,93 +5176,15 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "Lazy source arguments. A source is a volume path, never a host filesystem path.",
+              "description": "A discovered source within its declared volume.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Copy the complete source from discovered skill metadata."
+                  "description": "Complete source copied from discovery."
                 }
               },
               "required": [
                 "source"
-              ],
-              "type": "object"
-            },
-            "ResourceKind": {
-              "description": "Semantic kind of a provider-owned reference.",
-              "oneOf": [
-                {
-                  "const": "workspace",
-                  "description": "Mutable workspace head.",
-                  "type": "string"
-                },
-                {
-                  "const": "generation",
-                  "description": "Immutable workspace generation.",
-                  "type": "string"
-                },
-                {
-                  "const": "artifact",
-                  "description": "Immutable content or machine image.",
-                  "type": "string"
-                },
-                {
-                  "const": "sandbox",
-                  "description": "Live isolated execution allocation.",
-                  "type": "string"
-                },
-                {
-                  "const": "checkpoint",
-                  "description": "Immutable sandbox checkpoint.",
-                  "type": "string"
-                },
-                {
-                  "const": "stream",
-                  "description": "Durable event stream.",
-                  "type": "string"
-                },
-                {
-                  "const": "context",
-                  "description": "Immutable model context.",
-                  "type": "string"
-                },
-                {
-                  "const": "run",
-                  "description": "Recoverable model run.",
-                  "type": "string"
-                }
-              ]
-            },
-            "ResourceRef": {
-              "additionalProperties": false,
-              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
-              "properties": {
-                "key": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "$ref": "#/$defs/ResourceKind"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "kind",
-                "provider",
-                "key"
               ],
               "type": "object"
             },
@@ -5496,14 +5322,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "An already resolved immutable file, with optional byte range."
+              "description": "Read a pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve and read a discovered private source through its owner."
+              "description": "Resolve a discovered source."
             }
           ],
-          "description": "The read tool accepts either an immutable file or a lazy discovery source.",
+          "description": "Read a pinned file or a discovered private source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -5981,38 +5807,38 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        120,
-        188,
-        109,
-        208,
-        85,
-        229,
-        87,
-        165,
-        137,
-        179,
-        183,
-        223,
-        38,
-        22,
-        104,
+        146,
+        52,
+        83,
+        225,
+        94,
+        118,
+        132,
         202,
-        159,
+        132,
+        222,
+        221,
+        254,
+        119,
+        245,
+        244,
+        33,
         218,
-        199,
-        149,
-        243,
-        23,
-        209,
-        220,
-        215,
-        28,
-        174,
-        57,
-        247,
-        122,
-        40,
-        111
+        78,
+        200,
+        54,
+        76,
+        138,
+        81,
+        99,
+        223,
+        16,
+        169,
+        110,
+        0,
+        103,
+        241,
+        181
       ],
       "variant": "range_read_full"
     },
@@ -6102,19 +5928,39 @@
               "type": "object"
             },
             "GenerationRef": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/ResourceRef"
-                },
-                {
-                  "properties": {
-                    "kind": {
-                      "const": "generation"
-                    }
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
                   },
-                  "type": "object"
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "generation"
+                  ],
+                  "type": "string"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
-              ]
+              },
+              "required": [
+                "kind",
+                "provider",
+                "key"
+              ],
+              "type": "object"
             },
             "PinnedContextPath": {
               "additionalProperties": false,
@@ -6191,93 +6037,15 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "Lazy source arguments. A source is a volume path, never a host filesystem path.",
+              "description": "A discovered source within its declared volume.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Copy the complete source from discovered skill metadata."
+                  "description": "Complete source copied from discovery."
                 }
               },
               "required": [
                 "source"
-              ],
-              "type": "object"
-            },
-            "ResourceKind": {
-              "description": "Semantic kind of a provider-owned reference.",
-              "oneOf": [
-                {
-                  "const": "workspace",
-                  "description": "Mutable workspace head.",
-                  "type": "string"
-                },
-                {
-                  "const": "generation",
-                  "description": "Immutable workspace generation.",
-                  "type": "string"
-                },
-                {
-                  "const": "artifact",
-                  "description": "Immutable content or machine image.",
-                  "type": "string"
-                },
-                {
-                  "const": "sandbox",
-                  "description": "Live isolated execution allocation.",
-                  "type": "string"
-                },
-                {
-                  "const": "checkpoint",
-                  "description": "Immutable sandbox checkpoint.",
-                  "type": "string"
-                },
-                {
-                  "const": "stream",
-                  "description": "Durable event stream.",
-                  "type": "string"
-                },
-                {
-                  "const": "context",
-                  "description": "Immutable model context.",
-                  "type": "string"
-                },
-                {
-                  "const": "run",
-                  "description": "Recoverable model run.",
-                  "type": "string"
-                }
-              ]
-            },
-            "ResourceRef": {
-              "additionalProperties": false,
-              "description": "Bounded opaque identity whose interpretation belongs only to its provider.",
-              "properties": {
-                "key": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "$ref": "#/$defs/ResourceKind"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                },
-                "version": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "kind",
-                "provider",
-                "key"
               ],
               "type": "object"
             },
@@ -6415,14 +6183,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "An already resolved immutable file, with optional byte range."
+              "description": "Read a pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve and read a discovered private source through its owner."
+              "description": "Resolve a discovered source."
             }
           ],
-          "description": "The read tool accepts either an immutable file or a lazy discovery source.",
+          "description": "Read a pinned file or a discovered private source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -6921,38 +6689,38 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        63,
-        174,
-        204,
-        41,
-        41,
-        156,
-        14,
-        20,
-        68,
-        18,
-        147,
-        250,
+        48,
+        178,
+        239,
+        171,
+        71,
+        217,
+        17,
+        211,
+        64,
+        64,
+        208,
+        151,
+        61,
+        35,
+        171,
+        22,
+        126,
+        87,
+        15,
+        42,
+        35,
+        125,
+        226,
+        231,
+        169,
+        111,
         162,
-        190,
-        248,
-        73,
-        247,
-        186,
-        32,
-        132,
-        245,
-        90,
-        92,
-        55,
-        41,
-        84,
-        78,
-        93,
-        99,
-        175,
-        205,
-        246
+        206,
+        176,
+        77,
+        79,
+        20
       ],
       "variant": "range_read_reference"
     },
