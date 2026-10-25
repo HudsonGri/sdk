@@ -1,5 +1,5 @@
+use super::resource_lock::{Mutex, MutexGuard};
 use super::*;
-use crate::sync::inline::{Mutex, MutexGuard};
 use crate::{DemandError, WorkBudget, WorkCounters, WorkError};
 use std::sync::{Arc, Weak};
 
@@ -116,7 +116,7 @@ impl NativeResourceAllowance {
             })
     }
     fn lock(&self) -> ResourceGuard<'_> {
-        let state = crate::sync::inline::lock(&self.state).unwrap_or_else(|error| {
+        let state = super::resource_lock::lock(&self.state).unwrap_or_else(|error| {
             let mut state = error.into_inner();
             state.poisoned = true;
             state
