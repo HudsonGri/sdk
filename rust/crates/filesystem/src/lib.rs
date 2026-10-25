@@ -73,10 +73,12 @@ mod collection;
 pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
-pub mod mount_qualification;
 pub mod compat_wire;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub mod core_state;
+pub mod mount_qualification;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod package_install;
 // Unit fixtures use the production memory and local compositions directly.
 // cfg(test) supplies those implementations without a self dev-dependency.
 pub mod demand;
