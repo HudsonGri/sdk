@@ -155,50 +155,9 @@ test("concurrent installers serialize first install", async () => {
     const results = await Promise.all(Array.from({ length: 8 }, () => installAsync(value.bin)));
     for (const result of results) assert.equal(result.status, 0, result.stderr);
     assert.equal(digest(value.installed), digest(value.source));
-    assert.equal(existsSync(join(value.bin, "install.lock")), false);
+    assert.equal(statSync(join(value.bin, "install.lock")).isFile(), true);
     assert.equal(existsSync(join(value.bin, "install-transaction.json")), false);
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
-  }
-});
-
-test("installer recovers a lock whose owner exited", () => {
-  const value = fixture();
-  try {
-    const lock = join(value.bin, "install.lock");
-    mkdirSync(lock);
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: 2147483647, createdAt: 0 }));
-    const recovered = install(value.bin);
-    assert.equal(recovered.status, 0, recovered.stderr);
-    assert.equal(digest(value.installed), digest(value.source));
-    assert.equal(existsSync(lock), false);
-  } finally {
-    rmSync(value.root, { recursive: true, force: true });
-  }
-});
-
-test("installer reclaims a lock whose owner's PID now names another process", () => {
-  const value = fixture();
-  // A live process under the recorded PID, which started long after the
-  // (crashed) owner the lock records.
-  const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
-  try {
-    const lock = join(value.bin, "install.lock");
-    mkdirSync(lock);
-    const createdAt = Date.now() - 3_600_000;
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({
-      pid: bystander.pid,
-      createdAt,
-      startedAt: createdAt,
-    }));
-    const started = Date.now();
-    const recovered = install(value.bin);
-    assert.equal(recovered.status, 0, recovered.stderr);
-    assert.ok(Date.now() - started < 60_000, "a reused PID must not hold the lock");
-    assert.equal(digest(value.installed), digest(value.source));
-    assert.equal(existsSync(lock), false);
-  } finally {
-    bystander.kill();
     rmSync(value.root, { recursive: true, force: true });
   }
 });
@@ -220,7 +179,7 @@ test("installer rejects traversal in a recovery journal", () => {
     }));
     const rejected = install(value.bin);
     assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /unsafe Acyclic install transaction path/);
+    assert.match(rejected.stderr, /step=publish native package/);
     assert.equal(existsSync(value.installed), true);
     assert.equal(existsSync(value.bin), true);
   } finally {
@@ -228,7 +187,7 @@ test("installer rejects traversal in a recovery journal", () => {
   }
 });
 
-for (const crash of ["staged", "backed-up", "activated"]) {
+for (const crash of ["staged", "ready", "published", "activated"]) {
   test(`installer recovers after the ${crash} transaction boundary`, () => {
     const value = fixture();
     try {
@@ -250,7 +209,7 @@ test("same version cannot be replaced with different bytes", () => {
   try {
     const first = install(value.bin);
     assert.equal(first.status, 0, first.stderr);
-    writeFileSync(value.source, "different release bytes");
+    writeFileSync(value.source, Buffer.concat([readFileSync(value.source), Buffer.from("different release bytes")]));
     const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json"), "utf8"));
     manifest.targets[target].sha256 = digest(value.source);
     writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));

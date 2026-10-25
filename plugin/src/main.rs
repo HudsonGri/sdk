@@ -123,6 +123,8 @@ fn internal(args: &[String]) -> Result<bool> {
                 println!("{receipt}");
             }
         }
+        "__install-package" => install_package()?,
+        "__publish-certification" => publish_certification(args)?,
         "__verify-release-certification" => {
             let [_, receipt, executable, os, arch, version] = args else {
                 return Err("release certification verification requires RECEIPT EXECUTABLE OS ARCH VERSION; recovery: run acyclic __verify-release-certification with all five arguments".into());
@@ -143,6 +145,68 @@ fn internal(args: &[String]) -> Result<bool> {
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+fn install_package() -> Result<()> {
+    let request: acyclic_fs::package_install::Request =
+        serde_json::from_value(read_json(io::stdin().lock())?)?;
+    let recovery = serde_json::to_string(&json!(["node", request.directory.join("install.js")]))?;
+    let test = env::var("NODE_ENV").as_deref() == Ok("test");
+    use acyclic_fs::package_install::Stage;
+    acyclic_fs::package_install::install(&request, |stage| {
+        let point = match stage {
+            Stage::Intent => "staged",
+            Stage::Ready => "ready",
+            Stage::Published => "published",
+            Stage::Activated => "activated",
+            Stage::IdentityPublished => "identity-published",
+        };
+        if test && env::var("ACYCLIC_INSTALL_TEST_CRASH").as_deref() == Ok(point) {
+            std::process::exit(86);
+        }
+        if test
+            && stage == Stage::IdentityPublished
+            && env::var("ACYCLIC_INSTALL_TEST_FAIL").as_deref() == Ok("cleanup-after-identity")
+        {
+            return Err(io::Error::other(
+                "injected Acyclic installer failure at cleanup-after-identity",
+            ));
+        }
+        Ok(())
+    })
+    .map_err(|error| format!("step=publish native package: {error}; recovery argv: {recovery}"))?;
+    Ok(())
+}
+
+fn publish_certification(args: &[String]) -> Result<()> {
+    let [_, source, version, destination] = args else {
+        return Err("step=publish certification arguments; recovery: run acyclic __publish-certification RECEIPT VERSION DESTINATION".into());
+    };
+    let recovery = serde_json::to_string(&json!([
+        env::current_exe()?,
+        "__publish-certification",
+        source,
+        version,
+        destination
+    ]))?;
+    if version != env!("CARGO_PKG_VERSION") {
+        return Err(format!("step=admit installed certification version; recovery argv: {recovery}; install a package matching its executable version").into());
+    }
+    let receipt = verify_certification(
+        source,
+        &env::current_exe()?,
+        env::consts::OS,
+        env::consts::ARCH,
+        version,
+    )?;
+    acyclic_fs::package_install::publish_report(Path::new(destination), &receipt).map_err(
+        |error| {
+            format!(
+                "step=publish verified release certification: {error}; recovery argv: {recovery}"
+            )
+        },
+    )?;
+    Ok(())
 }
 
 fn verify_certification(
