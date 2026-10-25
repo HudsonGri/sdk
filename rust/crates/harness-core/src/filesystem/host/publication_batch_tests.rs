@@ -349,10 +349,15 @@ async fn immutable_record_batch(adapter: u8) -> Result<()> {
         1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
         _ => Some(PreparationIo::from_native_work(&native)?),
     };
-    let first = [WorkspaceMutation::CreateDirectory { path: "/records/nested".into() }, WorkspaceMutation::PutFile {
-        path: "/records/nested/sealed".into(),
-        bytes: b"original".to_vec().into(),
-    }];
+    let first = [
+        WorkspaceMutation::CreateDirectory {
+            path: "/records/nested".into(),
+        },
+        WorkspaceMutation::PutFile {
+            path: "/records/nested/sealed".into(),
+            bytes: b"original".to_vec().into(),
+        },
+    ];
     host.create_records(
         &workspace,
         &first,
@@ -363,33 +368,46 @@ async fn immutable_record_batch(adapter: u8) -> Result<()> {
     .await?;
     let before = host.resolve(&workspace, None).await?;
     for duplicate in [false, true] {
-    let forged = [WorkspaceMutation::CreateDirectory { path: "/uncommitted".into() }, WorkspaceMutation::PutFile {
-        path: "/uncommitted/first".into(),
-        bytes: b"first".to_vec().into(),
-    }, WorkspaceMutation::PutFile {
-        path: if duplicate { "/uncommitted/first" } else { "/records/nested/sealed" }.into(),
-        bytes: b"forged".to_vec().into(),
-    }];
-    assert!(matches!(
-        host.create_records(
-            &workspace,
-            &forged,
-            IdempotencyKey::new("overwrite-sealed")?,
-            io.as_ref(),
-            None
-        )?
-        .await,
-        Err(error) if error.code() == crate::wire::ErrorCode::Conflict
-    ));
-    assert_eq!(host.resolve(&workspace, None).await?, before);
-    assert_eq!(
-        host.read(&workspace, None, "/records/nested/sealed", 64, None)
-            .await?
-            .as_ref(),
-        b"original"
-    );
-    assert!(matches!(host.read(&workspace, None, "/uncommitted/first", 64, None).await,
-        Err(error) if error.code() == crate::wire::ErrorCode::NotFound));
+        let forged = [
+            WorkspaceMutation::CreateDirectory {
+                path: "/uncommitted".into(),
+            },
+            WorkspaceMutation::PutFile {
+                path: "/uncommitted/first".into(),
+                bytes: b"first".to_vec().into(),
+            },
+            WorkspaceMutation::PutFile {
+                path: if duplicate {
+                    "/uncommitted/first"
+                } else {
+                    "/records/nested/sealed"
+                }
+                .into(),
+                bytes: b"forged".to_vec().into(),
+            },
+        ];
+        assert!(matches!(
+            host.create_records(
+                &workspace,
+                &forged,
+                IdempotencyKey::new("overwrite-sealed")?,
+                io.as_ref(),
+                None
+            )?
+            .await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+        ));
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        assert_eq!(
+            host.read(&workspace, None, "/records/nested/sealed", 64, None)
+                .await?
+                .as_ref(),
+            b"original"
+        );
+        assert!(
+            matches!(host.read(&workspace, None, "/uncommitted/first", 64, None).await,
+        Err(error) if error.code() == crate::wire::ErrorCode::NotFound)
+        );
     }
     Ok(())
 }

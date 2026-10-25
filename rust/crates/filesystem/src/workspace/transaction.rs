@@ -177,18 +177,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-            let path = self.mutation_path(path, accounting, cancellation)?;
-            let operation = match build(path.value) {
-                Ok(value) => crate::kernel::Owned::new(value, path.allocation, path.bytes),
-                Err(error) => {
-                    let mut allocation = path.allocation;
-                    accounting.release_owned(&mut allocation, path.bytes)?;
-                    return Err(error);
-                }
-            };
-            let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
-            Self::push_mutation(&mut operations, operation, accounting)?;
-            self.apply_authored(operations, accounting, cancellation)
-                .await
+        let path = self.mutation_path(path, accounting, cancellation)?;
+        let operation = match build(path.value) {
+            Ok(value) => crate::kernel::Owned::new(value, path.allocation, path.bytes),
+            Err(error) => {
+                let mut allocation = path.allocation;
+                accounting.release_owned(&mut allocation, path.bytes)?;
+                return Err(error);
+            }
+        };
+        let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
+        Self::push_mutation(&mut operations, operation, accounting)?;
+        self.apply_authored(operations, accounting, cancellation)
+            .await
     }
 }

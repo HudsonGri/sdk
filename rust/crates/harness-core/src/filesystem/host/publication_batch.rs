@@ -12,8 +12,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<bool> {
         crate::model::charge_items(io, mutations.len() as u64)?;
         if mutations
-                .iter()
-                .any(|mutation| matches!(mutation, WorkspaceMutation::Remove { .. }))
+            .iter()
+            .any(|mutation| matches!(mutation, WorkspaceMutation::Remove { .. }))
         {
             return Ok(false);
         }
@@ -58,23 +58,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let create_only = matches!(publication, FilePublication::CreateOnly);
         let result = if let Some(io) = io {
-            let (result, recorded) = Self::stage_file_batch(transaction, &directories, &files, create_only, io, cancellation).await;
-            io.sdk((result.map_err(|error| {
-                if create_only { creation_error(error, Some(io)) } else { map_error(error) }
-            }), recorded))
+            let (result, recorded) = Self::stage_file_batch(
+                transaction,
+                &directories,
+                &files,
+                create_only,
+                io,
+                cancellation,
+            )
+            .await;
+            io.sdk((
+                result.map_err(|error| {
+                    if create_only {
+                        creation_error(error, Some(io))
+                    } else {
+                        map_error(error)
+                    }
+                }),
+                recorded,
+            ))
         } else {
-            Self::stage_file_batch(transaction,
-                    &directories,
-                    &files,
-                    create_only,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| {
-                    if create_only { creation_error(failure.error, None) } else { map_error(failure.error) }
-                })
-                .map(|_| ())
+            Self::stage_file_batch(
+                transaction,
+                &directories,
+                &files,
+                create_only,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                if create_only {
+                    creation_error(failure.error, None)
+                } else {
+                    map_error(failure.error)
+                }
+            })
+            .map(|_| ())
         };
         drop((files, directories));
         drop(quota);
@@ -90,9 +110,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         cancellation: &acyclic_fs::CancellationToken,
     ) -> W::Output<(), acyclic_fs::WorkspaceError> {
         if create_only {
-            transaction.create_batch(directories, files, work, cancellation).await
+            transaction
+                .create_batch(directories, files, work, cancellation)
+                .await
         } else {
-            transaction.write_batch(directories, files, work, cancellation).await
+            transaction
+                .write_batch(directories, files, work, cancellation)
+                .await
         }
     }
 }

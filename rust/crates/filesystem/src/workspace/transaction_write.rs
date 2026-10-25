@@ -146,7 +146,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let mut kinds = self
             .batch_kinds(&paths.value, accounting, cancellation)
             .await?;
-        classify_batch_paths::<CREATE_ONLY>(&paths.value, directory_count, &mut kinds.value, accounting)?;
+        classify_batch_paths::<CREATE_ONLY>(
+            &paths.value,
+            directory_count,
+            &mut kinds.value,
+            accounting,
+        )?;
         let capacity = directory_count
             .checked_add(
                 files
@@ -249,15 +254,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
         for (path, bytes) in files {
             if CREATE_ONLY {
-                candidate.mutate_with_accounting(path, |path| Ok(AuthoredMutation::CreateFile {
-                    path,
-                    bytes: bytes.clone(),
-                    metadata: FileMetadata::default(),
-                }), accounting, cancellation).await?;
+                candidate
+                    .mutate_with_accounting(
+                        path,
+                        |path| {
+                            Ok(AuthoredMutation::CreateFile {
+                                path,
+                                bytes: bytes.clone(),
+                                metadata: FileMetadata::default(),
+                            })
+                        },
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
             } else {
                 candidate
-                .write_with_accounting(path, bytes.clone(), accounting, cancellation)
-                .await?;
+                    .write_with_accounting(path, bytes.clone(), accounting, cancellation)
+                    .await?;
             }
         }
         self.checkout = candidate.checkout;
@@ -600,7 +614,9 @@ fn classify_batch_paths<const CREATE_ONLY: bool>(
             ..Default::default()
         })?;
         if CREATE_ONLY && index >= directory_count && kind.is_some() {
-            return Err(FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into());
+            return Err(
+                FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into(),
+            );
         }
         if kind.is_some_and(|kind| {
             kind != if index < directory_count {
@@ -642,7 +658,10 @@ fn classify_batch_paths<const CREATE_ONLY: bool>(
                 continue;
             }
             if CREATE_ONLY && current.ordinal >= directory_count {
-                return Err(FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into());
+                return Err(FsError::Mutation(
+                    crate::kernel::GenerationMutationError::AlreadyExists,
+                )
+                .into());
             }
             let kind = kinds.get_mut(current.ordinal).ok_or(FsError::InvalidDiff)?;
             *kind = Some(if current.ordinal < directory_count {
