@@ -1,6 +1,8 @@
 use super::*;
 use crate::WorkBudget;
 
+mod arithmetic;
+
 const APPENDS: u64 = 10;
 const COPIED: u64 = 100;
 const PEAK: u64 = 1 << 20;

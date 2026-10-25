@@ -18,12 +18,22 @@ pub(crate) struct NativeWorkWindow {
 }
 
 /// The only cumulative state a window's budget is derived from.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct WindowLedger {
     /// Work this window charged.
     consumed: WorkCounters,
     /// Reservations this window holds and has not yet started or refunded.
     held: WorkCounters,
+}
+
+// An unbounded allowance is never consumed by a cumulative addition. All
+// finite additions are exact, including a finite stored budget under its limit.
+fn add_bounded(left: u64, right: u64, limit: u64) -> Result<u64, WorkError> {
+    if limit == u64::MAX {
+        Ok(left)
+    } else {
+        left.checked_add(right).ok_or(WorkError::Overflow)
+    }
 }
 
 impl WindowLedger {
@@ -32,9 +42,20 @@ impl WindowLedger {
     /// An unbounded counter stays unbounded less exactly what this window holds, so a
     /// held reservation always has room to be refunded or completed.
     fn view(&self, limit: &WorkBudget, work: &WorkCounters) -> Result<WorkBudget, WorkError> {
-        limit
-            .checked_add_cumulative(&work.checked_sub_cumulative(&self.consumed)?)?
-            .checked_sub_cumulative(&self.held)
+        #[cfg(test)]
+        crate::performance::CUMULATIVE_PASSES.with(|passes| passes.set(passes.get() + 1));
+        let mut view = *limit;
+        macro_rules! project {
+            ($($field:ident),* $(,)?) => {$({
+                let external = work.$field.checked_sub(self.consumed.$field)
+                    .ok_or(WorkError::Overflow)?;
+                let available = add_bounded(limit.$field, external, limit.$field)?;
+                view.$field = available.checked_sub(self.held.$field)
+                    .ok_or(WorkError::Overflow)?;
+            })*};
+        }
+        crate::performance::additive_counters!(project);
+        Ok(view)
     }
     /// This window after an operation moved the shared work and pending reservations,
     /// with the work it charged.
@@ -42,18 +63,29 @@ impl WindowLedger {
         &self,
         work: (&WorkCounters, &WorkCounters),
         pending: (&WorkCounters, &WorkCounters),
-    ) -> Result<(Self, WorkCounters), WorkError> {
-        let charged = work.1.checked_sub_cumulative(work.0)?;
-        Ok((
-            Self {
-                consumed: self.consumed.checked_add_cumulative(&charged)?,
-                held: self
-                    .held
-                    .checked_add_cumulative(pending.1)?
-                    .checked_sub_cumulative(pending.0)?,
-            },
-            charged,
-        ))
+        stored: &WorkBudget,
+        limit: &WorkBudget,
+    ) -> Result<(Self, WorkBudget), WorkError> {
+        #[cfg(test)]
+        crate::performance::CUMULATIVE_PASSES.with(|passes| passes.set(passes.get() + 1));
+        let mut next = *self;
+        let mut budget = *stored;
+        // Settle each counter once. No intermediate whole-ledger sums or
+        // differences escape this transition; a failure publishes none of it.
+        macro_rules! settle {
+            ($($field:ident),* $(,)?) => {$({
+                let charged = work.1.$field.checked_sub(work.0.$field)
+                    .ok_or(WorkError::Overflow)?;
+                next.consumed.$field =
+                    add_bounded(self.consumed.$field, charged, self.consumed.$field)?;
+                let held = add_bounded(self.held.$field, pending.1.$field, self.held.$field)?;
+                next.held.$field = held.checked_sub(pending.0.$field)
+                    .ok_or(WorkError::Overflow)?;
+                budget.$field = add_bounded(stored.$field, charged, limit.$field)?;
+            })*};
+        }
+        crate::performance::additive_counters!(settle);
+        Ok((next, budget))
     }
 }
 
@@ -176,17 +208,12 @@ impl crate::demand::DemandWork {
         self.budget.peak_allocation_bytes = stored.peak_allocation_bytes;
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
         let peak = self.budget.peak_allocation_bytes;
-        let settled = ledger
-            .settle(
-                (&work, &self.work),
-                (&pending, &self.pending_reservations()),
-            )
-            .and_then(|(ledger, charged)| {
-                Ok((
-                    ledger,
-                    stored.checked_add_bounded(&charged, &self.original_budget())?,
-                ))
-            });
+        let settled = ledger.settle(
+            (&work, &self.work),
+            (&pending, &self.pending_reservations()),
+            &stored,
+            &self.original_budget(),
+        );
         self.budget = match settled {
             Ok((settled, budget)) => {
                 *window.ledger() = settled;
