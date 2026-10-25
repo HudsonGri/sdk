@@ -230,7 +230,7 @@ impl CheckoutTools {
                     .map(|authority| authority.for_scope(signed))
                     .transpose()?,
             };
-            let (active, _) = workspace.selected_view().await?;
+            let (active, pending) = workspace.selected_view().await?;
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();
             let options = workspace.mount_options(selected.workspace()).await?;
@@ -241,6 +241,13 @@ impl CheckoutTools {
             workspace.mounted = Some(mounted);
             workspace.mounts = workspace.mounts_at(&workspace.path).await?;
             workspace.context_line = workspace.mounts.context_line();
+            reconciliation::recover_pending(
+                &workspace,
+                active.as_ref().unwrap_or_else(|| workspace.view()),
+                pending,
+                &|| async { owner.verify_owner(None)?.await },
+            )
+            .await?;
             workspace.state = StateArc::new(AsyncMutex::new(State {
                 active,
                 initial_view,
