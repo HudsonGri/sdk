@@ -353,14 +353,28 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 }
 
 pub(super) fn child_state(index: &Index, reference: &Component) -> Result<ChildState> {
+    Ok(child_lifecycle(index, reference)?.0)
+}
+
+pub(super) fn child_lifecycle(
+    index: &Index,
+    reference: &Component,
+) -> Result<(ChildState, Option<Control>)> {
     let key = FileKey::Child {
         reference: reference.clone(),
         file: ChildFile::Control,
     };
-    match index.files.get(&key) {
-        Some(file) => Ok(ChildState::Running.apply(Control::parse(&file.file.bytes)?)),
-        None => Ok(ChildState::Running),
-    }
+    let control = index
+        .files
+        .get(&key)
+        .map(|file| Control::parse(&file.file.bytes))
+        .transpose()?;
+    Ok((
+        control.map_or(ChildState::Running, |control| {
+            ChildState::Running.apply(control)
+        }),
+        control,
+    ))
 }
 
 #[cfg(test)]

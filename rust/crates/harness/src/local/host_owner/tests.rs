@@ -405,7 +405,7 @@ async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
         b"discovered in child view",
     )
     .map_err(storage)?;
-    fixture
+    let spawned = fixture
         .session(
             "child",
             SessionAction::Spawn {
@@ -413,7 +413,19 @@ async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
             },
         )
         .await?;
-    fixture
+    assert!(spawned["control"].is_null());
+    assert_eq!(spawned["pending"], 1);
+    let resumed = fixture
+        .session(
+            "child",
+            SessionAction::Control {
+                control: crate::task_volume::Control::Resume,
+            },
+        )
+        .await?;
+    assert_eq!(resumed["control"], "resume");
+    assert!(resumed["status"].is_null());
+    let sent = fixture
         .session(
             "child",
             SessionAction::Send {
@@ -421,6 +433,29 @@ async fn shared_native_session_lifecycle(host: &str) -> Result<()> {
             },
         )
         .await?;
+    assert_eq!(sent["pending"], 2);
+    let files = fixture.owner.files(fixture.parent).await?;
+    let reference = Component::new("child").map_err(storage)?;
+    let (canonical, canonical_reads) =
+        crate::test_support::admission_work::measure(fixture.owner.local.observe_admitted_child(
+            &files,
+            &reference,
+            fixture.parent,
+            crate::task_volume::ChildResultWindow::Latest,
+            1,
+        ))
+        .await;
+    canonical?;
+    let (observed, adapter_reads) = crate::test_support::admission_work::measure(
+        fixture.session("child", SessionAction::Observe),
+    )
+    .await;
+    assert_eq!(observed?["pending"], 2);
+    assert!(canonical_reads > 0);
+    assert_eq!(
+        adapter_reads, canonical_reads,
+        "native observation repeats the canonical admission lookup"
+    );
     let first = fixture.session("child", SessionAction::Next).await?;
     assert_eq!(first["prompt"], "initial");
     assert_eq!(first["turn"], 1);
@@ -606,8 +641,22 @@ async fn native_claim_recovery_does_not_replay_unacknowledged_input_or_replace_r
 
 #[tokio::test]
 async fn native_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
+    live_observation_keeps_latest_result_and_retains_shared_history("pi").await
+}
+
+#[tokio::test]
+async fn codex_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
+    live_observation_keeps_latest_result_and_retains_shared_history("codex").await
+}
+
+#[tokio::test]
+async fn claude_live_observation_keeps_latest_result_and_retains_shared_history() -> Result<()> {
+    live_observation_keeps_latest_result_and_retains_shared_history("claude-code").await
+}
+
+async fn live_observation_keeps_latest_result_and_retains_shared_history(host: &str) -> Result<()> {
     const TURNS: u64 = 3;
-    let mut fixture = Fixture::open().await?;
+    let mut fixture = Fixture::for_host(host).await?;
     fixture
         .session(
             "history",
@@ -673,6 +722,32 @@ async fn native_live_observation_keeps_latest_result_and_retains_shared_history(
             .sum::<usize>();
     }
     assert!(retained_bytes > 65_536);
+    // A nested parent selects its own mailbox, even when the root has the
+    // same child reference. Observation must never fall back to root files.
+    let child = serde_json::from_value(observed["task"].clone()).map_err(storage)?;
+    for action in [
+        SessionAction::Spawn {
+            prompt: "nested initial".into(),
+        },
+        SessionAction::Observe,
+    ] {
+        let nested = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Session {
+                    parent: child,
+                    reference: "history".into(),
+                    action,
+                },
+            )
+            .await?;
+        assert_ne!(nested["task"], observed["task"]);
+        assert!(nested["status"].is_null());
+        assert!(nested["control"].is_null());
+        assert_eq!(nested["results"], json!([]));
+        assert_eq!(nested["pending"], 1);
+    }
     Ok(())
 }
 
