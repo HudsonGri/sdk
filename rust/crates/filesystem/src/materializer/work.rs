@@ -61,7 +61,8 @@ impl NativeMaterializationWork {
             }
         }
     }
-    /// Admits the original ledger before sharing it.
+    /// Prepares process-global services, then admits the original ledger before
+    /// sharing it. Global framework bootstrap is not invocation payload.
     pub fn new(
         budget: WorkBudget,
         cancellation: &crate::CancellationToken,
@@ -74,6 +75,22 @@ impl NativeMaterializationWork {
     pub(crate) fn from_demand(
         mut state: crate::demand::DemandWork,
     ) -> Result<Self, (NativeTreeMaterializationError, Box<WorkCounters>)> {
+        state.check().map_err(|error| {
+            (
+                native_materialization_work_error(error),
+                Box::new(state.work),
+            )
+        })?;
+        // Every constructor crosses this boundary before publishing original
+        // custody. Loading a process framework from an already original leaf is
+        // deliberately forbidden, so callers must not create such a cold leaf.
+        #[cfg(feature = "native-watch")]
+        crate::watch::initialize_native_watch_services().map_err(|error| {
+            (
+                NativeTreeMaterializationError::Io(std::io::Error::other(error)),
+                Box::new(state.work),
+            )
+        })?;
         state
             .claim_allocation(
                 Self::accounting_state_bytes(),
