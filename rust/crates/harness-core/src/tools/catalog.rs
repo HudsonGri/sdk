@@ -124,7 +124,7 @@ static FS: ToolSpec = ToolSpec {
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
     revision: "portable-7",
-    description: "Read exact UTF-8: pass file for an immutable reference with optional [start, end) byte range, or source copied from discovered skill metadata to resolve its private body. Private sources are not shell paths",
+    description: "Read UTF-8 from a pinned file/range or a copied discovery source. Private sources are not shell paths",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadInput>,

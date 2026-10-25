@@ -796,20 +796,20 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read exact UTF-8: pass file for an immutable reference with optional [start, end) byte range, or source copied from discovered skill metadata to resolve its private body. Private sources are not shell paths",
+        "description": "Read UTF-8 from a pinned file/range or a copied discovery source. Private sources are not shell paths",
         "input_schema": {
           "$defs": {
             "ContextRoot": {
               "additionalProperties": false,
-              "description": "A host-declared directory boundary. A declaration conveys no authority.",
+              "description": "Declared directory boundary; conveys no authority.",
               "properties": {
                 "directory": {
-                  "description": "Exact owner-issued subtree capability boundary; empty denotes the volume root.",
+                  "description": "Owner-issued subtree boundary; empty means volume root.",
                   "type": "string"
                 },
                 "volume": {
                   "$ref": "#/$defs/VolumeRef",
-                  "description": "Exact volume identity, independently of consumer role."
+                  "description": "Exact volume identity."
                 }
               },
               "required": [
@@ -916,11 +916,11 @@
             },
             "PinnedContextPath": {
               "additionalProperties": false,
-              "description": "Immutable path selected by discovery; resolving it never follows a newer head.",
+              "description": "Immutable discovery path; never follows a newer head.",
               "properties": {
                 "generation": {
                   "$ref": "#/$defs/GenerationRef",
-                  "description": "Exact retained filesystem generation."
+                  "description": "Retained filesystem generation."
                 },
                 "path": {
                   "description": "Volume-relative path.",
@@ -989,11 +989,11 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "A discovered source within its declared volume.",
+              "description": "Private discovery source.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Complete source copied from discovery."
+                  "description": "Source copied from discovery."
                 }
               },
               "required": [
@@ -1135,14 +1135,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "Read a pinned file."
+              "description": "Pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve a discovered source."
+              "description": "Private source."
             }
           ],
-          "description": "Read a pinned file or a discovered private source.",
+          "description": "Pinned file or private discovery source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -1620,57 +1620,57 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        146,
-        52,
-        83,
-        225,
-        94,
-        118,
-        132,
-        202,
-        132,
-        222,
-        221,
-        254,
-        119,
-        245,
-        244,
-        33,
-        218,
-        78,
-        200,
-        54,
-        76,
-        138,
-        81,
-        99,
-        223,
-        16,
-        169,
-        110,
-        0,
-        103,
+        140,
+        249,
         241,
-        181
+        195,
+        0,
+        181,
+        231,
+        30,
+        242,
+        174,
+        140,
+        116,
+        187,
+        115,
+        125,
+        245,
+        173,
+        51,
+        253,
+        238,
+        205,
+        11,
+        21,
+        73,
+        211,
+        243,
+        32,
+        127,
+        199,
+        53,
+        215,
+        101
       ],
       "variant": "exact_read_full"
     },
     {
       "definition": {
-        "description": "Read exact UTF-8: pass file for an immutable reference with optional [start, end) byte range, or source copied from discovered skill metadata to resolve its private body. Private sources are not shell paths",
+        "description": "Read UTF-8 from a pinned file/range or a copied discovery source. Private sources are not shell paths",
         "input_schema": {
           "$defs": {
             "ContextRoot": {
               "additionalProperties": false,
-              "description": "A host-declared directory boundary. A declaration conveys no authority.",
+              "description": "Declared directory boundary; conveys no authority.",
               "properties": {
                 "directory": {
-                  "description": "Exact owner-issued subtree capability boundary; empty denotes the volume root.",
+                  "description": "Owner-issued subtree boundary; empty means volume root.",
                   "type": "string"
                 },
                 "volume": {
                   "$ref": "#/$defs/VolumeRef",
-                  "description": "Exact volume identity, independently of consumer role."
+                  "description": "Exact volume identity."
                 }
               },
               "required": [
@@ -1777,11 +1777,11 @@
             },
             "PinnedContextPath": {
               "additionalProperties": false,
-              "description": "Immutable path selected by discovery; resolving it never follows a newer head.",
+              "description": "Immutable discovery path; never follows a newer head.",
               "properties": {
                 "generation": {
                   "$ref": "#/$defs/GenerationRef",
-                  "description": "Exact retained filesystem generation."
+                  "description": "Retained filesystem generation."
                 },
                 "path": {
                   "description": "Volume-relative path.",
@@ -1850,11 +1850,11 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "A discovered source within its declared volume.",
+              "description": "Private discovery source.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Complete source copied from discovery."
+                  "description": "Source copied from discovery."
                 }
               },
               "required": [
@@ -1996,14 +1996,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "Read a pinned file."
+              "description": "Pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve a discovered source."
+              "description": "Private source."
             }
           ],
-          "description": "Read a pinned file or a discovered private source.",
+          "description": "Pinned file or private discovery source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -2502,38 +2502,38 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        48,
-        178,
-        239,
-        171,
-        71,
-        217,
-        17,
-        211,
-        64,
-        64,
-        208,
-        151,
-        61,
-        35,
-        171,
-        22,
-        126,
-        87,
-        15,
-        42,
-        35,
-        125,
-        226,
-        231,
+        50,
+        30,
         169,
-        111,
-        162,
+        55,
+        235,
+        166,
+        76,
+        75,
+        225,
+        66,
+        215,
+        146,
+        27,
+        63,
+        253,
+        217,
         206,
-        176,
-        77,
-        79,
-        20
+        23,
+        235,
+        13,
+        155,
+        9,
+        9,
+        16,
+        41,
+        138,
+        106,
+        76,
+        224,
+        103,
+        217,
+        103
       ],
       "variant": "exact_read_reference"
     },
@@ -4983,20 +4983,20 @@
     },
     {
       "definition": {
-        "description": "Read exact UTF-8: pass file for an immutable reference with optional [start, end) byte range, or source copied from discovered skill metadata to resolve its private body. Private sources are not shell paths",
+        "description": "Read UTF-8 from a pinned file/range or a copied discovery source. Private sources are not shell paths",
         "input_schema": {
           "$defs": {
             "ContextRoot": {
               "additionalProperties": false,
-              "description": "A host-declared directory boundary. A declaration conveys no authority.",
+              "description": "Declared directory boundary; conveys no authority.",
               "properties": {
                 "directory": {
-                  "description": "Exact owner-issued subtree capability boundary; empty denotes the volume root.",
+                  "description": "Owner-issued subtree boundary; empty means volume root.",
                   "type": "string"
                 },
                 "volume": {
                   "$ref": "#/$defs/VolumeRef",
-                  "description": "Exact volume identity, independently of consumer role."
+                  "description": "Exact volume identity."
                 }
               },
               "required": [
@@ -5103,11 +5103,11 @@
             },
             "PinnedContextPath": {
               "additionalProperties": false,
-              "description": "Immutable path selected by discovery; resolving it never follows a newer head.",
+              "description": "Immutable discovery path; never follows a newer head.",
               "properties": {
                 "generation": {
                   "$ref": "#/$defs/GenerationRef",
-                  "description": "Exact retained filesystem generation."
+                  "description": "Retained filesystem generation."
                 },
                 "path": {
                   "description": "Volume-relative path.",
@@ -5176,11 +5176,11 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "A discovered source within its declared volume.",
+              "description": "Private discovery source.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Complete source copied from discovery."
+                  "description": "Source copied from discovery."
                 }
               },
               "required": [
@@ -5322,14 +5322,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "Read a pinned file."
+              "description": "Pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve a discovered source."
+              "description": "Private source."
             }
           ],
-          "description": "Read a pinned file or a discovered private source.",
+          "description": "Pinned file or private discovery source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -5807,57 +5807,57 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        146,
-        52,
-        83,
-        225,
-        94,
-        118,
-        132,
-        202,
-        132,
-        222,
-        221,
-        254,
-        119,
-        245,
-        244,
-        33,
-        218,
-        78,
-        200,
-        54,
-        76,
-        138,
-        81,
-        99,
-        223,
-        16,
-        169,
-        110,
-        0,
-        103,
+        140,
+        249,
         241,
-        181
+        195,
+        0,
+        181,
+        231,
+        30,
+        242,
+        174,
+        140,
+        116,
+        187,
+        115,
+        125,
+        245,
+        173,
+        51,
+        253,
+        238,
+        205,
+        11,
+        21,
+        73,
+        211,
+        243,
+        32,
+        127,
+        199,
+        53,
+        215,
+        101
       ],
       "variant": "range_read_full"
     },
     {
       "definition": {
-        "description": "Read exact UTF-8: pass file for an immutable reference with optional [start, end) byte range, or source copied from discovered skill metadata to resolve its private body. Private sources are not shell paths",
+        "description": "Read UTF-8 from a pinned file/range or a copied discovery source. Private sources are not shell paths",
         "input_schema": {
           "$defs": {
             "ContextRoot": {
               "additionalProperties": false,
-              "description": "A host-declared directory boundary. A declaration conveys no authority.",
+              "description": "Declared directory boundary; conveys no authority.",
               "properties": {
                 "directory": {
-                  "description": "Exact owner-issued subtree capability boundary; empty denotes the volume root.",
+                  "description": "Owner-issued subtree boundary; empty means volume root.",
                   "type": "string"
                 },
                 "volume": {
                   "$ref": "#/$defs/VolumeRef",
-                  "description": "Exact volume identity, independently of consumer role."
+                  "description": "Exact volume identity."
                 }
               },
               "required": [
@@ -5964,11 +5964,11 @@
             },
             "PinnedContextPath": {
               "additionalProperties": false,
-              "description": "Immutable path selected by discovery; resolving it never follows a newer head.",
+              "description": "Immutable discovery path; never follows a newer head.",
               "properties": {
                 "generation": {
                   "$ref": "#/$defs/GenerationRef",
-                  "description": "Exact retained filesystem generation."
+                  "description": "Retained filesystem generation."
                 },
                 "path": {
                   "description": "Volume-relative path.",
@@ -6037,11 +6037,11 @@
             },
             "ReadSourceInput": {
               "additionalProperties": false,
-              "description": "A discovered source within its declared volume.",
+              "description": "Private discovery source.",
               "properties": {
                 "source": {
                   "$ref": "#/$defs/PinnedContextPath",
-                  "description": "Complete source copied from discovery."
+                  "description": "Source copied from discovery."
                 }
               },
               "required": [
@@ -6183,14 +6183,14 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ReadFileInput",
-              "description": "Read a pinned file."
+              "description": "Pinned file."
             },
             {
               "$ref": "#/$defs/ReadSourceInput",
-              "description": "Resolve a discovered source."
+              "description": "Private source."
             }
           ],
-          "description": "Read a pinned file or a discovered private source.",
+          "description": "Pinned file or private discovery source.",
           "title": "ReadInput"
         },
         "name": "read",
@@ -6689,38 +6689,38 @@
         "revision": "portable-7"
       },
       "definition_digest": [
-        48,
-        178,
-        239,
-        171,
-        71,
-        217,
-        17,
-        211,
-        64,
-        64,
-        208,
-        151,
-        61,
-        35,
-        171,
-        22,
-        126,
-        87,
-        15,
-        42,
-        35,
-        125,
-        226,
-        231,
+        50,
+        30,
         169,
-        111,
-        162,
+        55,
+        235,
+        166,
+        76,
+        75,
+        225,
+        66,
+        215,
+        146,
+        27,
+        63,
+        253,
+        217,
         206,
-        176,
-        77,
-        79,
-        20
+        23,
+        235,
+        13,
+        155,
+        9,
+        9,
+        16,
+        41,
+        138,
+        106,
+        76,
+        224,
+        103,
+        217,
+        103
       ],
       "variant": "range_read_reference"
     },
