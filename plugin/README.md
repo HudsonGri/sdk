@@ -135,6 +135,13 @@ The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
 `Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
 native model-session acceptance.
 
+Captured Codex version output and its command, package integrity, binary hashes
+and capture provenance live in `rust/crates/harness/fixtures/hosts/`. The shared
+harness owns the version-admission test. Malformed controls are explicit
+mutations of a real capture. Existing native-session stand-ins and the scripted
+provider stream are synthetic protocol inputs; final external-output fixture
+qualification still requires captures and provenance from the real-host owner.
+
 The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:
 
