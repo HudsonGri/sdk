@@ -492,7 +492,11 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
                 })
                 .collect();
             assert_eq!(refusals.len(), 1, "the next turn needs one paired refusal");
-            assert!(refusals.iter().any(|message| message.contains("guard approval")));
+            assert!(
+                refusals
+                    .iter()
+                    .any(|message| message.contains("guard approval"))
+            );
         }
         assert_eq!(executed.lock().unwrap().len(), usize::from(approved));
         assert_eq!(
