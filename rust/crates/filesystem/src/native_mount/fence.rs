@@ -476,6 +476,8 @@ impl MountDestinationGuard {
             )?;
             *guard = Some(admitted);
         }
+        #[cfg(test)]
+        super::tests::fence::before_registry_unlock(native);
         held.unlock(work)
     }
 
