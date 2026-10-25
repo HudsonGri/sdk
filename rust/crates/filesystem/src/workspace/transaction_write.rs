@@ -90,7 +90,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .write_batch_with_accounting::<true>(directories, files, &mut accounting, cancellation)
+            .stage_file_batch::<true, false>(directories, files, &mut accounting, cancellation)
             .await;
         work.finish(result, &accounting)
     }
@@ -120,18 +120,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                     other => other,
                 });
         work.finish(result, &accounting)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn write_batch_with_accounting<const RESET: bool>(
-        &mut self,
-        directories: &[&str],
-        files: &[(&str, acyclic_stream::OwnedBytes)],
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), WorkspaceError> {
-        self.stage_file_batch::<RESET, false>(directories, files, accounting, cancellation)
-            .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
