@@ -322,7 +322,7 @@ async fn negative_control_barrier_acknowledgement_is_lost_by_power_loss() -> Res
 #[tokio::test(flavor = "multi_thread")]
 async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> Result {
     let mut proofs = [false; 3];
-    for entry in 0..3 {
+    for (entry, proof) in proofs.iter_mut().enumerate() {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         append(&provider, b"ordered approval").await?;
@@ -350,7 +350,7 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
                     .await??,
             ),
         }
-        proofs[entry] =
+        *proof =
             synced_bytes(&provider).is_some() && provider.watermarks(path()).await?.durable == 1;
         meter.assert_refunded();
     }

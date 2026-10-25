@@ -181,11 +181,10 @@ impl InternalPublicationCase<'_> {
             blake3::hash(path.as_bytes()).to_hex()
         );
         let single_record = receipt_path == metadata_path
-            && self
-                .host
-                .read(workspace, None, &obsolete, 4096, None)
-                .await
-                .is_err();
+            && matches!(
+                self.host.read(workspace, None, &obsolete, 4096, None).await,
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound
+            );
         let record = self
             .host
             .read(workspace, None, &metadata_path, 4096, None)
@@ -246,7 +245,10 @@ impl InternalPublicationCase<'_> {
             b"original"
         );
         let before = self.host.resolve(workspace, None).await?;
-        assert!(self.put(&path, b"forged", &key, class).await.is_err());
+        assert!(matches!(
+            self.put(&path, b"forged", &key, class).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+        ));
         assert_eq!(self.host.resolve(workspace, None).await?, before);
         Ok(single_record)
     }

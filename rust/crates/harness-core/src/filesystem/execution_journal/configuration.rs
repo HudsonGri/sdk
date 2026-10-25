@@ -56,13 +56,12 @@ where
         mut self,
         files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     ) -> Result<Self> {
-        match files {
-            Some(files) => self.with_task_files(files),
-            None => {
-                self.task_files = None;
-                self.invalidate_execution_caches();
-                Ok(self)
-            }
+        if let Some(files) = files {
+            self.with_task_files(files)
+        } else {
+            self.task_files = None;
+            self.invalidate_execution_caches();
+            Ok(self)
         }
     }
 
