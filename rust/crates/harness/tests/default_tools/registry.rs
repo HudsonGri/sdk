@@ -445,9 +445,11 @@ async fn workspace_commands_use_the_calling_runtime_with_an_explicit_policy() ->
     for workspace in ["checkout", "child-view"] {
         let bundle = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .policy(Arc::new(acyclic_harness::test_support::FixedToolPolicy::new(
-                runtime::ToolPolicyDecision::Allow,
-            )?))
+            .policy(Arc::new(
+                acyclic_harness::test_support::FixedToolPolicy::new(
+                    runtime::ToolPolicyDecision::Allow,
+                )?,
+            ))
             .workspace(Arc::new(Workspace(workspace)))
             .grant("task:spawn:commands@1")
             .task(TaskDefinition::live(

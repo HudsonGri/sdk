@@ -1,5 +1,10 @@
 //! Explicit policy fixtures shared by core and downstream contract tests.
-use crate::{Result, registry::ComponentIdentity, runtime::{RuntimeScope, ToolPolicy, ToolPolicyDecision}, tool::ToolInvocation};
+use crate::{
+    Result,
+    registry::ComponentIdentity,
+    runtime::{RuntimeScope, ToolPolicy, ToolPolicyDecision},
+    tool::ToolInvocation,
+};
 
 /// Fixed, explicitly selected policy decision for non-approval contract tests.
 #[derive(Clone)]
@@ -102,4 +107,3 @@ pub(crate) fn native_fixture_policy_identity(
         io.into_custody()?,
     ))
 }
-

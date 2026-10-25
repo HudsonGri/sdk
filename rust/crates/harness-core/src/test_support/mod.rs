@@ -15,8 +15,8 @@ pub mod admission_work;
 ))]
 #[doc(hidden)]
 pub mod crash_cuts;
-mod scripted;
 mod policy;
+mod scripted;
 pub use policy::FixedToolPolicy;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use policy::native_fixture_policy_identity;
