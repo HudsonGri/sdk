@@ -92,10 +92,9 @@ switch ($Lane) {
             }
         }
 
-        # Black-box fork/join conformance through hooks, the CLI and live ProjFS
-        # mounts. The shared test support module carries ignored tests of its own.
-        cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
-            --ignored --test-threads=1 --skip support::
+        # The shared harness owns native-host fork, capture and merge on ProjFS.
+        cargo test -p acyclic-harness --all-features --locked --lib `
+            local::host_workspace::tests:: -- --test-threads=4
 
         return
     }
