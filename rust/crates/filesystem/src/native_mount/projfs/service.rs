@@ -30,9 +30,7 @@ struct Shared {
 #[derive(Default)]
 struct State {
     views: HashMap<u64, View>,
-    ready: VecDeque<u64>,
-    delayed: HashSet<u64>,
-    retry_at: Option<std::time::Instant>,
+    queue: Queue,
     running: Option<u64>,
     next: u64,
     stopping: bool,
@@ -41,19 +39,71 @@ struct State {
 struct View {
     runtime: Arc<Runtime>,
     context: SendContext,
-    queued: bool,
+}
+
+/// Which view runs next. A held view retries [`HELD_RETRY`] after it was
+/// held, and a due retry joins the ready queue before the next pass is
+/// chosen, so other views' ready work never starves it.
+#[derive(Default)]
+struct Queue {
+    ready: VecDeque<u64>,
+    /// The views in `ready`.
+    queued: HashSet<u64>,
+    delayed: HashSet<u64>,
+    retry_at: Option<std::time::Instant>,
+}
+
+impl Queue {
+    /// Queues a view to run; false when it already is.
+    fn schedule(&mut self, id: u64) -> bool {
+        if !self.queued.insert(id) {
+            return false;
+        }
+        self.delayed.remove(&id);
+        self.ready.push_back(id);
+        true
+    }
+
+    /// Holds a view that has only held entries left, unless new work queued it.
+    fn delay(&mut self, id: u64, now: std::time::Instant) {
+        if !self.queued.contains(&id) {
+            self.delayed.insert(id);
+            self.retry_at.get_or_insert(now + HELD_RETRY);
+        }
+    }
+
+    fn remove(&mut self, id: u64) {
+        if self.queued.remove(&id) {
+            self.ready.retain(|queued| *queued != id);
+        }
+        self.delayed.remove(&id);
+    }
+
+    /// The next view to run, or how long to wait for one: `None` waits for
+    /// a schedule.
+    fn next(&mut self, now: std::time::Instant) -> Result<u64, Option<std::time::Duration>> {
+        if self.delayed.is_empty() {
+            self.retry_at = None;
+        } else if self.retry_at.is_some_and(|due| now >= due) {
+            self.retry_at = None;
+            for id in std::mem::take(&mut self.delayed) {
+                if self.queued.insert(id) {
+                    self.ready.push_back(id);
+                }
+            }
+        }
+        if let Some(id) = self.ready.pop_front() {
+            self.queued.remove(&id);
+            return Ok(id);
+        }
+        Err(self.retry_at.map(|due| due.saturating_duration_since(now)))
+    }
 }
 
 impl Shared {
     fn schedule(&self, id: u64) {
         let mut state = lock_recover(&self.state);
-        let state = &mut *state;
-        if let Some(view) = state.views.get_mut(&id)
-            && !view.queued
-        {
-            view.queued = true;
-            state.delayed.remove(&id);
-            state.ready.push_back(id);
+        if state.views.contains_key(&id) && state.queue.schedule(id) {
             self.changed.notify_all();
         }
     }
@@ -64,69 +114,46 @@ impl Shared {
             if state.stopping {
                 return;
             }
-            if let Some(id) = state.ready.pop_front() {
-                let Some(view) = state.views.get_mut(&id) else {
-                    continue;
-                };
-                view.queued = false;
-                let runtime = Arc::clone(&view.runtime);
-                let context = view.context.0;
-                state.running = Some(id);
-                drop(state);
-                let readiness = runtime.projector.service_pass(&runtime, context);
-                drop(runtime);
-                state = lock_recover(&self.state);
-                state.running = None;
-                self.changed.notify_all();
-                if !state.views.contains_key(&id) {
+            let id = match state.queue.next(std::time::Instant::now()) {
+                Ok(id) => id,
+                Err(None) => {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     continue;
                 }
-                match readiness {
-                    Readiness::Ready => {
-                        if let Some(view) = state.views.get_mut(&id)
-                            && !view.queued
-                        {
-                            view.queued = true;
-                            state.ready.push_back(id);
-                        }
-                    }
-                    Readiness::Delayed => {
-                        if !state.views.get(&id).is_some_and(|view| view.queued) {
-                            state.delayed.insert(id);
-                        }
-                    }
-                    Readiness::Idle | Readiness::Stopped => {}
+                Err(Some(timeout)) => {
+                    state = self
+                        .changed
+                        .wait_timeout(state, timeout)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                    continue;
                 }
+            };
+            let Some(view) = state.views.get(&id) else {
+                continue;
+            };
+            let runtime = Arc::clone(&view.runtime);
+            let context = view.context.0;
+            state.running = Some(id);
+            drop(state);
+            let readiness = runtime.projector.service_pass(&runtime, context);
+            drop(runtime);
+            state = lock_recover(&self.state);
+            state.running = None;
+            self.changed.notify_all();
+            if !state.views.contains_key(&id) {
                 continue;
             }
-            if state.delayed.is_empty() {
-                state.retry_at = None;
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let now = std::time::Instant::now();
-            let due = *state.retry_at.get_or_insert(now + HELD_RETRY);
-            if now >= due {
-                state.retry_at = None;
-                let delayed = std::mem::take(&mut state.delayed);
-                for id in delayed {
-                    if let Some(view) = state.views.get_mut(&id)
-                        && !view.queued
-                    {
-                        view.queued = true;
-                        state.ready.push_back(id);
-                    }
+            match readiness {
+                Readiness::Ready => {
+                    state.queue.schedule(id);
                 }
-                continue;
+                Readiness::Delayed => state.queue.delay(id, std::time::Instant::now()),
+                Readiness::Idle | Readiness::Stopped => {}
             }
-            state = self
-                .changed
-                .wait_timeout(state, due - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
         }
     }
 }
@@ -171,7 +198,6 @@ impl ProjectorService {
                 View {
                     runtime: Arc::clone(runtime),
                     context: SendContext(context),
-                    queued: false,
                 },
             );
             id
@@ -193,8 +219,7 @@ impl ProjectorService {
     pub(super) fn detach(&self, id: u64) {
         let mut state = lock_recover(&self.shared.state);
         state.views.remove(&id);
-        state.delayed.remove(&id);
-        state.ready.retain(|queued| *queued != id);
+        state.queue.remove(id);
         while state.running == Some(id) {
             state = self
                 .shared
@@ -214,5 +239,53 @@ impl Drop for ProjectorService {
         {
             tracing::warn!("ProjFS projector service panicked");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_view_retries_while_other_views_stay_ready() {
+        let start = std::time::Instant::now();
+        let mut queue = Queue::default();
+        queue.schedule(1);
+        assert_eq!(queue.next(start), Ok(1));
+        queue.delay(1, start);
+        // View 2 always has fresh work: it is rescheduled after every pass.
+        let mut now = start;
+        let mut retried = false;
+        for _ in 0..1000 {
+            queue.schedule(2);
+            now += HELD_RETRY / 4;
+            match queue.next(now) {
+                Ok(1) => {
+                    retried = true;
+                    break;
+                }
+                Ok(2) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(retried, "a busy sibling starved the held view");
+        assert!(now - start <= HELD_RETRY * 2, "retried late: {:?}", now - start);
+    }
+
+    #[test]
+    fn an_idle_queue_waits_for_the_held_retry_or_a_schedule() {
+        let start = std::time::Instant::now();
+        let mut queue = Queue::default();
+        assert_eq!(queue.next(start), Err(None));
+        queue.delay(1, start);
+        assert_eq!(queue.next(start), Err(Some(HELD_RETRY)));
+        // New work runs the view at once and cancels its retry.
+        assert!(queue.schedule(1));
+        assert!(!queue.schedule(1));
+        assert_eq!(queue.next(start), Ok(1));
+        assert_eq!(queue.next(start), Err(None));
+        queue.delay(1, start);
+        queue.remove(1);
+        assert_eq!(queue.next(start + HELD_RETRY), Err(None));
     }
 }
