@@ -168,7 +168,7 @@ if [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ] && ! grep -aqE '^error(\[E[0
 fi
 if [ -n "$features" ]; then
   wait "$features"
-  echo "GATE_FEATURES rc=$(cat "$gate_output/.gate-features.rc")"
+  printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"
   [ "$rc" != 0 ] || rc=$(cat "$gate_output/.gate-features.rc")
   grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' "$gate_output/.gate-features.out" | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
   if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ] && ! grep -aq '^FAILED cargo' "$gate_output/.gate-features.out"; then
