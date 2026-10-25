@@ -141,6 +141,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     typescript.push_str(&AuditDecision::decl(&ts_rs::Config::default()));
     typescript.push('\n');
     let path = root.join("typescript/packages/auth/src/contract.ts");
+    macro_rules! secrets_types {
+        ($($ty:ty),* $(,)?) => {$(
+            typescript.push_str("export ");
+            typescript.push_str(&<$ty>::decl(&ts_rs::Config::default()));
+            typescript.push('\n');
+        )*};
+    }
+    secrets_types!(SecretsOperation, SecretKind, SecretsGrant, SecretPutRequest,
+        SecretListRequest, SecretDeleteRequest, SecretMutationReply,
+        PlainSecretVariable, ProtectedSecretVariable, SecretVariableKind,
+        SecretVariable, SecretListReply);
     fs::create_dir_all(path.parent().ok_or("missing output parent")?)?;
     let typescript = typescript
         .lines()

@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Customer identity commands and MCP transport for the Acyclic CLI"
 
 [dependencies]
+acyclic-auth = { path = "../../rust/crates/auth", version = "=0.2.0", features = ["client"] }
 acyclic-native-runtime = { path = "../../rust/crates/native-runtime", version = "=0.2.0" }
 base64 = "0.23.1"
 reqwest.workspace = true
@@ -15,6 +16,7 @@ ring = "0.17.14"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+zeroize.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 
 [target.'cfg(windows)'.dependencies]

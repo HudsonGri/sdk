@@ -15,6 +15,7 @@ local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-exec
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-machines = { version = "=0.2.0", path = "../machines" }

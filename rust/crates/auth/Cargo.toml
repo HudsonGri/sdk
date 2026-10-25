@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "conformance/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-auth"
 version.workspace = true
 edition.workspace = true
@@ -11,6 +11,7 @@ description = "Shared capability chain contract and verification"
 
 [features]
 test-support = ["dep:acyclic-differential"]
+client = ["dep:reqwest"]
 
 [dependencies]
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
@@ -22,11 +23,14 @@ thiserror.workspace = true
 url = "=2.5.8"
 zeroize.workspace = true
 ts-rs = "=12.0.1"
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
-serde.workspace = true
-serde_json.workspace = true
 acyclic-test-support = { path = "../test-support" }
 futures.workspace = true
 syn = { version = "3", features = ["full"] }

@@ -4,6 +4,8 @@
 pub mod filesystem;
 /// Machine-readable cross-language conformance reports and qualification receipts.
 pub mod runner;
+/// Identity secrets conformance, shared with Rust, WASM and external providers.
+pub use acyclic_auth::secrets::conformance as secrets;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{

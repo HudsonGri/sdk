@@ -3,6 +3,7 @@
 
 mod agent;
 mod mcp;
+mod secrets;
 
 use acyclic_native_runtime::private_file;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -24,7 +25,7 @@ const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub fn is_command(command: &str) -> bool {
     matches!(
         command,
-        "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "bearer" | "identity-mcp"
+        "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "bearer" | "identity-mcp" | "secrets"
     )
 }
 
@@ -945,6 +946,9 @@ pub fn run(
 }
 
 async fn execute(arguments: &[String]) -> Result<Value, Error> {
+    if arguments.first().is_some_and(|command| command == "secrets") {
+        return secrets::execute(&arguments[1..]).await;
+    }
     let options = Options::parse(arguments)?;
     let identity = Identity::new(&options.endpoint)?;
     let store = Store::open(&options.credentials)?;

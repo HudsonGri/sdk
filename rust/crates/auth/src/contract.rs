@@ -3,6 +3,8 @@ use crate::Error;
 use ts_rs::TS;
 mod identity;
 pub use identity::*;
+mod secrets;
+pub use secrets::*;
 
 /// Attested principal category.
 #[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
@@ -111,7 +113,7 @@ pub struct WebsocketConnectGrant {
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Grant {
     /// Typed authority.
-    #[wire(oneof = "1, 2, 3, 4")]
+    #[wire(oneof = "1, 2, 3, 4, 5")]
     pub kind: GrantKind,
 }
 
@@ -337,6 +339,9 @@ pub enum GrantKind {
     /// WebsocketConnect payload.
     #[wire(tag = 4, message)]
     WebsocketConnect(WebsocketConnectGrant),
+    /// Independent identity secrets permission; product grants imply nothing.
+    #[wire(tag = 5, message)]
+    Secrets(SecretsGrant),
 }
 
 /// Typed PinValue cases. Unknown wire cases are rejected.
@@ -428,6 +433,15 @@ pub enum TipProof {
         SocketPortRangeProto,
         SocketHostRuleProto,
         WebsocketConnectGrantProto,
+        SecretsGrantProto,
+        SecretPutRequestProto,
+        SecretListRequestProto,
+        SecretDeleteRequestProto,
+        SecretMutationReplyProto,
+        SecretListReplyProto,
+        SecretVariableProto,
+        PlainSecretVariableProto,
+        ProtectedSecretVariableProto,
         GrantProto,
         GrantSetProto,
         AttributeProto,
@@ -445,7 +459,7 @@ pub enum TipProof {
         CapabilityProto,
         AdmittedCapabilityProto
     ),
-    enums(PrincipalKind, AuditDecision)
+    enums(PrincipalKind, AuditDecision, SecretsOperation, SecretKind)
 )]
 pub struct AuthFile;
 

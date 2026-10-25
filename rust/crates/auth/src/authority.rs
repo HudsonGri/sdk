@@ -42,6 +42,8 @@ pub enum Target<'a> {
     },
     /// External WebSocket destination, checked against typed socket grants.
     Websocket(crate::socket::Destination<'a>),
+    /// Identity secrets authority, separate from all product resource grants.
+    Secrets(crate::secrets::Target<'a>),
 }
 
 /// Immutable request facts, including usage charged against the root's ledger.
@@ -160,7 +162,11 @@ pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
 fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
     set.grants.iter().any(|g| {
         let Target::Resource { action, resource } = r.target else {
-            return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
+            return match (&g.kind, r.target) {
+                (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) => crate::socket::allows(grant, destination),
+                (GrantKind::Secrets(grant), Target::Secrets(target)) => target.allowed_by(grant),
+                _ => false,
+            };
         };
         let grant = match &g.kind {
             GrantKind::Resource(g) => g,
@@ -318,6 +324,9 @@ fn permits_operation(
     policy: PolicyDecision,
     record_facts: bool,
 ) -> Result<(), Deny> {
+    if matches!(r.target, Target::Secrets(target) if !target.valid()) {
+        return Err(Deny::Capability);
+    }
     if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
         return Err(Deny::NonCanonicalResource);
     }
