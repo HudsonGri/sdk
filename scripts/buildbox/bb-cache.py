@@ -24,7 +24,7 @@ import sys
 from admission_policy import (CACHE_ROOT, CACHE_ENDPOINT, SCCACHE_DIRECTORY,
                               SCCACHE_CACHE_BYTES, CachePolicyError, cache_environment)
 from admission_policy import process_identity as birth
-from admission_policy import cpu_host_set
+from admission_policy import cpu_host_set, wait_process
 
 SCCACHE = '/home/var/.cargo/bin/sccache'
 CONTROL = CACHE_ROOT / 'control.sock'
@@ -90,12 +90,17 @@ def admitted(env):
         # One atomic request carries a private reply socket. The authority
         # never accepts or retains an idle connection or client descriptor.
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as request:
-            receiver,reply_socket=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
+            receiver,reply_socket=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
             with receiver,reply_socket:
                 receiver.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
                 request.connect(str(CONTROL))
                 request.sendmsg([b'verify'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[reply_socket.fileno()]))])
+                # The authority now owns the only sending endpoint. If it
+                # exits before replying, recv returns EOF rather than waiting
+                # forever on a client-owned datagram socket.
+                reply_socket.close()
                 data,ancillary,flags,_=receiver.recvmsg(16384,socket.CMSG_SPACE(12))
+                if not data:raise CachePolicyError(detail='authority unavailable: ended before reply')
                 credentials=[struct.unpack('3i',value) for level,kind,value in ancillary
                              if level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS]
                 if flags & (socket.MSG_TRUNC|socket.MSG_CTRUNC) or len(credentials)!=1 or credentials[0][1]!=0:
@@ -159,7 +164,7 @@ def verify_request(listener,owner,refusal=None):
             try:
                 if (data!=b'verify' or flags & (socket.MSG_TRUNC|socket.MSG_CTRUNC)
                         or len(credentials)!=1 or credentials[0][1] not in (0,pwd.getpwnam('var').pw_uid)
-                        or response.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE)!=socket.SOCK_DGRAM):
+                        or response.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE)!=socket.SOCK_SEQPACKET):
                     raise CachePolicyError(detail='invalid atomic authority request')
                 if refusal:raise CachePolicyError(detail=refusal)
                 reply={'owner':validate_server(expected=owner)}
@@ -243,13 +248,7 @@ def serve():
 
 
 def wait_identity(record):
-    pid, identity = record['pid'], record['identity']
-    if birth(pid) != identity: return
-    try: fd = os.pidfd_open(pid)
-    except ProcessLookupError: return
-    try:
-        if birth(pid) == identity: select.select([fd], [], [])
-    finally: os.close(fd)
+    wait_process(record['pid'],record['identity'],None)
 
 
 def drain_admission(root=Path('/mnt/bb/admit')):
