@@ -134,6 +134,62 @@ fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> 
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
+fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Result<()> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    for route in [ApprovalRoute::Policy, ApprovalRoute::Human] {
+        let arguments = json!({
+            "$serde_json::private::RawValue": "literal text, not a JSON document",
+            "nested": [{"paths": ["a b", "雪", "build/output"]}, vec![false; 64]],
+        });
+        let operation_id = OperationId::from_bytes([4; 16]);
+        let request = Interaction::approval(
+            "Run?".into(),
+            operation_id,
+            [5; 32],
+            ApprovalSubject::Tool {
+                route,
+                tool: "fs".into(),
+                call_id: "original-call".into(),
+                arguments,
+            },
+        )?;
+        let bytes = serde_json::to_vec(&request)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let ticket = InteractionTicket {
+            id: Uuid::from_bytes([1; 16]),
+            kind: InteractionKind::Approval,
+            request: file("native-tool-approval.json", &bytes)?,
+            deadline_unix_ms: None,
+            approval: Some(ApprovalBinding {
+                operation_id,
+                action_digest: [5; 32],
+            }),
+        };
+        let cancellation = CancellationToken::new();
+        let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native)?,
+        );
+        let decoded = match ticket.validate_request_bytes(&bytes, &mut Some(&mut io)) {
+            Ok(decoded) => decoded,
+            Err(error) => panic!("native literal approval arguments must decode: {error}"),
+        };
+        assert_eq!(decoded.0, request, "native approval changed literal arguments");
+        assert_eq!(decoded.1, 0);
+        let Some(custody) = decoded.2.as_ref() else {
+            panic!("native request custody");
+        };
+        assert_eq!(custody.bytes(), request.owned_bytes()?);
+        assert!(native.shares_ledger(custody.work()));
+        drop(decoded);
+        assert_eq!(io.into_custody()?.bytes(), 0);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
 fn native_answer_error_retains_original_response_cause_after_request_drop() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let request_bytes = br#"{"type":"choice","prompt":"Choose","options":[{"id":"one","label":"One"}],"min_selections":1,"max_selections":1}"#;
@@ -477,7 +533,7 @@ proptest::proptest! {
         let native = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<Interaction>, &bytes,
             crate::executor::json::JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 },
-            bytes.len() as u64, Some(crate::wire::ErrorCode::Invalid),
+            Some(crate::wire::ErrorCode::Invalid),
             Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
         ).unwrap();
         proptest::prop_assert_eq!(&native, &request);
