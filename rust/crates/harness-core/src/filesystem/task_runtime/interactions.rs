@@ -670,15 +670,20 @@ where
                 // Calls the executor refuses before admission (an undeclared or ungranted tool,
                 // or arguments outside the pinned schema) settle as model-visible results and
                 // never wait for approval.
+                let Some(resolved) = self.tools.get(&invocation.name, None, io)? else {
+                    continue;
+                };
+                let definition = &resolved.definition;
                 let Some(pinned) = request
                     .request()
                     .tools
                     .iter()
-                    .find(|definition| definition.name == invocation.name)
+                    .find(|pinned| {
+                        pinned.name == definition.name && pinned.revision == definition.revision
+                    })
                 else {
                     continue;
                 };
-                let definition = self.tool_definition(&pinned.name, &pinned.revision, io)?;
                 if definition != pinned {
                     return Err(observed::boundary(
                         io,

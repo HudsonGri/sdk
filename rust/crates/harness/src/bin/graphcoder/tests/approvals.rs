@@ -17,6 +17,9 @@ enum Case {
     LlmForged,
     HumanAllow,
     HumanDeny,
+    PinnedHumanAllow,
+    PinnedHumanDeny,
+    PinnedHumanForged,
     ForgedPrincipal,
     ForgedSubject,
     Chain,
@@ -32,6 +35,12 @@ enum Case {
     ChildHumanDisconnected,
 }
 impl Case {
+    fn pinned(self) -> bool {
+        matches!(
+            self,
+            Self::PinnedHumanAllow | Self::PinnedHumanDeny | Self::PinnedHumanForged
+        )
+    }
     fn child_human(self) -> bool {
         matches!(
             self,
@@ -58,6 +67,9 @@ impl Case {
                 self,
                 Self::HumanAllow
                     | Self::HumanDeny
+                    | Self::PinnedHumanAllow
+                    | Self::PinnedHumanDeny
+                    | Self::PinnedHumanForged
                     | Self::ForgedPrincipal
                     | Self::ForgedSubject
                     | Self::LlmForged
@@ -72,6 +84,7 @@ impl Case {
                 | Self::RuleAllow
                 | Self::LlmAllow
                 | Self::HumanAllow
+                | Self::PinnedHumanAllow
                 | Self::Chain
                 | Self::ParentAllow
                 | Self::ParentHumanWait
@@ -83,6 +96,7 @@ impl Case {
             self,
             Self::ForgedPrincipal
                 | Self::ForgedSubject
+                | Self::PinnedHumanForged
                 | Self::ParentForged
                 | Self::ChildHumanForged
                 | Self::LlmForged
@@ -106,6 +120,10 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
         Case::Default => vec![rule("allow")],
         Case::LlmAllow | Case::LlmDeny => vec![llm],
         Case::LlmForged => vec![llm, human],
+        Case::PinnedHumanAllow | Case::PinnedHumanDeny | Case::PinnedHumanForged => vec![
+            json!({"kind":"rules","principal":"rules","rules":[{"tool":"read@portable-6","arguments":null,"verdict":"ask"}],"fallback":"allow"}),
+            human,
+        ],
         Case::Chain => vec![rule("ask"), llm, human],
         Case::ForgedPrincipal => vec![rule("ask"), human],
         Case::ChildHumanAllow
@@ -321,6 +339,24 @@ impl Fixture {
         let step = counter.fetch_add(1, Ordering::SeqCst);
         if !child && (self.case.parent() || self.case.child_human()) {
             return self.parent(body, step);
+        }
+        if self.case.pinned() {
+            return match step {
+                0 => call("write", &json!({"path":"probe.txt","text":"pinned approval content\n",
+                    "media_type":"text/plain","display_name":"probe.txt"}), step),
+                1 => {
+                    let result = tool_result(body);
+                    let file = result["file"].clone();
+                    assert!(file.is_object(), "setup write did not return its immutable file: {result}");
+                    call("read@portable-6", &json!({"file":file}), step)
+                }
+                2 => {
+                    assert_eq!(tool_result(body), json!("pinned approval content\n"));
+                    self.effects.fetch_add(1, Ordering::SeqCst);
+                    ANSWER.to_owned()
+                }
+                _ => panic!("pinned approval repeated the effect"),
+            };
         }
         if step == 0 {
             call(
@@ -574,6 +610,25 @@ impl Followed {
                 task,
                 file: TaskFile::ApprovalRequest(request),
             } => {
+                if case.pinned() {
+                    let interaction: acyclic_harness::interaction::Interaction =
+                        serde_json::from_slice(&file.bytes).unwrap();
+                    let acyclic_harness::interaction::Interaction::Approval {
+                        subject: acyclic_harness::interaction::ApprovalSubject::Tool {
+                            tool, arguments, ..
+                        }, ..
+                    } = interaction else {
+                        panic!("pinned call lost its exact approval subject")
+                    };
+                    if tool == "read@portable-6" {
+                        let input: acyclic_harness::tool::files::ReadFileInput =
+                            serde_json::from_value(arguments).unwrap();
+                        assert_eq!(input.file.path(), "probe.txt");
+                        assert!(input.range.is_none());
+                    } else {
+                        assert_eq!(tool, "write", "unexpected setup approval");
+                    }
+                }
                 self.requests.insert((task.clone(), request.clone()), file);
             }
             FileKey::Task {
@@ -596,9 +651,9 @@ impl Followed {
                     let mut decision = decision(
                         self.requests.get(&(task.clone(), request.clone())).unwrap(),
                         principal,
-                        !matches!(case, Case::HumanDeny | Case::ChildHumanDeny),
+                        !matches!(case, Case::HumanDeny | Case::ChildHumanDeny | Case::PinnedHumanDeny),
                     );
-                    if matches!(case, Case::ForgedSubject | Case::ChildHumanForged) {
+                    if matches!(case, Case::ForgedSubject | Case::ChildHumanForged | Case::PinnedHumanForged) {
                         let mut data: Value = serde_json::from_slice(&decision.bytes).unwrap();
                         *data.get_mut("request_sha256").unwrap() = json!("11".repeat(32));
                         decision.bytes = serde_json::to_vec(&data).unwrap().into();
@@ -624,7 +679,11 @@ impl Followed {
                     "{case:?}: {:?}",
                     file.key
                 );
-                let root_tool = (case.parent() || case.child_human()) && task == &self.root;
+                let setup_write = case.pinned() && {
+                    let interaction: Value = serde_json::from_slice(&request.bytes).unwrap();
+                    interaction["subject"]["tool"] == "write"
+                };
+                let root_tool = setup_write || ((case.parent() || case.child_human()) && task == &self.root);
                 if !root_tool {
                     self.saw_decision = true;
                 }
@@ -786,6 +845,9 @@ cases! {
     approvals_llm_forged_decision_is_refused => LlmForged,
     approvals_human_allows_live => HumanAllow,
     approvals_human_denies_before_effect => HumanDeny,
+    approvals_pinned_human_allows_live => PinnedHumanAllow,
+    approvals_pinned_human_denies_before_read => PinnedHumanDeny,
+    approvals_pinned_human_forged_file_is_refused => PinnedHumanForged,
     approvals_forged_principal_is_refused => ForgedPrincipal,
     approvals_forged_subject_is_refused => ForgedSubject,
     approvals_rules_llm_human_chain => Chain,
