@@ -27,7 +27,7 @@ fn release_certification_uses_the_shared_policy_for_foreign_artifacts() -> Resul
     ];
     std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
     assert!(internal(&args)?);
-    document["coverage"] = json!([]);
+    *document.get_mut("coverage").ok_or("coverage")? = json!([]);
     std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
     let error = match internal(&args) {
         Ok(_) => return Err("incomplete foreign release receipt accepted".into()),

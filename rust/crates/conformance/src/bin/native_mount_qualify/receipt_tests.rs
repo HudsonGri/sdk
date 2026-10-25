@@ -56,7 +56,10 @@ fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<()
     // The former typed verifier silently ignored extra top-level fields and
     // decoded a missing optional reason as null. Neither is the emitted schema.
     let mut extra = document.clone();
-    extra["unknown"] = serde_json::json!(true);
+    extra
+        .as_object_mut()
+        .ok_or("object")?
+        .insert("unknown".into(), serde_json::json!(true));
     std::fs::write(&receipt, serde_json::to_vec(&extra)?)?;
     assert!(verify_receipt(&args).is_err());
     let mut missing_reason = document.clone();
