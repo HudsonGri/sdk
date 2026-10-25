@@ -137,6 +137,52 @@ fn once(trace: &[(&str, u64)], request: u64, decision: u64, allocations: u64, by
         && values("decision-decode-bytes") == [bytes]
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_approval_verifier_retains_original_work_and_cancellation() -> Result<()> {
+    use crate::tool::ToolApprovalVerifier as _;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 64 << 20),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let initialized = initialized("original native owner", Some(&io)).await?;
+    drop(io);
+    let before = work.receipt();
+    let verification = initialized.journal.verify_with_native_work(
+        initialized.id,
+        initialized.operation,
+        [5; 32],
+        &work,
+    )?;
+    assert!(verification.work().shares_invocation_context(&work));
+    verification.await?;
+    assert!(
+        work.receipt().items_examined > before.items_examined,
+        "approval verification escaped the original native ledger"
+    );
+    let live = work.live_allocation_bytes();
+    let verification = initialized.journal.verify_with_native_work(
+        initialized.id,
+        initialized.operation,
+        [5; 32],
+        &work,
+    )?;
+    assert!(work.live_allocation_bytes() > live);
+    cancellation.cancel();
+    assert!(verification.await.is_err(), "cancelled approval authorized");
+    assert_eq!(work.live_allocation_bytes(), live);
+    assert!(
+        initialized
+            .journal
+            .verify_with_native_work(initialized.id, initialized.operation, [5; 32], &work)
+            .is_err()
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]

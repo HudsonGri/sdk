@@ -803,11 +803,20 @@ struct PublicationDecision {
 impl acyclic_harness_core::tool::ToolApprovalVerifier for PublicationDecision {
     fn verify<'a>(
         &'a self,
+        _: acyclic_harness_core::InteractionId,
+        _: acyclic_harness_core::OperationId,
+        _: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+        panic!("selected approval used an unmetered verifier")
+    }
+    fn verify_with_native_work<'a>(
+        &'a self,
         interaction: acyclic_harness_core::InteractionId,
         operation: acyclic_harness_core::OperationId,
         digest: [u8; 32],
-    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
-        Box::pin(async move {
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'a, ()>> {
+        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             if self.approved
                 && self.interaction == interaction
                 && self.operation == operation

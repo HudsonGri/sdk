@@ -448,11 +448,20 @@ struct PublicationDecision {
 impl acyclic_harness::tool::ToolApprovalVerifier for PublicationDecision {
     fn verify<'a>(
         &'a self,
+        _: acyclic_harness::InteractionId,
+        _: acyclic_harness::OperationId,
+        _: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<()>> {
+        panic!("selected approval used an unmetered verifier")
+    }
+    fn verify_with_native_work<'a>(
+        &'a self,
         id: acyclic_harness::InteractionId,
         operation: acyclic_harness::OperationId,
         digest: [u8; 32],
-    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<()>> {
-        Box::pin(async move {
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, ()>> {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
             if self.approved
                 && id == self.id
                 && operation == self.operation

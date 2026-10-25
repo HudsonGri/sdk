@@ -76,11 +76,12 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
         self.require_original_work(work)?;
         self.require_confirmation(confirmed, work)?;
         verifier
-            .verify(
+            .verify_with_native_work(
                 interaction,
                 crate::OperationId::from_bytes(self.publication.operation.into_bytes()),
                 *confirmed,
-            )
+                work,
+            )?
             .await?;
         Ok(AuthorizedCheckout {
             approval: self,

@@ -244,11 +244,20 @@ struct PublicationDecision {
 impl crate::tool::ToolApprovalVerifier for PublicationDecision {
     fn verify<'a>(
         &'a self,
+        _: crate::InteractionId,
+        _: crate::OperationId,
+        _: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>> {
+        panic!("selected approval used an unmetered verifier")
+    }
+    fn verify_with_native_work<'a>(
+        &'a self,
         id: crate::InteractionId,
         operation: crate::OperationId,
         digest: [u8; 32],
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>> {
-        Box::pin(async move {
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> crate::Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
             if self.approved
                 && id == self.id
                 && operation == self.operation
@@ -516,6 +525,54 @@ async fn selected_approval_refuses_a_foreign_work_owner() -> TestResult {
         );
         assert!(!fixture.root.join("note").exists());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_approval_refuses_an_ordinary_only_verifier() -> TestResult {
+    struct OrdinaryOnly;
+    impl crate::tool::ToolApprovalVerifier for OrdinaryOnly {
+        fn verify<'a>(
+            &'a self,
+            _: crate::InteractionId,
+            _: crate::OperationId,
+            _: [u8; 32],
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>> {
+            panic!("selected approval fell back to ordinary verification")
+        }
+    }
+    let fixture = Fixture::new().await?;
+    let publication = fixture.publication(OperationId::new())?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    let paths = vec!["note".into()];
+    let journal = publication
+        .prepare_selected(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+            (&paths, "original creator"),
+        )
+        .await?;
+    let approval = publication.approval_value(
+        &fixture.from,
+        &fixture.to,
+        &paths,
+        &journal,
+        "original creator",
+    )?;
+    let digest = approval.digest(&fixture.work)?;
+    assert!(matches!(
+        approval
+            .authorize(&OrdinaryOnly, crate::InteractionId::new(), &digest, &fixture.work)
+            .await,
+        Err(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "approval verifier requires original native work support",
+        })
+    ));
+    assert!(!fixture.root.join("note").exists());
     Ok(())
 }
 
