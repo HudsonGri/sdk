@@ -139,3 +139,13 @@ python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
 
 It checks CRLF, buffered requests and an oversized peer that keeps its input
 pipe open without sending a newline. Framing uses the shared harness MCP codec.
+
+The mailbox regression runs the production MCP shim for every host against a
+local protocol fixture, without launching a native session:
+
+```sh
+python3 plugin/tests/hosts/settled-session.py ACYCLIC
+```
+
+Settled empty and stopped sessions must remain read-only. Queued messages must
+reach the next-input claim; orphaned turns must recover before claiming.
