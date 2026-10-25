@@ -10,6 +10,53 @@ pub(super) const NATIVE_FENCE_NAME_BYTES: usize =
     NATIVE_FENCE_PREFIX.len() + 64 + NATIVE_FENCE_SUFFIX.len();
 pub(super) const NATIVE_REGISTRY_NAME: &str = ".acyclic-fs-mount-registry.lock";
 
+// Compare canonical OS names at a component boundary, without allocating a
+// second path. The OS adapters supply only units and their separator.
+#[cfg(any(unix, windows))]
+fn contains_path<T: Copy + Eq>(
+    root: impl Iterator<Item = T>,
+    mut candidate: impl Iterator<Item = T>,
+    separator: T,
+    work: &NativeMaterializationWork,
+) -> Result<bool, NativeMountError> {
+    let mut last = None;
+    for unit in root {
+        work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+        if candidate.next() != Some(unit) {
+            return Ok(false);
+        }
+        last = Some(unit);
+    }
+    work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+    Ok(last == Some(separator) || candidate.next().is_none_or(|unit| unit == separator))
+}
+
+#[cfg(any(unix, windows))]
+fn registry_is_within(
+    #[cfg(unix)] canonical: &Path,
+    #[cfg(windows)] canonical: &[u16],
+    work: &NativeMaterializationWork,
+) -> Result<bool, NativeMountError> {
+    registry::with_directory(|directory| {
+        #[cfg(unix)]
+        let (root, candidate, separator) = (
+            canonical.as_os_str().as_encoded_bytes().iter().copied(),
+            directory.as_os_str().as_encoded_bytes().iter().copied(),
+            b'/',
+        );
+        #[cfg(windows)]
+        let (root, candidate, separator) = {
+            use std::os::windows::ffi::OsStrExt as _;
+            (
+                canonical.iter().copied(),
+                directory.as_os_str().encode_wide(),
+                u16::from(b'\\'),
+            )
+        };
+        contains_path(root, candidate, separator, work)
+    })
+}
+
 #[derive(Debug)]
 pub(super) struct MountDestinationGuard {
     pub(super) file: Option<MountLockFile>,
@@ -207,7 +254,12 @@ impl MountDestinationGuard {
                 .ok_or(crate::WorkError::Overflow)?,
             ..crate::WorkCounters::UNCHARGED
         };
-        let result = Self::fence_name(canonical, leaf, separator, hashed, native);
+        let result = (|| {
+            if !recovery && registry_is_within(canonical, native)? {
+                return Err(NativeMountError::InvalidDestination);
+            }
+            Self::fence_name(canonical, leaf, separator, hashed, native)
+        })();
         let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> =
             if recovery && result.is_ok() {
                 #[cfg(unix)]

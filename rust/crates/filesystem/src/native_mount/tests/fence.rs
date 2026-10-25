@@ -69,6 +69,23 @@ fn destination_fences_survive_ancestor_relocation_and_retire_through_original_pa
     Ok(())
 }
 
+#[test]
+fn a_mount_cannot_cover_its_ownership_registry() -> Result<(), Box<dyn std::error::Error>> {
+    let registry = registry::path()?;
+    let directory = registry.parent().unwrap();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error)?;
+    for destination in [directory, directory.parent().unwrap()] {
+        let mut guard = None;
+        assert!(matches!(
+            MountDestinationGuard::acquire_with_work(destination, true, &work, &mut guard, false),
+            Err(NativeMountError::InvalidDestination)
+        ));
+        assert!(guard.is_none());
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error::Error>> {

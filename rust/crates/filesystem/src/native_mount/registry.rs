@@ -43,14 +43,20 @@ fn directory() -> Result<&'static Path, NativeMountError> {
 
 // Ordinary control-path queries run before any bounded native invocation.
 pub(super) fn path() -> Result<PathBuf, NativeMountError> {
+    initialize()?;
+    with_directory(|directory| Ok(directory.join(NATIVE_REGISTRY_NAME)))
+}
+
+pub(super) fn with_directory<T>(
+    operation: impl FnOnce(&Path) -> Result<T, NativeMountError>,
+) -> Result<T, NativeMountError> {
     #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
     if let Some(kernel) = super::disconnected::kernel::current()
         && let Some(directory) = kernel.registry_directory()
     {
-        return Ok(directory.join(NATIVE_REGISTRY_NAME));
+        return operation(directory);
     }
-    initialize()?;
-    Ok(directory()?.join(NATIVE_REGISTRY_NAME))
+    operation(directory()?)
 }
 
 pub(super) fn open<W: crate::native_host::NativeHostWork>(
@@ -68,13 +74,7 @@ pub(super) fn open_with_directory<W: crate::native_host::NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
-    #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
-    if let Some(kernel) = super::disconnected::kernel::current()
-        && let Some(directory) = kernel.registry_directory()
-    {
-        return open_in_directory(directory, work);
-    }
-    open_in_directory(directory()?, work)
+    with_directory(|directory| open_in_directory(directory, work))
 }
 
 fn open_in_directory<W: crate::native_host::NativeHostWork>(
