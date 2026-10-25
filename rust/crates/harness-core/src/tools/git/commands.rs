@@ -103,11 +103,10 @@ pub(crate) fn git_workspace_tree(
     argv: &[String],
     permit: Option<PublicationPermit>,
 ) -> impl Future<Output = Result<GitTreeRef, Error>> {
-    workspace
-        .tree(
-            git_requires_exact_workspace(argv),
-            permit.unwrap_or(PublicationPermit::Unrestricted),
-        )
+    workspace.tree(
+        git_requires_exact_workspace(argv),
+        permit.unwrap_or(PublicationPermit::Unrestricted),
+    )
 }
 
 /// Loads ignore and merge policies from the workspace.
