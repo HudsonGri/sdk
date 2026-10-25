@@ -7,6 +7,7 @@ uses PID-based tree killing. OpenAI Codex <noreply@openai.com>.
 """
 
 import ctypes
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -51,6 +52,8 @@ class Commands:
         self.acquired = False
         self.lease_wait_seconds = 0
         self.results = []
+        self.selections = []
+        self._selection = None
 
     def __enter__(self):
         if os.name != "nt":
@@ -117,6 +120,30 @@ class Commands:
             env.pop("ACYCLIC_TEST_BINARY", None)
         return identity, env
 
+    @contextmanager
+    def _libtest_selection(self):
+        """The libtest adapter owns nonvacuity across its whole selection."""
+        if self._selection is not None:
+            raise RuntimeError("a libtest selection already owns this runner")
+        selected = []
+        self._selection = selected
+        try:
+            yield
+        except BaseException:
+            raise
+        else:
+            result = dict(commands=len(selected), passed=sum(row["passed_tests"] for row in selected),
+                          exits=[row["exit"] for row in selected],
+                          listing=bool(selected) and all(row["listing"] for row in selected))
+            self.selections.append(result)
+            (self.records / "libtest-selections.json").write_text(
+                json.dumps(self.selections, indent=2), encoding="utf-8")
+            if not selected or (all(row["exit"] == 0 for row in selected)
+                                and result["passed"] == 0 and not result["listing"]):
+                raise RuntimeError("libtest selection reported ZERO passing tests")
+        finally:
+            self._selection = None
+
     def run(self, argv, *, cwd, name, sha256, libtest=False):
         """Run admitted argv. Only the libtest adapter adds libtest arguments."""
         if not self.acquired:
@@ -160,8 +187,12 @@ class Commands:
                 proc.communicate()
         elapsed = time.monotonic() - start
         verification_error = None
+        passed = sum(int(match.group(1)) for value in summaries
+                     if (match := re.search(r"\b([0-9]+) passed\b", value)))
         if libtest and rc == 0 and "--list" not in argv:
-            if not summaries or not any(re.search(r"\b[1-9][0-9]* passed\b", value) for value in summaries):
+            empty = bool(summaries) and all(re.match(
+                r"^test result: ok\. 0 passed; 0 failed; 0 ignored;", value) for value in summaries)
+            if not summaries or (passed == 0 and (self._selection is None or not empty)):
                 verification_error = "libtest selected ZERO passing tests: " + repr(argv)
         result = dict(
             target=name, executable=str(executable), argv=argv,
@@ -171,8 +202,12 @@ class Commands:
             summaries=summaries, sha256=sha256, fixture=identity,
             log=str(log_path), process_host_sha256=digest(self.host),
             verification_error=verification_error,
+            passed_tests=passed,
+            listing=libtest and "--list" in argv,
         )
         self.results.append(result)
+        if libtest and self._selection is not None:
+            self._selection.append(result)
         (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
         print("WIN_TEST_RESULT", json.dumps(result), flush=True)
         if verification_error:
@@ -189,15 +224,16 @@ def run_tests(records, manifest, runtime):
     binary = records / "bin" / fixtures[0]["name"] if fixtures else None
     host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
     with Commands(records, source, host, binary) as commands:
-        for row in manifest["artifacts"]:
-            if row["test"]:
-                rc = commands.run(
-                    [str((records / "bin" / row["name"]).resolve()), *runtime],
-                    cwd=source / manifest["crate_dir"], name=row["target"],
-                    sha256=row["sha256"], libtest=True,
-                )
-                if rc:
-                    return rc
+        with commands._libtest_selection():
+            for row in manifest["artifacts"]:
+                if row["test"]:
+                    rc = commands.run(
+                        [str((records / "bin" / row["name"]).resolve()), *runtime],
+                        cwd=source / manifest["crate_dir"], name=row["target"],
+                        sha256=row["sha256"], libtest=True,
+                    )
+                    if rc:
+                        return rc
     if not commands.results:
         raise RuntimeError("no admitted test executables")
     print("WIN_TEST_COMPLETE", len(commands.results), "suites;", records / "results.json", flush=True)
