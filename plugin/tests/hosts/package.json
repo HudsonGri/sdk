@@ -6,7 +6,8 @@
   "description": "Exact external host inputs for Acyclic qualification",
   "scripts": {
     "test:shim": "bun test shim-contract.test.ts && bun test pi-bridge.test.ts",
-    "test:version-admission": "node --test --test-reporter=tap --test-concurrency=1 version-admission.test.mjs"
+    "test:version-admission": "node --test --test-reporter=tap --test-concurrency=1 version-admission.test.mjs",
+    "test:settings-publication": "node --test --test-reporter=tap --test-concurrency=1 settings-publication.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.278",
