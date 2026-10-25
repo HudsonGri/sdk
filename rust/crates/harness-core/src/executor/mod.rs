@@ -40,7 +40,7 @@ pub use execution_claim::{ExecutionClaim, ExecutionClaims};
 use journal::validate_journal;
 pub use journal::{
     ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
-    IndexedExecutionRecords,
+    IndexedExecutionRecords, StagedPayload,
 };
 mod replay;
 pub(crate) use replay::replay_execution;
@@ -101,6 +101,70 @@ pub mod unsettled_resume {
     pub(crate) const fn enabled() -> bool {
         false
     }
+}
+/// Test-only faults of model observation group commit.
+#[doc(hidden)]
+pub mod model_group_faults {
+    #[cfg(any(test, feature = "test-support"))]
+    thread_local! {
+        static CRASH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static REACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static REFUSE_ADOPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static ADOPTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    /// Arms (or disarms) a crash once a group is staged, before any of it is
+    /// appended, as if its process were killed there.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn crash_after_stage(armed: bool) {
+        CRASH.set(armed);
+        REACHED.set(false);
+    }
+    /// Whether a group on this thread stopped at the crash point.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn reached() -> bool {
+        REACHED.get()
+    }
+    /// Negative control: a restaged member is never adopted from the
+    /// earlier publication that staged it.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn refuse_adoption(refused: bool) {
+        REFUSE_ADOPTION.set(refused);
+        ADOPTED.set(0);
+    }
+    /// Members adopted from another publication on this thread since the
+    /// last [`refuse_adoption`].
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn adopted() -> usize {
+        ADOPTED.get()
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn record_adoption() {
+        ADOPTED.set(ADOPTED.get() + 1);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(crate) const fn record_adoption() {}
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn adoption_refused() -> bool {
+        REFUSE_ADOPTION.get()
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(crate) const fn adoption_refused() -> bool {
+        false
+    }
+    /// Never returns once armed: the staged group is never appended.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn crash_point() {
+        if CRASH.get() {
+            REACHED.set(true);
+            std::future::pending::<()>().await;
+        }
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(crate) async fn crash_point() {}
 }
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;

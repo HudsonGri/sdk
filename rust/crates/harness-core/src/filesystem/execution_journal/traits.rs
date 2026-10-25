@@ -348,32 +348,7 @@ where
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let native = match io.and_then(PreparationIo::original_native_work) {
-            Some(work) => {
-                work.remaining()?;
-                let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native staging requires an original dispatch owner",
-                })?;
-                owner.require_volume_grant(
-                    &self.volume,
-                    VolumeOperation::Write,
-                    &mut Some(
-                        &mut io
-                            .ok_or_else(|| {
-                                crate::executor::stock_boundary(
-                                    io,
-                                    crate::wire::ErrorCode::Invalid,
-                                    "native ledger",
-                                )
-                            })?
-                            .history_io(),
-                    ),
-                )?;
-                Some((owner, work))
-            }
-            None => None,
-        };
+        let native = self.native_stager(io)?;
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some((owner, work)) = native {
@@ -384,22 +359,47 @@ where
                 let file = self
                     .stage_with_io(operation, key, bytes, media, Some(&local))
                     .await?;
-                owner
-                    .verify(true, &mut Some(&mut local.history_io()))
-                    .await?;
                 let retained = file.logical_owned_bytes()?;
-                io.ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "native ledger",
-                    )
-                })?
-                .absorb_native_custody(local.into_native_custody(retained)?)?;
+                Self::finish_native_stage(owner, local, retained, io).await?;
                 return Ok(file);
             }
             let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
             traced(span, self.stage_with_io(operation, key, bytes, media, io)).await
+        })
+    }
+
+    fn stage_all<'a>(
+        &'a self,
+        operation: OperationId,
+        payloads: &'a [crate::executor::StagedPayload<'a>],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<FileRef>>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = self.native_stager(io)?;
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some((owner, work)) = native {
+                let local = PreparationIo::from_native_work(work)?;
+                owner
+                    .verify(true, &mut Some(&mut local.history_io()))
+                    .await?;
+                let files = self
+                    .stage_all_with_io(operation, payloads, Some(&local))
+                    .await?;
+                let mut retained = 0_u64;
+                for file in &files {
+                    retained = retained.checked_add(file.logical_owned_bytes()?).ok_or(
+                        Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Storage,
+                            reason: "native staged payload size overflow",
+                        },
+                    )?;
+                }
+                Self::finish_native_stage(owner, local, retained, io).await?;
+                return Ok(files);
+            }
+            let span = obs_span!("acyclic.harness.journal.stage", items = payloads.len());
+            traced(span, self.stage_all_with_io(operation, payloads, io)).await
         })
     }
 
@@ -486,5 +486,68 @@ where
             }
             Ok(outcome)
         })
+    }
+}
+
+impl<P, A, O> FilesystemExecutionJournal<P, A, O>
+where
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// The owner and original work that native staging runs under, checked
+    /// before the staging future is built.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_stager<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<
+        Option<(
+            &'a TaskJournalOwner<P>,
+            &'a acyclic_fs::NativeMaterializationWork,
+        )>,
+    > {
+        let Some(work) = io.and_then(PreparationIo::original_native_work) else {
+            return Ok(None);
+        };
+        work.remaining()?;
+        let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "native staging requires an original dispatch owner",
+        })?;
+        owner.require_volume_grant(
+            &self.volume,
+            VolumeOperation::Write,
+            &mut Some(
+                &mut io
+                    .ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "native ledger",
+                        )
+                    })?
+                    .history_io(),
+            ),
+        )?;
+        Ok(Some((owner, work)))
+    }
+
+    /// Re-verifies the owner after staging and hands the staged references'
+    /// custody to the caller's ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn finish_native_stage(
+        owner: &TaskJournalOwner<P>,
+        local: PreparationIo,
+        retained: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        owner
+            .verify(true, &mut Some(&mut local.history_io()))
+            .await?;
+        io.ok_or_else(|| {
+            crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "native ledger")
+        })?
+        .absorb_native_custody(local.into_native_custody(retained)?)
     }
 }

@@ -110,6 +110,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await
     }
 
+    /// Publishes several internal files in one generation (a group commit).
+    pub(in crate::filesystem) async fn put_internal_contents(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        items: &[ContentItem<'_, [u8]>],
+        maximum_bytes: u64,
+        key: &IdempotencyKey,
+        class: InternalContentClass,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<FileRef>>
+    where
+        A: 'static,
+        O: 'static,
+    {
+        self.put_contents_impl(
+            volume,
+            grant,
+            items,
+            maximum_bytes,
+            key,
+            Some(class),
+            None,
+            None,
+            io,
+        )
+        .await
+    }
+
     /// Stages a complete canonical attachment list for a manifest-backed event.
     pub async fn put_attachment_manifest(
         &self,

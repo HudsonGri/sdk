@@ -8,6 +8,8 @@ pub(crate) fn matches_turn(event: &ExecutionEvent, step: u32, purpose: ModelPurp
         if *recorded == step && *recorded_purpose == purpose)
 }
 
+/// Records one observation; see [`append_all`].
+#[cfg(test)]
 pub(crate) async fn append(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
@@ -16,63 +18,99 @@ pub(crate) async fn append(
     model: &ModelEvent,
     original: Option<&PreparationIo>,
 ) -> Result<()> {
+    append_all(
+        journal,
+        operation,
+        turn,
+        (&[key], std::slice::from_ref(model)),
+        original,
+        &mut 0,
+    )
+    .await
+}
+
+/// Records model observations that are ready together, in order. Each is
+/// inline when the journal admits its size; the rest are staged as one
+/// group commit (one generation) before any of them is appended, so a crash
+/// leaves staged-but-unappended payloads that recovery adopts. `appended`
+/// counts the observations appended so far, for a caller that resumes.
+pub(crate) async fn append_all(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    turn: (u32, ModelPurpose),
+    (keys, models): (&[&str], &[ModelEvent]),
+    original: Option<&PreparationIo>,
+    appended: &mut usize,
+) -> Result<()> {
     validate_journal(journal, original)?;
+    if keys.len() != models.len() {
+        return Err(stock_boundary(
+            original,
+            crate::wire::ErrorCode::Invalid,
+            "model observations and keys differ in number",
+        ));
+    }
+    if models.is_empty() {
+        return Ok(());
+    }
     let maximum = journal.inline_model_event_bytes();
     let (step, purpose) = turn;
-    if maximum == 0 {
-        let event = stage_json(journal, operation, key, model, original).await?;
-        return journal
-            .append(
-                operation,
-                key,
-                &ExecutionEvent::Model {
-                    step,
-                    purpose,
-                    event,
-                },
-                original,
-            )?
-            .await;
-    }
     #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(original)?;
     #[cfg(feature = "filesystem")]
     let io = scope.io();
     #[cfg(not(feature = "filesystem"))]
     let io = original;
-    #[cfg(feature = "filesystem")]
-    let _hold;
-    let bytes: acyclic_stream::OwnedBytes = match io {
-        #[cfg(feature = "filesystem")]
-        Some(io) => {
-            let bytes = io.encode(model, io.remaining()?.bytes_encoded, true)?;
-            _hold = io.guard_bytes(&bytes)?;
-            bytes
+    let mut encoded = crate::model::vec_with_capacity(models.len(), io)?;
+    for model in models {
+        encoded.push(encode_canonical(model, io)?);
+    }
+    let inline = |bytes: &[u8]| maximum != 0 && bytes.len() as u64 <= maximum;
+    let mut payloads = crate::model::vec_with_capacity(models.len(), io)?;
+    for (key, (bytes, _)) in keys.iter().zip(&encoded) {
+        if !inline(bytes) {
+            payloads.push((*key, bytes.as_ref()));
         }
-        _ => crate::contract::canonical_json_bytes(model)?.into(),
-    };
-    let event = if bytes.len() as u64 <= maximum {
-        let event = std::str::from_utf8(&bytes).map_err(|_| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "canonical model event is not UTF-8",
-            )
-        })?;
-        ExecutionEvent::ModelInline {
-            step,
-            purpose,
-            event: stock_string_copy(event, io)?,
-        }
+    }
+    let mut staged = if payloads.is_empty() {
+        Vec::new()
     } else {
-        let event = stage_bytes(journal, operation, key, &bytes, true, io).await?;
-        ExecutionEvent::Model {
-            step,
-            purpose,
-            event,
-        }
-    };
-    journal.append(operation, key, &event, io)?.await
+        stage_json_all(journal, operation, &payloads, io).await?
+    }
+    .into_iter();
+    drop(payloads);
+    super::model_group_faults::crash_point().await;
+    for (key, (bytes, _)) in keys.iter().zip(&encoded) {
+        let event = if inline(bytes) {
+            let event = std::str::from_utf8(bytes).map_err(|_| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "canonical model event is not UTF-8",
+                )
+            })?;
+            ExecutionEvent::ModelInline {
+                step,
+                purpose,
+                event: stock_string_copy(event, io)?,
+            }
+        } else {
+            ExecutionEvent::Model {
+                step,
+                purpose,
+                event: staged.next().ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "model observation group lost a member",
+                    )
+                })?,
+            }
+        };
+        journal.append(operation, key, &event, io)?.await?;
+        *appended += 1;
+    }
+    Ok(())
 }
 
 pub(crate) async fn load(

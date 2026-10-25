@@ -771,6 +771,7 @@ mod content;
 #[cfg(not(target_arch = "wasm32"))]
 mod context_input_reuse;
 mod final_message;
+mod group_commit;
 mod invocation_bounds;
 mod live_execution;
 mod output_bounds;

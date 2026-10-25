@@ -10,6 +10,31 @@ struct PreparedDispatchStep {
     started: bool,
 }
 
+/// The most observations one group commit stages together.
+const MAX_MODEL_GROUP: usize = 64;
+
+#[cfg(test)]
+thread_local! {
+    static DEFER_MODEL_GROUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Negative control: polls `build`'s future with observations recorded only
+/// once the provider's stream ends, never before a wait.
+#[cfg(test)]
+pub(crate) async fn model_group_deferred<F: std::future::Future>(
+    defer: bool,
+    build: impl FnOnce() -> F,
+) -> F::Output {
+    let mut future = std::pin::pin!(build());
+    std::future::poll_fn(|context| {
+        let prior = DEFER_MODEL_GROUP.replace(defer);
+        let polled = future.as_mut().poll(context);
+        DEFER_MODEL_GROUP.set(prior);
+        polled
+    })
+    .await
+}
+
 impl StockExecution<'_> {
     /// Cancellation covers preparation and response headers as well as chunks.
     pub(super) async fn cancellable_model_step(
@@ -441,6 +466,10 @@ impl StockExecution<'_> {
         Ok(())
     }
 
+    /// Records each observation before the turn waits on the provider again:
+    /// observations that are already available are staged together as one
+    /// group commit, then appended in order. Nothing waits on the provider,
+    /// and no error returns, while an admitted observation is unrecorded.
     async fn record_model_events(
         &self,
         journal: &dyn ExecutionJournal,
@@ -450,26 +479,33 @@ impl StockExecution<'_> {
         admission: &mut ModelEventAdmission,
         stream: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
     ) -> Result<Vec<ModelEvent>> {
+        use futures::FutureExt as _;
         let (step, purpose, purpose_key) = turn;
         let io = self.io;
+        let mut recorded = observed.len();
         {
             let mut stream = stream;
+            let mut ready = None;
             loop {
-                #[cfg(feature = "filesystem")]
-                let next = if let Some(cancellation) = self
-                    .original_context()
-                    .and_then(crate::runtime::TaskContext::invocation_cancellation)
-                {
-                    let next = {
-                        let cancelled = std::pin::pin!(cancellation.cancelled());
-                        let event = std::pin::pin!(stream.next());
-                        match futures::future::select(cancelled, event).await {
-                            Either::Left(_) => None,
-                            Either::Right((event, _)) => Some(event),
-                        }
-                    };
-                    match next {
-                        Some(event) => event,
+                let next = if let Some(next) = ready.take() {
+                    next
+                } else {
+                    #[cfg(test)]
+                    let deferred = DEFER_MODEL_GROUP.get();
+                    #[cfg(not(test))]
+                    let deferred = false;
+                    if !deferred {
+                        self.record_model_group(
+                            journal,
+                            operation_id,
+                            turn,
+                            &observed,
+                            &mut recorded,
+                        )
+                        .await?;
+                    }
+                    match self.next_model_event(&mut stream).await {
+                        Some(next) => next,
                         None => {
                             drop(stream);
                             if !admission.completed {
@@ -493,40 +529,95 @@ impl StockExecution<'_> {
                             ));
                         }
                     }
-                } else {
-                    stream.next().await
                 };
-                #[cfg(not(feature = "filesystem"))]
-                let next = stream.next().await;
                 let Some(event) = next else {
                     break;
                 };
-                let event = event?;
-                let index = observed.len();
-                let key = with_history_io(io, |work| {
-                    preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
-                })?;
-                stock_vec_push(&mut observed, event, io)?;
-                let event = observed.last().ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "model observation was not retained",
-                    )
-                })?;
-                admission.observe(event, self.stock.limits, io)?;
-                super::model_observation::append(
-                    journal,
-                    operation_id,
-                    &key,
-                    (step, purpose),
-                    event,
-                    io,
-                )
-                .await?;
+                let before = observed.len();
+                let admitted = match event {
+                    Ok(event) => stock_vec_push(&mut observed, event, io).and_then(|()| {
+                        let event = observed.last().ok_or_else(|| {
+                            stock_boundary(
+                                io,
+                                crate::wire::ErrorCode::Storage,
+                                "model observation was not retained",
+                            )
+                        })?;
+                        admission.observe(event, self.stock.limits, io)
+                    }),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = admitted {
+                    let admitted = observed.get(..before).unwrap_or_default();
+                    self.record_model_group(journal, operation_id, turn, admitted, &mut recorded)
+                        .await?;
+                    return Err(error);
+                }
+                if observed.len() - recorded < MAX_MODEL_GROUP {
+                    ready = stream.next().now_or_never();
+                }
             }
         }
+        self.record_model_group(journal, operation_id, turn, &observed, &mut recorded)
+            .await?;
         Ok(observed)
+    }
+
+    /// Waits for the provider's next observation; `None` once the
+    /// invocation is cancelled first.
+    async fn next_model_event(
+        &self,
+        stream: &mut (impl futures::Stream<Item = Result<ModelEvent>> + Unpin),
+    ) -> Option<Option<Result<ModelEvent>>> {
+        #[cfg(feature = "filesystem")]
+        if let Some(cancellation) = self
+            .original_context()
+            .and_then(crate::runtime::TaskContext::invocation_cancellation)
+        {
+            let cancelled = std::pin::pin!(cancellation.cancelled());
+            let event = std::pin::pin!(stream.next());
+            return match futures::future::select(cancelled, event).await {
+                Either::Left(_) => None,
+                Either::Right((event, _)) => Some(event),
+            };
+        }
+        Some(stream.next().await)
+    }
+
+    /// Records every unrecorded observation as one group.
+    async fn record_model_group(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        turn: (u32, ModelPurpose, &str),
+        observed: &[ModelEvent],
+        recorded: &mut usize,
+    ) -> Result<()> {
+        let (step, purpose, purpose_key) = turn;
+        let io = self.io;
+        let Some(events) = observed
+            .get(*recorded..)
+            .filter(|events| !events.is_empty())
+        else {
+            return Ok(());
+        };
+        let mut keys = crate::model::vec_with_capacity(events.len(), io)?;
+        for index in *recorded..observed.len() {
+            keys.push(with_history_io(io, |work| {
+                preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
+            })?);
+        }
+        let mut borrowed = crate::model::vec_with_capacity(keys.len(), io)?;
+        borrowed.extend(keys.iter().map(String::as_str));
+        super::model_observation::append_all(
+            journal,
+            operation_id,
+            (step, purpose),
+            (&borrowed, events),
+            io,
+            recorded,
+        )
+        .await
     }
 
     async fn require_model_producer(&self) -> Result<()> {

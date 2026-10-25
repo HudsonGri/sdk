@@ -136,7 +136,7 @@ struct SegmentView<'a> {
 }
 
 #[derive(Serialize)]
-struct ProjectionView<'a> {
+pub(super) struct ProjectionView<'a> {
     context: ContextView<'a>,
     canonical: &'a Option<FileRef>,
     checkpoint: &'a Option<FileRef>,
@@ -625,6 +625,16 @@ pub(super) async fn stage_projection(
     prepared: &crate::model::PreparedModelRequest,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
+    let view = projection_view(projection, prepared, io)?;
+    stage_json(journal, operation, key, &view, io).await
+}
+
+/// The persisted form of a projection, validated against its request.
+pub(super) fn projection_view<'a>(
+    projection: &'a ResponseProjection,
+    prepared: &'a crate::model::PreparedModelRequest,
+    io: Option<&PreparationIo>,
+) -> Result<ProjectionView<'a>> {
     // This is the sole persisted projection schema, including main's inline
     // context. Validate the combined value before either its event or request
     // can be published; per-message admission is insufficient.
@@ -635,23 +645,16 @@ pub(super) async fn stage_projection(
         prepared.admitted_limits(),
         io,
     )?;
-    stage_json(
-        journal,
-        operation,
-        key,
-        &ProjectionView {
-            context: ContextView {
-                messages,
-                metadata: &projection.context.metadata,
-                current_input_index: projection.context.current_input_index,
-            },
-            canonical: &projection.canonical,
-            checkpoint: &projection.checkpoint,
-            working: &projection.working,
+    Ok(ProjectionView {
+        context: ContextView {
+            messages,
+            metadata: &projection.context.metadata,
+            current_input_index: projection.context.current_input_index,
         },
-        io,
-    )
-    .await
+        canonical: &projection.canonical,
+        checkpoint: &projection.checkpoint,
+        working: &projection.working,
+    })
 }
 
 /// Read checkpoint metadata without reconstructing the historical request.

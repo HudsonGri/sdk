@@ -56,6 +56,17 @@ impl ExecutionRecordQuery<'_> {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExecutionJournalCacheId(OperationId);
 
+/// One payload of [`ExecutionJournal::stage_all`].
+#[derive(Clone, Copy, Debug)]
+pub struct StagedPayload<'a> {
+    /// The payload's own retry key within its operation.
+    pub idempotency_key: &'a str,
+    /// The immutable bytes.
+    pub bytes: &'a [u8],
+    /// The bytes' media type.
+    pub media_type: &'static str,
+}
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Authenticates private working cuts issued by this journal binding.
@@ -180,6 +191,34 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         _io: Option<&'a PreparationIo>,
     ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, FileRef>>> {
         Ok(None)
+    }
+
+    /// Stages several immutable private payloads before any observation
+    /// referring to them is appended: a group commit. A journal with
+    /// generations publishes them together; the group is one retry unit, so
+    /// a caller restages exactly the same sequence or none of it.
+    fn stage_all<'a>(
+        &'a self,
+        operation_id: OperationId,
+        payloads: &'a [StagedPayload<'a>],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<FileRef>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let mut files = crate::model::vec_with_capacity(payloads.len(), io)?;
+            for payload in payloads {
+                files.push(
+                    self.stage(
+                        operation_id,
+                        payload.idempotency_key,
+                        payload.bytes,
+                        payload.media_type,
+                        io,
+                    )?
+                    .await?,
+                );
+            }
+            Ok(files)
+        })
     }
 
     /// Observes an already staged immutable payload by its original operation and retry key.
