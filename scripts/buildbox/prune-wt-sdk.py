@@ -11,6 +11,13 @@ import sys
 import time
 
 def remove_tree(path):
+    # Preparation markers share their source copy's lease and retirement path.
+    # Never traverse a link, including a substituted retirement entry.
+    if path.is_symlink():
+        raise OSError('refusing symlink retirement: '+str(path))
+    if path.is_file():
+        path.unlink()
+        return
     # Test fixtures and tools can leave unreadable directories. Make each
     # directory traversable before descending; never follow a directory link.
     path.chmod(path.stat().st_mode | 0o700)
@@ -41,7 +48,7 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
         fcntl.flock(global_lock,fcntl.LOCK_EX)
         groups={}
         for p in root.iterdir():
-            if p.is_dir() and not p.is_symlink():
+            if not p.is_symlink() and (p.is_dir() or (p.name.endswith('.prep') and p.is_file())):
                 # Retirement retains the original lease identity. A failed
                 # removal must not grow another .prune- prefix on every call.
                 name=p.name.removeprefix('.prune-').removesuffix('.prep')

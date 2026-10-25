@@ -1,5 +1,6 @@
 import fcntl
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,48 @@ class RetirementTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    def test_prep_files_share_age_count_and_source_lease_with_directories(self):
+        root=self.d/'preparations';root.mkdir();locks=self.d/'locks';locks.mkdir()
+        mirror=self.d/'mirror';now=100000
+        for name in ['old.prep','leased.prep','fresh.prep','active.prep']:
+            (root/name).write_text('preparation marker')
+            os.utime(root/name,(now-50000,)*2)
+        os.utime(root/'fresh.prep',(now,)*2)
+        (root/'leased').mkdir();os.utime(root/'leased',(now-50000,)*2)
+        outside=self.d/'outside';outside.write_text('must survive')
+        (root/'link.prep').symlink_to(outside)
+        with (locks/'leased.lock').open('a') as lease:
+            fcntl.flock(lease,fcntl.LOCK_SH)
+            result=pruner.prune(root,mirror,locks,active={str(root/'active.prep')},now=now)
+            self.assertEqual(result['removed'],['old'])
+            self.assertEqual(set(result['held']),{'leased','active'})
+            self.assertTrue((root/'leased').is_dir());self.assertTrue((root/'leased.prep').is_file())
+            self.assertTrue((root/'fresh.prep').is_file());self.assertEqual(outside.read_text(),'must survive')
+        result=pruner.prune(root,mirror,locks,active=set(),now=now,max_count=0)
+        self.assertEqual(set(result['removed']),{'leased','fresh','active'})
+        self.assertEqual([p.name for p in root.iterdir()],['link.prep'])
+        # Actual deployed source, captured before this change, leaks old markers.
+        (root/'old.prep').write_text('abandoned')
+        old={'__name__':'captured_deployed_pruner'}
+        exec(compile((HERE/'fixtures/prep-retirement/deployed-pruner.py.txt').read_text(),
+                     'actual-deployed-pruner','exec'),old)
+        self.assertEqual(old['prune'](root,mirror,locks,active=set(),now=now,max_count=0)['remaining'],0)
+        self.assertTrue((root/'old.prep').exists())
+
+    def test_failed_prep_unlink_reuses_tomb_and_preserves_peer_cleanup(self):
+        root=self.d/'markers';root.mkdir();locks=self.d/'locks';mirror=self.d/'mirror'
+        for name in ['a.prep','b.prep']:(root/name).write_text(name)
+        remove=pruner.remove_tree
+        def retire(path):
+            if path.name=='.prune-a.prep':raise PermissionError('marker ownership control')
+            remove(path)
+        for _ in range(2):
+            with patch.object(pruner,'remove_tree',side_effect=retire):
+                result=pruner.prune(root,mirror,locks,max_count=0,active=set())
+            self.assertEqual(result['errors'][0]['source'],'a')
+            self.assertEqual([p.name for p in root.iterdir()],['.prune-a.prep'])
+        self.assertEqual(pruner.prune(root,mirror,locks,max_count=0,active=set())['removed'],['a'])
 
     def test_failed_retirement_keeps_its_name_and_original_source_lease(self):
         root=self.d/'retire';root.mkdir();source=root/'old';source.mkdir()

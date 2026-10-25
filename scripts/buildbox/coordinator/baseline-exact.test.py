@@ -33,6 +33,34 @@ CAPTURED_HEAD = '32b79969bc504e875bb6e9f65611bf0d02ea45e9'
 
 
 class ExactBaselineTests(unittest.TestCase):
+    def test_1504_captured_scope_cannot_use_its_historical_baseline_labels(self):
+        captured=(FIXTURES/'route-1504/checks.txt').read_text()
+        scope=json.loads(captured.splitlines()[0].removeprefix('GATE_SCOPE '))
+        self.assertEqual(scope['base'],CAPTURED_HEAD)
+        self.assertIn('GATE_CLIPPY rc=0\n',captured)
+        self.assertIn('7989aaf9c465c04e0f2044854afefa8cd4136344.log',captured)
+        ancestor='ecd0e67effe6d71631ba4acb66c918074f40df59'
+        self.assertIn('features=Q:/lanes/main-gate/wide/'+ancestor+'.log',captured)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'wide').mkdir();(root/'clippy').mkdir()
+            native=root/'wide'/(CAPTURED_HEAD+'.log');native.write_text(PHASES)
+            lint=root/'clippy'/(CAPTURED_HEAD+'.log')
+            lint.write_text((FIXTURES/'main-32b799-complete-clippy.txt').read_text())
+            stale=root/'wide'/(ancestor+'.log')
+            stale.write_text(completed_clippy_phase(PHASES).replace(CAPTURED_HEAD,ancestor))
+            os.utime(stale,(max(native.stat().st_mtime,lint.stat().st_mtime)+10,)*2)
+            alerts=f'MAIN_WIDE RED {CAPTURED_HEAD}: captured\nMAIN_WIDE RED {ancestor}: captured\n'
+            from unittest.mock import patch
+            with patch.object(baseline.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+                for phase,expected in [('clippy',lint),('features',native)]:
+                    self.assertEqual(baseline.select(root,scope['base'],root,alerts,phase,True),expected)
+                    # Removing exact selection reproduces the historical
+                    # ancestor comparison even though this base has results.
+                    self.assertEqual(baseline.select(root,scope['base'],root,alerts,phase,False),stale)
+                native.unlink()
+                with self.assertRaisesRegex(RuntimeError,'no complete exact-base main features'):
+                    baseline.select(root,scope['base'],root,alerts,'features',True)
+
     def test_real_requalified_clippy_replaces_damaged_stream_only_for_its_exact_phase(self):
         complete = (FIXTURES/'main-32b799-complete-clippy.txt').read_text()
         self.assertTrue(baseline.check_complete(complete, 'clippy'))
