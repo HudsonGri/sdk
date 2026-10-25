@@ -201,9 +201,7 @@ impl PublicationDomain {
             quota.observer()?.allocation_attempt(bytes)?;
         }
         let _custody = quota.into_custody()?;
-        Ok(Arc::new(Self {
-            _custody,
-        }))
+        Ok(Arc::new(Self { _custody }))
     }
 }
 
