@@ -1,6 +1,69 @@
 use super::*;
 
 #[tokio::test]
+async fn metadata_pages_skip_full_entries_but_retries_check_the_original_payload() {
+    use acyclic_test_support::differential::observe_async;
+    use journal::FullEntryDecode;
+    let (_, _, _, _, host) = fixture().await;
+    let owner = placement();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
+    let delivered = event(2, json!(1));
+    let admitted = host
+        .deliver(owner.clone(), delivered.clone())
+        .await
+        .unwrap();
+    let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+    let unknown = event(3, json!(1));
+    let (metadata, decoded): (_, Vec<FullEntryDecode>) = observe_async(async {
+        assert!(journal.retry(&unknown).await?.is_none());
+        journal.reject_result_identity(&unknown).await?;
+        journal
+            .check_commands(
+                &MachineTransition {
+                    state: json!(1),
+                    status: MachineStatus::Suspended,
+                    commands: vec![outbox::command()],
+                },
+                unknown.operation_id,
+            )
+            .await?;
+        assert!(journal.admission(None)?.await?.0.is_some());
+        Ok::<(), Error>(())
+    })
+    .await;
+    metadata.unwrap();
+    assert!(
+        decoded.is_empty(),
+        "metadata decoded full actor records: {decoded:?}"
+    );
+    let (retry, decoded): (_, Vec<FullEntryDecode>) =
+        observe_async(journal.retry(&delivered)).await;
+    assert_eq!(retry.unwrap().unwrap().snapshot, admitted);
+    assert_eq!(
+        decoded,
+        [FullEntryDecode(1)],
+        "retry decoded unrelated record bodies"
+    );
+    let changed = Event {
+        input: json!(2),
+        ..delivered
+    };
+    assert!(matches!(
+        journal.retry(&changed).await,
+        Err(Error::Conflict(_))
+    ));
+    let (head, decoded): (_, Vec<FullEntryDecode>) = observe_async(journal.load()).await;
+    assert_eq!(head.unwrap().last.snapshot, admitted);
+    assert_eq!(
+        decoded,
+        [FullEntryDecode(1)],
+        "loading the current head decoded the initial snapshot again"
+    );
+}
+
+#[tokio::test]
 async fn journal_metadata_reads_do_not_materialize_admission_and_checkpoint() {
     use acyclic_test_support::differential::observe_async;
     use journal::EntryRead;
@@ -54,6 +117,42 @@ async fn journal_metadata_reads_do_not_materialize_admission_and_checkpoint() {
         host.recover(owner).await.unwrap().checkpoint.state,
         json!(1)
     );
+}
+
+#[tokio::test]
+async fn replay_decodes_workflow_records_without_duplicate_snapshot_bodies() {
+    use acyclic_test_support::differential::observe_async;
+    use journal::FullEntryDecode;
+    let (stream, _, _, _, host) = fixture().await;
+    let owner = placement();
+    host.place(owner.clone(), counter_identity(), json!(0))
+        .await
+        .unwrap();
+    host.deliver(owner.clone(), event(2, json!(1)))
+        .await
+        .unwrap();
+    let journal = host.journal(&host.package().unwrap(), &owner).unwrap();
+    let (replayed, decoded): (_, Vec<FullEntryDecode>) =
+        observe_async(journal.replay(0, 64, None).unwrap()).await;
+    let (records, _) = replayed.unwrap();
+    let [record] = records.as_slice() else {
+        panic!("missing replayed transition")
+    };
+    assert_eq!(record.prior.revision, 0);
+    assert_eq!(record.prior.state, json!(0));
+    assert_eq!(record.input, json!(1));
+    assert_eq!(record.transition.state, json!(1));
+    assert!(
+        decoded.is_empty(),
+        "replay decoded duplicate snapshot bodies: {decoded:?}"
+    );
+    let mut changed = host.package().unwrap().manifest;
+    changed.effects.push("changed".into());
+    let changed = Journal::new(stream, changed, owner).unwrap();
+    assert!(matches!(
+        changed.replay(0, 64, None).unwrap().await,
+        Err(Error::Conflict(_))
+    ));
 }
 
 #[tokio::test]

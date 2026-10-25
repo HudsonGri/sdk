@@ -32,25 +32,42 @@ impl<P: StreamProvider> Journal<P> {
         if maximum == 0 {
             return Err(Error::Invalid("invalid actor replay page size".into()));
         }
-        let current = self.load().await?;
-        if after >= current.last.snapshot.checkpoint.revision {
+        let tail = self.tail().await?;
+        let first = self.record::<identities::ReplayBounds>(0).await?.0;
+        self.require_manifest(
+            &first
+                .bootstrap
+                .ok_or_else(|| Error::Storage("actor journal has no admission".into()))?
+                .manifest,
+        )?;
+        let revision = if tail == 1 {
+            first.snapshot.checkpoint.revision
+        } else {
+            self.record::<identities::ReplayBounds>(tail - 1)
+                .await?
+                .0
+                .snapshot
+                .checkpoint
+                .revision
+        };
+        if after >= revision {
             return Ok(Vec::new());
         }
         // The position is published in the checkpoint's transaction, rather
         // than reconstructed by scanning all earlier pages on every request.
         let mut from = self.revision_position(after).await?;
-        if from == 0 || from >= current.tail {
+        if from == 0 || from >= tail {
             return Err(Error::Storage(
                 "actor revision index is out of range".into(),
             ));
         }
         let mut expected = after;
         let mut result = Vec::new();
-        while from < current.tail && result.len() < maximum as usize {
+        while from < tail && result.len() < maximum as usize {
             let page = self
-                .page(
+                .page::<identities::ReplayEntry>(
                     from,
-                    PAGE.min(u32::try_from(current.tail - from).unwrap_or(PAGE)),
+                    PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)),
                 )
                 .await?;
             if page.is_empty() {

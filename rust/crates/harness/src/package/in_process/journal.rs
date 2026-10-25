@@ -10,6 +10,7 @@ use futures::TryStreamExt;
 
 const PAGE: u32 = 64;
 mod admission;
+mod identities;
 mod replay;
 pub(super) mod subscription;
 
@@ -40,6 +41,17 @@ pub(super) struct Loaded {
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct EntryRead(pub u64);
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct FullEntryDecode(pub u64);
+
+#[cfg(test)]
+fn record_decode<T>(sequence: u64) {
+    if std::any::type_name::<T>() == std::any::type_name::<Entry>() {
+        acyclic_test_support::differential::record(FullEntryDecode(sequence));
+    }
+}
 
 pub(super) struct Journal<P: StreamProvider> {
     stream: Arc<P>,
@@ -88,6 +100,10 @@ impl<P: StreamProvider> Journal<P> {
     }
 
     async fn entry(&self, sequence: u64) -> Result<(Entry, CommitId)> {
+        self.record(sequence).await
+    }
+
+    async fn record<T: serde::de::DeserializeOwned>(&self, sequence: u64) -> Result<(T, CommitId)> {
         let mut records = self
             .stream
             .read(ReadRequest {
@@ -107,6 +123,8 @@ impl<P: StreamProvider> Journal<P> {
         }
         #[cfg(test)]
         acyclic_test_support::differential::record(EntryRead(sequence));
+        #[cfg(test)]
+        record_decode::<T>(sequence);
         Ok((
             serde_json::from_slice(&record.value).map_err(|error| codec_error(&error))?,
             record.commit_id,
@@ -122,22 +140,15 @@ impl<P: StreamProvider> Journal<P> {
         if tail == 0 {
             return Err(Error::Storage("empty actor journal".into()));
         }
-        let mut first = self.entry(0).await?;
-        let bootstrap = first
-            .0
-            .bootstrap
-            .take()
-            .ok_or_else(|| Error::Storage("actor journal has no admission".into()))?;
-        if bootstrap.manifest != self.manifest {
-            return Err(Error::Conflict(
-                "actor package identity or bindings changed".into(),
-            ));
-        }
-        let (last, head) = if tail == 1 {
-            first.0.bootstrap = Some(bootstrap.clone());
-            first
+        let (bootstrap, last, head) = if tail == 1 {
+            let (mut first, head) = self.entry(0).await?;
+            let bootstrap = self.require_admission(first.bootstrap.take())?;
+            first.bootstrap = Some(bootstrap.clone());
+            (bootstrap, first, head)
         } else {
-            self.entry(tail - 1).await?
+            let bootstrap = self.bootstrap().await?;
+            let (last, head) = self.entry(tail - 1).await?;
+            (bootstrap, last, head)
         };
         Ok(Some(Loaded {
             tail,
@@ -168,18 +179,24 @@ impl<P: StreamProvider> Journal<P> {
     }
 
     async fn bootstrap(&self) -> Result<Bootstrap> {
-        let bootstrap = self
-            .entry(0)
-            .await?
-            .0
-            .bootstrap
-            .ok_or_else(|| Error::Storage("actor journal has no admission".into()))?;
-        if bootstrap.manifest != self.manifest {
+        let bootstrap = self.record::<identities::Admission>(0).await?.0.bootstrap;
+        self.require_admission(bootstrap)
+    }
+
+    fn require_admission(&self, bootstrap: Option<Bootstrap>) -> Result<Bootstrap> {
+        let bootstrap =
+            bootstrap.ok_or_else(|| Error::Storage("actor journal has no admission".into()))?;
+        self.require_manifest(&bootstrap.manifest)?;
+        Ok(bootstrap)
+    }
+
+    fn require_manifest(&self, manifest: &Manifest) -> Result<()> {
+        if manifest != &self.manifest {
             return Err(Error::Conflict(
                 "actor package identity or bindings changed".into(),
             ));
         }
-        Ok(bootstrap)
+        Ok(())
     }
 
     pub fn require_owner(&self, loaded: &Loaded) -> Result<()> {
@@ -341,7 +358,11 @@ impl<P: StreamProvider> Journal<P> {
         }
     }
 
-    async fn page(&self, from: u64, maximum: u32) -> Result<Vec<Entry>> {
+    async fn page<T: serde::de::DeserializeOwned>(
+        &self,
+        from: u64,
+        maximum: u32,
+    ) -> Result<Vec<T>> {
         let mut records = self
             .stream
             .read(ReadRequest {
@@ -361,6 +382,8 @@ impl<P: StreamProvider> Journal<P> {
             if record.sequence != expected {
                 return Err(Error::Storage("actor history lost its cursor".into()));
             }
+            #[cfg(test)]
+            record_decode::<T>(record.sequence);
             expected += 1;
             entries
                 .push(serde_json::from_slice(&record.value).map_err(|error| codec_error(&error))?);
@@ -373,13 +396,17 @@ impl<P: StreamProvider> Journal<P> {
         let mut from = 0;
         while from < tail {
             let page = self
-                .page(from, PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)))
+                .page::<identities::Entry>(
+                    from,
+                    PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)),
+                )
                 .await?;
             if page.is_empty() {
                 return Err(Error::Storage("actor retry history is incomplete".into()));
             }
+            let page_start = from;
             from += page.len() as u64;
-            for entry in page {
+            for (offset, entry) in page.into_iter().enumerate() {
                 if entry.workflow.as_ref().is_some_and(|record| {
                     record
                         .transition
@@ -395,7 +422,8 @@ impl<P: StreamProvider> Journal<P> {
                     && (existing.operation_id == event.operation_id
                         || existing.idempotency_key == event.idempotency_key)
                 {
-                    if existing != event {
+                    let (entry, _) = self.entry(page_start + offset as u64).await?;
+                    if entry.event.as_ref() != Some(event) {
                         return Err(Error::Conflict(
                             "actor retry identity is already bound to another input".into(),
                         ));
@@ -431,18 +459,20 @@ impl<P: StreamProvider> Journal<P> {
         let mut from = 1;
         while from < tail {
             let page = self
-                .page(from, PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)))
+                .page::<identities::Entry>(
+                    from,
+                    PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)),
+                )
                 .await?;
             if page.is_empty() {
                 return Err(Error::Storage("actor command history is incomplete".into()));
             }
             from += page.len() as u64;
             for record in page.into_iter().filter_map(|entry| entry.workflow) {
-                if record
-                    .operation_ids()
-                    .any(|operation| identities.contains(&operation))
+                if identities.contains(&record.operation_id)
                     || record.transition.commands.iter().any(|command| {
-                        identities.contains(&effect_result_operation(command.operation_id))
+                        identities.contains(&command.operation_id)
+                            || identities.contains(&effect_result_operation(command.operation_id))
                     })
                 {
                     return Err(Error::Conflict(
@@ -459,7 +489,10 @@ impl<P: StreamProvider> Journal<P> {
         let mut from = 1;
         while from < tail {
             let page = self
-                .page(from, PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)))
+                .page::<identities::Entry>(
+                    from,
+                    PAGE.min(u32::try_from(tail - from).unwrap_or(PAGE)),
+                )
                 .await?;
             if page.is_empty() {
                 return Err(Error::Storage("actor effect history is incomplete".into()));
