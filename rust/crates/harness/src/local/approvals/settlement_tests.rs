@@ -149,7 +149,8 @@ async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<(u64, u
     let requests = pending(&observed);
     assert_eq!(requests.len(), 1);
     let request = requests[0];
-    let attention_flushes = attention_trial(&harness, task, request, &files, flushes, eager).await?;
+    let attention_flushes =
+        attention_trial(&harness, task, request, &files, flushes, eager).await?;
     let Some(Stage::Automatic(review)) = harness
         .approval_stage(task, request, &files, &observed, true)
         .await?
