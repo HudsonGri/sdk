@@ -5,14 +5,24 @@ use wire::actors_service_server::ActorsService;
 #[path = "admission_tests.rs"]
 mod admission_tests;
 
+fn observation_order(snapshot: &Snapshot) -> (u64, u64, u64, bool, std::cmp::Reverse<usize>) {
+    (
+        snapshot.placement.epoch,
+        snapshot.checkpoint.revision,
+        snapshot.consumed,
+        snapshot.cancelled,
+        std::cmp::Reverse(snapshot.pending.len()),
+    )
+}
+
 impl Actors {
     async fn remember_actor(deployment: &Deployment, id: String, snapshot: Snapshot) {
         let mut actors = deployment.actors.lock().await;
-        // RPC completion order is not placement order. Late replies from an old
-        // owner cannot regress the fence used by inspection/checkpoint requests.
+        // RPC completion order is not journal order. Inspection must preserve
+        // placement, checkpoint progress and terminal cancellation together.
         if actors
             .get(&id)
-            .is_none_or(|current| current.placement.epoch <= snapshot.placement.epoch)
+            .is_none_or(|current| observation_order(current) <= observation_order(&snapshot))
         {
             actors.insert(id, snapshot);
         }

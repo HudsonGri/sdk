@@ -190,3 +190,84 @@ async fn worker_invocation_holds_the_shared_retirement_lease()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn actor_inspection_preserves_progress_for_every_pair_of_reply_orders()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use acyclic_harness::{
+        AgentId,
+        workflow::{MachineCheckpoint, MachineStatus},
+    };
+    let storage =
+        acyclic_harness::filesystem::MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+    let command = acyclic_harness::workflow::WorkflowCommand {
+        operation_id: acyclic_harness::OperationId::new(),
+        kind: "fixture.effect".into(),
+        payload: storage
+            .stage(
+                acyclic_harness::OperationId::new(),
+                "input.json",
+                b"{}",
+                "application/json",
+                "input.json",
+            )
+            .await?,
+    };
+    let deployment = Deployment {
+        request: wire::DeploymentRequest::default(),
+        revision: 1,
+        runtime: Instance::Workflow(Arc::new(Uncalled)),
+        actors: Arc::new(Mutex::new(BTreeMap::new())),
+    };
+    let observations: Vec<_> = [
+        (1, 0, 0, false, 0),
+        (1, 1, 1, false, 1),
+        (1, 1, 1, false, 0),
+        (1, 2, 2, false, 1),
+        (1, 2, 2, false, 0),
+        (1, 2, 3, false, 0),
+        (1, 2, 3, true, 0),
+        (2, 2, 3, false, 0),
+    ]
+    .into_iter()
+    .map(|(epoch, revision, consumed, cancelled, pending)| Snapshot {
+        placement: Placement {
+            actor: AgentId::from_bytes([1; 16]),
+            node: "owner".into(),
+            epoch,
+        },
+        checkpoint: MachineCheckpoint {
+            machine: MachineIdentity {
+                name: "fixture".into(),
+                version: "1".into(),
+                digest: [1; 32],
+            },
+            revision,
+            state: serde_json::json!({"revision":revision}),
+        },
+        consumed,
+        status: if cancelled {
+            MachineStatus::Failed {
+                message: "actor cancelled".into(),
+            }
+        } else {
+            MachineStatus::Suspended
+        },
+        pending: vec![command.clone(); pending],
+        cancelled,
+    })
+    .collect();
+    for (a, first) in observations.iter().enumerate() {
+        for (b, second) in observations.iter().enumerate() {
+            deployment.actors.lock().await.clear();
+            Actors::remember_actor(&deployment, "actor".into(), first.clone()).await;
+            Actors::remember_actor(&deployment, "actor".into(), second.clone()).await;
+            assert_eq!(
+                deployment.actors.lock().await.get("actor"),
+                observations.get(a.max(b)),
+                "reply order {a},{b}"
+            );
+        }
+    }
+    Ok(())
+}
