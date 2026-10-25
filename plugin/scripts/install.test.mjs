@@ -2,25 +2,15 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
-  chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   realpathSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const plugin = dirname(dirname(fileURLToPath(import.meta.url)));
+import { plugin, target, executableName, nativeVersion, scratch, digest, fixture, install } from "./install-fixture.mjs";
 const require = createRequire(import.meta.url);
-const { hostTarget, linuxLibc, sha256File } = require("../bin/verify.js");
-const target = hostTarget();
-const executableName = process.platform === "win32" ? "acyclic.exe" : "acyclic";
-const scratch = process.env.ACYCLIC_TEST_TEMP_ROOT
-  || join(dirname(plugin), "target", "plugin-installer-tests");
-mkdirSync(scratch, { recursive: true });
-
-function digest(path) {
-  return sha256File(path);
-}
+const { linuxLibc } = require("../bin/verify.js");
 
 function treeSnapshot(root, prefix = "") {
   return readdirSync(root, { withFileTypes: true })
@@ -33,96 +23,6 @@ function treeSnapshot(root, prefix = "") {
     })
     .sort();
 }
-
-function fixture() {
-  const root = mkdtempSync(join(scratch, "install-"));
-  const bin = join(root, "bin");
-  cpSync(join(plugin, "bin"), bin, {
-    recursive: true,
-    filter: source => !basename(source).startsWith("acyclic."),
-  });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ version: "9.8.7-test.1" }));
-  const source = join(bin, target, executableName);
-  mkdirSync(dirname(source), { recursive: true });
-  copyFileSync(process.execPath, source);
-  // Package managers ship executables writable by their owner; the host
-  // interpreter may be installed read-only (Homebrew installs node 0555).
-  chmodSync(source, 0o755);
-  // The copy stands in for a self-contained release binary, which an
-  // official Node build is. A Homebrew Node links a sibling libnode and
-  // cannot run from another directory.
-  const relocated = spawnSync(source, ["--version"], { encoding: "utf8" });
-  assert.equal(
-    relocated.stdout?.trim(),
-    process.version,
-    `these tests need a relocatable Node (an official build), not ${process.execPath}: ${relocated.stderr}`,
-  );
-  writeFileSync(join(bin, "platform-binaries.json"), JSON.stringify({
-    version: 1,
-    targets: { [target]: { path: `${target}/${executableName}`, sha256: digest(source) } },
-  }));
-  return { root, bin, source, installed: join(bin, executableName) };
-}
-
-function install(bin, crash, failure, extraEnvironment = {}) {
-  return spawnSync(process.execPath, [join(bin, "install.js")], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      ACYCLIC_INSTALL_SKIP_DRAIN: "1",
-      ...extraEnvironment,
-      ...(crash ? { ACYCLIC_INSTALL_TEST_CRASH: crash } : {}),
-      ...(failure ? { ACYCLIC_INSTALL_TEST_FAIL: failure } : {}),
-    },
-  });
-}
-
-test("installer publishes the exact release certification receipt", () => {
-  const value = fixture();
-  const state = mkdtempSync(join(scratch, "state-"));
-  try {
-    const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
-    const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
-    const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
-    const name = `native-mount-${target}.json`;
-    const certification = join(value.root, "certification");
-    mkdirSync(certification);
-    const receipt = {
-      schema: "acyclic-native-mount-qualification-v2",
-      os: platform,
-      arch: architecture,
-      required_kind: backend,
-      release_version: "9.8.7-test.1",
-      executable_blake3: "a".repeat(64),
-      capability: {
-        kind: backend,
-        available: true,
-        writable: true,
-        provider_process_io_observable: platform !== "windows",
-        session_isolation: "SharedProcess",
-        unavailable_reason: null,
-      },
-      passed: true,
-    };
-    writeFileSync(join(certification, name), JSON.stringify(receipt));
-    const environment = {
-      ACYCLIC_INSTALL_TEST_CERTIFICATION: "1",
-      ...(process.platform === "win32"
-        ? { LOCALAPPDATA: state }
-        : { XDG_STATE_HOME: state }),
-    };
-    const installed = install(value.bin, null, null, environment);
-    assert.equal(installed.status, 0, installed.stderr);
-    const destination = process.platform === "win32"
-      ? join(state, "Acyclic", "state-v5", "certification", name)
-      : join(state, "acyclic", "state-v5", "certification", name);
-    assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
-  } finally {
-    rmSync(value.root, { recursive: true, force: true });
-    rmSync(state, { recursive: true, force: true });
-  }
-});
 
 test("Linux libc selection is explicit and fail closed", () => {
   assert.equal(linuxLibc({ header: { glibcVersionRuntime: "2.39" } }), "gnu");
@@ -180,7 +80,7 @@ test("installed command is the verified executable itself", () => {
     assert.equal(existsSync(placeholder), process.platform !== "win32");
     const ran = spawnSync(value.installed, ["--version"], { encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
-    assert.equal(ran.stdout.trim(), process.version);
+    assert.equal(ran.stdout.trim(), nativeVersion);
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }
@@ -383,7 +283,7 @@ test("the published package declares the native session MCP server on the instal
   assert.equal(servers["acyclic-sessions"].required, true);
 });
 
-// Installs a package whose "native executable" is this Node binary with each
+// Installs a package with the admitted shipping executable with each
 // package manager, and checks that the `acyclic-plugin` command runs the executable
 // with no interpreter in between, across an upgrade to different bytes and an
 // uninstall.
@@ -475,7 +375,7 @@ for (const [name, manager] of Object.entries(managers)) {
         const bin = join(manager.root(home), "bin");
         const executable = join(bin, executableName);
         assert.equal(digest(executable), digest(release.source));
-        assert.equal(invoke(), process.version);
+        assert.equal(invoke(), nativeVersion);
         if (process.platform === "win32") {
           assert.equal(existsSync(join(bin, "acyclic")), false);
           // No shim may start an interpreter: each runs bin/acyclic itself.
@@ -513,10 +413,10 @@ test("the acyclic-plugin command installs the executable when install scripts we
       const bin = join(managers.npm.root(home), "bin");
       assert.equal(existsSync(join(bin, "installed-binary.json")), false);
       const commandPath = { PATH: `${managers.npm.bin(home)}:${process.env.PATH}` };
-      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), process.version);
+      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), nativeVersion);
       assert.equal(digest(join(bin, executableName)), digest(release.source));
       assert.equal(realpathSync(join(managers.npm.bin(home), "acyclic-plugin")), realpathSync(join(bin, executableName)));
-      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), process.version);
+      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), nativeVersion);
     } finally {
       for (const path of [release.root, home]) rmSync(path, { recursive: true, force: true });
     }
