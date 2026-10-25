@@ -18,7 +18,10 @@ fn check_callback(error: &NativeMountError, expected: NativeFailure) {
     assert_eq!(
         crate::native_mount::projfs::native_hresult(error),
         windows::core::HRESULT::from_win32(match expected {
-            NativeFailure::Cancelled | NativeFailure::Stale => 1006,
+            NativeFailure::Cancelled => {
+                windows::Win32::Foundation::ERROR_OPERATION_ABORTED.0
+            }
+            NativeFailure::Stale => 1006,
             NativeFailure::NotFound => 2,
             NativeFailure::AccessDenied => 5,
             NativeFailure::Os(code) => u32::from_ne_bytes(code.to_ne_bytes()),

@@ -699,7 +699,8 @@ fn failure_hresult(failure: crate::native_mount::outcome::NativeFailure) -> HRES
         F::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
         F::Invalid => HR_INVALID_DATA,
         F::Unsupported => HR_NOT_SUPPORTED,
-        F::Stale | F::Cancelled => HR_FILE_INVALID,
+        F::Stale => HR_FILE_INVALID,
+        F::Cancelled => windows::Win32::Foundation::ERROR_OPERATION_ABORTED.to_hresult(),
         F::Allocation => HRESULT::from_win32(8),
         F::TooLarge => HRESULT::from_win32(223),
         F::Os(code) => HRESULT::from_win32(u32::from_ne_bytes(code.to_ne_bytes())),
@@ -707,6 +708,6 @@ fn failure_hresult(failure: crate::native_mount::outcome::NativeFailure) -> HRES
     }
 }
 
-pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
+pub(in crate::native_mount) fn native_hresult(error: &NativeMountError) -> HRESULT {
     failure_hresult(crate::native_mount::outcome::callback_failure(error))
 }
