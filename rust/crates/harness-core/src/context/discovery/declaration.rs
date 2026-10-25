@@ -1,14 +1,14 @@
 use super::*;
 
-/// A host-declared directory boundary. A declaration conveys no authority.
+/// Declared directory boundary; conveys no authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextRoot {
-    /// Exact volume identity, independently of consumer role.
+    /// Exact volume identity.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub volume: VolumeRef,
-    /// Exact owner-issued subtree capability boundary; empty denotes the volume root.
+    /// Owner-issued subtree boundary; empty means volume root.
     pub directory: String,
 }
 
@@ -229,14 +229,14 @@ impl ContextDiscoveryLimits {
     }
 }
 
-/// Immutable path selected by discovery; resolving it never follows a newer head.
+/// Immutable discovery path; never follows a newer head.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PinnedContextPath {
     /// Declared volume and read boundary.
     pub root: ContextRoot,
-    /// Exact retained filesystem generation.
+    /// Retained filesystem generation.
     #[cfg_attr(
         feature = "wasm",
         tsify(type = "WasmResourceRefWire & { kind: 'generation' }")

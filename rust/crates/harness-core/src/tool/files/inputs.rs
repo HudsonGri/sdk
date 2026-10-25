@@ -1,22 +1,22 @@
 use super::*;
 
-/// Read a pinned file or a discovered private source.
+/// Pinned file or private discovery source.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ReadInput {
-    /// Read a pinned file.
+    /// Pinned file.
     File(ReadFileInput),
-    /// Resolve a discovered source.
+    /// Private source.
     Source(ReadSourceInput),
 }
 
-/// A discovered source within its declared volume.
+/// Private discovery source.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSourceInput {
-    /// Complete source copied from discovery.
+    /// Source copied from discovery.
     pub source: crate::context::PinnedContextPath,
 }
 
