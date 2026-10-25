@@ -13,6 +13,7 @@ enum ToolCallRejection {
     /// The bound policy denied the call; the model can adapt.
     Refused(Error),
     /// A pre-tool approval refused this call, retaining the guard's explanation.
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     Approval(crate::InteractionRejection, String),
 }
 
@@ -30,6 +31,7 @@ impl ToolCallRejection {
             ),
             Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation, None),
             Self::Refused(denial) => (ToolFailureKind::Refused, denial, None),
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Approval(reason, prompt) => (
                 ToolFailureKind::Refused,
                 Error::InteractionRejected(reason),

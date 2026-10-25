@@ -302,6 +302,7 @@ mod tests {
             variant in any::<u8>(),
             text in r"(\PC|[\n\t\x1b ]){0,400}",
             name in "[a-z_.@0-9]{1,300}",
+            approval_prompt in prop::option::of(r"(\PC|[\n\t\x1b ]){0,400}"),
         ) {
             let kind = KINDS[kind];
             let cause = entry(kind, &name, &error(variant, text)).unwrap();
@@ -312,6 +313,12 @@ mod tests {
             // The rendered text is exactly what the result admission contract accepts.
             let result = crate::model::ToolResultContent::Error { message: rendered };
             prop_assert!(result.validate_limits(crate::conversation::Limits::default(), &mut None).is_ok());
+            if let Some(prompt) = approval_prompt {
+                let denial = Error::InteractionRejected(crate::InteractionRejection::Denied);
+                let cause = ToolFailureCause::refusal(&name, ToolFailureKind::Refused, &denial, Some(&prompt), &mut None).unwrap();
+                prop_assert_eq!(cause.class, ToolErrorClass::Denied);
+                prop_assert!(cause.is_canonical(), "{cause:?}");
+            }
         }
     }
 
