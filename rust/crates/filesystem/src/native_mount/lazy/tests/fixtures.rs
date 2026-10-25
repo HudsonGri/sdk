@@ -1,5 +1,26 @@
 use super::*;
 
+type RetirementAuthored =
+    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+
+type RetirementSource = (
+    Arc<RetirementAuthored>,
+    Arc<dyn MountFilesystem>,
+    adapter::NativeSourceIoLease,
+);
+
+pub(in crate::native_mount) fn native_retirement_source(
+    root: &Path,
+    original: &crate::NativeMaterializationWork,
+) -> Result<RetirementSource, Box<dyn std::error::Error>> {
+    let mut view = shared_runtime()?.block_on(mounted_view(root, "physical-retirement"))?;
+    view.authored = adapter::tests::native_source_io_control(&view.authored, original)?;
+    let authored = Arc::clone(&view.authored);
+    let view = Arc::new(view);
+    let lease = view.native_source_io_lease()?;
+    Ok((authored, view, lease))
+}
+
 pub(super) fn shared_runtime() -> std::io::Result<&'static tokio::runtime::Runtime> {
     static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
         std::sync::OnceLock::new();

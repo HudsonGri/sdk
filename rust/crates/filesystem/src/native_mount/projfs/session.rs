@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::retirement::SourceRetirementWait;
 
 // SAFETY: the projection loop drains before its owner stops the SDK context.
 unsafe impl Send for SendContext {}
@@ -270,7 +271,7 @@ impl ProjFsSession {
                 drop(self.projection_cleanup.take());
             }
             if let Some(retirement) = self.retirement.as_mut() {
-                retirement.retire(None)?;
+                retirement.retire(None, SourceRetirementWait::Physical)?;
             }
             if self
                 .retirement
@@ -295,7 +296,7 @@ impl ProjFsSession {
             .map(crate::NativeMaterializationWork::allocation_work);
         drop(installed);
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire_source_and_watch_with_cleanup(None)?;
+            retirement.retire_source_and_watch_with_join(None, SourceRetirementWait::Physical)?;
         }
         if let Some(context) = self.context {
             let credit = self
@@ -350,7 +351,7 @@ impl ProjFsSession {
             drop(self.projection_cleanup.take());
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None)?;
+            retirement.retire(None, SourceRetirementWait::Physical)?;
         }
         if self
             .retirement

@@ -85,7 +85,10 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
     work.cancellation().cancel();
     let wait = CancellationToken::new();
     wait.cancel();
-    let result = packet.retire(Some(&wait));
+    let result = packet.retire(
+        Some(&wait),
+        crate::native_mount::retirement::SourceRetirementWait::Caller,
+    );
     assert!(
         matches!(result, Ok(true)),
         "detached driver did not finish accepted fence release: {result:?}"
@@ -93,7 +96,10 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
     assert!(packet.is_retired());
     retired(root.path(), &fence, before, &work)?;
     let completed = work.receipt();
-    assert!(!packet.retire(Some(&wait))?);
+    assert!(!packet.retire(
+        Some(&wait),
+        crate::native_mount::retirement::SourceRetirementWait::Caller
+    )?);
     assert_eq!(work.receipt(), completed);
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::retirement::SourceRetirementWait;
 
 impl DriverSessionResources {
     pub(super) fn wait_until(&self, timeout: Duration, done: impl Fn(&LoopState) -> bool) {
@@ -14,6 +15,7 @@ impl DriverSessionResources {
         &self,
         state: &mut LoopState,
         wait: Option<&crate::CancellationToken>,
+        join: SourceRetirementWait,
     ) -> Result<(), NativeMountError> {
         let LoopState {
             resources,
@@ -37,7 +39,7 @@ impl DriverSessionResources {
             self.free(wait)?;
         }
         if let Some(packet) = retirement {
-            packet.retire(wait)?;
+            packet.retire(wait, join)?;
             if !packet.is_retired() {
                 return Err(NativeMountError::ControlPending);
             }
@@ -50,7 +52,7 @@ impl DriverSessionResources {
         let mut state = self.state();
         self.requested.store(false, Ordering::Release);
         self.changed.notify_all();
-        if let Err(error) = self.retire(&mut state, None) {
+        if let Err(error) = self.retire(&mut state, None, SourceRetirementWait::Physical) {
             state.failure = Some(error);
         } else {
             return;
@@ -61,7 +63,7 @@ impl DriverSessionResources {
                 .changed
                 .wait_while(state, |_| !self.requested.swap(false, Ordering::AcqRel))
                 .unwrap_or_else(PoisonError::into_inner);
-            match self.retire(&mut state, None) {
+            match self.retire(&mut state, None, SourceRetirementWait::Physical) {
                 Ok(()) => return,
                 Err(error) => {
                     state.failure.get_or_insert(error);
@@ -198,7 +200,7 @@ impl DarwinMountSession {
         let was_mounted = {
             let mut state = events.state();
             if state.resources.is_none() && self.thread.is_none() {
-                events.retire(&mut state, wait)?;
+                events.retire(&mut state, wait, SourceRetirementWait::Caller)?;
                 drop(state);
                 return self.classify_detached_loop(false);
             }
@@ -259,7 +261,7 @@ impl DarwinMountSession {
             );
         }
         let mut state = events.state();
-        events.retire(&mut state, wait)?;
+        events.retire(&mut state, wait, SourceRetirementWait::Caller)?;
         drop(state);
         self.classify_detached_loop(was_mounted)
     }

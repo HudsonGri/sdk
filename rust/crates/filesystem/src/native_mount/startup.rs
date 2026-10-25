@@ -142,8 +142,9 @@ impl NativeMountRetirement {
     pub(super) fn retire(
         &mut self,
         wait: Option<&crate::CancellationToken>,
+        join: retirement::SourceRetirementWait,
     ) -> Result<bool, NativeMountError> {
-        let mut changed = self.retire_source_and_watch_with_cleanup(wait)?;
+        let mut changed = self.retire_source_and_watch_with_join(wait, join)?;
         let work = match wait {
             Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
             None => NativeSessionStopWork::AcceptedDrop,
@@ -152,10 +153,11 @@ impl NativeMountRetirement {
         Ok(changed)
     }
 
-    /// Drains source producers after callback admission closes, before the driver's own namespace teardown.
-    pub(super) fn retire_source_and_watch_with_cleanup(
+    /// Drains producers after callback admission closes, before driver teardown.
+    pub(super) fn retire_source_and_watch_with_join(
         &mut self,
         wait: Option<&crate::CancellationToken>,
+        join: retirement::SourceRetirementWait,
     ) -> Result<bool, NativeMountError> {
         let work = match wait {
             Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
@@ -165,6 +167,7 @@ impl NativeMountRetirement {
             &mut self.retained_source,
             &mut self.startup_source_watch,
             &work,
+            join,
         )
     }
 

@@ -1,17 +1,28 @@
 use super::*;
 
+/// Caller waits can refuse; the existing physical worker joins accepted I/O.
+#[derive(Clone, Copy)]
+pub(super) enum SourceRetirementWait {
+    Caller,
+    Physical,
+}
+
 /// Retires the original producers before releasing their owning references.
 pub(super) fn retire_sources(
     source: &mut Option<Arc<dyn MountFilesystem>>,
     watch: &mut Option<lazy::NativeMountSourceWatchOwner>,
     work: &NativeSessionStopWork<'_>,
+    join: SourceRetirementWait,
 ) -> Result<bool, NativeMountError> {
     let mut changed = false;
     if let Some(owner) = source.as_ref() {
-        match work {
-            NativeSessionStopWork::Meter(meter) => owner.shutdown_with_meter(meter),
-            NativeSessionStopWork::AcceptedWait(wait) => owner.shutdown_with_cleanup_wait(wait),
-            NativeSessionStopWork::AcceptedDrop => owner.shutdown_accepted_cleanup(),
+        match join {
+            SourceRetirementWait::Physical => owner.shutdown_physical_cleanup(),
+            SourceRetirementWait::Caller => match work {
+                NativeSessionStopWork::Meter(meter) => owner.shutdown_with_meter(meter),
+                NativeSessionStopWork::AcceptedWait(wait) => owner.shutdown_with_cleanup_wait(wait),
+                NativeSessionStopWork::AcceptedDrop => owner.shutdown_accepted_cleanup(),
+            },
         }?;
         // Failed or cancelled joins leave the original source owned.
         drop(source.take());

@@ -1,5 +1,6 @@
 use super::*;
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
+use crate::native_mount::retirement::SourceRetirementWait;
 use crate::native_mount::{NativeMountRetirement, NativeSessionStopWork};
 use crate::{
     NativeAllocation, NativeMaterializationWork, NativeRootIdentity, NativeWorkReservation,
@@ -41,6 +42,7 @@ impl FuseSessionState {
         &mut self,
         core: &Arc<ProjectionCore>,
         work: Option<&NativeMaterializationWork>,
+        join: SourceRetirementWait,
     ) -> Result<(), NativeMountError> {
         if self.is_retired() {
             return Ok(());
@@ -92,7 +94,7 @@ impl FuseSessionState {
                 })??;
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None)?;
+            retirement.retire(None, join)?;
         }
         Ok(())
     }
@@ -312,7 +314,7 @@ impl FuseSession {
         {
             return Err(error);
         }
-        state.stop(&self.core, meter)?;
+        state.stop(&self.core, meter, SourceRetirementWait::Caller)?;
         state.failure.take();
         if self.invalidator.is_some() {
             state.cleanup.started_io(ReadOperations.delta(1), None)?;
@@ -352,7 +354,7 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
         drop(projection);
     }
     let mut retiring = state.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Err(error) = retiring.stop(&core, None) {
+    if let Err(error) = retiring.stop(&core, None, SourceRetirementWait::Physical) {
         retiring.failure.get_or_insert(error);
     }
     drop(retiring);

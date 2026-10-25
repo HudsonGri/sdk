@@ -14,6 +14,52 @@ enum Retirement {
     LastOwner,
 }
 
+/// Runs the real physical loop after namespace/device retirement, retaining a
+/// real caller-supplied source packet. No live kernel mount is needed to drive
+/// the remaining source-join obligation.
+pub(in crate::native_mount) fn retire_source_in_physical_loop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let (callbacks, _) = shared_sources(posix_config())
+        .map_err(|cause| NativeMountError::Driver(cause.to_string()))?;
+    let work = fuse_fixture_work();
+    let core = projection_core(
+        Arc::new(callbacks),
+        crate::WorkBudget::UNBOUNDED,
+        work.cancellation(),
+    )?;
+    core.stop();
+    let state = Arc::new(Mutex::new(FuseSessionState {
+        path: super::super::FuseOwned::empty(vec![0]),
+        before: None,
+        mount: super::super::mount::Mount::default(),
+        worker: None,
+        device: None,
+        notifier: None,
+        identity: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+        }),
+        cleanup: work.reserve_work(crate::WorkCounters::UNCHARGED)?,
+        failure: None,
+        _allocation: work.claim(
+            std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?,
+    }));
+    run_fuse_session((core, Arc::clone(&state)));
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(error) = state.failure.take() {
+        return Err(error);
+    }
+    Ok(state.is_retired())
+}
+
 fn waiting_mount(
     polling: Sender<Event>,
     acknowledged: Receiver<()>,

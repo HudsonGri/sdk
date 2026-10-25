@@ -387,6 +387,7 @@ impl NativeMountSession {
                 &mut self.retained_source,
                 &mut self.startup_source_watch,
                 work,
+                retirement::SourceRetirementWait::Caller,
             )?;
             Ok(changed)
         })();
