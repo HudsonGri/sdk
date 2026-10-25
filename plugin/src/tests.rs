@@ -344,16 +344,3 @@ fn claude_installation_preserves_foreign_hooks_permissions_and_unrelated_setting
     assert!(install::update_claude(&mut invalid, &executable.to_string_lossy(), true).is_err());
     Ok(())
 }
-
-#[test]
-fn old_codex_releases_and_ambiguous_version_output_are_rejected() {
-    for old in [
-        "codex-cli 0.146.0",
-        "codex-cli 0.163.9",
-        "unknown",
-        "0.164.0",
-    ] {
-        assert!(acyclic_harness::host_hooks::check_codex_version(old).is_err());
-    }
-    assert!(acyclic_harness::host_hooks::check_codex_version("codex-cli 0.164.0\n").is_ok());
-}

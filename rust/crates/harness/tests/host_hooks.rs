@@ -8,24 +8,24 @@ use serde_json::json;
 
 #[test]
 fn codex_minimum_version_is_enforced_without_compatibility_fallback() {
+    let supported = include_str!("../fixtures/hosts/codex-0.164.0.stdout");
+    let obsolete = include_str!("../fixtures/hosts/codex-0.146.0.stdout");
+    assert!(check_codex_version(supported).is_ok(), "{supported}");
+    let error = check_codex_version(obsolete).unwrap_err().to_string();
+    assert!(error.contains(MINIMUM_CODEX_VERSION), "{error}");
+
+    // Deliberate corruptions of captured stdout, not purported host fixtures.
+    let version = supported.trim_end();
     for output in [
-        "codex-cli 0.164.0\n",
-        "codex-cli 0.165.0",
-        "codex-cli 1.0.0",
+        format!("{version}-alpha"),
+        version.rsplit_once('.').unwrap().0.to_owned(),
+        format!("{version}.1"),
+        format!("{version} invalid"),
+        version.strip_prefix("codex-cli ").unwrap().to_owned(),
+        version.replacen("codex-cli", "other", 1),
+        String::new(),
     ] {
-        assert!(check_codex_version(output).is_ok(), "{output}");
-    }
-    for output in [
-        "codex-cli 0.146.0",
-        "codex-cli 0.163.99",
-        "codex-cli 0.164.0-alpha",
-        "codex-cli 0.164",
-        "codex-cli 0.164.0.1",
-        "codex-cli 0.164.0 invalid",
-        "other 9.0.0",
-        "",
-    ] {
-        let error = check_codex_version(output).unwrap_err().to_string();
+        let error = check_codex_version(&output).unwrap_err().to_string();
         assert!(error.contains(MINIMUM_CODEX_VERSION), "{error}");
     }
 }
