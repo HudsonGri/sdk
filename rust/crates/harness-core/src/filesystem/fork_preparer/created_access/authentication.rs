@@ -258,11 +258,11 @@ impl<'a> CreationRequest<'a> {
                         .take()
                         .ok_or_else(|| io.invalid("authenticated allocation has no task origin"))?,
                     volume: {
-                    let mut history = io.history_io();
-                    volume.copy(&mut Some(
-                        &mut history as &mut dyn crate::store::history::HistoryIo,
-                    ))?
-                },
+                        let mut history = io.history_io();
+                        volume.copy(&mut Some(
+                            &mut history as &mut dyn crate::store::history::HistoryIo,
+                        ))?
+                    },
                     generation,
                     prepared_generation: bounded_io::generation_ref(
                         &host.provider,
