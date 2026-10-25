@@ -4223,7 +4223,7 @@ pub enum NativeWatchError {
     },
     /// Original native preparation admission or allocation cause.
     #[error(transparent)]
-    NativeWork(#[from] crate::NativeTreeMaterializationError),
+    NativeWork(crate::NativeTreeMaterializationError),
     /// A started watcher remains owned after a later preparation failure.
     #[error("native watcher startup failed: {cause}")]
     StartupFailed {
@@ -4301,6 +4301,18 @@ pub enum NativeWatchError {
     /// Exact work overflowed or exceeded the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+}
+
+impl From<crate::NativeTreeMaterializationError> for NativeWatchError {
+    fn from(error: crate::NativeTreeMaterializationError) -> Self {
+        match error {
+            crate::NativeTreeMaterializationError::Work(error) => Self::Work(error),
+            crate::NativeTreeMaterializationError::Cancelled => Self::Cancelled(CancellationError),
+            crate::NativeTreeMaterializationError::OriginalWorkPoisoned => Self::StatePoisoned,
+            crate::NativeTreeMaterializationError::Io(error) => Self::Io(error),
+            error => Self::NativeWork(error),
+        }
+    }
 }
 
 impl From<std::io::Error> for NativeWatchError {
