@@ -51,81 +51,82 @@ async fn generation(
         .value)
 }
 
-async fn assert_published(harness: &LocalHarness, expected: &[(String, String)]) -> Result<()> {
+async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> {
     let checkout = harness.workspace().unwrap();
+    assert_eq!(
+        std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
+        expected.as_bytes(),
+        "unpublished rebase"
+    );
     let selected = checkout.selected_view().await?.0.unwrap();
     let head = generation(&selected).await?;
-    let mut identities = Vec::new();
-    for (path, expected) in expected {
-        assert_eq!(
-            std::fs::read(checkout.path.join(path)).map_err(super::super::storage)?,
-            expected.as_bytes(),
-            "unpublished rebase: {path}"
-        );
-        let path = format!("/{path}");
-        assert_eq!(
-            head.read(&path, 128, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(super::super::storage)?
-                .value
-                .as_ref(),
-            expected.as_bytes()
-        );
-        identities.push(
-            head.stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(super::super::storage)?
-                .value
-                .file_id,
-        );
-    }
-    // Capture once for the whole cut, then verify every generated payload and
-    // its identity. A partial multi-file publication cannot satisfy this cut.
+    assert_eq!(
+        head.read(
+            "/upstream.txt",
+            128,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new()
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .as_ref(),
+        expected.as_bytes()
+    );
+    // Use the real pre-command capture directly, without a model turn or
+    // process per cut. Native projection can change unassignable timestamps;
+    // file identity and the entire immutable payload must remain unchanged.
+    let before = head
+        .stat(
+            "/upstream.txt",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
     capture(harness).await?;
     let after = generation(&selected).await?;
-    for ((path, expected), identity) in expected.iter().zip(identities) {
-        let path = format!("/{path}");
-        assert_eq!(
-            after
-                .stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(super::super::storage)?
-                .value
-                .file_id,
-            identity
-        );
-        assert_eq!(
-            after
-                .read_range_if_unchanged(
-                    &head,
-                    &path,
-                    acyclic_fs::ByteRange {
-                        offset: 0,
-                        length: expected.len() as u64
-                    },
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map_err(super::super::storage)?
-                .value
-                .bytes
-                .as_ref(),
-            expected.as_bytes()
-        );
-    }
+    assert_eq!(
+        after
+            .stat(
+                "/upstream.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .file_id,
+        before.file_id
+    );
+    assert_eq!(
+        after
+            .read_range_if_unchanged(
+                &head,
+                "/upstream.txt",
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: expected.len() as u64,
+                },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .bytes
+            .as_ref(),
+        expected.as_bytes()
+    );
     Ok(())
 }
 
-async fn sweep(texts: &[String]) -> Result<()> {
+async fn sweep(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
-    let initial = (0..texts.len())
-        .map(|index| format!("printf base > upstream-{index}.txt"))
-        .collect::<Vec<_>>()
-        .join(" && ");
     let provider = scripted([
-        super::checked_commands::call(0, "shell", &initial),
+        super::checked_commands::call(0, "shell", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
@@ -137,15 +138,11 @@ async fn sweep(texts: &[String]) -> Result<()> {
     .await?;
     super::checkout_reopen::run(&harness).await?;
     // Learn the finite native effect boundaries on the real publication path.
-    // Every attempt changes all four files, with identical tree structure.
+    // Later attempts change only this same file, with identical tree structure.
     let mut effects = 0;
     let mut cut = 0;
     loop {
-        let expected: Vec<_> = texts
-            .iter()
-            .enumerate()
-            .map(|(index, text)| (format!("upstream-{index}.txt"), format!("{text}-{cut}")))
-            .collect();
+        let expected = format!("{text}-{cut}");
         let checkout = harness.workspace().unwrap();
         let selected = checkout.selected_view().await?.0.unwrap();
         let from = generation(&selected).await?;
@@ -156,14 +153,12 @@ async fn sweep(texts: &[String]) -> Result<()> {
             .begin(selected.workspace().id(), from.id(), "interrupted", 0, 1)
             .await
             .map_err(super::super::storage)?;
-        for (path, text) in &expected {
-            checkout
-                .view()
-                .workspace()
-                .write_text(&format!("/{path}"), text)
-                .await
-                .map_err(super::super::storage)?;
-        }
+        checkout
+            .view()
+            .workspace()
+            .write_text("/upstream.txt", &expected)
+            .await
+            .map_err(super::super::storage)?;
         reconciliation::prepare(
             checkout,
             acyclic_fs::OperationId::new(),
@@ -378,8 +373,7 @@ async fn negative_control(text: &str) -> Result<()> {
     // head. The same complete crash invariant used by the positive sweep must
     // detect this deliberately broken variant; preservation cannot hold here.
     let failure = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(assert_published(
-        &harness,
-        &[("upstream.txt".into(), expected.clone())],
+        &harness, &expected,
     )))
     .await
     .expect_err("the crash invariant missed premature acknowledgement");
@@ -402,23 +396,27 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
 
 #[test]
 fn reopen_never_captures_over_an_unpublished_rebase() {
-    // Four generated/shrinkable payloads share one workspace and every cut.
-    // The sweep discovers every effect boundary of the multi-file publication;
-    // the invariant checks all files, including cuts between file effects.
+    // Keep all four independent fixtures, complete sweeps and shrinkable
+    // payloads. One reactor drives them concurrently without four OS threads
+    // and four copies of Tokio's I/O/timer scheduling machinery.
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         source_file: Some(file!()),
         ..ProptestConfig::with_cases(1)
     });
-    let cases = proptest::collection::vec("[a-z]{1,12}", 4);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
+    let cases = proptest::collection::vec("[a-z]{1,12}", 4);
     runner
         .run(&cases, |texts| {
-            runtime
-                .block_on(sweep(&texts))
-                .map_err(|error| TestCaseError::fail(error.to_string()))
+            let outcomes = runtime.block_on(futures::future::join_all(
+                texts.iter().map(|text| Box::pin(sweep(text))),
+            ));
+            for outcome in outcomes {
+                outcome.map_err(|error| TestCaseError::fail(error.to_string()))?;
+            }
+            Ok(())
         })
         .unwrap();
 }
