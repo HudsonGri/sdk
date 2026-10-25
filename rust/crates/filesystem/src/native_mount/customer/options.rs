@@ -91,6 +91,15 @@ impl MountOptions {
             ))
     }
 
+    /// Original allowance admitted with the authenticated policy owner.
+    /// Additional lifetime guards must retain this context rather than create
+    /// a ledger that the policy owner cannot authorize.
+    pub fn require_native_work(&self) -> Result<&NativeMaterializationWork, MountLifecycleError> {
+        self.work.as_ref().ok_or(MountLifecycleError::NativePolicy(
+            "native lifetime guards require the admitted work context",
+        ))
+    }
+
     pub(super) fn work(
         &self,
         budget: crate::WorkBudget,
