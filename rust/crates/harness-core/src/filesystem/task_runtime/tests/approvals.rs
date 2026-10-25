@@ -371,129 +371,140 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    for route in [crate::interaction::ApprovalRoute::Policy, crate::interaction::ApprovalRoute::Human] {
-    for approved in [false, true] {
-        let initialized = executor.block_on(setup())?;
-        let runtime = &initialized.runtime;
-        let task = initialized.task;
-        let definition = &initialized
-            ._fixture
-            .tools
-            .get("test.deadline", None, None)?
-            .ok_or_else(|| Error::Invalid("fixture tool absent".into()))?
-            .definition;
-        let invocation = ToolInvocation::for_model_call(
-            OperationId::from_bytes(task.into_bytes()),
-            0,
-            "readiness".into(),
-            definition.name.clone(),
-            serde_json::Value::Null,
-            None,
-        )?;
-        let policy = runtime
-            .approval_policy_identity()
-            .ok_or_else(|| Error::Invalid("fixture policy absent".into()))?;
-        let (operation, digest) =
-            crate::runtime::tool_approval_binding(task, &policy, definition, &invocation, None)?;
-        let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
-        let context = executor.block_on(
-            runtime.task_context(task, LeaseFence::from(&initialized.lease.reservation)),
-        )?;
-        let admission = executor.block_on(runtime.admission_observed(task, None))?;
-        let journal = executor.block_on(runtime.open_execution_journal(
-            task,
-            LeaseFence::from(&initialized.lease.reservation),
-            OperationId::from_bytes(task.into_bytes()),
-            &admission,
-        ))?;
-        for state in 0..3 {
-            if state == 1 {
-                let request = Interaction::approval(
-                    "Inspect the exact action".into(),
-                    invocation.operation_id,
-                    digest,
-                    ApprovalSubject::Tool {
-                        route,
-                        tool: invocation.name.clone(),
-                        call_id: invocation.call_id.clone(),
-                        arguments: invocation.arguments.clone(),
-                    },
-                )?;
-                executor.block_on(journal.open_interaction(id, &request, None)?)?;
-            } else if state == 2 {
-                let responder = initialized._conversation.issue(
-                    "human",
-                    &Capabilities::new([
-                        "interaction:resolve".to_owned(),
-                        format!("interaction:respond:{id}"),
-                    ]),
-                    None,
-                    None,
-                    &mut None,
-                )?;
-                executor.block_on(journal.resolve_interaction(
-                    id,
-                    crate::interaction::InteractionResponse::Approval {
-                        approved,
-                        reason: None,
-                    },
-                    &responder,
-                ))?;
-            }
-            let (ready, trace) = differential::observe::<_, _, (&'static str, u64)>(
-                || (),
-                |()| {
-                    executor.block_on(runtime.tool_approval_ready(
-                        &context,
-                        definition,
-                        &invocation,
+    for route in [
+        crate::interaction::ApprovalRoute::Policy,
+        crate::interaction::ApprovalRoute::Human,
+    ] {
+        for approved in [false, true] {
+            let initialized = executor.block_on(setup())?;
+            let runtime = &initialized.runtime;
+            let task = initialized.task;
+            let definition = &initialized
+                ._fixture
+                .tools
+                .get("test.deadline", None, None)?
+                .ok_or_else(|| Error::Invalid("fixture tool absent".into()))?
+                .definition;
+            let invocation = ToolInvocation::for_model_call(
+                OperationId::from_bytes(task.into_bytes()),
+                0,
+                "readiness".into(),
+                definition.name.clone(),
+                serde_json::Value::Null,
+                None,
+            )?;
+            let policy = runtime
+                .approval_policy_identity()
+                .ok_or_else(|| Error::Invalid("fixture policy absent".into()))?;
+            let (operation, digest) = crate::runtime::tool_approval_binding(
+                task,
+                &policy,
+                definition,
+                &invocation,
+                None,
+            )?;
+            let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
+            let context = executor.block_on(
+                runtime.task_context(task, LeaseFence::from(&initialized.lease.reservation)),
+            )?;
+            let admission = executor.block_on(runtime.admission_observed(task, None))?;
+            let journal = executor.block_on(runtime.open_execution_journal(
+                task,
+                LeaseFence::from(&initialized.lease.reservation),
+                OperationId::from_bytes(task.into_bytes()),
+                &admission,
+            ))?;
+            for state in 0..3 {
+                if state == 1 {
+                    let request = Interaction::approval(
+                        "Inspect the exact action".into(),
+                        invocation.operation_id,
+                        digest,
+                        ApprovalSubject::Tool {
+                            route,
+                            tool: invocation.name.clone(),
+                            call_id: invocation.call_id.clone(),
+                            arguments: invocation.arguments.clone(),
+                        },
+                    )?;
+                    executor.block_on(journal.open_interaction(id, &request, None)?)?;
+                } else if state == 2 {
+                    let responder = initialized._conversation.issue(
+                        "human",
+                        &Capabilities::new([
+                            "interaction:resolve".to_owned(),
+                            format!("interaction:respond:{id}"),
+                        ]),
                         None,
-                    ))
-                },
-            );
-            if route == crate::interaction::ApprovalRoute::Human && state != 0 {
-                assert!(matches!(ready, Err(Error::Conflict(_))), "ordinary policy readiness accepted a human-routed request");
-                continue;
-            }
-            assert_eq!(ready?, state == 2);
-            assert_eq!(
-                trace
-                    .iter()
-                    .filter(|(name, _)| *name == "interaction-reconstruction")
-                    .count(),
-                1,
-                "approval readiness reconstructed more than one cut"
-            );
-            if state != 0 {
-                // Execute the former two-read shape against the same request.
-                // Both allow and deny are terminal observations, not authority.
-                let (old_ready, old_trace) = differential::observe::<_, _, (&'static str, u64)>(
+                        None,
+                        &mut None,
+                    )?;
+                    executor.block_on(journal.resolve_interaction(
+                        id,
+                        crate::interaction::InteractionResponse::Approval {
+                            approved,
+                            reason: None,
+                        },
+                        &responder,
+                    ))?;
+                }
+                let (ready, trace) = differential::observe::<_, _, (&'static str, u64)>(
                     || (),
                     |()| {
-                        executor.block_on(async {
-                            let host = runtime.interaction_host(None)?;
-                            assert!(host.read_request(id, None).await?.is_some());
-                            Ok::<_, Error>(
-                                host.read(id, None)
-                                    .await?
-                                    .as_ref()
-                                    .and_then(|(_, resolution)| resolution.as_ref())
-                                    .is_some_and(|resolution| resolution.outcome.is_terminal()),
-                            )
-                        })
+                        executor.block_on(runtime.tool_approval_ready(
+                            &context,
+                            definition,
+                            &invocation,
+                            None,
+                        ))
                     },
                 );
-                assert_eq!(old_ready?, state == 2);
+                if route == crate::interaction::ApprovalRoute::Human && state != 0 {
+                    assert!(
+                        matches!(ready, Err(Error::Conflict(_))),
+                        "ordinary policy readiness accepted a human-routed request"
+                    );
+                    continue;
+                }
+                assert_eq!(ready?, state == 2);
                 assert_eq!(
-                    old_trace
+                    trace
                         .iter()
                         .filter(|(name, _)| *name == "interaction-reconstruction")
                         .count(),
-                    2
+                    1,
+                    "approval readiness reconstructed more than one cut"
                 );
+                if state != 0 {
+                    // Execute the former two-read shape against the same request.
+                    // Both allow and deny are terminal observations, not authority.
+                    let (old_ready, old_trace) = differential::observe::<_, _, (&'static str, u64)>(
+                        || (),
+                        |()| {
+                            executor.block_on(async {
+                                let host = runtime.interaction_host(None)?;
+                                assert!(host.read_request(id, None).await?.is_some());
+                                Ok::<_, Error>(
+                                    host.read(id, None)
+                                        .await?
+                                        .as_ref()
+                                        .and_then(|(_, resolution)| resolution.as_ref())
+                                        .is_some_and(|resolution| resolution.outcome.is_terminal()),
+                                )
+                            })
+                        },
+                    );
+                    assert_eq!(old_ready?, state == 2);
+                    assert_eq!(
+                        old_trace
+                            .iter()
+                            .filter(|(name, _)| *name == "interaction-reconstruction")
+                            .count(),
+                        2
+                    );
+                }
             }
         }
-    }
     }
     Ok(())
 }

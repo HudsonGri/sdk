@@ -368,8 +368,15 @@ where
                 "approval policy differs from admission",
             ));
         }
-        self.approval_wait(context, &identity, definition, invocation, io, crate::interaction::ApprovalRoute::Policy)
-            .await
+        self.approval_wait(
+            context,
+            &identity,
+            definition,
+            invocation,
+            io,
+            crate::interaction::ApprovalRoute::Policy,
+        )
+        .await
     }
 
     // Readiness only observes the exact owner's ticket. It never authorizes
@@ -744,8 +751,15 @@ where
                                 *input.context_manifest.descriptor().sha256(),
                             );
                             return Ok(matches!(
-                                self.approval_wait(context, &identity, definition, &invocation, io, crate::interaction::ApprovalRoute::Human)
-                                    .await?,
+                                self.approval_wait(
+                                    context,
+                                    &identity,
+                                    definition,
+                                    &invocation,
+                                    io,
+                                    crate::interaction::ApprovalRoute::Human
+                                )
+                                .await?,
                                 ApprovalWait::Resolved
                             ));
                         }

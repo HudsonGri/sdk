@@ -410,11 +410,19 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
                         break request;
                     }
                 };
-                assert!(matches!(&request.request, crate::interaction::Interaction::Approval {
-                    subject: crate::interaction::ApprovalSubject::Tool {
-                        route: crate::interaction::ApprovalRoute::Human, ..
-                    }, ..
-                }), "human client received an ordinary policy request");
+                assert!(
+                    matches!(
+                        &request.request,
+                        crate::interaction::Interaction::Approval {
+                            subject: crate::interaction::ApprovalSubject::Tool {
+                                route: crate::interaction::ApprovalRoute::Human,
+                                ..
+                            },
+                            ..
+                        }
+                    ),
+                    "human client received an ordinary policy request"
+                );
                 // Negative control: the former all-history selection now exceeds 128.
                 assert!(
                     harness
