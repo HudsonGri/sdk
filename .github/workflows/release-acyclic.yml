@@ -328,7 +328,7 @@ jobs:
         env:
           ACYCLIC_TEST_BINARY: ${{ runner.temp }}/installer-binary/linux-x64-gnu/acyclic
           ACYCLIC_TEST_TEMP_ROOT: ${{ runner.temp }}/installer-fixtures
-        run: node --test --test-reporter=tap --test-concurrency=1 plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs
+        run: node --test --test-reporter=tap --test-concurrency=1 plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs
 
   assemble:
     name: Validate and assemble

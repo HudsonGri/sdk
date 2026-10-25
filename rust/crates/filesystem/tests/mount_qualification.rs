@@ -97,7 +97,7 @@ fn policy_binds_each_release_target_and_every_required_field()
                     "missing {key}"
                 );
                 let mut changed = document.clone();
-                changed[key] = Value::Null;
+                *changed.get_mut(key).ok_or("known field")? = Value::Null;
                 assert!(
                     check(&changed, &b"artifact"[..], target).is_err(),
                     "null {key}"
@@ -109,8 +109,9 @@ fn policy_binds_each_release_target_and_every_required_field()
                 .ok_or("capability")?;
             for key in capability.keys() {
                 let mut missing = document.clone();
-                missing["capability"]
-                    .as_object_mut()
+                missing
+                    .get_mut("capability")
+                    .and_then(Value::as_object_mut)
                     .ok_or("capability")?
                     .remove(key);
                 assert!(
@@ -119,7 +120,10 @@ fn policy_binds_each_release_target_and_every_required_field()
                 );
             }
             let mut extra = document.clone();
-            extra["unrecognized"] = json!(true);
+            extra
+                .as_object_mut()
+                .ok_or("object")?
+                .insert("unrecognized".into(), json!(true));
             assert!(check(&extra, &b"artifact"[..], target).is_err());
             assert!(
                 check(
@@ -175,31 +179,43 @@ fn policy_rejects_missing_duplicate_or_failed_coverage_but_accepts_reordering_an
             .ok_or("array")?;
         for index in 0..original.len() {
             let mut missing = document.clone();
-            missing[name].as_array_mut().ok_or("array")?.remove(index);
+            missing
+                .get_mut(name)
+                .and_then(Value::as_array_mut)
+                .ok_or("array")?
+                .remove(index);
             assert!(
                 check(&missing, &b"artifact"[..], target).is_err(),
                 "missing {name} {index}"
             );
         }
         let mut duplicate = document.clone();
-        duplicate[name]
-            .as_array_mut()
+        duplicate
+            .get_mut(name)
+            .and_then(Value::as_array_mut)
             .ok_or("array")?
             .push(original.first().ok_or("item")?.clone());
         assert!(check(&duplicate, &b"artifact"[..], target).is_err());
     }
     let mut extended = document;
-    let coverage = extended["coverage"].as_array_mut().ok_or("coverage")?;
+    let coverage = extended
+        .get_mut("coverage")
+        .and_then(Value::as_array_mut)
+        .ok_or("coverage")?;
     coverage.reverse();
     coverage.push(json!("future-coverage"));
-    let cases = extended["cases"].as_array_mut().ok_or("cases")?;
+    let cases = extended
+        .get_mut("cases")
+        .and_then(Value::as_array_mut)
+        .ok_or("cases")?;
     cases.reverse();
     cases.push(json!({"name":"future-case","status":"passed","reason":null,"elapsed_ms":1}));
     check(&extended, &b"artifact"[..], target)?;
     for field in ["status", "reason"] {
         let mut failed = extended.clone();
-        *failed["cases"]
-            .as_array_mut()
+        *failed
+            .get_mut("cases")
+            .and_then(Value::as_array_mut)
             .ok_or("cases")?
             .last_mut()
             .ok_or("last")?
