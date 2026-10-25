@@ -373,7 +373,10 @@ impl LocalStream {
         self.check_available()?;
         let target = {
             let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
-            if journal.flushed_sequence.is_some_and(|cut| cut >= journal.appended) {
+            if journal
+                .flushed_sequence
+                .is_some_and(|cut| cut >= journal.appended)
+            {
                 return Ok(());
             }
             if !reserved && let Some(work) = &self.work {

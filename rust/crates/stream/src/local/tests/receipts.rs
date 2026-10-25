@@ -329,16 +329,30 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
             let mut journal = provider.inner.journal.lock().map_err(|_| "journal")?;
             journal.flushed_sequence = None;
         }
-        provider.inner.synced.send_modify(|progress| progress.flushed = None);
+        provider
+            .inner
+            .synced
+            .send_modify(|progress| progress.flushed = None);
         assert!(synced_bytes(&provider).is_none());
         assert_eq!(provider.watermarks(path()).await?.durable, 0);
         let meter = Arc::new(Meter::local());
         match entry {
             0 => provider.durability_barrier().await?,
-            1 => drop(provider.native_durability_barrier(meter.original()).await??),
-            _ => drop(provider.prepare_native_durability_barrier(meter.original())?.await??),
+            1 => drop(
+                provider
+                    .native_durability_barrier(meter.original())
+                    .await??,
+            ),
+            _ => drop(
+                provider
+                    .prepare_native_durability_barrier(meter.original())?
+                    .await??,
+            ),
         }
-        assert!(synced_bytes(&provider).is_some(), "phase barrier returned an ordered-only proof");
+        assert!(
+            synced_bytes(&provider).is_some(),
+            "phase barrier returned an ordered-only proof"
+        );
         assert_eq!(provider.watermarks(path()).await?.durable, 1);
         meter.assert_refunded();
     }
