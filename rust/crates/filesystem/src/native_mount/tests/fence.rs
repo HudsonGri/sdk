@@ -344,7 +344,10 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
                 ])
                 .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination)
                 .env("ACYCLIC_FS_RECLAIM_CHILD_READY", &ready)
-                .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release),
+                .env("ACYCLIC_FS_RECLAIM_CHILD_RELEASE", &release)
+                // Child libtest summaries belong to their own invocation. The
+                // parent reports their checked exit statuses in its summary.
+                .stdout(std::process::Stdio::null()),
         )?;
         readiness.push(ready);
         children.push(child);
