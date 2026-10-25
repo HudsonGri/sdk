@@ -110,13 +110,21 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
                     )
                     .await
                     .unwrap_err();
-                assert!(
+                let exact_refusal = if folded && target == "/out/new" {
+                    matches!(
+                        failure.error,
+                        WorkspaceError::Filesystem(FsError::NameCollision)
+                    )
+                } else {
                     matches!(
                         failure.error,
                         WorkspaceError::Filesystem(FsError::Mutation(
                             acyclic_fs::kernel::GenerationMutationError::AlreadyExists
                         ))
-                    ),
+                    )
+                };
+                assert!(
+                    exact_refusal,
                     "folded={folded}, pending={pending}, target={target}: {:?}",
                     failure.error
                 );
