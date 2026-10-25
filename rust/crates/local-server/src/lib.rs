@@ -25,6 +25,8 @@ use tokio::{
 use tonic::{Request, Response, Status};
 
 mod actors;
+#[cfg(test)]
+mod registry_tests;
 // Custom incoming streams bypass tonic Server's accepted-socket settings.
 // All services share this one transport adapter and its immediate emission.
 fn incoming(listener: TcpListener) -> tonic::transport::server::TcpIncoming {
@@ -229,19 +231,26 @@ pub struct Registry {
 impl Registry {
     /// Register a compiled package, rejecting duplicate identities.
     pub fn package(&mut self, code: Arc<dyn Package>) -> Result<(), Status> {
-        if self.packages.contains_key(&code.digest()) {
-            return Err(Status::already_exists("package digest"));
-        }
-        self.packages.insert(code.digest(), code);
-        Ok(())
+        register_artifact(&mut self.packages, code.digest(), code, "package digest")
     }
     /// Register a compiled Worker, rejecting duplicate identities.
     pub fn worker(&mut self, code: Arc<dyn Worker>) -> Result<(), Status> {
-        if self.workers.contains_key(&code.digest()) {
-            return Err(Status::already_exists("Worker digest"));
+        register_artifact(&mut self.workers, code.digest(), code, "Worker digest")
+    }
+}
+
+fn register_artifact<T: ?Sized>(
+    registry: &mut BTreeMap<[u8; 32], Arc<T>>,
+    digest: [u8; 32],
+    code: Arc<T>,
+    conflict: &'static str,
+) -> Result<(), Status> {
+    match registry.entry(digest) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(code);
+            Ok(())
         }
-        self.workers.insert(code.digest(), code);
-        Ok(())
+        std::collections::btree_map::Entry::Occupied(_) => Err(Status::already_exists(conflict)),
     }
 }
 
