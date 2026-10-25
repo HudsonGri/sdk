@@ -35,6 +35,7 @@ class RuntimeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
+        shutil.copyfile(HERE/'bb-cache.py',self.d/'bb-cache.py')
         self.real_home=self.d/'home'
         self.real_home.mkdir()
     def tearDown(self):
@@ -64,6 +65,9 @@ class RuntimeTests(unittest.TestCase):
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
     def worker_env(self,extra=None):
         env=dict(os.environ)
+        # Lifecycle/HOME fixtures do not consume a host cache. Its actual
+        # server/namespace/launcher controls live in cache_policy.test.py.
+        env['BB_CACHE_DISABLED']='1'
         # This worker owns a new receipt and target tree. An enclosing job's
         # export specification refers to that job's outputs, never this one's.
         for key in ['BB_JOB_ACTIVE','BB_ADMITTED','BB_JOB_EXPORT_SPEC','BB_JOB_PRIVATE_MOUNT','BB_JOB_GIT_SOURCE','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED','BUILD_SLOT_EXEC_IN_PAYLOAD','BUILD_SLOT_DEFER_EXEC']:
@@ -509,7 +513,9 @@ finally:a.close();b.close()
 
     def test_admission_disk_refusal_is_stderr_with_stdout_negative(self):
         source=(HERE/'bb-admit.py').read_text().replace("if ROOT==Path('/mnt/bb/admit'):", 'if True:')
-        source=source.replace('space=os.statvfs(path)', 'space=type("Space",(),{"f_bavail":9,"f_blocks":100,"f_frsize":4096})()')
+        # Read the actual shared policy result, then inject pressure into that
+        # observation; admission has no second statvfs implementation to patch.
+        source=source.replace('readings=disk_free()', "readings=disk_free();readings[0]['free_percent']=9")
         source=source.replace("Path('/mnt/bb/log/alerts.jsonl')",f'Path({str(self.d/"alerts.jsonl")!r})')
         for negative in [False,True]:
             worker=self.d/f'admit-{negative}.py';worker.write_text(source.replace("t['fds'][2]","t['fds'][1]") if negative else source)
@@ -724,20 +730,16 @@ module.serve()
             out,err=second.communicate(timeout=5);self.assertEqual(second.returncode,0,err)
             self.assertTrue(marker.exists());self.assertIsNone(admit.identity(pid))
 
-    def test_two_sccache_servers_are_isolated(self):
-        a=self.d/'a';b=self.d/'b';a.mkdir();b.mkdir()
-        envA=dict(os.environ);envB=dict(os.environ)
-        first,status=job.start_cache(a,envA);second,status2=job.start_cache(b,envB)
-        try:
+    def test_job_entries_reuse_authority_and_never_own_its_server(self):
+        authority=job.cache_authority()
+        with patch.object(job,'cache_authority',return_value=authority),patch.object(authority,'admitted') as admit:
+            owner={'scope':'host-shared'};admit.return_value=owner
+            first,status=job.start_cache(self.d/'a',{})
+            second,status2=job.start_cache(self.d/'b',{})
             self.assertEqual((status,status2),('ready','ready'))
-            self.assertNotEqual(first['pid'],second['pid']);self.assertNotEqual(first['endpoint'],second['endpoint'])
-            job.stop_server(first)
-            r=subprocess.run([job.SCCACHE,'--show-stats'],env=envB,capture_output=True)
-            self.assertEqual(r.returncode,0);self.assertEqual(job.server_identity(b/'sccache.sock')['pid'],second['pid'])
-            stale={**second,'identity':'wrong birth'};job.stop_server(stale)
-            self.assertEqual(job.server_identity(b/'sccache.sock')['pid'],second['pid'])
-            self.assertEqual(envA['SCCACHE_DIR'],'/mnt/bb/sccache');self.assertEqual(envA['SCCACHE_IDLE_TIMEOUT'],'120')
-        finally:job.stop_server(first);job.stop_server(second)
+            self.assertIs(first,second);self.assertEqual(admit.call_count,2)
+            with patch.object(job.os,'pidfd_open') as opened:
+                job.stop_server(first);opened.assert_not_called()
 
     def test_cache_exit_during_pidfd_cleanup_is_already_stopped(self):
         server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock','pid_namespace':job.pid_namespace()}
@@ -818,11 +820,11 @@ module.serve()
             self.assertNotEqual(again.returncode,0) # both jobs collide on one server
         finally:subprocess.run([job.SCCACHE,'--stop-server'],env=env,capture_output=True)
 
-    def test_startup_failure_is_explicit_and_uncached(self):
+    def test_policy_failure_is_explicit_and_never_falls_back(self):
         d=self.d/'failed';d.mkdir();env=dict(os.environ)
-        with patch.object(job.subprocess,'run',return_value=subprocess.CompletedProcess([],2,'','forced bind failure')):
-            server,status=job.start_cache(d,env)
-        self.assertIsNone(server);self.assertEqual(status,'startup-failed:forced bind failure')
+        authority=job.cache_authority()
+        with patch.object(job,'cache_authority',return_value=authority),patch.object(authority,'admitted',side_effect=RuntimeError('CACHE_POLICY control')):
+            with self.assertRaisesRegex(RuntimeError,'CACHE_POLICY'):job.start_cache(d,env)
 
 if __name__=='__main__':
     # Keep the kernel-boundary and lifecycle suites independently measurable.

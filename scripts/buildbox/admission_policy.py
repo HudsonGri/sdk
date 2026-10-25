@@ -8,6 +8,84 @@ import shlex
 import resource
 import ctypes
 
+# The single host cache policy. All launchers and compiler clients import it;
+# a client environment cannot reconfigure an already-running server.
+SCCACHE_CACHE_SIZE = '50G'
+SCCACHE_CACHE_BYTES = 53687091200
+SCCACHE_DIRECTORY = '/mnt/bb/sccache'
+CACHE_ROOT = Path('/run/buildbox-cache')
+CACHE_ENDPOINT = CACHE_ROOT / 'server' / 'sccache.sock'
+CACHE_RECOVERY = ['sudo', '-n', '/usr/bin/python3', '-B', '/home/var/bin/bb-cache.py', 'recover']
+
+
+def process_identity(pid):
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+        if fields[0] == 'Z': return None
+        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()+':'+fields[19]
+    except (OSError, IndexError): return None
+
+
+class CachePolicyError(RuntimeError):
+    def __init__(self, actual='unknown', endpoint=None, detail=''):
+        super().__init__('kind=CACHE_POLICY step=sccache-server-policy '
+                         f'expected_bytes={SCCACHE_CACHE_BYTES} actual={shlex.quote(str(actual))} '
+                         f'endpoint={shlex.quote(str(endpoint or CACHE_ENDPOINT))} owner=gate-speed '
+                         f'recovery={shlex.quote(shlex.join(CACHE_RECOVERY))} detail={shlex.quote(detail)}')
+
+
+def cache_environment(env, endpoint=CACHE_ENDPOINT):
+    expected = {'SCCACHE_CACHE_SIZE': SCCACHE_CACHE_SIZE, 'SCCACHE_DIR': SCCACHE_DIRECTORY,
+                'SCCACHE_SERVER_UDS': str(endpoint), 'SCCACHE_IDLE_TIMEOUT': '0'}
+    for key, value in expected.items():
+        if key in env and env[key] != value:
+            raise CachePolicyError(env[key], env.get('SCCACHE_SERVER_UDS'), 'caller disagreement: '+key)
+    if 'SCCACHE_SERVER_PORT' in env:
+        raise CachePolicyError(env['SCCACHE_SERVER_PORT'], detail='TCP endpoint override')
+    return {**env, **expected}
+
+
+def cache_authority():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('bb_cache_authority', Path(__file__).with_name('bb-cache.py'))
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
+
+
+def disk_free():
+    readings = []
+    for path in ['/', '/mnt/bb']:
+        space = os.statvfs(path)
+        readings.append({'path': path, 'free_percent': 100*space.f_bavail/max(1,space.f_blocks),
+                         'free_bytes': space.f_bavail*space.f_frsize})
+    return readings
+
+
+def disk_low(readings):
+    return any(row['free_percent'] < 10 for row in readings)
+
+
+def disk_pressure(readings):
+    """Bounded existing accounting, never a recursive scan on admission."""
+    if not any(row['free_percent'] < 15 for row in readings): return None
+    import re
+    source = Path('/mnt/bb/log/free-space-quota.last')
+    report = {'disk_free': readings, 'accounting_source': str(source), 'largest_reported': []}
+    try:
+        with source.open('rb') as stream:
+            stream.seek(max(0, source.stat().st_size - 65536))
+            text = stream.read(65536).decode('utf-8', errors='replace')
+        report['accounting_mtime_ns'] = source.stat().st_mtime_ns
+        records = {}
+        for path, size in re.findall(r'(/mnt/bb/targets/\S+) (\d+) (?:->|GB)', text):
+            records[path] = int(size)
+        report['largest_reported'] = sorted(
+            [{'path': path, 'reported_gb': size} for path, size in records.items()],
+            key=lambda row: row['reported_gb'], reverse=True)[:10]
+        report['note'] = 'retained quota observations, not current physical usage'
+    except OSError as error: report['accounting_unavailable'] = str(error)
+    return 'BB_DISK_PRESSURE '+json.dumps(report)+'\n'
+
 LIMIT_ENV = 'BB_CALLER_RLIMITS_JSON'
 RLIM_MAX = (1 << (8 * ctypes.sizeof(ctypes.c_ulong))) - 1
 # Preserve every resource exposed by this kernel/Python, including the five
