@@ -197,7 +197,7 @@ impl Volume for FixtureVolume {
     fn get(&self, file: FileRef) -> BoxProviderFuture<'_, Result<Value>> {
         Box::pin(async move {
             let mut client = self.client.clone();
-            let workspace = client
+            let mut workspace = client
                 .open_workspace(fs::OpenWorkspaceRequest {
                     selector: Some(fs::open_workspace_request::Selector::Name(
                         file.volume().id().into(),
@@ -208,13 +208,15 @@ impl Volume for FixtureVolume {
                 .into_inner()
                 .workspace
                 .ok_or_else(|| codec("missing workspace"))?;
-            let bytes = self
-                .read(fs::GenerationRef {
-                    workspace: workspace.workspace.clone(),
-                    generation_id: hex::decode(file.version()).map_err(codec)?,
-                })
-                .await
-                .map_err(codec)?;
+            let generation = fs::GenerationRef {
+                workspace: workspace.workspace.clone(),
+                generation_id: hex::decode(file.version()).map_err(codec)?,
+            };
+            let bytes = self.read(generation.clone()).await.map_err(codec)?;
+            // Opening resolves the workspace identity, not the requested cut.
+            // The immutable read and binding must use that same pinned cut even
+            // if another publication has advanced the workspace's current head.
+            workspace.head = Some(generation);
             // The immutable descriptor is only part of the publication binding.
             // A different provider, owner or volume class must not resolve as
             // this fixture merely because it names the same workspace bytes.
@@ -284,7 +286,7 @@ mod tests {
             let file = writer.put(operation, value.clone()).await?;
             assert_eq!(reader.lookup(operation).await?, Some(file.clone()));
             assert_eq!(reader.get(file.clone()).await?, value);
-            assert_eq!(writer.put(operation, value).await?, file);
+            assert_eq!(writer.put(operation, value.clone()).await?, file);
             for adapter in [&local, &remote] {
                 let forged = FileRef::new(
                     file.volume().clone(),
@@ -335,8 +337,44 @@ mod tests {
                     assert!(adapter.get(forged).await.is_err());
                 }
             }
+            advance_head(writer, &file).await?;
+            for adapter in [&local, &remote] {
+                assert_eq!(adapter.get(file.clone()).await?, value);
+            }
         }
         server.shutdown().await?;
+        Ok(())
+    }
+
+    async fn advance_head(volume: &FixtureVolume, file: &FileRef) -> TestResult {
+        let mut client = volume.client.clone();
+        let workspace = client
+            .open_workspace(fs::OpenWorkspaceRequest {
+                selector: Some(fs::open_workspace_request::Selector::Name(
+                    file.volume().id().into(),
+                )),
+            })
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("workspace missing")?;
+        let outcome = client
+            .apply_transaction(fs::ApplyTransactionRequest {
+                base: workspace.head,
+                mutations: vec![fs::Mutation {
+                    mutation: Some(fs::mutation::Mutation::PutFile(fs::PutFile {
+                        path: "/payload.json".into(),
+                        contents: br#"{"later":true}"#.to_vec(),
+                    })),
+                }],
+                operation: Some(fs::OperationOptions {
+                    idempotency_key: OperationId::new().into_bytes().to_vec(),
+                }),
+                maximum_conflicts: 8,
+            })
+            .await?
+            .into_inner();
+        assert_eq!(outcome.status, fs::MutationStatus::Committed as i32);
         Ok(())
     }
 }
