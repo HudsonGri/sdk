@@ -19,9 +19,9 @@ proptest! {
             acyclic_fs::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
         let baseline = work.live_allocation_bytes();
-        let paid = copy_approval_subject(&invocation, Some(&work)).unwrap();
+        let paid = copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy).unwrap();
         prop_assert_eq!((work.receipt().bytes_copied, paid.1.is_some()), (expected, true));
-        prop_assert_eq!(&paid.0, &ApprovalSubject::Tool {
+        prop_assert_eq!(&paid.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
             tool: invocation.name.clone(), call_id: invocation.call_id.clone(), arguments: invocation.arguments.clone(),
         });
         prop_assert!(paid.1.as_ref().unwrap().work().shares_ledger(&work));
@@ -33,8 +33,8 @@ proptest! {
         let control = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
-        let unmetered = copy_approval_subject(&invocation, None).unwrap();
-        prop_assert_eq!(&unmetered.0, &ApprovalSubject::Tool {
+        let unmetered = copy_approval_subject(&invocation, None, crate::interaction::ApprovalRoute::Policy).unwrap();
+        prop_assert_eq!(&unmetered.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
             tool: invocation.name, call_id: invocation.call_id, arguments: invocation.arguments,
         });
         prop_assert_ne!((control.receipt().bytes_copied, unmetered.1.is_some()), (expected, true));
@@ -55,7 +55,7 @@ fn subject_copy_denies_exhausted_copy_work_before_allocating() {
     };
     let baseline = work.live_allocation_bytes();
     let allocations = work.receipt().allocation_operations;
-    assert!(copy_approval_subject(&invocation, Some(&work)).is_err());
+    assert!(copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy).is_err());
     assert_eq!(work.receipt().allocation_operations, allocations);
     assert_eq!(work.live_allocation_bytes(), baseline);
 }

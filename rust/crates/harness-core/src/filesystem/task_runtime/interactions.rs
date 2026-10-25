@@ -408,6 +408,7 @@ where
                 action_digest,
                 subject:
                     crate::interaction::ApprovalSubject::Tool {
+                        route: crate::interaction::ApprovalRoute::Policy,
                         tool,
                         call_id,
                         arguments,

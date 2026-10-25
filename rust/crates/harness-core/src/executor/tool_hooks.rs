@@ -132,6 +132,7 @@ impl StockExecution<'_> {
             invocation,
             (prompt, None),
             None,
+            crate::interaction::ApprovalRoute::Human,
         )?;
         let progress = self
             .settle_approval(journal, operation, approval, &request, invocation, started)

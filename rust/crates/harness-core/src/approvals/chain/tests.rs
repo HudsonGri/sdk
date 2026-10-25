@@ -8,7 +8,14 @@ fn request() -> Result<FileValue> {
             task: Component::new("task")?,
             file: TaskFile::ApprovalRequest(Component::new("request")?),
         },
-        br#"{"tool":"write","arguments":{"path":"approved"}}"#.to_vec(),
+        serde_json::to_vec(&crate::interaction::Interaction::approval(
+            "Review exact action".into(), crate::OperationId::from_bytes([1; 16]), [2; 32],
+            crate::interaction::ApprovalSubject::Tool {
+                route: crate::interaction::ApprovalRoute::Policy,
+                tool: "write".into(), call_id: "call".into(),
+                arguments: serde_json::json!({"path":"approved"}),
+            },
+        )?).map_err(|error| Error::Invalid(error.to_string()))?,
     ))
 }
 
@@ -135,5 +142,52 @@ proptest! {
         let bytes = serde_json::to_vec(&expected)?;
         files.insert(key.clone(), FileValue::new(key, bytes));
         prop_assert!(matches!(next_stage(&policy, digest, None, &request, &files, 0), Err(Error::Conflict(_))));
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn explicit_human_requests_cannot_be_decided_by_ordinary_policy(
+        allow in any::<bool>(), forged in any::<bool>(),
+    ) {
+        let policy = ApprovalPolicy { approvers: vec![Approver::Rules {
+            principal: "ordinary-policy".into(), rules: vec![],
+            fallback: if allow { RuleVerdict::Allow } else { RuleVerdict::Deny },
+        }] };
+        let digest = policy.bind()?.identity().digest;
+        let mut request = request()?;
+        let mut interaction: crate::interaction::Interaction = serde_json::from_slice(&request.bytes).unwrap();
+        if let crate::interaction::Interaction::Approval {
+            subject: crate::interaction::ApprovalSubject::Tool { route, .. }, ..
+        } = &mut interaction {
+            *route = crate::interaction::ApprovalRoute::Human;
+        }
+        request.bytes = serde_json::to_vec(&interaction).unwrap();
+        let mut files = BTreeMap::new();
+        if forged {
+            // An ordinary policy review cannot settle an explicitly human request.
+            let fake = ApprovalReviewFile {
+                principal: "ordinary-policy".into(), request_sha256: fingerprint(&request)?,
+                policy_digest: digest, stage: 0, verdict: RuleVerdict::Allow, reason: None,
+            };
+            retain(&mut files, &request, &fake)?;
+        }
+        let NextStage::Review { approver, expected, .. } = next_stage(&policy, digest, None, &request, &files, 0)? else {
+            panic!("ordinary policy settled an explicitly human guard");
+        };
+        prop_assert!(matches!(approver, Approver::Human { .. }));
+        prop_assert_eq!(expected.principal, "human");
+        prop_assert_eq!(expected.policy_digest, digest);
+        // Actual prior routing selected this same policy's rule stage instead.
+        let mut ordinary = interaction;
+        if let crate::interaction::Interaction::Approval {
+            subject: crate::interaction::ApprovalSubject::Tool { route, .. }, ..
+        } = &mut ordinary {
+            *route = crate::interaction::ApprovalRoute::Policy;
+        }
+        request.bytes = serde_json::to_vec(&ordinary).unwrap();
+        prop_assert!(matches!(next_stage(&policy, digest, None, &request, &BTreeMap::new(), 0)?,
+            NextStage::Review { approver: Approver::Rules { .. }, .. }));
     }
 }

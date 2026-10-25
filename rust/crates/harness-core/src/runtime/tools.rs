@@ -106,6 +106,7 @@ pub fn tool_approval_request(
     invocation: &ToolInvocation,
     paid: (String, Option<NativeCustody>),
     work: Option<&NativeWork>,
+    route: crate::interaction::ApprovalRoute,
 ) -> Result<((OperationId, Interaction), Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
@@ -140,7 +141,7 @@ pub fn tool_approval_request(
     let (prompt, custody) = paid;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut custody = custody;
-    let subject = copy_approval_subject(invocation, work)?;
+    let subject = copy_approval_subject(invocation, work, route)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut subject = subject;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -165,6 +166,7 @@ pub fn tool_approval_request(
 fn copy_approval_subject(
     invocation: &ToolInvocation,
     work: Option<&NativeWork>,
+    route: crate::interaction::ApprovalRoute,
 ) -> Result<(ApprovalSubject, Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
@@ -187,6 +189,7 @@ fn copy_approval_subject(
         )?;
         return Ok((
             ApprovalSubject::Tool {
+                route,
                 tool,
                 call_id,
                 arguments,
@@ -197,6 +200,7 @@ fn copy_approval_subject(
     let _ = work;
     Ok((
         ApprovalSubject::Tool {
+            route,
             tool: invocation.name.clone(),
             call_id: invocation.call_id.clone(),
             arguments: invocation.arguments.clone(),

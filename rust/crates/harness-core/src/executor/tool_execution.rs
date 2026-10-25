@@ -446,6 +446,7 @@ impl StockExecution<'_> {
                             invocation,
                             (prompt, None),
                             None,
+                            crate::interaction::ApprovalRoute::Policy,
                         )?;
                         if let Some(progress) = self
                             .settle_approval(

@@ -319,7 +319,13 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
                 provider.clone(),
                 vec![guarded("guarded", &["Write"], &executed)],
             )?
-            .approval_policy(crate::approvals::ApprovalPolicy::default()),
+            .approval_policy(crate::approvals::ApprovalPolicy {
+                approvers: vec![crate::approvals::Approver::Rules {
+                    principal: "ordinary-policy".into(),
+                    rules: vec![],
+                    fallback: crate::approvals::RuleVerdict::Allow,
+                }],
+            }),
         )
         .await?;
         let task =

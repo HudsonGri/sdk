@@ -162,7 +162,7 @@ async fn owner_scope(fixture: &Fixture) -> Result<Scope> {
 }
 
 fn tool_subject() -> ApprovalSubject {
-    ApprovalSubject::Tool {
+    ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
         tool: "bash".into(),
         call_id: "call-1".into(),
         arguments: serde_json::json!({"command": "rm -rf build"}),

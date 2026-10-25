@@ -411,7 +411,7 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
                     "Inspect the exact action".into(),
                     invocation.operation_id,
                     digest,
-                    ApprovalSubject::Tool {
+                    ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
                         tool: invocation.name.clone(),
                         call_id: invocation.call_id.clone(),
                         arguments: invocation.arguments.clone(),

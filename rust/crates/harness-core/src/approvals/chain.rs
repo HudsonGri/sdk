@@ -31,6 +31,19 @@ pub fn next_stage<'a>(
     files: &BTreeMap<FileKey, FileValue>,
     start: usize,
 ) -> Result<NextStage<'a>> {
+    static HUMAN_POLICY: std::sync::LazyLock<ApprovalPolicy> =
+        std::sync::LazyLock::new(ApprovalPolicy::default);
+    let interaction: crate::interaction::Interaction = crate::contract::json_from_slice(&request.bytes)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let policy = match interaction {
+        crate::interaction::Interaction::Approval {
+            subject: crate::interaction::ApprovalSubject::Tool {
+                route: crate::interaction::ApprovalRoute::Human, ..
+            }, ..
+        } => &*HUMAN_POLICY,
+        crate::interaction::Interaction::Approval { .. } => policy,
+        _ => return Err(Error::Invalid("not an approval request".into())),
+    };
     let hash = fingerprint(request)?;
     for (stage, approver) in policy.approvers.iter().enumerate().skip(start) {
         let principal = match approver {

@@ -68,7 +68,7 @@ fn paint(subject: ApprovalSubject) -> Vec<String> {
 
 #[tokio::test]
 async fn only_the_first_pending_subject_in_the_answered_task_is_shown() {
-    let tool = |command: &str| ApprovalSubject::Tool {
+    let tool = |command: &str| ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
         tool: "shell".into(),
         call_id: command.into(),
         arguments: serde_json::json!({"command": command}),
@@ -101,7 +101,7 @@ async fn human_subject_is_painted_in_the_scrollable_transcript() {
             ratatui::{Terminal, backend::TestBackend},
         },
     };
-    let snapshot = pending(ApprovalSubject::Tool {
+    let snapshot = pending(ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
         tool: "shell".into(),
         call_id: "call-42".into(),
         arguments: serde_json::json!({"command": "rm -rf ./important"}),
@@ -172,7 +172,7 @@ fn exact_tool_subject_precedes_the_human_answer() {
         "path": "./important",
         "nested": {"replace": false},
     });
-    let subject = ApprovalSubject::Tool {
+    let subject = ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
         tool: "shell".into(),
         call_id: "call-42".into(),
         arguments,
@@ -193,7 +193,7 @@ fn exact_tool_subject_precedes_the_human_answer() {
 
 #[test]
 fn subject_controls_remain_visible_and_opaque_preimages_stay_private() {
-    let painted = paint(ApprovalSubject::Tool {
+    let painted = paint(ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
         tool: "shell\u{1b}[2J".into(),
         call_id: "call\u{202e}id".into(),
         arguments: serde_json::json!({"command": "echo\nnext\u{1b}[31m"}),

@@ -11,6 +11,17 @@ pub struct ChoiceOption {
     pub description: Option<String>,
 }
 
+/// The authority that must review this request. Guard requests require a human
+/// independently of the ordinary tool policy; the immutable request binds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRoute {
+    /// Traverse the configured rule, model, parent and human policy chain.
+    Policy,
+    /// A guard explicitly requested a human decision.
+    Human,
+}
+
 /// The exact action an approval decides, as its approver sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -19,6 +30,8 @@ pub enum ApprovalSubject {
     /// operation and digest bind this same invocation, and execution reopens the
     /// request from the invocation it runs, so a differing request conflicts.
     Tool {
+        /// Pinned review authority, independent of the tool's display text.
+        route: ApprovalRoute,
         /// Model-visible tool name.
         tool: String,
         /// Provider call identity.

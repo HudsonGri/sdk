@@ -173,6 +173,7 @@ pub(super) fn interaction_request_owned_bytes(
                 tool,
                 call_id,
                 arguments,
+                ..
             } => (prompt.capacity() as u64)
                 .checked_add(tool.capacity() as u64)
                 .and_then(|bytes| bytes.checked_add(call_id.capacity() as u64))
