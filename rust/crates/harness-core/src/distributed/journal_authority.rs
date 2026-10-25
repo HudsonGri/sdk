@@ -41,6 +41,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 }
 
 impl<P: StreamProvider> JournalAuthority<P> {
+    pub(crate) fn declared_agent(&self) -> Option<crate::AgentId> {
+        self.declarer.scope().agent()
+    }
+
     pub(super) const fn operation(&self) -> OperationId {
         self.operation
     }
