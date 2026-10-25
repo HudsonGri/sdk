@@ -148,14 +148,16 @@ gate_cache_prepare "{target}" fixture-boot
         self.assertFalse(output.is_relative_to(Path('/work/src')))
         self.assertEqual(output.stat().st_mode & 0o777,0o700)
         with patch.object(gate,'private_inputs',return_value=None):
-            self.assertEqual(gate.output_directory(),Path.cwd())
+            self.assertNotEqual(gate.output_directory(),Path.cwd())
         with self.assertRaisesRegex(ValueError,'outside job custody'):
             gate.output_directory({**os.environ,'TMPDIR':'/tmp'})
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'tmp').mkdir();(root/'outside').mkdir()
             (root/'tmp/gate-output').symlink_to(root/'outside',target_is_directory=True)
-            with patch.object(gate,'private_inputs',return_value={}),self.assertRaisesRegex(ValueError,'alias'):
-                gate.output_directory({'TMPDIR':str(root/'tmp'),'BB_JOB_HOME':str(root/'home')})
+            with patch.object(gate,'private_inputs',return_value={}):
+                allocated=gate.output_directory({'TMPDIR':str(root/'tmp'),'BB_JOB_HOME':str(root/'home')})
+                self.assertEqual(allocated.parent,root/'tmp')
+                self.assertFalse(allocated.is_symlink())
 
     def test_killed_launcher_cannot_release_a_live_scheduler_lease(self):
         with tempfile.TemporaryDirectory() as temporary:
