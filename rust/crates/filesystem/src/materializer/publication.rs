@@ -243,40 +243,69 @@ where
             NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
         let materializer = JournaledMaterializer::new(store, backend);
         publication_step(work, || materializer.verify_allocation(&journal)).await?;
-        if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
-            publication_step(work, &mut *before_effect).await?;
-            publication_step(work, || materializer.verify_effect_context(&journal)).await?;
-            let completion =
-                publication_step(work, || materializer.store.prepare_action(journal)).await?;
-            let identity =
-                publication_step(work, || materializer.backend.reset_target_directory("")).await?;
-            journal = publication_step(work, || completion).await?;
-            let (_storage, selections) = install_selections(&journal, work)?;
-            if !selections.is_empty() {
-                let (destination, _allocation) = materializer.backend.staging_path("")?;
-                let options = crate::MaterializeOptions {
-                    destination,
-                    expected_root_identity: Some(identity),
-                    maximum_directory_entries: request.options.maximum_directory_entries,
-                    maximum_extent_spans: request.options.maximum_extent_spans,
-                    transfer_bytes: request.options.transfer_bytes,
-                };
-                journal = publication_step(work, || {
-                    materializer.stage_generation(
-                        to,
-                        &selections,
-                        &options,
-                        journal,
-                        work,
-                        before_effect,
-                    )
-                })
-                .await?;
-            }
-        }
+        journal = stage_preparing_generation(
+            &materializer,
+            to,
+            journal,
+            request.options,
+            work,
+            before_effect,
+        )
+        .await?;
         Ok((materializer, journal))
     })
     .await
+}
+
+async fn stage_preparing_generation<A, O, F, Fut>(
+    materializer: &JournaledMaterializer<
+        crate::LocalCoreStateStore,
+        Arc<NativeTreeMaterializationBackend>,
+    >,
+    to: &crate::Generation<A, O>,
+    mut journal: MaterializationJournal,
+    options: &crate::MaterializeOptions,
+    work: &NativeMaterializationWork,
+    before_effect: &mut F,
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+    F: FnMut() -> Fut + Send,
+    Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
+{
+    if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
+        publication_step(work, &mut *before_effect).await?;
+        publication_step(work, || materializer.verify_effect_context(&journal)).await?;
+        let completion =
+            publication_step(work, || materializer.store.prepare_action(journal)).await?;
+        let identity =
+            publication_step(work, || materializer.backend.reset_target_directory("")).await?;
+        journal = publication_step(work, || completion).await?;
+        let (_storage, selections) = install_selections(&journal, work)?;
+        if !selections.is_empty() {
+            let (destination, _allocation) = materializer.backend.staging_path("")?;
+            let options = crate::MaterializeOptions {
+                destination,
+                expected_root_identity: Some(identity),
+                maximum_directory_entries: options.maximum_directory_entries,
+                maximum_extent_spans: options.maximum_extent_spans,
+                transfer_bytes: options.transfer_bytes,
+            };
+            journal = publication_step(work, || {
+                materializer.stage_generation(
+                    to,
+                    &selections,
+                    &options,
+                    journal,
+                    work,
+                    before_effect,
+                )
+            })
+            .await?;
+        }
+    }
+    Ok(journal)
 }
 
 fn publication_root_identity(
@@ -364,22 +393,19 @@ pub enum NativeWorkspacePublicationError {
 #[test]
 fn generation_publication_keeps_its_original_work_frame_bounded() {
     type Generation = crate::Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
-    fn future_bytes<F: Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<(
-        &Generation,
-        &Generation,
-        &crate::LocalCoreStateStore,
-        NativeWorkspacePublication<'_>,
-        NativeMaterializationWork,
-    )> = None;
-    let bytes = future_bytes(|| {
-        let (from, to, state, publication, work) = arguments.unwrap();
-        publish_native_generation_transition(from, to, state, publication, work, || {
-            std::future::ready(Ok(()))
-        })
-    });
+    let bytes = acyclic_test_support::future_bytes(
+        |(from, to, state, publication, work): (
+            &'static Generation,
+            &'static Generation,
+            &'static crate::LocalCoreStateStore,
+            NativeWorkspacePublication<'static>,
+            NativeMaterializationWork,
+        )| {
+            publish_native_generation_transition(from, to, state, publication, work, || {
+                std::future::ready(Ok(()))
+            })
+        },
+    );
     assert!(
         bytes <= 4096,
         "generation publication future is {bytes} bytes"

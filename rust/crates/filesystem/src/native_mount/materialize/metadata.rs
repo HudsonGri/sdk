@@ -46,57 +46,25 @@ where
                     value
                 },
             );
-            let source_array_bytes = vec_bytes(&read);
-            let mut attributes = Vec::new();
-            let mut payload_bytes = 0_usize;
-            for (name, value) in read {
-                // Volume policy is authority metadata, never a host xattr/stream.
-                // In particular, Linux's security.* namespace requires privilege.
-                if name.as_bytes() == crate::access::POLICY_METADATA_KEY {
-                    let retained = name.retained_bytes()
-                        + if reader.validate_native_work(receipt.custody.work()).is_ok() {
-                            0
-                        } else {
-                            value.len()
-                        };
-                    drop((name, value));
-                    receipt
-                        .custody
-                        .release(retained as u64)
-                        .map_err(MaterializeError::from)?;
-                    continue;
-                }
-                if name.class() != crate::kernel::AttributeClass::PosixXattr {
-                    return Err(MaterializeError::UnsupportedMetadata("named_attributes").into());
-                }
-                let name = name.bytes;
-                let value_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() {
-                    0
-                } else {
-                    value.len()
-                };
-                payload_bytes = payload_bytes
-                    .checked_add(name.capacity())
-                    .and_then(|bytes| bytes.checked_add(value_bytes))
-                    .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-                receipt.push(&mut attributes, (name, value))?;
-            }
-            receipt
-                .custody
-                .release(source_array_bytes as u64)
-                .map_err(MaterializeError::from)?;
-            let host_array_bytes = vec_bytes(&attributes);
-            let retained = host_array_bytes
-                .checked_add(payload_bytes)
-                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            let attributes = prepare_host_attributes(
+                read,
+                reader.validate_native_work(receipt.custody.work()).is_ok(),
+                receipt,
+            )?;
             generation_action(
                 before_effect,
                 NativeMaterializationActionPhase::Before,
                 receipt.custody.work(),
             )
             .await?;
-            apply_host_attributes_offloaded(host_root, host_path, attributes, retained, receipt)
-                .await?;
+            apply_host_attributes_offloaded(
+                host_root,
+                host_path,
+                attributes.values,
+                attributes.retained,
+                receipt,
+            )
+            .await?;
             generation_action(
                 before_effect,
                 NativeMaterializationActionPhase::Completed,
@@ -123,6 +91,56 @@ where
     let result = frame.value.as_mut().await;
     drop(frame);
     result
+}
+
+struct PreparedAttributes {
+    values: Vec<(Vec<u8>, acyclic_stream::OwnedBytes)>,
+    retained: usize,
+}
+
+fn prepare_host_attributes(
+    read: Vec<(crate::kernel::AttributeName, acyclic_stream::OwnedBytes)>,
+    native: bool,
+    receipt: &mut GenerationReceipt,
+) -> Result<PreparedAttributes, MaterializeError> {
+    let source_array_bytes = vec_bytes(&read);
+    let mut attributes = Vec::new();
+    let mut payload_bytes = 0_usize;
+    for (name, value) in read {
+        // Volume policy is authority metadata, never a host xattr/stream.
+        // In particular, Linux's security.* namespace requires privilege.
+        if name.as_bytes() == crate::access::POLICY_METADATA_KEY {
+            let retained = name.retained_bytes() + if native { 0 } else { value.len() };
+            drop((name, value));
+            receipt
+                .custody
+                .release(retained as u64)
+                .map_err(MaterializeError::from)?;
+            continue;
+        }
+        if name.class() != crate::kernel::AttributeClass::PosixXattr {
+            return Err(MaterializeError::UnsupportedMetadata("named_attributes"));
+        }
+        let name = name.bytes;
+        let value_bytes = if native { 0 } else { value.len() };
+        payload_bytes = payload_bytes
+            .checked_add(name.capacity())
+            .and_then(|bytes| bytes.checked_add(value_bytes))
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+        receipt.push(&mut attributes, (name, value))?;
+    }
+    receipt
+        .custody
+        .release(source_array_bytes as u64)
+        .map_err(MaterializeError::from)?;
+    let host_array_bytes = vec_bytes(&attributes);
+    let retained = host_array_bytes
+        .checked_add(payload_bytes)
+        .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+    Ok(PreparedAttributes {
+        values: attributes,
+        retained,
+    })
 }
 
 pub(super) async fn apply_host_attributes_offloaded(

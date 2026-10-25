@@ -53,13 +53,41 @@ fn signature_evidence_binds_every_input_and_evicts_with_fixed_storage() {
 }
 
 #[test]
+fn active_certificate_evidence_survives_streaming_record_churn() {
+    let cache = SignatureCache::default();
+    let key = SigningKey::from_bytes(&[19; 32]);
+    let public = key.verifying_key();
+    let certificate = b"runtime certificate";
+    let signature = key.sign(certificate).to_bytes();
+    cache.verify(&public, certificate, &signature).unwrap();
+    for index in 0..96_u8 {
+        assert_eq!(
+            strict_calls(|| cache.verify(&public, certificate, &signature).unwrap()),
+            0
+        );
+        let record = [index];
+        cache
+            .verify(&public, &record, &key.sign(&record).to_bytes())
+            .unwrap();
+    }
+    // Capacity remains 32. Evidence not read during churn must be evicted.
+    let record = [0];
+    assert_eq!(
+        strict_calls(|| cache
+            .verify(&public, &record, &key.sign(&record).to_bytes())
+            .unwrap()),
+        1
+    );
+}
+
+#[test]
 fn cached_signatures_never_cache_trust_time_or_capability_admission() {
     use crate::{testing, verify};
     let cache = SignatureCache::default();
     let bytes = testing::root(|_| {});
     let trust = testing::Snapshot::default();
     let capability = verify::verify(&bytes, &cache.with_trust(&trust), testing::NOW).unwrap();
-    let id = capability.block_ids()[0];
+    let id = *capability.block_ids().first().unwrap();
     assert_eq!(
         strict_calls(|| {
             verify::verify(&bytes, &cache.with_trust(&trust), testing::NOW).unwrap();
@@ -84,7 +112,13 @@ fn cached_signatures_never_cache_trust_time_or_capability_admission() {
     assert!(verify::verify(&bytes, &cache.with_trust(&trust), 0).is_err());
     assert!(verify::verify(&bytes, &cache.with_trust(&trust), 1000).is_err());
     let mut wire = crate::authority::decode_capability(&bytes).unwrap();
-    wire.blocks[0].signature[0] ^= 1;
+    *wire
+        .blocks
+        .first_mut()
+        .unwrap()
+        .signature
+        .first_mut()
+        .unwrap() ^= 1;
     assert!(
         verify::verify(
             &crate::contract::CapabilityProto::from(wire).encode_to_vec(),
@@ -92,5 +126,40 @@ fn cached_signatures_never_cache_trust_time_or_capability_admission() {
             testing::NOW
         )
         .is_err()
+    );
+}
+
+#[test]
+fn verified_public_keys_reuse_the_same_evidence_slots_and_reject_changed_bytes() {
+    let cache = SignatureCache::default();
+    let bytes = crate::testing::root(|_| {});
+    let trust = crate::testing::Snapshot::default();
+    crate::verify::verify(&bytes, &cache.with_trust(&trust), crate::testing::NOW).unwrap();
+    let ((), keys): (_, Vec<PublicKeyPreparation>) = acyclic_test_support::differential::observe(
+        || (),
+        |()| {
+            crate::verify::verify(&bytes, &cache.with_trust(&trust), crate::testing::NOW).unwrap();
+        },
+    );
+    assert!(
+        keys.is_empty(),
+        "authenticated public keys were decoded again: {}",
+        keys.len()
+    );
+    assert!(cache.public_key(&[0; 31]).is_err());
+    assert!(cache.public_key(&[0; 32]).is_err());
+    let mut identity = [0; 32];
+    *identity.first_mut().unwrap() = 1;
+    assert!(cache.public_key(&identity).is_err());
+    let unrelated = SigningKey::from_bytes(&[29; 32]).verifying_key();
+    let (key, keys): (_, Vec<PublicKeyPreparation>) = acyclic_test_support::differential::observe(
+        || (),
+        |()| cache.public_key(unrelated.as_bytes()).unwrap(),
+    );
+    assert_eq!(key, unrelated);
+    assert_eq!(
+        keys.len(),
+        1,
+        "unverified keys must use the canonical decoder"
     );
 }

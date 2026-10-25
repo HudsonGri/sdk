@@ -18,12 +18,7 @@ fn symlink_materialization_keeps_its_original_work_frame_bounded() {
         receipt: &'a mut GenerationReceipt,
         control: &'a mut Option<&'a mut Control>,
     }
-    fn future_bytes<F: Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<Inputs<'_>> = None;
-    let bytes = future_bytes(|| {
-        let input = arguments.unwrap();
+    let bytes = acyclic_test_support::future_bytes(|input: Inputs<'static>| {
         materialize_symlink::<_, _, MaterializeError, _, _>(
             (input.reader, input.cancellation),
             input.path,

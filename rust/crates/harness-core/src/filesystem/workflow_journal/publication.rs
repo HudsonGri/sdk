@@ -49,27 +49,7 @@ where
                     .transpose()?;
                 (held, path)
             };
-            let (_key, key) = {
-                let key = match transition {
-                    Some((_, operation)) => crate::executor::with_history_io(io, |work| {
-                        crate::executor::preparation_format(
-                            format_args!("workflow:{}:{operation}", self.id()),
-                            work,
-                        )
-                    })?,
-                    None => crate::executor::with_history_io(io, |work| {
-                        crate::executor::preparation_format(
-                            format_args!("workflow:{}:admission", self.id()),
-                            work,
-                        )
-                    })?,
-                };
-                let held = io
-                    .map(|io| io.guard_owned(key.capacity() as u64))
-                    .transpose()?;
-                (held, key)
-            };
-            let key = IdempotencyKey::new(key)?;
+            let (_key, key) = self.payload_key(transition, io)?;
             let maximum = io
                 .map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
                 .transpose()?
@@ -112,6 +92,34 @@ where
                 .await
         })?
         .await
+    }
+
+    fn payload_key<'i>(
+        &self,
+        transition: Option<(u64, crate::OperationId)>,
+        io: Option<&'i PreparationIo>,
+    ) -> Result<(Option<super::super::DecodeReservation<'i>>, IdempotencyKey)> {
+        let (held, key) = {
+            let key = match transition {
+                Some((_, operation)) => crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("workflow:{}:{operation}", self.id()),
+                        work,
+                    )
+                })?,
+                None => crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("workflow:{}:admission", self.id()),
+                        work,
+                    )
+                })?,
+            };
+            let held = io
+                .map(|io| io.guard_owned(key.capacity() as u64))
+                .transpose()?;
+            (held, key)
+        };
+        Ok((held, IdempotencyKey::new(key)?))
     }
 
     pub(super) async fn append_reference(

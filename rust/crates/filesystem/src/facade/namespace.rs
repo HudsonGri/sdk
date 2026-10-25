@@ -521,18 +521,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 #[test]
 fn namespace_lookup_keeps_its_original_accounting_frame_bounded() {
     type View = Checkout<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
-    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<(
-        &mut View,
-        &NamespacePath,
-        &mut KernelAccounting<'_>,
-        &CancellationToken,
-    )> = None;
-    let bytes = future_bytes(|| {
-        let (view, path, work, cancellation) = arguments.unwrap();
-        view.lookup_no_follow_with_accounting(path, work, cancellation, false)
-    });
+    let bytes = acyclic_test_support::future_bytes(
+        |(view, path, work, cancellation): (
+            &'static mut View,
+            &'static NamespacePath,
+            &'static mut KernelAccounting<'static>,
+            &'static CancellationToken,
+        )| { view.lookup_no_follow_with_accounting(path, work, cancellation, false) },
+    );
     assert!(bytes <= 4096, "namespace lookup future is {bytes} bytes");
 }

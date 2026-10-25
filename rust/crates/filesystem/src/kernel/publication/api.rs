@@ -180,7 +180,7 @@ where
                     },
                 );
                 match boxed {
-                    Ok((future, _)) => futures::future::Either::Right(future.erase_send()),
+                    Ok((future, _)) => futures::future::Either::Right(future.erase_provider()),
                     Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
                 }
             }

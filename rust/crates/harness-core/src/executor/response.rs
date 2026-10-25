@@ -155,9 +155,8 @@ impl StockExecution<'_> {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
-                crate::conversation::BoundedContentFuture::new(self.io, || async {
+                crate::conversation::BoundedContentFuture::new(self.io, || {
                     self.capture_response(journal, input, step, prior_messages, tail)
-                        .await
                 })?
                 .await?
             }
@@ -189,7 +188,7 @@ impl StockExecution<'_> {
                 "prepared response projection differs from its request",
             ));
         }
-        crate::conversation::BoundedContentFuture::new(self.io, || async {
+        crate::conversation::BoundedContentFuture::new(self.io, || {
             self.resolve_response_accounting(
                 journal,
                 (input, step, prior_messages),
@@ -198,7 +197,6 @@ impl StockExecution<'_> {
                 &records,
                 phase,
             )
-            .await
         })?
         .await
     }

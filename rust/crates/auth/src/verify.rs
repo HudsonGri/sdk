@@ -119,6 +119,10 @@ pub fn verify(
     trust: &(impl Trust + ?Sized),
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
+    let public_key = |bytes: &[u8]| match trust.signature_cache() {
+        Some(cache) => cache.public_key(bytes),
+        None => crate::crypto::public_key(bytes),
+    };
     let verify_signature =
         |key: &ed25519_dalek::VerifyingKey, message: &[u8], signature: &[u8]| match trust
             .signature_cache()

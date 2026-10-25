@@ -44,6 +44,8 @@ pub(crate) fn claims_message(
 }
 
 pub(crate) fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
+    #[cfg(any(test, feature = "test-support"))]
+    acyclic_differential::record(PublicKeyPreparation);
     let bytes = bytes.try_into().map_err(|_| VerifyError::Malformed)?;
     let key = VerifyingKey::from_bytes(bytes).map_err(|_| VerifyError::Signature)?;
     if key.is_weak() {
@@ -59,6 +61,11 @@ pub use signatures::SignatureCache;
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignatureVerification;
+
+/// One actual public-key decoding and weak-point check across test crates.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicKeyPreparation;
 pub(crate) fn verify_signature(
     key: &VerifyingKey,
     message: &[u8],

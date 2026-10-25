@@ -117,8 +117,8 @@ where
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
         BoundedContentFuture::new(io, || async move {
-            let context = crate::conversation::BoundedContentFuture::new(io, || async {
-                self.model_task_context(invocation).await
+            let context = crate::conversation::BoundedContentFuture::new(io, || {
+                self.model_task_context(invocation)
             })?
             .await?;
             let stock = admission.task.name == "acyclic.stock_turn"
@@ -127,11 +127,10 @@ where
             let steering = self
                 .model_steering(invocation, &context, stock, &command)
                 .await?;
-            let (journal, operation) =
-                crate::conversation::BoundedContentFuture::new(io, || async {
-                    self.prepared_model_journal(invocation, &context).await
-                })?
-                .await?;
+            let (journal, operation) = crate::conversation::BoundedContentFuture::new(io, || {
+                self.prepared_model_journal(invocation, &context)
+            })?
+            .await?;
             if self
                 .reconcile_undispatched_model(
                     invocation,
@@ -144,19 +143,8 @@ where
             {
                 return mail::reconciled(io);
             }
-            if let Some(steering) = steering {
-                BoundedContentFuture::new(io, || {
-                    self.steer(
-                        &context,
-                        fence,
-                        &mut command,
-                        steering,
-                        reconciliation_only,
-                        io,
-                    )
-                })?
+            self.apply_model_steering(invocation, &context, &mut command, steering)
                 .await?;
-            }
             reserve_model_input(io)?;
             let (command, manifest) =
                 ModelExecutionInput::split_manifest(command, admission.task_id());
@@ -199,7 +187,7 @@ where
             } else {
                 (pipeline, None)
             };
-            crate::conversation::BoundedContentFuture::new(io, || async {
+            crate::conversation::BoundedContentFuture::new(io, || {
                 self.execute_model_command(
                     invocation,
                     ModelExecution {
@@ -214,11 +202,33 @@ where
                     },
                     phase,
                 )
-                .await
             })?
             .await
         })?
         .await
+    }
+
+    async fn apply_model_steering(
+        &self,
+        invocation: CommandInvocation<'_>,
+        context: &Arc<TaskContext>,
+        command: &mut ModelTaskCommand,
+        steering: Option<(crate::workflow::WorkflowRecord, OperationId)>,
+    ) -> Result<()> {
+        if let Some(steering) = steering {
+            BoundedContentFuture::new(invocation.io, || {
+                self.steer(
+                    context,
+                    invocation.fence,
+                    command,
+                    steering,
+                    invocation.reconciliation_only,
+                    invocation.io,
+                )
+            })?
+            .await?;
+        }
+        Ok(())
     }
 
     async fn model_task_context(
@@ -821,23 +831,19 @@ fn model_execution_frames_stay_bounded() {
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >;
-    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<(
-        &Commands<'_>,
-        CommandInvocation<'_>,
-        ModelExecution<
-            acyclic_stream::MemoryStream,
-            acyclic_fs::MemoryAuthorityBackend,
-            acyclic_fs::MemoryObjectBackend,
-        >,
-        &mut crate::executor::DispatchPhase,
-    )> = None;
-    let bytes = future_bytes(|| {
-        let (commands, invocation, prepared, phase) = arguments.unwrap();
-        commands.execute_model_command(invocation, prepared, phase)
-    });
+    type Prepared = ModelExecution<
+        acyclic_stream::MemoryStream,
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >;
+    let bytes = acyclic_test_support::future_bytes(
+        |(commands, invocation, prepared, phase): (
+            &'static Commands<'static>,
+            CommandInvocation<'static>,
+            Prepared,
+            &'static mut crate::executor::DispatchPhase,
+        )| { commands.execute_model_command(invocation, prepared, phase) },
+    );
     assert!(bytes <= 4096, "model execution future is {bytes} bytes");
 }
 
@@ -850,31 +856,30 @@ fn model_preparation_frames_stay_bounded() {
         acyclic_fs::MemoryAuthorityBackend,
         acyclic_fs::MemoryObjectBackend,
     >;
-    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<(
-        &Commands<'_>,
-        CommandInvocation<'_>,
-        &Arc<TaskContext>,
-        &ModelTaskCommand,
-    )> = None;
-    let bytes = future_bytes(|| {
-        let (commands, invocation, context, command) = arguments.unwrap();
-        commands.model_steering(invocation, context, false, command)
-    });
+    let bytes = acyclic_test_support::future_bytes(
+        |(commands, invocation, context, command): (
+            &'static Commands<'static>,
+            CommandInvocation<'static>,
+            &'static Arc<TaskContext>,
+            &'static ModelTaskCommand,
+        )| { commands.model_steering(invocation, context, false, command) },
+    );
     assert!(bytes <= 4096, "model steering future is {bytes} bytes");
-    let arguments: Option<(&Commands<'_>, CommandInvocation<'_>, &Arc<TaskContext>)> = None;
-    let bytes = future_bytes(|| {
-        let (commands, invocation, _context) = arguments.unwrap();
-        commands.reconcile_undispatched_model(
-            invocation,
-            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-            _context,
-            None,
-            OperationId::from_bytes([1; 16]),
-        )
-    });
+    let bytes = acyclic_test_support::future_bytes(
+        |(commands, invocation, _context): (
+            &'static Commands<'static>,
+            CommandInvocation<'static>,
+            &'static Arc<TaskContext>,
+        )| {
+            commands.reconcile_undispatched_model(
+                invocation,
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                _context,
+                None,
+                OperationId::from_bytes([1; 16]),
+            )
+        },
+    );
     assert!(
         bytes <= 4096,
         "model reconciliation future is {bytes} bytes"

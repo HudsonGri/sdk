@@ -272,3 +272,79 @@ fn expired_history_remains_verifiable_but_cannot_become_live_authority() -> Resu
     );
     Ok(())
 }
+
+#[test]
+fn historical_admissions_reuse_signature_evidence_but_recheck_trust_and_payload() -> Result<()> {
+    let issuer = fixture();
+    let event = expired_historical_event(&issuer)?;
+    let verifier = issuer.verifier(&mut None)?;
+    verifier.verify_event(&event, &mut None)?;
+    let (result, signatures): (_, Vec<acyclic_auth::crypto::SignatureVerification>) =
+        acyclic_test_support::differential::observe(
+            || (),
+            |()| verifier.verify_event(&event, &mut None),
+        );
+    result?;
+    assert!(
+        signatures.is_empty(),
+        "immutable historical signatures were verified twice"
+    );
+    let mut changed = event.clone();
+    changed.intent_digest[0] ^= 1;
+    assert!(verifier.verify_event(&changed, &mut None).is_err());
+    assert!(live_record(&verifier, &event, &mut None).is_err());
+    verifier
+        .public
+        .trust
+        .write()
+        .map_err(unauthorized)?
+        .minimum_key_epoch += 1;
+    assert!(verifier.verify_event(&event, &mut None).is_err());
+    Ok(())
+}
+
+#[test]
+fn runtime_certificates_are_prepared_once_with_identity_time_and_parent_fences() -> Result<()> {
+    let issuer = fixture();
+    let keys = &issuer.runtime.workload;
+    let name = resource(&issuer.audience)?;
+    let (result, preparations): (_, Vec<CertificatePreparation>) =
+        acyclic_test_support::differential::observe(
+            || (),
+            |()| -> Result<()> {
+                let first = signer(&issuer.id, keys, 100, &name, None)?;
+                let same = signer(&issuer.id, keys, 101, &name, None)?;
+                assert!(std::sync::Arc::ptr_eq(&first, &same));
+                let expired = signer(&issuer.id, keys, 100 + CERTIFICATE_SECONDS, &name, None)?;
+                assert!(!std::sync::Arc::ptr_eq(&first, &expired));
+                let rollback = signer(&issuer.id, keys, 99, &name, None)?;
+                assert!(!std::sync::Arc::ptr_eq(&expired, &rollback));
+                let foreign = signer("another-issuer", keys, 99, &name, None)?;
+                assert!(!std::sync::Arc::ptr_eq(&rollback, &foreign));
+                let other = signer(&issuer.id, keys, 99, "harness:/tasks/other", None)?;
+                assert!(!std::sync::Arc::ptr_eq(&foreign, &other));
+                Ok(())
+            },
+        );
+    result?;
+    assert_eq!(
+        preparations.len(),
+        5,
+        "runtime certificate was prepared again"
+    );
+    // Derived scopes must preserve their parent's revocation ancestry.
+    let scope = issuer.issue(
+        "parent",
+        &Capabilities::new(["event:append"]),
+        None,
+        None,
+        &mut None,
+    )?;
+    let trust = issuer.public_workload_trust()?;
+    let capability =
+        acyclic_auth::verify::verify(&scope.workload, &trust, now()).map_err(unauthorized)?;
+    let a = signer(&issuer.id, keys, now(), &name, Some(&capability))?;
+    let b = signer(&issuer.id, keys, now(), &name, Some(&capability))?;
+    assert!(!std::sync::Arc::ptr_eq(&a, &b));
+    Ok(())
+}

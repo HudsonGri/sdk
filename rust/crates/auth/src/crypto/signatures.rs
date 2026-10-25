@@ -5,17 +5,68 @@ use std::sync::Mutex;
 
 #[derive(Default)]
 struct Entries {
-    digests: [Option<[u8; 32]>; 32],
-    next: usize,
+    evidence: [Option<Evidence>; 32],
 }
 
-/// Fixed storage owned by one verifier. Only successful strict verifications
-/// enter this cache. Entries bind the public key, signature and full transcript;
-/// no token, secret, trust decision or validity interval is retained.
+#[derive(Clone, Copy)]
+struct Evidence {
+    digest: Option<[u8; 32]>,
+    key: VerifyingKey,
+}
+
+impl Entries {
+    fn promote(&mut self, digest: [u8; 32]) -> bool {
+        let Some(index) = self
+            .evidence
+            .iter()
+            .position(|entry| entry.is_some_and(|entry| entry.digest == Some(digest)))
+        else {
+            return false;
+        };
+        if let Some(recent) = self.evidence.get_mut(..=index) {
+            recent.rotate_right(1);
+        }
+        true
+    }
+}
+
+/// Fixed storage owned by one verifier. Entries hold canonical nonweak public
+/// keys or successful strict signature proofs binding the key and transcript.
+/// No token, secret, trust decision or validity interval is retained.
 #[derive(Default)]
 pub struct SignatureCache(Mutex<Entries>);
 
 impl SignatureCache {
+    /// Reuses successful canonical public-key decoding and weak-point checks.
+    /// The same 32 evidence slots own decoded keys and signature transcripts.
+    /// No trust decision or caller-provided decoded key is admitted here.
+    pub fn public_key(&self, bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
+        let bytes: &[u8; 32] = bytes.try_into().map_err(|_| VerifyError::Malformed)?;
+        if let Some(key) = self
+            .0
+            .lock()
+            .map_err(|_| VerifyError::Trust)?
+            .evidence
+            .iter()
+            .flatten()
+            .find_map(|entry| (entry.key.as_bytes() == bytes).then_some(entry.key))
+        {
+            return Ok(key);
+        }
+        let key = super::public_key(bytes)?;
+        let mut entries = self.0.lock().map_err(|_| VerifyError::Trust)?;
+        if !entries
+            .evidence
+            .iter()
+            .flatten()
+            .any(|entry| entry.key == key)
+        {
+            entries.evidence.rotate_right(1);
+            entries.evidence[0] = Some(Evidence { digest: None, key });
+        }
+        Ok(key)
+    }
+
     /// Pair reusable signature evidence with the owner's current trust snapshot.
     /// The ordinary verification API still checks that snapshot and time each call.
     pub fn with_trust<'a>(&'a self, trust: &'a (impl Trust + ?Sized)) -> impl Trust + 'a {
@@ -25,7 +76,9 @@ impl SignatureCache {
         }
     }
 
-    pub(crate) fn verify(
+    /// Verify immutable signature evidence. Callers separately enforce their
+    /// current trust, domain, audience and validity rules on every use.
+    pub fn verify(
         &self,
         key: &VerifyingKey,
         message: &[u8],
@@ -47,8 +100,7 @@ impl SignatureCache {
             .0
             .lock()
             .map_err(|_| VerifyError::Trust)?
-            .digests
-            .contains(&Some(digest))
+            .promote(digest)
         {
             return Ok(());
         }
@@ -56,9 +108,13 @@ impl SignatureCache {
         // replace evidence. Concurrent misses may independently prove the same fact.
         verify_signature(key, message, &signature.to_bytes())?;
         let mut entries = self.0.lock().map_err(|_| VerifyError::Trust)?;
-        let next = entries.next;
-        entries.digests[next] = Some(digest);
-        entries.next = (next + 1) % entries.digests.len();
+        if !entries.promote(digest) {
+            entries.evidence.rotate_right(1);
+            entries.evidence[0] = Some(Evidence {
+                digest: Some(digest),
+                key: *key,
+            });
+        }
         Ok(())
     }
 }

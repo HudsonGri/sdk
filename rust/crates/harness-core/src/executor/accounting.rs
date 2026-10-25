@@ -6,16 +6,17 @@ pub(super) fn stock_context_capacity(
     io: Option<&PreparationIo>,
 ) -> Result<crate::context::ModelContextCapacity> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let work = io.original_native_work().ok_or_else(|| {
-            stock_boundary(
-                io.into(),
-                crate::wire::ErrorCode::Unsupported,
-                "stock model capacity requires original native work",
-            )
-        })?;
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
         io.check_cancellation()?;
         return provider.context_capacity_with_native_work(model, work);
+    }
+    // An ordinary finite preparation scope can inspect pure catalog metadata.
+    // Original native work above always uses the native capability entry point.
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.check_cancellation()?;
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     if io.is_some() {

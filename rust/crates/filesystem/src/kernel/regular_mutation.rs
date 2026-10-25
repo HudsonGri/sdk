@@ -182,39 +182,41 @@ pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<RegularMutationReceipt, FsError> {
-    let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
-        accounting.check()?;
-        validate_mutation(mutation).map_err(regular_error)?;
-        if !config.sparse_files {
-            let current = regular_logical_bytes(payload).map_err(regular_error)?;
-            let requires_sparse = match mutation {
-                RegularMutation::Write { offset, .. } => offset > current,
-                RegularMutation::Resize { logical_bytes } => logical_bytes > current,
-                RegularMutation::ZeroRange { .. } | RegularMutation::Preallocate { .. } => true,
+    let mut frame =
+        crate::heap_future::with_provider_accounting(accounting, |accounting| async move {
+            accounting.check()?;
+            validate_mutation(mutation).map_err(regular_error)?;
+            if !config.sparse_files {
+                let current = regular_logical_bytes(payload).map_err(regular_error)?;
+                let requires_sparse = match mutation {
+                    RegularMutation::Write { offset, .. } => offset > current,
+                    RegularMutation::Resize { logical_bytes } => logical_bytes > current,
+                    RegularMutation::ZeroRange { .. } | RegularMutation::Preallocate { .. } => true,
+                };
+                if requires_sparse {
+                    return Err(regular_error(RegularMutationError::SparseSemanticsDisabled));
+                }
+            }
+            let payload = if let FilePayload::InlineRegular(data) = payload {
+                if let Some(payload) =
+                    try_inline(store, data, mutation, config, accounting, cancellation).await?
+                {
+                    return Ok(RegularMutationReceipt {
+                        payload,
+                        work: accounting.spent(),
+                    });
+                }
+                let promoted =
+                    promote_inline(store, data, config, accounting, cancellation).await?;
+                FilePayload::Regular {
+                    logical_bytes: promoted.logical_bytes,
+                    extents: promoted.extents,
+                }
+            } else {
+                payload
             };
-            if requires_sparse {
-                return Err(regular_error(RegularMutationError::SparseSemanticsDisabled));
-            }
-        }
-        let payload = if let FilePayload::InlineRegular(data) = payload {
-            if let Some(payload) =
-                try_inline(store, data, mutation, config, accounting, cancellation).await?
-            {
-                return Ok(RegularMutationReceipt {
-                    payload,
-                    work: accounting.spent(),
-                });
-            }
-            let promoted = promote_inline(store, data, config, accounting, cancellation).await?;
-            FilePayload::Regular {
-                logical_bytes: promoted.logical_bytes,
-                extents: promoted.extents,
-            }
-        } else {
-            payload
-        };
-        apply_sparse(store, payload, mutation, config, accounting, cancellation).await
-    })?;
+            apply_sparse(store, payload, mutation, config, accounting, cancellation).await
+        })?;
     let result = frame.value.as_mut().await;
     drop(frame);
     result

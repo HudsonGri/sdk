@@ -47,6 +47,15 @@ pub(super) struct RuntimeKeys {
     environment: SigningKey,
     account: SigningKey,
     runtime: SigningKey,
+    certificate: std::sync::Mutex<Option<PreparedCertificate>>,
+}
+
+struct PreparedCertificate {
+    id: String,
+    name: String,
+    issued: u64,
+    expires: u64,
+    signer: std::sync::Arc<CertifiedSigner>,
 }
 
 impl RuntimeKeys {
@@ -56,6 +65,7 @@ impl RuntimeKeys {
             environment: key("acyclic.harness.environment.v1"),
             account: key("acyclic.harness.account.v1"),
             runtime: key("acyclic.harness.runtime.v1"),
+            certificate: std::sync::Mutex::new(None),
         }
     }
 }
@@ -111,7 +121,48 @@ fn signer(
     timestamp: u64,
     name: &str,
     parent: Option<&VerifiedCapability>,
+) -> Result<std::sync::Arc<CertifiedSigner>> {
+    // A derived certificate has its parent's expiry and revocation ancestry;
+    // it must never borrow an independently certified runtime ceiling.
+    if parent.is_some() {
+        return certify(id, keys, timestamp, name, parent).map(std::sync::Arc::new);
+    }
+    let mut cached = keys.certificate.lock().map_err(unauthorized)?;
+    if let Some(entry) = cached.as_ref()
+        && entry.id == id
+        && entry.name == name
+        && entry.issued <= timestamp
+        && timestamp < entry.expires
+    {
+        return Ok(entry.signer.clone());
+    }
+    let expires = timestamp
+        .checked_add(CERTIFICATE_SECONDS)
+        .ok_or_else(|| unauthorized("clock overflow"))?;
+    let signer = std::sync::Arc::new(certify(id, keys, timestamp, name, None)?);
+    *cached = Some(PreparedCertificate {
+        id: id.into(),
+        name: name.into(),
+        issued: timestamp,
+        expires,
+        signer: signer.clone(),
+    });
+    Ok(signer)
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+struct CertificatePreparation;
+
+fn certify(
+    id: &str,
+    keys: &RuntimeKeys,
+    timestamp: u64,
+    name: &str,
+    parent: Option<&VerifiedCapability>,
 ) -> Result<CertifiedSigner> {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(CertificatePreparation);
     let environment = &keys.environment;
     let account = &keys.account;
     let leaf = &keys.runtime;
@@ -223,31 +274,35 @@ pub(super) fn issue(
     }
     let timestamp = now();
     let name = resource(&issuer.audience)?;
-    let capability = signer(
-        &issuer.id,
-        &issuer.runtime.workload,
-        timestamp,
-        &name,
-        parent,
-    )?
-    .mint(
-        vec![
-            claims(scope, 0)?,
-            Caveat {
-                kind: CaveatKind::Grants(grant(&name)),
-            },
-            Caveat {
-                kind: CaveatKind::Audience(ResourcePattern {
-                    name,
-                    prefix: false,
-                }),
-            },
-        ],
-        SigningKey::from_bytes(&entropy()),
-        &issuer.public_workload_trust()?,
-        timestamp,
-    )
-    .map_err(unauthorized)?;
+    let capability = {
+        let snapshot = issuer.runtime.public.trust.read().map_err(unauthorized)?;
+        let trust = issuer.runtime.public.signatures.with_trust(&*snapshot);
+        signer(
+            &issuer.id,
+            &issuer.runtime.workload,
+            timestamp,
+            &name,
+            parent,
+        )?
+        .mint(
+            vec![
+                claims(scope, 0)?,
+                Caveat {
+                    kind: CaveatKind::Grants(grant(&name)),
+                },
+                Caveat {
+                    kind: CaveatKind::Audience(ResourcePattern {
+                        name,
+                        prefix: false,
+                    }),
+                },
+            ],
+            SigningKey::from_bytes(&entropy()),
+            &trust,
+            timestamp,
+        )
+        .map_err(unauthorized)?
+    };
     retain(scope, &capability, work)
 }
 pub(super) fn append(

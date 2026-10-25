@@ -42,6 +42,21 @@ impl<'a> StockExecution<'a> {
             if !cache.enabled {
                 return Ok(());
             }
+            // Stored previews age on the following projection. Such a request
+            // cannot be the immutable prefix of an append-only continuation.
+            // Rebuild through the single context projection while that mutable
+            // tail is present; ordinary text/tool histories keep their cache.
+            if request.request().messages.iter().any(|message| {
+                message.content.parts().iter().any(|part| {
+                    matches!(part,
+                    crate::model::ModelContentPart::ToolResult {
+                        content: crate::model::ToolResultContent::Stored { preview, .. }, ..
+                    } if !preview.is_empty())
+                })
+            }) {
+                cache.enabled = false;
+                return Ok(());
+            }
             let prior = self.absolute_prior_count(prior).await?;
             #[cfg(feature = "filesystem")]
             let hold = self

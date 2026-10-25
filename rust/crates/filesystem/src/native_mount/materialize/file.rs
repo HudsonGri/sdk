@@ -249,6 +249,9 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
     receipt: &mut GenerationReceipt,
     writes: &mut Vec<GenerationWrite>,
 ) -> Result<(), MaterializeError> {
+    let native = receipt.custody.work().clone();
+    let mut accounting = crate::kernel::KernelAccounting::native(&native, native.cancellation());
+    let mut frame = crate::heap_future::with_provider_accounting(&mut accounting, |_| async move {
     let request_bytes = vec_bytes(&reads);
     let read = read_source!(reader, receipt, remaining, value,
         reader.read_resolved_ranges(
@@ -292,6 +295,10 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
         .release(result_bytes as u64)
         .map_err(MaterializeError::from)?;
     Ok(())
+    }).map_err(MaterializeError::from)?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 pub(super) fn queue_zero_writes(

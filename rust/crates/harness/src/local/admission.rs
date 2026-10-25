@@ -441,25 +441,10 @@ impl LocalHarness {
         // A staged model input is already an immutable choice. Recover it
         // before reading a possibly edited, completed or removed GOAL.md.
         if let Some(inputs) = self.recover_turn_inputs(operation).await? {
-            let count = current
-                .automatic_turns
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
-            return admitted_task(
-                self.publish_turn(
-                    Turn {
-                        operation,
-                        root: current.root,
-                        automatic_turns: count,
-                        goal_revision: None,
-                        receive: inputs.0,
-                        model: inputs.1,
-                    },
-                    Some(current.operation),
-                )
-                .await?,
-            )
-            .map(Some);
+            return self
+                .publish_goal_continuation(&current, operation, inputs, None)
+                .await
+                .map(Some);
         }
         let Some((goal, publication)) = self.read_continuation_goal().await? else {
             return Ok(None);
@@ -495,20 +480,9 @@ impl LocalHarness {
                         self.stage_turn(operation, &prompt)
                     })?
                     .await?;
-                let admission = self
-                    .publish_turn(
-                        Turn {
-                            operation,
-                            root: current.root,
-                            automatic_turns: current.automatic_turns + 1,
-                            goal_revision: publication,
-                            receive,
-                            model,
-                        },
-                        Some(current.operation),
-                    )
-                    .await?;
-                admitted_task(admission).map(Some)
+                self.publish_goal_continuation(&current, operation, (receive, model), publication)
+                    .await
+                    .map(Some)
             }
             Some(GoalContinuation::Block(contents)) => {
                 let blocked = self.block_goal(&goal, settled, &contents).await?;
@@ -517,6 +491,36 @@ impl LocalHarness {
                 Err(Error::GoalBlocked(GoalBlockedReason::Declared))
             }
         }
+    }
+
+    async fn publish_goal_continuation(
+        &self,
+        current: &Turn,
+        operation: OperationId,
+        inputs: (
+            crate::workflow::WorkflowCommand,
+            crate::workflow::WorkflowCommand,
+        ),
+        goal_revision: Option<OperationId>,
+    ) -> Result<TaskId> {
+        let automatic_turns = current
+            .automatic_turns
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
+        let admission = self
+            .publish_turn(
+                Turn {
+                    operation,
+                    root: current.root,
+                    automatic_turns,
+                    goal_revision,
+                    receive: inputs.0,
+                    model: inputs.1,
+                },
+                Some(current.operation),
+            )
+            .await?;
+        admitted_task(admission)
     }
 
     async fn read_continuation_goal(&self) -> Result<Option<(GoalView, Option<OperationId>)>> {

@@ -12,11 +12,12 @@ pub(in crate::core::authority) fn record(
 ) -> Result<Vec<u8>> {
     let timestamp = now();
     let trust = runtime.public.trust.read().map_err(unauthorized)?;
-    let capability = verify_trusted(&*trust, audience, scope, timestamp, work)?;
+    let trust = runtime.public.signatures.with_trust(&*trust);
+    let capability = verify_trusted(&trust, audience, scope, timestamp, work)?;
     let (attributes, _) = scope_facts(&capability, false)?;
     let name = resource(audience)?;
     let signer = signer(id, &runtime.workload, timestamp, &name, None)?;
-    let receipt = RuntimeAdmission::new(&signer, &*trust, timestamp)
+    let receipt = RuntimeAdmission::new(&signer, &trust, timestamp)
         .record(
             &capability,
             &Request {
@@ -64,8 +65,9 @@ pub(in crate::core::authority) fn verify_record(
     }
     let admitted: AdmittedCapability = envelope.try_into().map_err(unauthorized)?;
     let trust = verifier.public.trust.read().map_err(unauthorized)?;
+    let trust = verifier.public.signatures.with_trust(&*trust);
     let authenticated = admitted
-        .authenticate_history(&*trust, now())
+        .authenticate_history(&trust, now())
         .map_err(unauthorized)?;
     let capability = authenticated.workload();
     if capability.account_id().map_err(unauthorized)? != verifier.id {
@@ -90,7 +92,7 @@ pub(in crate::core::authority) fn verify_record(
     let name = resource(&verifier.audience)?;
     authenticated
         .authorize_history(
-            &*trust,
+            &trust,
             &Request {
                 target: Target::Resource {
                     action: ACTION,

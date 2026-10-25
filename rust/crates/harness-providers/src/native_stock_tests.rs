@@ -242,27 +242,27 @@ pub(super) async fn run_stock_input<O: acyclic_fs::AsyncObjectStore + 'static>(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = AuthorityIssuer::new(
-        "fixture",
-        [47; 32],
-        Authority {
-            kind: AggregateKind::Task,
-            id: "owner".into(),
-        },
-    );
-    let signed = stock_scope(&issuer, &volume, agent)?;
+    static ISSUER: std::sync::OnceLock<AuthorityIssuer> = std::sync::OnceLock::new();
+    let issuer = ISSUER.get_or_init(|| {
+        AuthorityIssuer::new(
+            "fixture",
+            [47; 32],
+            Authority {
+                kind: AggregateKind::Task,
+                id: "owner".into(),
+            },
+        )
+    });
+    let signed = stock_scope(issuer, &volume, agent)?;
+    // Retain the immutable issuer as well as its public verifier: admission
+    // ports borrow this owner, so a verifier cannot outlive it across fixtures.
+    let verifier = issuer.verifier(&mut None)?;
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let work = work(&CancellationToken::new())?;
     let io = PreparationIo::from_native_work(&work)?;
     let operation = OperationId::from_bytes([1; 16]);
-    let payloads = FilesystemContentPublisher::new(
-        host.clone(),
-        &volume,
-        &issuer.verifier(&mut None)?,
-        &signed,
-        65_536,
-        None,
-    )?;
+    let payloads =
+        FilesystemContentPublisher::new(host.clone(), &volume, &verifier, &signed, 65_536, None)?;
     let machine = stock_machine(payloads.as_ref(), operation, input).await?;
     let mut tasks = TaskRegistry::default();
     tasks.register(
@@ -282,7 +282,7 @@ pub(super) async fn run_stock_input<O: acyclic_fs::AsyncObjectStore + 'static>(
         // Callers may arm threshold compaction, whose summaries need the
         // private volume.
         Some(&volume),
-        &issuer.verifier(&mut None)?,
+        &verifier,
         &signed,
         &scope,
         &tasks,

@@ -287,25 +287,12 @@ impl CaptureBatch<'_> {
             let replace = intent == CaptureIntent::Replace
                 && !(host_kind == FileKind::Directory
                     && current.is_some_and(|record| record.kind == FileKind::Directory));
-            if let Some(record) = current
-                && (record.kind != host_kind || replace)
-            {
-                if record.kind == FileKind::Directory {
-                    push_subtree_removals(
-                        checkout,
-                        &path,
-                        &mut self.mutations,
-                        &mut self.receipt,
-                        self.meter,
-                    )
-                    .await?;
-                }
-                capture_reserve(&mut self.mutations, 1, self.meter)?;
-                self.mutations.push(AuthoredMutation::Remove {
-                    path: clone_capture_path(&path, self.meter)?,
-                    expected_file_id: Some(record.file_id),
-                });
-            }
+            self.remove_replaced(
+                checkout,
+                &path,
+                current.filter(|record| record.kind != host_kind || replace),
+            )
+            .await?;
             let exists_with_kind =
                 !replace && current.is_some_and(|record| record.kind == host_kind);
             let (canonical_metadata, prior_metadata) = self
@@ -364,6 +351,32 @@ impl CaptureBatch<'_> {
         let result = frame.value.as_mut().await;
         drop(frame);
         result
+    }
+
+    async fn remove_replaced<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &mut self,
+        checkout: &mut Checkout<A, O>,
+        path: &NamespacePath,
+        replaced: Option<FileRecord>,
+    ) -> Result<(), CaptureError> {
+        if let Some(record) = replaced {
+            if record.kind == FileKind::Directory {
+                push_subtree_removals(
+                    checkout,
+                    path,
+                    &mut self.mutations,
+                    &mut self.receipt,
+                    self.meter,
+                )
+                .await?;
+            }
+            capture_reserve(&mut self.mutations, 1, self.meter)?;
+            self.mutations.push(AuthoredMutation::Remove {
+                path: clone_capture_path(path, self.meter)?,
+                expected_file_id: Some(record.file_id),
+            });
+        }
+        Ok(())
     }
 
     fn finish_present(

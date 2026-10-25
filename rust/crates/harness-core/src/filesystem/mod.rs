@@ -238,6 +238,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
+        // Reject malformed identities before admitting any heap frame. A
+        // caller with no allocation allowance still receives the path refusal.
+        crate::executor::with_history_io(io, |work| {
+            crate::conversation::validate_content_path(path, work)
+        })?;
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let bytes = input.as_ref();
             grant.require(volume, VolumeOperation::Write, io)?;
@@ -259,9 +264,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "content provider or size limit mismatch",
                 ));
             }
-            crate::executor::with_history_io(io, |work| {
-                crate::conversation::validate_content_path(path, work)
-            })?;
             let descriptor = crate::executor::with_history_io(io, |work| {
                 FileDescriptor::from_bytes(bytes, media_type, work)
             })?;
@@ -508,13 +510,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 .await
                                 .map_err(Error::from)
                         })?
-                        .await?
+                        .await?;
                     }
                     None => {
                         crate::conversation::BoundedContentFuture::new(io, || {
                             retain_published_generation(&generation)
                         })?
-                        .await?
+                        .await?;
                     }
                 }
             }

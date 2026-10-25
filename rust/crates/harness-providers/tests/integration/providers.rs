@@ -238,9 +238,8 @@ fn task<'a>(
         let temporary = local_workspace::temporary()?;
         let directory = temporary.path().join("filesystem");
         std::fs::create_dir(&directory)?;
-        let seeded = local_workspace::seed(&directory, &case.seed);
-        eprintln!("provider seed future {}", std::mem::size_of_val(&seeded));
-        let (host, volume, workspace, reader) = seeded.await?;
+        let (host, volume, workspace, reader) =
+            local_workspace::seed(&directory, &case.seed).await?;
         let provider = Arc::new(resolve(case, transport.clone())?);
         let config = local_harness_config(&directory, (provider.model().clone(), provider))?
             .state_directory(temporary.path().join("state"))
@@ -316,21 +315,11 @@ fn task<'a>(
         drop(harness);
         drop(reader);
         drop(host);
-        let cold_future = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory));
-        eprintln!(
-            "provider cold open future {}",
-            std::mem::size_of_val(&cold_future)
-        );
-        let cold = cold_future.await?;
+        let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
         let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
         for (path, expected) in &case.expect.files {
             let absolute = format!("/{path}");
-            let read_future = cold.read(&workspace, None, &absolute, 65_536, None);
-            eprintln!(
-                "provider cold read future {}",
-                std::mem::size_of_val(&read_future)
-            );
-            let actual = read_future.await;
+            let actual = cold.read(&workspace, None, &absolute, 65_536, None).await;
             match (expected, actual) {
                 (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
                 (None, Err(acyclic_harness::Error::NotFound(_))) => {}

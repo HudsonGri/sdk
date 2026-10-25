@@ -44,15 +44,21 @@ impl<F: Future + ?Sized> HeapFuture<F> {
 
 impl<F: Future> HeapFuture<F> {
     /// Erases a provider body without moving or reallocating admitted storage.
-    pub(crate) fn erase_send<'a>(self) -> HeapFuture<dyn Future<Output = F::Output> + Send + 'a>
+    pub(crate) fn erase_provider<'a>(self) -> HeapFuture<ErasedProviderFuture<'a, F::Output>>
     where
-        F: Send + 'a,
+        F: acyclic_stream::ProviderTask + 'a,
     {
         HeapFuture {
             future: self.future,
         }
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+type ErasedProviderFuture<'a, T> = dyn Future<Output = T> + Send + 'a;
+#[cfg(target_arch = "wasm32")]
+type ErasedProviderFuture<'a, T> = dyn Future<Output = T> + 'a;
+type ProviderFrame<'a, T> = crate::kernel::ReadOwned<HeapFuture<ErasedProviderFuture<'a, T>>>;
 
 /// Builds `create`'s future directly in a heap allocation.
 ///
@@ -199,6 +205,42 @@ where
             })
         }
     }
+}
+
+/// One construction boundary for kernel futures on the original native ledger.
+pub(crate) fn with_accounting<'a, 'accounting, F: Future>(
+    accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+    create: impl FnOnce(&'a mut crate::kernel::allocation::KernelAccounting<'accounting>) -> F,
+) -> Result<crate::kernel::ReadOwned<crate::heap_future::HeapFuture<F>>, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let custody = if accounting.native_work().is_some() {
+        let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
+        accounting.claim_owned(bytes, u64::from(bytes != 0))?
+    } else {
+        crate::kernel::allocation::KernelOwnedAllocation::Standalone
+    };
+    #[cfg(target_arch = "wasm32")]
+    let custody = crate::kernel::allocation::KernelOwnedAllocation::Standalone;
+    Ok(crate::kernel::ReadOwned {
+        value: in_heap(|| create(accounting)),
+        custody,
+    })
+}
+
+/// Erases the admitted frame before it can enter a caller's async state.
+/// Construction, charging and retirement remain owned by `with_accounting`.
+pub(crate) fn with_provider_accounting<'a, 'accounting, F>(
+    accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+    create: impl FnOnce(&'a mut crate::kernel::allocation::KernelAccounting<'accounting>) -> F,
+) -> Result<ProviderFrame<'a, F::Output>, crate::FsError>
+where
+    F: Future + acyclic_stream::ProviderTask + 'a,
+{
+    let frame = with_accounting(accounting, create)?;
+    Ok(crate::kernel::ReadOwned {
+        value: frame.value.erase_provider(),
+        custody: frame.custody,
+    })
 }
 
 #[cfg(test)]
@@ -636,24 +678,4 @@ mod tests {
             .expect("later actual DATA");
         assert_eq!(owner.take_completed_data_work().peak_allocation_bytes, 1);
     }
-}
-
-/// One construction boundary for kernel futures on the original native ledger.
-pub(crate) fn with_accounting<'a, 'accounting, F: Future>(
-    accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
-    create: impl FnOnce(&'a mut crate::kernel::allocation::KernelAccounting<'accounting>) -> F,
-) -> Result<crate::kernel::ReadOwned<crate::heap_future::HeapFuture<F>>, crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let custody = if accounting.native_work().is_some() {
-        let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
-        accounting.claim_owned(bytes, u64::from(bytes != 0))?
-    } else {
-        crate::kernel::allocation::KernelOwnedAllocation::Standalone
-    };
-    #[cfg(target_arch = "wasm32")]
-    let custody = crate::kernel::allocation::KernelOwnedAllocation::Standalone;
-    Ok(crate::kernel::ReadOwned {
-        value: in_heap(|| create(accounting)),
-        custody,
-    })
 }

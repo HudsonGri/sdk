@@ -279,6 +279,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "futures",
+ "httpdate",
  "js-sys",
  "loom",
  "pin-project-lite",

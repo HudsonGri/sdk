@@ -110,12 +110,7 @@ fn materialization_children_keep_bounded_frames() {
         receipt: &'a mut GenerationReceipt,
         control: &'a mut Option<&'a mut Control>,
     }
-    fn future_bytes<F: Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<Inputs<'_>> = None;
-    let lookup = future_bytes(|| {
-        let input = arguments.unwrap();
+    let lookup = acyclic_test_support::future_bytes(|input: Inputs<'static>| {
         input.reader.lookup_record_with_native_work(
             input.path,
             input.receipt.custody.work(),
@@ -126,9 +121,7 @@ fn materialization_children_keep_bounded_frames() {
         lookup <= 4096,
         "original namespace future is {lookup} bytes"
     );
-    let arguments: Option<Inputs<'_>> = None;
-    let metadata = future_bytes(|| {
-        let input = arguments.unwrap();
+    let metadata = acyclic_test_support::future_bytes(|input: Inputs<'static>| {
         apply_metadata(
             input.reader,
             input.root,
@@ -139,9 +132,7 @@ fn materialization_children_keep_bounded_frames() {
             input.control,
         )
     });
-    let arguments: Option<Inputs<'_>> = None;
-    let sparse = future_bytes(|| {
-        let input = arguments.unwrap();
+    let sparse = acyclic_test_support::future_bytes(|input: Inputs<'static>| {
         materialize_sparse_file(
             input.reader,
             input.path,
@@ -153,26 +144,20 @@ fn materialization_children_keep_bounded_frames() {
             input.control,
         )
     });
-    let arguments: Option<Inputs<'_>> = None;
-    let reader_metadata = future_bytes(|| {
-        let input = arguments.unwrap();
+    let reader_metadata = acyclic_test_support::future_bytes(|input: Inputs<'static>| {
         input
             .reader
             .read_metadata(input.path, input.receipt.custody.work(), input.cancellation)
     });
-    let arguments: Option<Inputs<'_>> = None;
-    let root: Option<crate::ObjectId> = None;
-    let reader_attributes = future_bytes(|| {
-        let input = arguments.unwrap();
-        input.reader.read_named_attributes(
-            root.unwrap(),
-            input.receipt.custody.work(),
-            input.cancellation,
-        )
-    });
-    let arguments: Option<Inputs<'_>> = None;
-    let reader_directory = future_bytes(|| {
-        let input = arguments.unwrap();
+    let reader_attributes =
+        acyclic_test_support::future_bytes(|(input, root): (Inputs<'static>, crate::ObjectId)| {
+            input.reader.read_named_attributes(
+                root,
+                input.receipt.custody.work(),
+                input.cancellation,
+            )
+        });
+    let reader_directory = acyclic_test_support::future_bytes(|input: Inputs<'static>| {
         input.reader.list_directory_records(
             input.path,
             None,

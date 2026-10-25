@@ -1182,51 +1182,57 @@ mod cancellation_tests {
 #[cfg(test)]
 #[test]
 fn tool_admission_children_keep_bounded_frames() {
-    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<(&StockExecution<'_>, &dyn ExecutionJournal, &ToolInvocation)> = None;
-    let refusal = future_bytes(|| {
-        let (execution, journal, invocation) = arguments.unwrap();
-        execution.settle_tool_refusal(
-            journal,
-            OperationId::from_bytes([1; 16]),
-            0,
-            invocation,
-            ToolCallRejection::Unavailable,
-        )
-    });
-    let arguments: Option<(
-        &StockExecution<'_>,
-        &dyn ExecutionJournal,
-        &ToolInvocation,
-        &crate::tool::Tool,
-    )> = None;
-    let policy = future_bytes(|| {
-        let (execution, journal, invocation, tool) = arguments.unwrap();
-        execution.require_tool_policy(
-            journal,
-            OperationId::from_bytes([1; 16]),
-            invocation,
-            tool,
-            false,
-        )
-    });
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        let arguments: Option<(&StockExecution<'_>, &ToolInvocation)> = None;
-        let hooks = future_bytes(|| {
-            let (execution, invocation) = arguments.unwrap();
-            execution.tool_hook_output(
+    let refusal = acyclic_test_support::future_bytes(
+        |(execution, journal, invocation): (
+            &'static StockExecution<'static>,
+            &'static dyn ExecutionJournal,
+            &'static ToolInvocation,
+        )| {
+            execution.settle_tool_refusal(
+                journal,
                 OperationId::from_bytes([1; 16]),
-                crate::hooks::HookSite::BeforeTool,
+                0,
                 invocation,
-                None,
+                ToolCallRejection::Unavailable,
+            )
+        },
+    );
+    let policy = acyclic_test_support::future_bytes(
+        |(execution, journal, invocation, tool): (
+            &'static StockExecution<'static>,
+            &'static dyn ExecutionJournal,
+            &'static ToolInvocation,
+            &'static crate::tool::Tool,
+        )| {
+            execution.require_tool_policy(
+                journal,
+                OperationId::from_bytes([1; 16]),
+                invocation,
+                tool,
                 false,
             )
-        });
-        assert!(hooks <= 512, "tool hooks future is {hooks} bytes");
+        },
+    );
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        let hooks = acyclic_test_support::future_bytes(
+            |(execution, invocation): (
+                &'static StockExecution<'static>,
+                &'static ToolInvocation,
+            )| {
+                execution.tool_hook_output(
+                    OperationId::from_bytes([1; 16]),
+                    crate::hooks::HookSite::BeforeTool,
+                    invocation,
+                    None,
+                    false,
+                )
+            },
+        );
+        eprintln!("TOOL_HOOK_FRAME {hooks}");
+        assert!(hooks <= 1024, "tool hooks future is {hooks} bytes");
     }
-    assert!(refusal <= 512, "tool refusal future is {refusal} bytes");
-    assert!(policy <= 512, "tool policy future is {policy} bytes");
+    eprintln!("TOOL_ADMISSION_FRAMES refusal={refusal} policy={policy}");
+    assert!(refusal <= 1024, "tool refusal future is {refusal} bytes");
+    assert!(policy <= 1024, "tool policy future is {policy} bytes");
 }

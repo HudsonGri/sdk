@@ -733,44 +733,38 @@ fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
 #[cfg(test)]
 #[test]
 fn model_dispatch_children_keep_bounded_frames() {
-    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let execution: Option<&StockExecution<'_>> = None;
     let dispatch = crate::model::ModelDispatch {
         operation_id: OperationId::from_bytes([1; 16]),
         step: 0,
         request_digest: [0; 32],
     };
-    let phase: Option<&mut DispatchPhase> = None;
-    let resume = future_bytes(|| {
-        execution.unwrap().resume_model_attempt(
-            dispatch.operation_id,
-            dispatch,
-            true,
-            phase.unwrap(),
-        )
-    });
-    let execution: Option<&StockExecution<'_>> = None;
-    let reconcile = future_bytes(|| execution.unwrap().reconcile_model_events(dispatch, &[]));
-    let arguments: Option<(
-        &StockExecution<'_>,
-        &dyn ExecutionJournal,
-        &TurnInput,
-        &crate::model::PreparedModelRequest,
-        &mut DispatchPhase,
-    )> = None;
-    let claim = future_bytes(|| {
-        let (execution, journal, input, request, phase) = arguments.unwrap();
-        execution.claim_model_dispatch(
-            journal,
-            input,
-            (0, ModelPurpose::Response, "response"),
-            request,
-            dispatch,
-            phase,
-        )
-    });
+    let resume = acyclic_test_support::future_bytes(
+        |(execution, phase): (&'static StockExecution<'static>, &'static mut DispatchPhase)| {
+            execution.resume_model_attempt(dispatch.operation_id, dispatch, true, phase)
+        },
+    );
+    let reconcile =
+        acyclic_test_support::future_bytes(|execution: &'static StockExecution<'static>| {
+            execution.reconcile_model_events(dispatch, &[])
+        });
+    let claim = acyclic_test_support::future_bytes(
+        |(execution, journal, input, request, phase): (
+            &'static StockExecution<'static>,
+            &'static dyn ExecutionJournal,
+            &'static TurnInput,
+            &'static crate::model::PreparedModelRequest,
+            &'static mut DispatchPhase,
+        )| {
+            execution.claim_model_dispatch(
+                journal,
+                input,
+                (0, ModelPurpose::Response, "response"),
+                request,
+                dispatch,
+                phase,
+            )
+        },
+    );
     for (name, bytes) in [
         ("resume", resume),
         ("reconcile", reconcile),

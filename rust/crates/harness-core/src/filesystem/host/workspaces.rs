@@ -251,26 +251,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let budget = acyclic_fs::WorkBudget::UNBOUNDED;
             let workspace = self.open(workspace, None).await?;
             let key = filesystem_key(idempotency_key);
-            let mut transaction = crate::conversation::BoundedContentFuture::new(None, || async {
-                Ok(match expected_generation {
-                    Some(reference) => {
-                        let generation = self.generation(&workspace, reference, None).await?;
-                        workspace
-                            .begin_transaction_at(&generation, key, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?
-                    }
-                    None => workspace
-                        .begin_transaction(key, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?,
-                })
-            })?
-            .await?;
+            let mut transaction = self
+                .begin_unmeasured(&workspace, expected_generation, key, budget, &cancellation)
+                .await?;
             if let Some(fence) = publication.fence() {
                 transaction
                     .observe_policy_fence(fence, budget, &cancellation)
@@ -350,6 +333,80 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await
     }
 
+    async fn begin_unmeasured(
+        &self,
+        workspace: &acyclic_fs::Workspace<A, O>,
+        expected_generation: Option<&GenerationRef>,
+        key: acyclic_fs::IdempotencyKey,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<acyclic_fs::Transaction<A, O>> {
+        crate::conversation::BoundedContentFuture::new(None, || async {
+            Ok(match expected_generation {
+                Some(reference) => {
+                    let generation = self.generation(workspace, reference, None).await?;
+                    workspace
+                        .begin_transaction_at(&generation, key, budget, cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?
+                }
+                None => workspace
+                    .begin_transaction(key, budget, cancellation)
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(map_error)?,
+            })
+        })?
+        .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn stage_unmeasured_batch(
+        transaction: &mut acyclic_fs::Transaction<A, O>,
+        mutations: &[WorkspaceMutation],
+        invalidate_metadata: bool,
+        publication: FilePublication<'_>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<bool> {
+        if !invalidate_metadata
+            && !matches!(publication, FilePublication::CreateOnly)
+            && mutations
+                .iter()
+                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
+        {
+            let directories = mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let files = mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    WorkspaceMutation::PutFile { path, bytes } => {
+                        Some((path.as_str(), bytes.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            crate::conversation::BoundedContentFuture::new(None, || async {
+                transaction
+                    .write_batch(&directories, &files, budget, cancellation)
+                    .await
+                    .map_err(|failure| map_error(failure.error))
+            })?
+            .await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     async fn stage_unmeasured(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
@@ -360,39 +417,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             #[cfg(not(target_arch = "wasm32"))]
-            let batched = if !invalidate_metadata
-                && !matches!(publication, FilePublication::CreateOnly)
-                && mutations
-                    .iter()
-                    .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
-            {
-                let directories = mutations
-                    .iter()
-                    .filter_map(|mutation| match mutation {
-                        WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let files = mutations
-                    .iter()
-                    .filter_map(|mutation| match mutation {
-                        WorkspaceMutation::PutFile { path, bytes } => {
-                            Some((path.as_str(), bytes.clone()))
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                crate::conversation::BoundedContentFuture::new(None, || async {
-                    transaction
-                        .write_batch(&directories, &files, budget, cancellation)
-                        .await
-                        .map_err(|failure| map_error(failure.error))
-                })?
-                .await?;
-                true
-            } else {
-                false
-            };
+            let batched = Self::stage_unmeasured_batch(
+                transaction,
+                mutations,
+                invalidate_metadata,
+                publication,
+                budget,
+                cancellation,
+            )
+            .await?;
             #[cfg(target_arch = "wasm32")]
             let batched = false;
             if !batched {
@@ -738,7 +771,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     .await,
                             )
                         })?
-                        .await?
+                        .await?;
                     }
                     WorkspaceMutation::PutFile { path, bytes } => match publication {
                         FilePublication::Replace(_) | FilePublication::Authorized(..) => {
@@ -749,7 +782,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                         .await,
                                 )
                             })?
-                            .await?
+                            .await?;
                         }
                         FilePublication::CreateOnly => {
                             let (created, recorded) = transaction
@@ -1009,16 +1042,14 @@ mod workload_tests {
 #[cfg(test)]
 #[test]
 fn public_read_future_stays_bounded() {
-    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    let arguments: Option<(
-        &FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
-        &WorkspaceRef,
-    )> = None;
-    let bytes = future_bytes(|| {
-        let (host, reference) = arguments.unwrap();
-        host.read(reference, None, "/a", 1024, None)
-    });
+    let bytes = acyclic_test_support::future_bytes(
+        |(host, reference): (
+            &'static FilesystemHost<
+                acyclic_fs::MemoryAuthorityBackend,
+                acyclic_fs::MemoryObjectBackend,
+            >,
+            &'static WorkspaceRef,
+        )| { host.read(reference, None, "/a", 1024, None) },
+    );
     assert!(bytes <= 4096, "public file read future is {bytes} bytes");
 }

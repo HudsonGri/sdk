@@ -251,7 +251,7 @@ where
                             .await?
                             {
                                 ready @ CommandDispatch::Ready { .. } => {
-                                    command_input = Some(ready)
+                                    command_input = Some(ready);
                                 }
                                 CommandDispatch::Pending {
                                     command,
