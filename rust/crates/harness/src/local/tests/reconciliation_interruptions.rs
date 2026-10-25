@@ -122,7 +122,7 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
     Ok(())
 }
 
-async fn sweep(text: &str) -> Result<()> {
+async fn sweep(texts: &[String]) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
@@ -137,134 +137,138 @@ async fn sweep(text: &str) -> Result<()> {
     )
     .await?;
     super::checkout_reopen::run(&harness).await?;
-    // Learn the finite native effect boundaries on the real publication path.
-    // Later attempts change only this same file, with identical tree structure.
-    let mut effects = 0;
-    let mut cut = 0;
-    loop {
-        let expected = format!("{text}-{cut}");
-        let checkout = harness.workspace().unwrap();
-        let selected = checkout.selected_view().await?.0.unwrap();
-        let from = generation(&selected).await?;
-        let windows = acyclic_fs::OperationWindowCoordinator::new(
-            checkout.filesystem.operation_window_store(),
-        );
-        windows
-            .begin(selected.workspace().id(), from.id(), "interrupted", 0, 1)
-            .await
-            .map_err(super::super::storage)?;
-        checkout
-            .view()
-            .workspace()
-            .write_text("/upstream.txt", &expected)
-            .await
-            .map_err(super::super::storage)?;
-        reconciliation::prepare(
-            checkout,
-            acyclic_fs::OperationId::new(),
-            acyclic_fs::GitGenerationRef {
-                workspace_id: selected.workspace().id(),
-                generation: from.id(),
-            },
-        )
-        .await?;
-        windows
-            .observe_parent(
-                selected.workspace().id(),
-                generation(checkout.view()).await?.id(),
-            )
-            .await
-            .map_err(super::super::storage)?;
-        // Cut 0 measures a complete run. Cuts 1..=4 stop after the source
-        // marker, ticket claim, rebase commit, and ticket acknowledgement.
-        let ticket = if cut == 0 || cut >= 2 {
-            Some(
-                windows
-                    .claim_reconcile(selected.workspace().id(), 2)
-                    .await
-                    .map_err(super::super::storage)?
-                    .unwrap(),
-            )
-        } else {
-            None
-        };
-        if cut == 0 || cut >= 3 {
-            let ticket = ticket.as_ref().unwrap();
-            let limits = acyclic_fs::OperationReconcileLimits::default();
-            selected
+    // Bootstrap the binding once; every generated payload still sweeps every
+    // durable/native cut and performs its own complete host reopen.
+    for text in texts {
+        // Learn the finite native effect boundaries on the real publication path.
+        // Later attempts change only this same file, with identical tree structure.
+        let mut effects = 0;
+        let mut cut = 0;
+        loop {
+            let expected = format!("{text}-{cut}");
+            let checkout = harness.workspace().unwrap();
+            let selected = checkout.selected_view().await?.0.unwrap();
+            let from = generation(&selected).await?;
+            let windows = acyclic_fs::OperationWindowCoordinator::new(
+                checkout.filesystem.operation_window_store(),
+            );
+            windows
+                .begin(selected.workspace().id(), from.id(), "interrupted", 0, 1)
+                .await
+                .map_err(super::super::storage)?;
+            checkout
+                .view()
                 .workspace()
-                .live_rebase(
-                    acyclic_fs::IdempotencyKey::from_bytes(ticket.ticket.into_bytes()),
-                    limits.maximum_generations,
-                    limits.maximum_changes,
-                    limits.maximum_conflicts,
+                .write_text("/upstream.txt", &expected)
+                .await
+                .map_err(super::super::storage)?;
+            reconciliation::prepare(
+                checkout,
+                acyclic_fs::OperationId::new(),
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: selected.workspace().id(),
+                    generation: from.id(),
+                },
+            )
+            .await?;
+            windows
+                .observe_parent(
+                    selected.workspace().id(),
+                    generation(checkout.view()).await?.id(),
                 )
                 .await
                 .map_err(super::super::storage)?;
-        }
-        if cut == 0 || cut >= 4 {
-            windows
-                .complete_reconcile(selected.workspace().id(), ticket.as_ref().unwrap().ticket)
-                .await
-                .map_err(super::super::storage)?;
-        }
-        if cut == 0 || cut >= 5 {
-            let count = AtomicUsize::new(0);
-            let result = reconciliation::recover(checkout, &selected, &|| {
-                let index = count.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    if cut != 0 && index == cut - 5 {
-                        Err(Error::Conflict("injected publication interruption".into()))
-                    } else {
-                        Ok(())
-                    }
-                }
-            })
-            .await;
-            if cut == 0 {
-                effects = count.load(Ordering::SeqCst);
-                result?;
-            } else if cut - 5 < effects {
-                assert!(result.is_err(), "publication ignored interruption {cut}");
-                assert_eq!(
-                    count.load(Ordering::SeqCst),
-                    cut - 4,
-                    "publication stopped before the selected effect boundary"
-                );
+            // Cut 0 measures a complete run. Cuts 1..=4 stop after the source
+            // marker, ticket claim, rebase commit, and ticket acknowledgement.
+            let ticket = if cut == 0 || cut >= 2 {
+                Some(
+                    windows
+                        .claim_reconcile(selected.workspace().id(), 2)
+                        .await
+                        .map_err(super::super::storage)?
+                        .unwrap(),
+                )
             } else {
-                result?;
+                None
+            };
+            if cut == 0 || cut >= 3 {
+                let ticket = ticket.as_ref().unwrap();
+                let limits = acyclic_fs::OperationReconcileLimits::default();
+                selected
+                    .workspace()
+                    .live_rebase(
+                        acyclic_fs::IdempotencyKey::from_bytes(ticket.ticket.into_bytes()),
+                        limits.maximum_generations,
+                        limits.maximum_changes,
+                        limits.maximum_conflicts,
+                    )
+                    .await
+                    .map_err(super::super::storage)?;
             }
-        }
-        // Reconstruct the exact production binding from durable selection and
-        // reconciliation records; retain unrelated scratch mounts and task I/O.
-        // No native projection or model needs restarting at these cuts.
-        {
-            let mut state = super::super::workspace::lock_owned(
-                super::super::workspace::StateArc::clone(&checkout.state),
-            )
-            .await;
-            state.active = None;
-            state.watcher = None;
-            state.initialized = false;
-        }
-        Box::pin(super::super::checkout_tools::CheckoutTools::new(
-            Arc::clone(checkout),
-            harness.project(),
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
-            &harness.signed,
-            Arc::clone(harness.task_files()),
-        ))
-        .await?;
-        assert_published(&harness, &expected).await?;
-        if cut == 5 + effects {
-            // One complete host reopen additionally checks binding and mount
-            // reconstruction after every durable interruption was recovered.
-            drop(harness);
-            harness = open(directory.path(), state_directory.path()).await?;
+            if cut == 0 || cut >= 4 {
+                windows
+                    .complete_reconcile(selected.workspace().id(), ticket.as_ref().unwrap().ticket)
+                    .await
+                    .map_err(super::super::storage)?;
+            }
+            if cut == 0 || cut >= 5 {
+                let count = AtomicUsize::new(0);
+                let result = reconciliation::recover(checkout, &selected, &|| {
+                    let index = count.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if cut != 0 && index == cut - 5 {
+                            Err(Error::Conflict("injected publication interruption".into()))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                })
+                .await;
+                if cut == 0 {
+                    effects = count.load(Ordering::SeqCst);
+                    result?;
+                } else if cut - 5 < effects {
+                    assert!(result.is_err(), "publication ignored interruption {cut}");
+                    assert_eq!(
+                        count.load(Ordering::SeqCst),
+                        cut - 4,
+                        "publication stopped before the selected effect boundary"
+                    );
+                } else {
+                    result?;
+                }
+            }
+            // Reconstruct the exact production binding from durable selection and
+            // reconciliation records; retain unrelated scratch mounts and task I/O.
+            // No native projection or model needs restarting at these cuts.
+            {
+                let mut state = super::super::workspace::lock_owned(
+                    super::super::workspace::StateArc::clone(&checkout.state),
+                )
+                .await;
+                state.active = None;
+                state.watcher = None;
+                state.initialized = false;
+            }
+            Box::pin(super::super::checkout_tools::CheckoutTools::new(
+                Arc::clone(checkout),
+                harness.project(),
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                &harness.signed,
+                Arc::clone(harness.task_files()),
+            ))
+            .await?;
             assert_published(&harness, &expected).await?;
-            break;
+            if cut == 5 + effects {
+                // One complete host reopen additionally checks binding and mount
+                // reconstruction after every durable interruption was recovered.
+                drop(harness);
+                harness = open(directory.path(), state_directory.path()).await?;
+                assert_published(&harness, &expected).await?;
+                break;
+            }
+            cut += 1;
         }
-        cut += 1;
     }
     Ok(())
 }
@@ -396,32 +400,22 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
 
 #[test]
 fn reopen_never_captures_over_an_unpublished_rebase() {
-    // Preserve the same four generated/shrinkable byte cases and every cut;
-    // run independent cases concurrently instead of serial model/process turns.
-    std::thread::scope(|scope| {
-        let cases: Vec<_> = (0..4)
-            .map(|_| {
-                scope.spawn(|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
-                        source_file: Some(file!()),
-                        ..ProptestConfig::with_cases(1)
-                    });
-                    runner
-                        .run(&"[a-z]{1,12}", |text| {
-                            runtime
-                                .block_on(sweep(&text))
-                                .map_err(|error| TestCaseError::fail(error.to_string()))
-                        })
-                        .unwrap();
-                })
-            })
-            .collect();
-        for case in cases {
-            case.join().unwrap();
-        }
+    // Preserve all four generated/shrinkable byte cases and every cut while
+    // sharing the expensive scripted bootstrap. The independent cases have
+    // no concurrency invariant; later sweeps additionally exercise history.
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        source_file: Some(file!()),
+        ..ProptestConfig::with_cases(1)
     });
+    let cases = proptest::collection::vec("[a-z]{1,12}", 4);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runner
+        .run(&cases, |texts| {
+            runtime.block_on(sweep(&texts))
+                .map_err(|error| TestCaseError::fail(error.to_string()))
+        })
+        .unwrap();
 }
