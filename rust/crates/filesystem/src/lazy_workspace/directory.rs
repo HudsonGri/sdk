@@ -278,10 +278,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         if state.source != self.source.reference() {
                             return Err(LazyWorkspaceError::StaleSource);
                         }
-                        let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
-                        let guard = ctx.claim_owned(bytes, 1)?;
-                        let mut failure =
-                            Owned::new(Box::<LazyWorkspaceError>::new_uninit(), guard, bytes);
+                        let mut failure = error::reserve_source_page_failure(ctx)?;
+                        let bytes = failure.bytes;
                         let fetched = accounted!(ctx, |work, cancel| self.source.list_page(
                             state.source,
                             &directory.value,
@@ -341,7 +339,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                                     page.publication.as_mut().map_or(Ok(()), |p| p.abort(ctx))
                                 {
                                     let publication = page.publication.take();
-                                    let primary = Box::write(failure.value, primary);
+                                    let failure_payload = Box::write(
+                                        failure.value,
+                                        SourcePageCleanupFailure {
+                                            primary,
+                                            cleanup,
+                                            publication,
+                                        },
+                                    );
                                     #[cfg(not(target_arch = "wasm32"))]
                                     let allocation = match failure.allocation {
                                         KernelOwnedAllocation::NativeOriginal(guard) => Some(guard),
@@ -350,9 +355,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                                     drop(page);
                                     crate::kernel::retire_allocation(source_guard, retained, ctx)?;
                                     return Err(LazyWorkspaceError::SourcePageCleanup {
-                                        primary,
-                                        cleanup,
-                                        publication,
+                                        failure: failure_payload,
                                         #[cfg(not(target_arch = "wasm32"))]
                                         allocation,
                                     });

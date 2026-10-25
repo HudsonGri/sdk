@@ -102,7 +102,7 @@ mod transaction;
 mod work;
 mod write;
 pub use directory::{LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage};
-pub use error::LazyWorkspaceError;
+pub use error::{LazyWorkspaceError, SourcePageCleanupFailure};
 pub use lookup::{LazyLookup, LazyStat};
 pub use model::{
     LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,

@@ -37,6 +37,22 @@ ceiling!(
 ceiling!(event, Event, 376);
 ceiling!(event_payload, EventPayload, 152);
 ceiling!(effect_status, EffectStatus, 24);
+#[cfg(all(
+    feature = "filesystem",
+    target_pointer_width = "64",
+    not(target_arch = "wasm32")
+))]
+ceiling!(lineage_failure, crate::Error, 112);
+#[cfg(all(
+    feature = "filesystem",
+    target_pointer_width = "64",
+    not(target_arch = "wasm32")
+))]
+ceiling!(
+    measured_lineage_failure,
+    acyclic_fs::OperationFailure<crate::Error>,
+    120
+);
 ceiling!(effect_state, EffectState, 712);
 ceiling!(extension_binding, registry::ExtensionBinding, 192);
 ceiling!(extension_admission, ExtensionAdmission, 88);

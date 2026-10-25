@@ -244,6 +244,7 @@ pub use lazy_workspace::{
     LazyLookup, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazySnapshotId,
     LazySnapshotRef, LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState,
     LazyWorkspaceStore, MemoryLazyWorkspaceStore, NativePublicationSnapshot, SelectedImportPlan,
+    SourcePageCleanupFailure,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,

@@ -1,4 +1,31 @@
 use super::*;
+
+/// The original consumer failure and the source publication still needing rollback.
+/// Directory admission funds this complete payload before requesting a source page.
+#[derive(Debug, Error)]
+#[error("{primary}; source rollback failed: {cleanup}")]
+pub struct SourcePageCleanupFailure {
+    /// Original consumer failure, including its semantic classification.
+    #[source]
+    pub primary: LazyWorkspaceError,
+    /// Original rollback failure.
+    pub cleanup: DemandError,
+    /// Producer state still requiring cleanup.
+    pub publication: Option<Box<crate::demand::SourceDirectoryPublication>>,
+}
+
+pub(super) fn reserve_source_page_failure(
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<Owned<Box<std::mem::MaybeUninit<SourcePageCleanupFailure>>>, LazyWorkspaceError> {
+    let bytes = std::mem::size_of::<SourcePageCleanupFailure>() as u64;
+    let guard = ctx.claim_owned(bytes, 1)?;
+    Ok(Owned::new(
+        Box::<SourcePageCleanupFailure>::new_uninit(),
+        guard,
+        bytes,
+    ))
+}
+
 /// Fail-closed lazy workspace errors.
 #[derive(Debug, Error)]
 pub enum LazyWorkspaceError {
@@ -54,15 +81,11 @@ pub enum LazyWorkspaceError {
     #[error("original snapshot is unavailable")]
     OriginalSnapshotUnavailable,
     /// Retains the original consumer and producer rollback failures.
-    #[error("{primary}; source rollback failed: {cleanup}")]
+    #[error("{failure}")]
     SourcePageCleanup {
-        /// Original consumer failure.
+        /// Complete rollback payload, admitted on the original ledger.
         #[source]
-        primary: Box<Self>,
-        /// Original rollback failure.
-        cleanup: DemandError,
-        /// Producer state still requiring cleanup.
-        publication: Option<Box<crate::demand::SourceDirectoryPublication>>,
+        failure: Box<SourcePageCleanupFailure>,
         /// Retained diagnostic funding.
         #[cfg(not(target_arch = "wasm32"))]
         allocation: Option<crate::NativeAllocation>,
@@ -112,8 +135,76 @@ impl LazyWorkspaceError {
     /// Original semantic cause.
     pub fn semantic_error(&self) -> &Self {
         match self {
-            Self::SourcePageCleanup { primary, .. } => primary.semantic_error(),
+            Self::SourcePageCleanup { failure, .. } => failure.primary.semantic_error(),
             error => error,
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollback_payload_uses_one_original_funded_allocation_and_retains_both_causes() {
+        let cancellation = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+        let before = original.live_allocation_bytes();
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &original,
+            cancellation: &cancellation,
+        };
+        let slot = reserve_source_page_failure(&mut ctx).unwrap();
+        assert_eq!(
+            original.live_allocation_bytes() - before,
+            std::mem::size_of::<SourcePageCleanupFailure>() as u64
+        );
+        let allocation = match slot.allocation {
+            KernelOwnedAllocation::NativeOriginal(allocation) => Some(allocation),
+            KernelOwnedAllocation::Standalone => panic!("original allocation lost"),
+        };
+        let error = LazyWorkspaceError::SourcePageCleanup {
+            failure: Box::write(
+                slot.value,
+                SourcePageCleanupFailure {
+                    primary: LazyWorkspaceError::StaleSource,
+                    cleanup: DemandError::WorkerUnavailable,
+                    publication: None,
+                },
+            ),
+            allocation,
+        };
+        assert!(matches!(
+            error.semantic_error(),
+            LazyWorkspaceError::StaleSource
+        ));
+        assert!(
+            matches!(&error, LazyWorkspaceError::SourcePageCleanup { failure, .. } if matches!(failure.cleanup, DemandError::WorkerUnavailable))
+        );
+        assert_eq!(
+            original.live_allocation_bytes() - before,
+            std::mem::size_of::<SourcePageCleanupFailure>() as u64
+        );
+        drop(error);
+        assert_eq!(original.live_allocation_bytes(), before);
+    }
+
+    #[test]
+    fn rollback_payload_is_admitted_before_the_box_is_allocated() {
+        let cancellation = CancellationToken::new();
+        // The constructor consumes the only admitted operation for its own Arc.
+        let budget = WorkBudget {
+            allocation_operations: 1,
+            ..WorkBudget::UNBOUNDED
+        };
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let before = original.live_allocation_bytes();
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &original,
+            cancellation: &cancellation,
+        };
+        assert!(reserve_source_page_failure(&mut ctx).is_err());
+        assert_eq!(original.live_allocation_bytes(), before);
     }
 }
