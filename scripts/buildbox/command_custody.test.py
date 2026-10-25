@@ -188,13 +188,21 @@ finally:
                 run.assert_called_once_with(arguments)
                 unchecked.assert_not_called()
         probe(source)
-        boundary = "    if sys.argv[1:2]==['home-namespace']:"
-        self.assertEqual(source.count(boundary), 1)
-        former = source.replace(boundary,
-            "    if sys.argv[1:2]==['supervise']: raise SystemExit(supervise(17,19,sys.argv[4:]))\n"
-            "    elif sys.argv[1:2]==['home-namespace']:")
+        # Insert the old unchecked branch into the actual CLI entry by AST.
+        # Legitimate new branches must not invalidate the negative control.
+        tree = ast.parse(source)
+        entry = tree.body[-1]
+        self.assertIsInstance(entry, ast.If)
+        self.assertEqual(len(entry.body), 1)
+        self.assertIsInstance(entry.body[0], ast.If)
+        unchecked = ast.parse(
+            "if sys.argv[1:2]==['supervise']:\n"
+            "    raise SystemExit(supervise(17,19,sys.argv[4:]))"
+        ).body[0]
+        unchecked.orelse = entry.body
+        entry.body = [unchecked]
         with self.assertRaises(AssertionError):
-            probe(former)
+            probe(ast.unparse(ast.fix_missing_locations(tree)))
 
     def test_foreign_namespace_never_observes_or_signals_numeric_command_pid(self):
         def probe(module):
