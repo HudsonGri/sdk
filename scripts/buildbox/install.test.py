@@ -40,6 +40,36 @@ def without_qualification(suite):
 
 
 class InstallTests(unittest.TestCase):
+    def test_frozen_qualification_consumes_canonical_windows_sources(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary)
+            for missing in [False, True]:
+                bundle=root/str(missing);bundle.mkdir()
+                def qualify(stage, user):
+                    self.assertEqual(stage,bundle/'scripts'/'buildbox')
+                    for name in ['windows-test.sh','windows-runner.py','graphcoder-e2e/artifacts.mjs']:
+                        self.assertEqual((stage.parent/name).read_bytes(),(HERE.parent/name).read_bytes())
+                    for directory in [stage,stage.parent,stage.parent/'graphcoder-e2e']:
+                        self.assertEqual(directory.stat().st_mode & 0o555,0o555)
+                    self.assertFalse((stage/'win-test.sh').exists(),'a second Windows runtime must not enter qualification')
+                    result=subprocess.run([sys.executable,str(stage/'windows-input.test.py')],capture_output=True)
+                    self.assertEqual(result.returncode,0,result.stderr.decode())
+                with (patch.object(installer.os,'geteuid',return_value=0),
+                      patch.object(installer.pwd,'getpwnam',return_value=type('Account',(),{'pw_name':'fixture'})()),
+                      patch.object(installer.tempfile,'mkdtemp',return_value=str(bundle)),
+                      patch.object(installer,'qualify',side_effect=qualify)):
+                    if missing:
+                        # Actual former preparation omitted the shared files;
+                        # the unchanged frozen-source oracle must refuse it.
+                        with patch.object(installer,'stage_qualification_inputs',return_value=None):
+                            with self.assertRaises(FileNotFoundError):installer.prepare(HERE)
+                        self.assertFalse((bundle/'scripts/buildbox/.qualified.json').exists())
+                    else:
+                        previous_umask=os.umask(0o077)
+                        try:stage=installer.prepare(HERE)
+                        finally:os.umask(previous_umask)
+                        self.assertTrue((stage/'.qualified.json').is_file())
+
     def test_privileged_import_keeps_source_immutable_without_inherited_environment(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             source=Path(temporary)/'module.py';source.write_text('VALUE=1\n')

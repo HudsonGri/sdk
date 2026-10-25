@@ -91,10 +91,27 @@ def qualify(source, user):
         subprocess.run(['runuser', '-u', user, '--', *command], cwd=source, check=True, stdout=sys.stderr)
 
 
+def stage_qualification_inputs(source, stage):
+    """Freeze the canonical Windows input closure beside the buildbox sources."""
+    for name in ['windows-test.sh', 'windows-runner.py', 'graphcoder-e2e/artifacts.mjs']:
+        base = Path(source).resolve().parent
+        relative = Path(name)
+        original = base/relative
+        if any((base/Path(*relative.parts[:index])).is_symlink() for index in range(1,len(relative.parts)+1)) or not original.is_file():
+            raise ValueError('missing regular qualification input: '+str(original))
+        destination = stage.parent/name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.chmod(0o755)
+        publish(destination, original.read_bytes(), 0o444)
+
+
 def prepare(source):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo; direct tool edits are refused')
     account = pwd.getpwnam('var')
-    stage = Path(tempfile.mkdtemp(prefix='bb-install-', dir='/mnt/bb/tmp')); stage.chmod(0o755)
+    bundle = Path(tempfile.mkdtemp(prefix='bb-install-', dir='/mnt/bb/tmp')); bundle.chmod(0o755)
+    stage = bundle/'scripts'/'buildbox'
+    stage.parent.mkdir(); stage.parent.chmod(0o755)
+    stage.mkdir(); stage.chmod(0o755)
     try:
         # Copy only regular source files. No symlinks or mutable shared test
         # dependencies enter the qualification generation.
@@ -104,7 +121,9 @@ def prepare(source):
             if item.is_file() and not item.name.endswith('.bak-gatespeed'):
                 destination=stage/item.relative_to(source)
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.parent.chmod(0o755)
                 publish(destination, item.read_bytes(), 0o444)
+        stage_qualification_inputs(source, stage)
         hashes = {name: hashlib.sha256((stage/name).read_bytes()).hexdigest() for name in TOOLS}
         # Fence only the selected publication destinations. Unrelated runtime
         # modules may advance while this candidate qualifies and stay intact.

@@ -215,13 +215,23 @@ class Commands:
         return rc if 0 <= rc < 256 else 1
 
 
+def fixture_binary(records, manifest):
+    """Select the single admitted normal binary independently of its target name."""
+    fixtures = [row for row in manifest["artifacts"] if not row["test"]]
+    if len(fixtures) > 1:
+        raise RuntimeError("Ambiguous normal executable fixture")
+    if not fixtures:
+        return None
+    binary = (Path(records) / "bin" / fixtures[0]["name"]).resolve()
+    if not binary.is_file():
+        raise RuntimeError("Missing admitted normal executable fixture")
+    return binary
+
+
 def run_tests(records, manifest, runtime):
     """The libtest adapter over the same generic command custody API."""
     source = records / "source"
-    fixtures = [row for row in manifest["artifacts"] if not row["test"]]
-    if len(fixtures) > 1:
-        raise ValueError("ambiguous normal executable fixture")
-    binary = records / "bin" / fixtures[0]["name"] if fixtures else None
+    binary = fixture_binary(records, manifest)
     host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
     with Commands(records, source, host, binary) as commands:
         with commands._libtest_selection():

@@ -14,14 +14,14 @@ from unittest import mock
 
 
 def load_helper():
-    source = (Path(__file__).parent / 'win-test.sh').read_text()
+    source = (Path(__file__).resolve().parents[1] / 'windows-test.sh').read_text()
     source = source.split("<<'WIN_TEST_PY'\n", 1)[1].rsplit('\nWIN_TEST_PY', 1)[0]
     module = ast.parse(source)
     assert isinstance(module.body[-1], ast.Try)
     # Load the real factories without launching Windows main on the build box.
     module.body.pop()
     namespace = {'__name__': 'windows_input_fixture'}
-    exec(compile(module, 'win-test.sh', 'exec'), namespace)
+    exec(compile(module, 'windows-test.sh', 'exec'), namespace)
     return namespace
 
 
@@ -91,7 +91,7 @@ class ImmutableWindowsInputTests(unittest.TestCase):
                     self.assertNotEqual(Path(rows[0]['remote']).read_bytes(), binary.read_bytes())
 
     def test_fixture_binding_uses_admitted_identity_for_every_binary_target(self):
-        helper = load_helper()
+        helper = load_helper()['runner_module'](Path(__file__).resolve().parents[1] / 'windows-runner.py').__dict__
         with tempfile.TemporaryDirectory() as directory:
             records = Path(directory)
             binary = records / 'bin' / 'immutable-export.exe'

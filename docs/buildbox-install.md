@@ -4,9 +4,9 @@ All lanes and the efficiency loop must install bb2 tools through:
 
 ```
 sudo /home/var/bin/bb-install.py --source /mnt/bb/<candidate>/scripts/buildbox
-# prints /mnt/bb/tmp/bb-install-<qualified-generation>
+# prints /mnt/bb/tmp/bb-install-<qualified-generation>/scripts/buildbox
 # after acquiring the idle PR mkdir lock:
-sudo python3 /mnt/bb/tmp/bb-install-<qualified-generation>/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
+sudo python3 /mnt/bb/tmp/bb-install-<qualified-generation>/scripts/buildbox/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>/scripts/buildbox
 ```
 
 For a change confined to selected tools, add `--only bb_target_store.py
@@ -17,6 +17,11 @@ refuses a selected destination that changed afterward, preserving another
 lane's newer deployment. Unselected tools are preserved, even if they advanced
 during qualification. The Cargo source-namespace controls are mandatory in the
 installer's qualification suite.
+
+The source must retain the SDK scripts layout. Qualification freezes the
+canonical `scripts/windows-test.sh`, `scripts/windows-runner.py` and Cargo
+artifact stager beside the buildbox sources. The Windows input controls use
+that same frozen implementation; there is no buildbox-specific runtime copy.
 
 The installer freezes a root-owned candidate, runs the receipt, runtime,
 admission and publication controls as `var`, and publishes only after they
