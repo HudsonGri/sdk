@@ -348,7 +348,11 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         let denied_binding = denied.native_binding.as_ref().unwrap();
         denied_binding.require_native_work(&work)?;
         assert!(matches!(
-            super::content_verifier::require_file_read(denied_binding.authority.scope(), &first, &io),
+            super::content_verifier::require_file_read(
+                denied_binding.authority.scope(),
+                &first,
+                &io
+            ),
             Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 ..
