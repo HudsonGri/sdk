@@ -26,9 +26,16 @@ struct WindowLedger {
     held: WorkCounters,
 }
 
+#[cfg(test)]
+thread_local! {
+    static WINDOW_ADDITIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 // An unbounded allowance is never consumed by a cumulative addition. All
 // finite additions are exact, including a finite stored budget under its limit.
 fn add_bounded(left: u64, right: u64, limit: u64) -> Result<u64, WorkError> {
+    #[cfg(test)]
+    WINDOW_ADDITIONS.with(|count| count.set(count.get() + 1));
     if limit == u64::MAX {
         Ok(left)
     } else {
@@ -74,14 +81,20 @@ impl WindowLedger {
         // differences escape this transition; a failure publishes none of it.
         macro_rules! settle {
             ($($field:ident),* $(,)?) => {$({
-                let charged = work.1.$field.checked_sub(work.0.$field)
-                    .ok_or(WorkError::Overflow)?;
-                next.consumed.$field =
-                    add_bounded(self.consumed.$field, charged, self.consumed.$field)?;
-                let held = add_bounded(self.held.$field, pending.1.$field, self.held.$field)?;
-                next.held.$field = held.checked_sub(pending.0.$field)
-                    .ok_or(WorkError::Overflow)?;
-                budget.$field = add_bounded(stored.$field, charged, limit.$field)?;
+                // With no work or reservation change, this counter is the
+                // identity transition even at the unbounded sentinel.
+                if work.1.$field != work.0.$field
+                    || pending.0.$field != 0 || pending.1.$field != 0
+                {
+                    let charged = work.1.$field.checked_sub(work.0.$field)
+                        .ok_or(WorkError::Overflow)?;
+                    next.consumed.$field =
+                        add_bounded(self.consumed.$field, charged, self.consumed.$field)?;
+                    let held = add_bounded(self.held.$field, pending.1.$field, self.held.$field)?;
+                    next.held.$field = held.checked_sub(pending.0.$field)
+                        .ok_or(WorkError::Overflow)?;
+                    budget.$field = add_bounded(stored.$field, charged, limit.$field)?;
+                }
             })*};
         }
         crate::performance::additive_counters!(settle);

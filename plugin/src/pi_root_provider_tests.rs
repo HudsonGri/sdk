@@ -631,7 +631,6 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
 }
 
 mod every_lost_ack_reconciles_original_resources_or_cancellation {
-    use super::*;
 
     // Each recovery state keeps the original independent durable fixture. The
     // existing libtest workers can run these states without a serial tail.

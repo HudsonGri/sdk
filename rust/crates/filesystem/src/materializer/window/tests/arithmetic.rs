@@ -107,3 +107,17 @@ fn window_transition_visits_each_counter_in_two_passes() {
         2
     );
 }
+
+#[test]
+fn unchanged_window_counters_require_no_addition() {
+    let ledger = WindowLedger::default();
+    let before = WorkCounters::UNCHARGED;
+    let limit = crate::performance::work_budget(128, 128);
+    WINDOW_ADDITIONS.with(|count| count.set(0));
+    let (settled, budget) = ledger
+        .settle((&before, &before), (&before, &before), &limit, &limit)
+        .unwrap();
+    assert_eq!(settled, ledger);
+    assert_eq!(budget, limit);
+    assert_eq!(WINDOW_ADDITIONS.with(std::cell::Cell::get), 0);
+}
