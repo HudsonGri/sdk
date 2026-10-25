@@ -60,7 +60,7 @@ async fn fixture(
         stream,
         &fixture.storage,
         &fixture.issuer.verifier(&mut None)?,
-        journal.authority.scope(),
+        journal.write_grant.authority.scope(),
         65_536,
     )
     .await?;

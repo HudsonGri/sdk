@@ -1,6 +1,50 @@
 use super::*;
 
 #[tokio::test]
+async fn journal_admission_authenticates_its_single_grant_once() -> Result<()> {
+    let (journal, _issuer) = super::super::test_support::journal().await?;
+    let verifier = journal.write_grant.authority.verifier();
+    let scope = journal.write_grant.authority.scope();
+    let authenticate = |journal_admission: bool| {
+        acyclic_test_support::differential::observe(
+            || (),
+            |()| -> Result<ContentGrant> {
+                let mut work = None;
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+                if journal_admission {
+                    journal_authority(verifier, scope, &journal.volume, None, &mut quota)
+                } else {
+                    ContentGrant::verify_in_quota(
+                        verifier,
+                        scope,
+                        &journal.volume,
+                        VolumeOperation::Write,
+                        u64::MAX,
+                        &mut quota,
+                    )
+                }
+            },
+        )
+    };
+    let (baseline, baseline_signatures) = authenticate(false);
+    baseline?;
+    let baseline_signatures: Vec<acyclic_auth::crypto::SignatureVerification> = baseline_signatures;
+    assert!(
+        !baseline_signatures.is_empty(),
+        "control did not authenticate"
+    );
+    let (admitted, signatures) = authenticate(true);
+    admitted?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert_eq!(
+        signatures.len(),
+        baseline_signatures.len(),
+        "journal duplicated the grant's authenticated authority"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn rebinding_rotates_the_execution_identity_and_discards_cached_authority() -> Result<()> {
     let (mut journal, _issuer) = super::super::test_support::journal().await?;
     let operation = OperationId::new();
@@ -36,16 +80,16 @@ async fn rebinding_rotates_the_execution_identity_and_discards_cached_authority(
     identity = journal.cache_identity();
     let input = crate::filesystem::FilesystemContentVerifier::new(
         journal.host.clone(),
-        journal.authority.verifier(),
-        journal.authority.scope(),
+        journal.write_grant.authority.verifier(),
+        journal.write_grant.authority.scope(),
         65_536,
         None,
     )?;
     journal = journal.with_input_verifier(input);
     assert_ne!(journal.cache_identity(), identity);
     identity = journal.cache_identity();
-    let verifier = journal.authority.verifier().copy(&mut None)?;
-    let scope = journal.authority.scope().copy(&mut None)?;
+    let verifier = journal.write_grant.authority.verifier().copy(&mut None)?;
+    let scope = journal.write_grant.authority.scope().copy(&mut None)?;
     let volume = journal.volume.copy(&mut None)?;
     journal =
         journal.with_interaction_owner(&verifier, &SchemaRegistry::new(), &scope, &volume, None)?;
@@ -61,7 +105,7 @@ async fn journal_retains_immutable_authentication_but_rechecks_live_revocation()
         |()| -> Result<()> {
             for operation in [VolumeOperation::Read, VolumeOperation::Write] {
                 ContentGrant::authorize_authenticated_volume(
-                    &journal.authority,
+                    &journal.write_grant.authority,
                     &journal.volume,
                     operation,
                     u64::MAX,
@@ -77,11 +121,11 @@ async fn journal_retains_immutable_authentication_but_rechecks_live_revocation()
         signatures.is_empty(),
         "journal reauthenticated its immutable owner"
     );
-    issuer.revoke_workload(journal.authority.scope())?;
+    issuer.revoke_workload(journal.write_grant.authority.scope())?;
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         assert!(matches!(
             ContentGrant::authorize_authenticated_volume(
-                &journal.authority,
+                &journal.write_grant.authority,
                 &journal.volume,
                 operation,
                 u64::MAX,
@@ -107,7 +151,7 @@ async fn private_staging_reuses_its_original_authenticated_grant_and_rechecks_re
         signatures.is_empty(),
         "private staging reauthenticated its immutable owner"
     );
-    issuer.revoke_workload(journal.authority.scope())?;
+    issuer.revoke_workload(journal.write_grant.authority.scope())?;
     assert!(matches!(
         journal
             .stage_with_io(

@@ -85,7 +85,6 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
-    authority: crate::core::VerifiedScope,
     write_grant: ContentGrant,
     schemas: SchemaRegistry,
     maximum_payload_bytes: u64,

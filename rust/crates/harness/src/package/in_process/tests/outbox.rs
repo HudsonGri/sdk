@@ -71,7 +71,7 @@ impl EffectHost for Host {
         Box::pin(async { Ok(()) })
     }
 }
-fn command() -> WorkflowCommand {
+pub(super) fn command() -> WorkflowCommand {
     let payload = FileRef::new(
         VolumeRef::new(
             ProviderRef::new("fixture".into(), "filesystem".into(), "1".into(), &mut None).unwrap(),

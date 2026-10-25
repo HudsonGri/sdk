@@ -103,8 +103,8 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
         &first.schemas,
         crate::filesystem::FilesystemJournalBinding {
             volume: &first.volume,
-            verifier: first.authority.verifier(),
-            scope: first.authority.scope(),
+            verifier: first.write_grant.authority.verifier(),
+            scope: first.write_grant.authority.scope(),
             maximum_bytes: first.maximum_payload_bytes,
             io: None,
         },
@@ -448,7 +448,7 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
                     fixture.stream.clone(),
                     &fixture.storage,
                     &fixture.issuer.verifier(&mut None)?,
-                    journal.authority.scope(),
+                    journal.write_grant.authority.scope(),
                     65_536,
                 )
                 .await?;
@@ -635,7 +635,7 @@ async fn journal_chunks_distinguish_restarted_steps_in_later_task_inputs() -> Re
                 fixture.stream.clone(),
                 &fixture.storage,
                 &fixture.issuer.verifier(&mut None)?,
-                first.authority.scope(),
+                first.write_grant.authority.scope(),
                 65_536,
             )
             .await?,
@@ -689,7 +689,7 @@ async fn journal_chunks_distinguish_restarted_steps_in_later_task_inputs() -> Re
                 fixture.stream.clone(),
                 &fixture.storage,
                 &fixture.issuer.verifier(&mut None)?,
-                first.authority.scope(),
+                first.write_grant.authority.scope(),
                 65_536,
             )
             .await?,

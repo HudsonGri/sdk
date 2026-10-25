@@ -359,7 +359,7 @@ pub fn contains_content_label(
 /// Verified, exact-volume authority for a single storage operation.
 #[derive(Clone, Debug)]
 pub struct ContentGrant {
-    authority: crate::core::VerifiedScope,
+    pub(crate) authority: crate::core::VerifiedScope,
     pub(super) volume: VolumeRef,
     pub(super) operation: VolumeOperation,
     pub(super) exact_file: Option<(String, String, FileDescriptor, String)>,

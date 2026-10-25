@@ -37,6 +37,10 @@ pub(super) struct Loaded {
     pub last: Entry,
 }
 
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct EntryRead(pub u64);
+
 pub(super) struct Journal<P: StreamProvider> {
     stream: Arc<P>,
     manifest: Manifest,
@@ -101,6 +105,8 @@ impl<P: StreamProvider> Journal<P> {
         if record.sequence != sequence {
             return Err(Error::Storage("actor journal cursor differs".into()));
         }
+        #[cfg(test)]
+        acyclic_test_support::differential::record(EntryRead(sequence));
         Ok((
             serde_json::from_slice(&record.value).map_err(|error| codec_error(&error))?,
             record.commit_id,
@@ -116,16 +122,23 @@ impl<P: StreamProvider> Journal<P> {
         if tail == 0 {
             return Err(Error::Storage("empty actor journal".into()));
         }
-        let first = self.entry(0).await?.0;
+        let mut first = self.entry(0).await?;
         let bootstrap = first
+            .0
             .bootstrap
+            .take()
             .ok_or_else(|| Error::Storage("actor journal has no admission".into()))?;
         if bootstrap.manifest != self.manifest {
             return Err(Error::Conflict(
                 "actor package identity or bindings changed".into(),
             ));
         }
-        let (last, head) = self.entry(tail - 1).await?;
+        let (last, head) = if tail == 1 {
+            first.0.bootstrap = Some(bootstrap.clone());
+            first
+        } else {
+            self.entry(tail - 1).await?
+        };
         Ok(Some(Loaded {
             tail,
             head,
@@ -138,6 +151,35 @@ impl<P: StreamProvider> Journal<P> {
         self.load_optional()
             .await?
             .ok_or_else(|| Error::NotFound("actor is not placed".into()))
+    }
+
+    // The append-only admission and the changing checkpoint are independent
+    // projections. Metadata-only reads must not materialize either payload.
+    async fn tail(&self) -> Result<u64> {
+        let tail = self
+            .stream
+            .tail(self.path.clone())
+            .await
+            .map_err(|error| stream_error(&error))?;
+        if tail == 0 {
+            return Err(Error::Storage("empty actor journal".into()));
+        }
+        Ok(tail)
+    }
+
+    async fn bootstrap(&self) -> Result<Bootstrap> {
+        let bootstrap = self
+            .entry(0)
+            .await?
+            .0
+            .bootstrap
+            .ok_or_else(|| Error::Storage("actor journal has no admission".into()))?;
+        if bootstrap.manifest != self.manifest {
+            return Err(Error::Conflict(
+                "actor package identity or bindings changed".into(),
+            ));
+        }
+        Ok(bootstrap)
     }
 
     pub fn require_owner(&self, loaded: &Loaded) -> Result<()> {
@@ -327,7 +369,7 @@ impl<P: StreamProvider> Journal<P> {
     }
 
     pub async fn retry(&self, event: &Event) -> Result<Option<Entry>> {
-        let tail = self.load().await?.tail;
+        let tail = self.tail().await?;
         let mut from = 0;
         while from < tail {
             let page = self
@@ -385,7 +427,7 @@ impl<P: StreamProvider> Journal<P> {
                 ));
             }
         }
-        let tail = self.load().await?.tail;
+        let tail = self.tail().await?;
         let mut from = 1;
         while from < tail {
             let page = self
@@ -413,7 +455,7 @@ impl<P: StreamProvider> Journal<P> {
     }
 
     pub async fn reject_result_identity(&self, event: &Event) -> Result<()> {
-        let tail = self.load().await?.tail;
+        let tail = self.tail().await?;
         let mut from = 1;
         while from < tail {
             let page = self
@@ -443,7 +485,7 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
         admission: WorkflowAdmission,
     ) -> BoxProviderFuture<'_, Result<WorkflowAdmission>> {
         Box::pin(async move {
-            let retained = self.load().await?.bootstrap.admission;
+            let retained = self.bootstrap().await?.admission;
             if retained != admission {
                 return Err(Error::Conflict("workflow admission changed".into()));
             }
@@ -461,9 +503,7 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
             ));
         }
         Ok(HistoryContentFuture::Ordinary {
-            future: Box::pin(
-                async move { Ok((Some(self.load().await?.bootstrap.admission), None)) },
-            ),
+            future: Box::pin(async move { Ok((Some(self.bootstrap().await?.admission), None)) }),
             frame_bytes: 0,
         })
     }

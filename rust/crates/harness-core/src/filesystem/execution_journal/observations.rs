@@ -170,7 +170,7 @@ where
         workflow.require_execution_owner(
             owner,
             &self.volume,
-            self.authority.verifier().audience(),
+            self.write_grant.authority.verifier().audience(),
         )?;
         let result = crate::NativeFutureBundle::new(work, || async {
             let mut borrowed = io.history_io();

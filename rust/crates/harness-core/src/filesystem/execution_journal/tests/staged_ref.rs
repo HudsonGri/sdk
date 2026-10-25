@@ -91,7 +91,8 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         None,
         &mut None,
     )?;
-    journal.authority = journal
+    journal.write_grant.authority = journal
+        .write_grant
         .authority
         .verifier()
         .authenticate_scope(&writer, &mut None)?;

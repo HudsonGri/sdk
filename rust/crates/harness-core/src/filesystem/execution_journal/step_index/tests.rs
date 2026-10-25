@@ -58,8 +58,8 @@ async fn check_selection(native: bool) -> Result<()> {
             &SchemaRegistry::new(),
             crate::filesystem::FilesystemJournalBinding {
                 volume: &journal.volume,
-                verifier: journal.authority.verifier(),
-                scope: journal.authority.scope(),
+                verifier: journal.write_grant.authority.verifier(),
+                scope: journal.write_grant.authority.scope(),
                 maximum_bytes: journal.maximum_payload_bytes,
                 io: None,
             },

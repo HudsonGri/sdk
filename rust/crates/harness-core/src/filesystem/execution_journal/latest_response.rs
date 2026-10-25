@@ -38,7 +38,7 @@ where
             self.require_operation(operation, io)?;
             crate::executor::with_history_io(io, |work| {
                 ContentGrant::authorize_authenticated_volume(
-                    &self.authority,
+                    &self.write_grant.authority,
                     &self.volume,
                     VolumeOperation::Read,
                     self.maximum_payload_bytes,

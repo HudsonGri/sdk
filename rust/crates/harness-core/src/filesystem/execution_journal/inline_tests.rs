@@ -253,11 +253,11 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
     let (mut journal, _issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
-    let original = journal.authority.clone();
+    let original = journal.write_grant.authority.clone();
     let issuer = crate::core::AuthorityIssuer::new(
         "append-cost",
         [81; 32],
-        journal.authority.verifier().audience().clone(),
+        journal.write_grant.authority.verifier().audience().clone(),
     );
     for grant in [VolumeOperation::Read, VolumeOperation::Write] {
         let scope = issuer.issue(
@@ -267,7 +267,8 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             None,
             &mut None,
         )?;
-        journal.authority = journal
+        journal.write_grant.authority = journal
+            .write_grant
             .authority
             .verifier()
             .authenticate_scope(&scope, &mut None)?;
@@ -285,7 +286,7 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             "missing opposite grant for {grant:?}"
         );
     }
-    journal.authority = original;
+    journal.write_grant.authority = original;
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
     crate::executor::append_model_event(
         &journal,
@@ -304,7 +305,8 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             None,
             &mut None,
         )?;
-        journal.authority = journal
+        journal.write_grant.authority = journal
+            .write_grant
             .authority
             .verifier()
             .authenticate_scope(&scope, &mut None)?;
@@ -357,7 +359,7 @@ async fn owned_journal(
         fixture.stream.clone(),
         &fixture.storage,
         &fixture.issuer.verifier(&mut None)?,
-        journal.authority.scope(),
+        journal.write_grant.authority.scope(),
         65_536,
     )
     .await?;

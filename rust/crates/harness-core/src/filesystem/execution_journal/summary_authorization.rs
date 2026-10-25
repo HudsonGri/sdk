@@ -62,7 +62,7 @@ where
             }
             crate::executor::with_history_io(io, |work| {
                 ContentGrant::authorize_authenticated_volume(
-                    &self.authority,
+                    &self.write_grant.authority,
                     &self.volume,
                     VolumeOperation::Read,
                     self.maximum_payload_bytes,
@@ -90,7 +90,7 @@ where
                         maximum_bytes: self.maximum_payload_bytes,
                         internal_class: Some(InternalContentClass::Execution),
                         purpose: super::super::PublicationPurpose::Content,
-                        scope: self.authority.scope(),
+                        scope: self.write_grant.authority.scope(),
                         ceiling: None,
                     },
                     io,

@@ -10,23 +10,8 @@ fn journal_authority(
     volume: &VolumeRef,
     io: Option<&PreparationIo>,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(crate::core::VerifiedScope, ContentGrant)> {
-    let authority = verifier.authenticate_scope(scope, quota.work())?;
-    quota.adopt(authority.logical_owned_bytes()?)?;
-    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-        let maximum = io
-            .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
-        ContentGrant::authorize_authenticated_volume(
-            &authority,
-            volume,
-            operation,
-            maximum,
-            quota.work(),
-        )?;
-    }
-    let write_grant = ContentGrant::verify_in_quota(
+) -> Result<ContentGrant> {
+    let grant = ContentGrant::verify_in_quota(
         verifier,
         scope,
         volume,
@@ -36,7 +21,16 @@ fn journal_authority(
             .unwrap_or(u64::MAX),
         quota,
     )?;
-    Ok((authority, write_grant))
+    ContentGrant::authorize_authenticated_volume(
+        &grant.authority,
+        volume,
+        VolumeOperation::Read,
+        io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+            .transpose()?
+            .unwrap_or(u64::MAX),
+        quota.work(),
+    )?;
+    Ok(grant)
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -244,7 +238,7 @@ where
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
         let volume = volume.copy_in_quota(&mut quota)?;
         let schemas = schemas.copy(quota.work())?;
-        let (authority, write_grant) = journal_authority(verifier, scope, &volume, io, &mut quota)?;
+        let write_grant = journal_authority(verifier, scope, &volume, io, &mut quota)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(),
@@ -268,7 +262,6 @@ where
             stream,
             host,
             volume,
-            authority,
             write_grant,
             schemas,
             maximum_payload_bytes,
@@ -317,7 +310,9 @@ where
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
-        } else if self.authority.verifier().audience().kind == crate::core::AggregateKind::Task {
+        } else if self.write_grant.authority.verifier().audience().kind
+            == crate::core::AggregateKind::Task
+        {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

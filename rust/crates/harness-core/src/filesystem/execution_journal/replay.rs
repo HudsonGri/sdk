@@ -230,7 +230,7 @@ where
                     let model = if authenticated {
                         crate::executor::with_history_io(io, |work| {
                             ContentGrant::authorize_authenticated_volume(
-                                &self.authority,
+                                &self.write_grant.authority,
                                 &self.volume,
                                 VolumeOperation::Read,
                                 io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))

@@ -314,12 +314,17 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
         .await?;
     let public = crate::core::AuthorityVerifier::from_public(
         "append-cost".into(),
-        journal.authority.verifier().audience().clone(),
+        journal.write_grant.authority.verifier().audience().clone(),
         issuer.public_workload_trust()?,
-        journal.authority.verifier().public_checkpoint_key(),
+        journal
+            .write_grant
+            .authority
+            .verifier()
+            .public_checkpoint_key(),
     )?;
     drop(issuer);
-    journal.authority = public.authenticate_scope(journal.authority.scope(), &mut None)?;
+    journal.write_grant.authority =
+        public.authenticate_scope(journal.write_grant.authority.scope(), &mut None)?;
     let recovered = journal.load_index_checkpoint(operation, None).await;
     assert!(
         matches!(&recovered, Ok(Some(_))),

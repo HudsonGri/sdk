@@ -162,8 +162,8 @@ where
             let mut borrowed = io.map(PreparationIo::history_io);
             let reader = crate::store::HistoryReader::new(
                 &self.stream,
-                self.authority.verifier().audience(),
-                self.authority.verifier(),
+                self.write_grant.authority.verifier().audience(),
+                self.write_grant.authority.verifier(),
                 &mut borrowed
                     .as_mut()
                     .map(|work| work as &mut dyn crate::store::HistoryIo),
@@ -172,8 +172,8 @@ where
                 Some(work) => {
                     crate::store::operations::find_operation_bounded_with_work(
                         &self.stream,
-                        self.authority.verifier().audience(),
-                        self.authority.verifier(),
+                        self.write_grant.authority.verifier().audience(),
+                        self.write_grant.authority.verifier(),
                         self.turn_operation(envelope.operation_id),
                         history_limits.maximum_bytes,
                         true,
@@ -216,9 +216,9 @@ where
             let authority = match borrowed.as_mut() {
                 Some(work) => crate::store::history::HistoryIo::clone_authority(
                     work,
-                    self.authority.verifier().audience(),
+                    self.write_grant.authority.verifier().audience(),
                 )?,
-                None => self.authority.verifier().audience().clone(),
+                None => self.write_grant.authority.verifier().audience().clone(),
             };
             let cursor = crate::store::HistoryCursor {
                 authority,
