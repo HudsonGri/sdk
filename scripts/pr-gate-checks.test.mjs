@@ -16,6 +16,7 @@ test('affected PR checks every target and docs, including test=false fuzz binari
     chmodSync(join(cwd,'bin/bun'),0o755);
     writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),readFileSync(join(scripts,'gate-test-runner.sh')));
     writeFileSync(join(cwd,'scripts/gate-windows-features.sh'),'#!/bin/bash\necho "windows-features $*" >> calls\nexit "${WINDOWS_FEATURE_RC:-0}"\n');
+    writeFileSync(join(cwd,'scripts/check-harness-models.sh'),'#!/bin/bash\necho "models $*" >> calls\nexit "${MODELS_RC:-0}"\n');
     const cargo=join(cwd,'bin/cargo');
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls
@@ -110,5 +111,54 @@ esac
         assert.match(result.stdout,/GATE_RUSTFMT rc=101/);
       }
     }
+    // All ordinary tests can pass while a cfg-only Loom composition fails.
+    // Exercise the actual final PR verdict, then delete its model phase as the
+    // negative control: the unchanged broken composition must become green.
+    writeFileSync(join(cwd,'.gate-scope-mode'),'affected\n');
+    writeFileSync(join(cwd,'.gate-tests-packages'),'acyclic-harness-core\n');
+    const modelPhase=/loom_started=\$SECONDS[\s\S]*?\[ "\$rc" != 0 \] \|\| rc=\$loom_rc\n/;
+    assert.match(source,modelPhase);
+    for(const negative of [false,true]){
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(modelPhase,''):source);
+      writeFileSync(join(cwd,'calls'),'');
+      const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{
+        ...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,
+        CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),
+        FORMAT_RC:'0',BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0',MODELS_RC:'101',
+      }});
+      assert.equal(result.status,negative?0:101,result.stdout+result.stderr);
+      const modelCalls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(c=>c.startsWith('models '));
+      assert.deepEqual(modelCalls,negative?[]:['models --packages-file .gate-tests-packages']);
+      assert.match(result.stdout,new RegExp('GATE_DONE rc='+(negative?0:101)));
+    }
   }finally{rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('main and affected PRs use the same complete model qualifier', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'gate-model-scope-'));
+  try {
+    mkdirSync(join(cwd, 'bin'));
+    const runner = join(cwd, 'models.sh');
+    writeFileSync(runner, readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'check-harness-models.sh')));
+    const node = join(cwd, 'bin/node');
+    writeFileSync(node, '#!/bin/bash\necho "$*" >> calls\nexit "${MODEL_RC:-0}"\n');
+    chmodSync(node, 0o755);
+    const core = 'scripts/qualify-mcp-loom.mjs --child-views --all-features';
+    const facade = ['--harness-models', '--query-model'].map(flag => `scripts/qualify-mcp-loom.mjs ${flag} --all-features`);
+    const env = {...process.env, PATH: join(cwd, 'bin') + ':' + process.env.PATH, MODEL_RC: '0'};
+    for (const [packages, expected] of [[null, [core, ...facade]], [['acyclic-harness-core'], [core]], [['acyclic-harness'], facade], [['acyclic-harness-core', 'acyclic-harness'], [core, ...facade]], [['acyclic-fs'], []]]) {
+      writeFileSync(join(cwd, 'calls'), '');
+      if (packages !== null) writeFileSync(join(cwd, 'packages'), packages.join('\r\n'));
+      const result = spawnSync('bash', [runner, ...(packages === null ? [] : ['--packages-file', 'packages'])], {cwd, env, encoding: 'utf8'});
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.deepEqual(readFileSync(join(cwd, 'calls'), 'utf8').trim().split('\n').filter(Boolean), expected);
+    }
+    const missing = spawnSync('bash', [runner, '--packages-file', 'absent'], {cwd, env, encoding: 'utf8'});
+    assert.equal(missing.status, 2);
+    writeFileSync(join(cwd, 'packages'), 'acyclic-harness-core\n');
+    const broken = spawnSync('bash', [runner, '--packages-file', 'packages'], {cwd, env: {...env, MODEL_RC: '101'}, encoding: 'utf8'});
+    assert.equal(broken.status, 101, broken.stdout + broken.stderr);
+  } finally {
+    rmSync(cwd, {recursive: true, force: true});
+  }
 });
