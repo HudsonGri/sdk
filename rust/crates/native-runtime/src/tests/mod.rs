@@ -8,6 +8,7 @@ use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 mod admission;
+mod claim;
 mod completion;
 mod custody;
 mod namespace;
@@ -171,7 +172,7 @@ impl Drop for Saturation {
 pub(super) struct ReadBudgetMeter {
     pub(super) used_operations: AtomicU64,
     used_bytes: AtomicU64,
-    used_allocations: AtomicU64,
+    pub(super) used_allocations: AtomicU64,
     examined_items: AtomicU64,
     encoded: AtomicU64,
     copied: AtomicU64,
@@ -187,6 +188,7 @@ pub(super) struct ReadBudgetMeter {
     pub(super) deny_allocations: AtomicBool,
     pub(super) operation_denial: Option<NativeOperationKind>,
     pub(super) cancel_after_operation: bool,
+    pub(super) fail_recorded_operation: Option<u64>,
     memory_limit: u64,
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
@@ -247,6 +249,9 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn record_reserved_operation(&self, _: NativeOperationKind) -> io::Result<()> {
         if self.cancel_after_operation {
             self.cancelled.store(true, Ordering::Release);
+        }
+        if self.fail_recorded_operation == Some(self.used_operations.load(Ordering::Acquire)) {
+            return Err(Self::refuse());
         }
         Ok(())
     }

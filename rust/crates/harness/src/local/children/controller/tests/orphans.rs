@@ -115,16 +115,17 @@ async fn recover_tree(head_only: bool, cancel_before_reopen: bool) -> Result<()>
     );
     match futures::future::select(running, boundary).await {
         futures::future::Either::Right((Ok(()), running)) => {
-            let duplicate = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
+            // At this held provider boundary no owner can advance. The claim
+            // must reject synchronously; Pending proves a forbidden wait on
+            // the running executor, without using a wall-clock oracle.
+            let duplicate = futures::FutureExt::now_or_never(tokio::task::unconstrained(
                 harness.service_child(
                     files.clone(),
                     Component::new("child").map_err(storage)?,
                     request,
                     None,
                 ),
-            )
-            .await
+            ))
             .expect("duplicate child controller waited on live execution");
             assert!(matches!(duplicate, Err(Error::Conflict(message))
                 if message == "local turn already has an active driver"));
