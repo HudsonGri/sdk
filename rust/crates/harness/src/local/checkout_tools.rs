@@ -116,6 +116,7 @@ impl CheckoutTools {
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
+                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
                     .await?;
                 state.watcher = if workspace.fresh {
