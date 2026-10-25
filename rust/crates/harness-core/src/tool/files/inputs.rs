@@ -4,6 +4,7 @@ use super::*;
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
+#[schemars(extend("type" = "object"))]
 pub enum ReadInput {
     /// Pinned file.
     File(ReadFileInput),
