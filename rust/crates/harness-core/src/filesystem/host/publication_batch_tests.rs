@@ -138,7 +138,8 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
     Ok(())
 }
 
-type MemoryHost = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+type MemoryHost =
+    FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 struct InternalPublicationCase<'a> {
     host: &'a MemoryHost,
@@ -149,10 +150,27 @@ struct InternalPublicationCase<'a> {
 }
 
 impl InternalPublicationCase<'_> {
-    async fn put(&self, path: &str, bytes: &[u8], key: &IdempotencyKey,
-        class: InternalContentClass) -> Result<FileRef> {
-        self.host.put_internal_content(self.volume, self.write, path, bytes,
-            "application/json", "payload", 64, key, class, self.io).await
+    async fn put(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        key: &IdempotencyKey,
+        class: InternalContentClass,
+    ) -> Result<FileRef> {
+        self.host
+            .put_internal_content(
+                self.volume,
+                self.write,
+                path,
+                bytes,
+                "application/json",
+                "payload",
+                64,
+                key,
+                class,
+                self.io,
+            )
+            .await
     }
 
     async fn single_record(&self, workspace: &WorkspaceRef, path: &str) -> Result<bool> {
@@ -163,13 +181,17 @@ impl InternalPublicationCase<'_> {
             blake3::hash(path.as_bytes()).to_hex()
         );
         let single_record = receipt_path == metadata_path
-            && self.host.read(workspace, None, &obsolete, 4096, None).await.is_err();
-        let record = self.host
+            && self
+                .host
+                .read(workspace, None, &obsolete, 4096, None)
+                .await
+                .is_err();
+        let record = self
+            .host
             .read(workspace, None, &metadata_path, 4096, None)
             .await?;
         let (staged, expected): (FileRef, Option<GenerationRef>) =
-            serde_json::from_slice(&record)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            serde_json::from_slice(&record).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(staged.path(), path);
         assert!(expected.is_none());
         assert_eq!(
@@ -182,12 +204,17 @@ impl InternalPublicationCase<'_> {
     async fn verify(&self, workspace: &WorkspaceRef, class: InternalContentClass) -> Result<bool> {
         let path = format!("{}payload.json", class.prefix());
         let key = IdempotencyKey::new(format!("first-{path}"))?;
-        let original = self.put(&path, b"original", &key, class)
-            .await?;
+        let original = self.put(&path, b"original", &key, class).await?;
         let single_record = self.single_record(workspace, &path).await?;
-        self.put(&path, b"replacement", &IdempotencyKey::new(format!("second-{path}"))?, class)
+        self.put(
+            &path,
+            b"replacement",
+            &IdempotencyKey::new(format!("second-{path}"))?,
+            class,
+        )
         .await?;
-        let recovered = self.host
+        let recovered = self
+            .host
             .content_for_operation_record_io(
                 PublicationLookup {
                     volume: self.volume,
@@ -212,17 +239,14 @@ impl InternalPublicationCase<'_> {
             b"original"
         );
         assert_eq!(
-            self.host.read_content(&original, self.read, 64, self.io)
+            self.host
+                .read_content(&original, self.read, 64, self.io)
                 .await?
                 .as_ref(),
             b"original"
         );
         let before = self.host.resolve(workspace, None).await?;
-        assert!(
-            self.put(&path, b"forged", &key, class)
-            .await
-            .is_err()
-        );
+        assert!(self.put(&path, b"forged", &key, class).await.is_err());
         assert_eq!(self.host.resolve(workspace, None).await?, before);
         Ok(single_record)
     }
@@ -239,37 +263,44 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
         InternalContentClass::ModelPrefix,
         InternalContentClass::Conversation,
     ] {
-      for adapter in 0..3 {
-        let provider =
-            ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
-        let agent = crate::AgentId::from_bytes([37; 16]);
-        let volume = VolumeRef::new(
-            provider.clone(),
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        host.create_volume(&volume).await?;
-        let (write, read) = publication_grants(&volume, agent)?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let io = match adapter {
-            0 => None,
-            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
-            _ => Some(PreparationIo::from_native_work(&native)?),
-        };
-        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
-        let case = InternalPublicationCase {
-            host: &host, volume: &volume, write: &write, read: &read, io: io.as_ref(),
-        };
-        single_records.push(case.verify(&workspace, class).await.map_err(|error| {
-            Error::Storage(format!("adapter {adapter}, family {}: {error:?}", class.prefix()))
-        })?);
-      }
+        for adapter in 0..3 {
+            let provider =
+                ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
+            let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+            let agent = crate::AgentId::from_bytes([37; 16]);
+            let volume = VolumeRef::new(
+                provider.clone(),
+                "private".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(agent),
+                &mut None,
+            )?;
+            host.create_volume(&volume).await?;
+            let (write, read) = publication_grants(&volume, agent)?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = match adapter {
+                0 => None,
+                1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+                _ => Some(PreparationIo::from_native_work(&native)?),
+            };
+            let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+            let case = InternalPublicationCase {
+                host: &host,
+                volume: &volume,
+                write: &write,
+                read: &read,
+                io: io.as_ref(),
+            };
+            single_records.push(case.verify(&workspace, class).await.map_err(|error| {
+                Error::Storage(format!(
+                    "adapter {adapter}, family {}: {error:?}",
+                    class.prefix()
+                ))
+            })?);
+        }
     }
     assert_eq!(
         single_records, [true; 15],
