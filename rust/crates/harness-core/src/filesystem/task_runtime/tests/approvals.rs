@@ -18,7 +18,15 @@ struct Initialized {
 }
 
 async fn setup() -> Result<Initialized> {
+    setup_with_io(None).await
+}
+
+async fn setup_with_io(io: Option<&PreparationIo>) -> Result<Initialized> {
     let mut fixture = Fixture::new().await?;
+    if io.is_some() {
+        fixture.machine.native.store(true, Ordering::SeqCst);
+        fixture.tool.native.store(true, Ordering::SeqCst);
+    }
     let grants = Capabilities::new(
         fixture
             .scope
@@ -43,7 +51,7 @@ async fn setup() -> Result<Initialized> {
         .await?,
     );
     let gate = Arc::new(ApprovalPolicy::default().bind()?);
-    let mut runtime = fixture.runtime_with_policy(None, Some(gate)).await?;
+    let mut runtime = fixture.runtime_with_policy(io, Some(gate)).await?;
     runtime.bind_task_files(Some(files.clone()));
     let conversation = AuthorityIssuer::new(
         "approval-binding",
@@ -222,18 +230,16 @@ async fn request(initialized: &Initialized) -> Result<FileValue> {
 async fn native_recorded_tool_waits_for_exact_approval_and_replays_without_dispatch() -> Result<()>
 {
     for approved in [false, true] {
-        let initialized = setup().await?;
-        let runtime = &initialized.runtime;
-        let fixture = &initialized._fixture;
-        fixture.machine.native.store(true, Ordering::SeqCst);
-        fixture.tool.native.store(true, Ordering::SeqCst);
-        fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
         let work = acyclic_fs::NativeMaterializationWork::new(
             super::native_mail::BUDGET,
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
+        let initialized = setup_with_io(Some(&io)).await?;
+        let runtime = &initialized.runtime;
+        let fixture = &initialized._fixture;
+        fixture.tool.receipt_ready.store(true, Ordering::SeqCst);
         let task = initialized.task;
         let fence = LeaseFence::from(&initialized.lease.reservation);
         let context = runtime
