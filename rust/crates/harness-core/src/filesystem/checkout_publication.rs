@@ -88,7 +88,11 @@ impl CheckoutPublication {
         work: &NativeMaterializationWork,
     ) -> Result<MaterializationJournal> {
         let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
-            from, to, state, self.request(from, to, options, work), work.clone(),
+            from,
+            to,
+            state,
+            self.request(from, to, options, work),
+            work.clone(),
         )
         .await;
         match prepared {
@@ -124,16 +128,11 @@ impl CheckoutPublication {
                 .into(),
             );
         }
-        let retained = acyclic_fs::load_native_materialization_journal(
-            state,
-            self.operation,
-            work.clone(),
-        )
-        .await;
+        let retained =
+            acyclic_fs::load_native_materialization_journal(state, self.operation, work.clone())
+                .await;
         let journal = match retained {
-            Ok(receipt) => {
-                receipt.value
-            }
+            Ok(receipt) => receipt.value,
             Err((cause, _)) => return Err(cause.into()),
         };
         // Fresh transitions need the same validated plan as retained ones.
