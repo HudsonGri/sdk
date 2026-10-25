@@ -9,12 +9,13 @@ use acyclic_auth::{
 use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 mod admission;
+mod retained;
+use retained::RetainedAuthentication;
 pub(crate) use admission::AuthenticatedRecord;
 pub(super) use admission::HistoricalOwner;
 pub(super) use admission::{live_record, record, verify_record};
 
 pub(super) struct AuthenticatedWorkload {
-    digest: [u8; 32],
     capability: std::sync::Arc<VerifiedCapability>,
     attributes: RecordAttributes,
     last: Claims,
@@ -22,17 +23,15 @@ pub(super) struct AuthenticatedWorkload {
 
 #[derive(Default)]
 pub(super) struct WorkloadOwner {
-    latest: Option<std::sync::Arc<AuthenticatedWorkload>>,
+    latest: Option<RetainedAuthentication<AuthenticatedWorkload>>,
     certificates: verify::CertificateVerifier,
 }
 
 fn authenticated(
     capability: VerifiedCapability,
-    digest: [u8; 32],
 ) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
     let (attributes, last) = admission::scope_facts(&capability, false)?;
     Ok(std::sync::Arc::new(AuthenticatedWorkload {
-        digest,
         capability: std::sync::Arc::new(capability),
         attributes,
         last,
@@ -48,23 +47,20 @@ fn authenticate(
 ) -> Result<std::sync::Arc<AuthenticatedWorkload>> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
-        io.hashed_bytes(scope.workload.len() as u64)?;
     }
-    let digest = *blake3::hash(&scope.workload).as_bytes();
     let mut retained = public.workload.lock().map_err(unauthorized)?;
     if let Some(authenticated) = retained.latest.as_ref()
-        && authenticated.digest == digest
+        && let Some(proof) = authenticated.get(&scope.workload, work)?
     {
-        return Ok(authenticated.clone());
+        return Ok(proof);
     }
     let authenticated = authenticated(
         retained
             .certificates
             .verify(&scope.workload, trust, timestamp)
             .map_err(unauthorized)?,
-        digest,
     )?;
-    retained.latest = Some(authenticated.clone());
+    retained.latest = Some(RetainedAuthentication::new(&scope.workload, authenticated.clone(), work)?);
     Ok(authenticated)
 }
 
@@ -395,11 +391,9 @@ pub(super) fn verify_trusted(
 ) -> Result<std::sync::Arc<VerifiedCapability>> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
-        io.hashed_bytes(scope.workload.len() as u64)?;
     }
     let authenticated = authenticated(
         verify::verify(&scope.workload, trust, timestamp).map_err(unauthorized)?,
-        *blake3::hash(&scope.workload).as_bytes(),
     )?;
     authorize_scope(trust, audience, scope, timestamp, &authenticated, work)
 }

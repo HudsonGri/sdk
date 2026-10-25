@@ -10,6 +10,45 @@ fn fixture() -> AuthorityIssuer {
     )
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn live_and_historical_authentication_compare_funded_exact_wire_without_rehashing() -> Result<()> {
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    let scope = issuer.issue("root", &Capabilities::new(["event:append"]), None, None, &mut None)?;
+    let encoded = verifier.admission.record("owner", issuer.audience(), &scope, [7; 32], &mut None)?;
+    verifier.verify(&scope, &mut None)?;
+    verify_record(&verifier, &encoded, [7; 32], None, &[], &mut None)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
+    ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    for _ in 0..3 {
+        let before = work.receipt();
+        verifier.verify(&scope, &mut Some(&mut io.history_io()))?;
+        let live = work.receipt();
+        assert_eq!(live.bytes_hashed, before.bytes_hashed, "retained live authentication rehashed its wire");
+        assert!(live.items_examined >= before.items_examined + scope.workload.len() as u64);
+        verify_record(&verifier, &encoded, [7; 32], None, &[], &mut Some(&mut io.history_io()))?;
+        let historical = work.receipt();
+        assert_eq!(historical.bytes_hashed, live.bytes_hashed, "retained historical authentication rehashed its wire");
+        assert!(historical.items_examined >= live.items_examined + encoded.len() as u64);
+    }
+    // Equal-length corruption must miss the shared exact-wire owner. These
+    // same-claims controls fail if cache identity uses length or a pointer.
+    let mut forged = scope.clone();
+    forged.workload[20] ^= 1;
+    assert!(verifier.verify(&forged, &mut Some(&mut io.history_io())).is_err());
+    let mut forged_record = encoded.clone();
+    forged_record[20] ^= 1;
+    assert!(verify_record(&verifier, &forged_record, [7; 32], None, &[], &mut Some(&mut io.history_io())).is_err());
+    issuer.revoke_workload(&scope)?;
+    assert!(verifier.verify(&scope, &mut Some(&mut io.history_io())).is_err());
+    assert!(verify_record(&verifier, &encoded, [7; 32], None, &[], &mut Some(&mut io.history_io())).is_err());
+    Ok(())
+}
+
 #[test]
 fn alternating_live_scopes_share_certificate_authentication_and_recheck_authority() -> Result<()> {
     let issuer = fixture();

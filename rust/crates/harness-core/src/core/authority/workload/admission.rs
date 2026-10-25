@@ -5,13 +5,12 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(in crate::core::authority) struct HistoricalOwner {
-    record: Option<Arc<AuthenticatedRecord>>,
+    record: Option<RetainedAuthentication<AuthenticatedRecord>>,
     verifier: HistoryVerifier,
 }
 
 /// One exact historical proof, retained by the public authority, never a decision.
 pub(crate) struct AuthenticatedRecord {
-    digest: [u8; 32],
     authenticated: AuthenticatedAdmission,
     attributes: RecordAttributes,
     last: Claims,
@@ -33,14 +32,12 @@ fn authenticate_record(
 ) -> Result<Arc<AuthenticatedRecord>> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
-        io.hashed_bytes(encoded.len() as u64)?;
     }
-    let digest = *blake3::hash(encoded).as_bytes();
     let mut retained = public.historical.lock().map_err(unauthorized)?;
     if let Some(record) = retained.record.as_ref()
-        && record.digest == digest
+        && let Some(proof) = record.get(encoded, work)?
     {
-        return Ok(record.clone());
+        return Ok(proof);
     }
     let envelope = AdmittedCapabilityProto::decode(encoded).map_err(unauthorized)?;
     if envelope.encode_to_vec() != encoded {
@@ -53,12 +50,11 @@ fn authenticate_record(
         .map_err(unauthorized)?;
     let (attributes, last) = scope_facts(authenticated.workload(), true)?;
     let record = Arc::new(AuthenticatedRecord {
-        digest,
         authenticated,
         attributes,
         last,
     });
-    retained.record = Some(record.clone());
+    retained.record = Some(RetainedAuthentication::new(encoded, record.clone(), work)?);
     Ok(record)
 }
 
