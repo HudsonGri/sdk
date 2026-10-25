@@ -106,9 +106,7 @@ echo "GATE_HARNESS_LOOM_WALL seconds=$((SECONDS-loom_started)) rc=$loom_rc"
 wait "$clippy"
 echo "GATE_CLIPPY rc=$(cat "$gate_output/.gate-clippy.rc")"
 if [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ]; then sed 's/^/GATE_CLIPPY_RAW /' "$gate_output/.gate-clippy.out"; fi
-grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' "$gate_output/.gate-clippy.out" | sed -E 's/:[0-9]+:[0-9]+: (warning|error): /: /' \
-  | sort | uniq -c | sed -E 's/^ *([0-9]+) /GATE_CLIPPY_FINDING \1 /'
-grep -aE '^error(\[E[0-9]+\])?: ' "$gate_output/.gate-clippy.out" | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
+python3 scripts/buildbox/coordinator/gate-clippy.py emit "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")" || exit 224
 wait "$features"
 printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"
 grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' "$gate_output/.gate-features.out" | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
