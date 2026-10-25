@@ -24,7 +24,7 @@ impl Cursor {
         cancellation: &CancellationToken,
         optional_before_images: bool,
     ) -> Result<WatchBatch> {
-        self.watcher.begin_rescan().map_err(storage)?;
+        let rescan = self.watcher.begin_rescan().map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("begin")?;
         self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
@@ -54,7 +54,7 @@ impl Cursor {
         }
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("baseline")?;
-        let batch = self.watcher.finish_rescan().map_err(storage)?;
+        let batch = self.watcher.finish_rescan(rescan).map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("finish")?;
         Ok(batch)

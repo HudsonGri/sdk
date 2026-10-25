@@ -273,6 +273,7 @@ impl NativeWatchOptions {
 #[derive(Debug)]
 struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
+    rescan: Option<u64>,
     #[cfg(any(target_os = "linux", windows))]
     pending_rename: Option<PendingRename>,
     /// Host path of the outstanding fence cookie, cleared on delivery.
@@ -301,6 +302,7 @@ impl SharedState {
     const fn new(invalidation: Option<WatchInvalidationReason>) -> Self {
         Self {
             invalidation,
+            rescan: None,
             #[cfg(any(target_os = "linux", windows))]
             pending_rename: None,
             fence: None,
@@ -315,6 +317,50 @@ impl SharedState {
             self.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
         }
         self.invalidation
+    }
+}
+
+/// Exclusive custody of an authenticated baseline scan.
+///
+/// Finishing consumes this owner. Dropping it, including when an async capture
+/// is cancelled, releases the scan and requires a new authenticated baseline.
+/// The owner borrows no watcher lock and retains only the already admitted
+/// shared state; it neither allocates nor starts cleanup I/O.
+#[derive(Debug)]
+#[must_use = "keep the scan owner until finish_rescan or abort"]
+pub struct NativeWatchRescan {
+    shared: Arc<Mutex<SharedState>>,
+    epoch: u64,
+}
+
+impl NativeWatchRescan {
+    /// Epoch whose pre-scan hints were discarded by this scan.
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Abandons this scan without certifying any captured state.
+    pub fn abort(self, reason: WatchInvalidationReason) {
+        if let Ok(mut shared) = self.shared.lock()
+            && shared.rescan == Some(self.epoch)
+        {
+            shared.invalidation.get_or_insert(reason);
+        }
+    }
+}
+
+impl Drop for NativeWatchRescan {
+    fn drop(&mut self) {
+        if let Ok(mut shared) = self.shared.lock()
+            && shared.rescan == Some(self.epoch)
+        {
+            shared.rescan = None;
+            shared
+                .invalidation
+                .get_or_insert(WatchInvalidationReason::BackendError);
+        }
+        // Poisoning already makes every watcher entry point fail closed.
     }
 }
 
@@ -1248,7 +1294,6 @@ pub struct NativeWatch {
     fences: u64,
     epoch: u64,
     next_sequence: u64,
-    rescan_in_progress: bool,
     root_identity: NativeRootIdentity,
     complete: bool,
     original_work: Option<crate::NativeMaterializationWork>,
@@ -1931,7 +1976,6 @@ impl NativeWatch {
             fences: 0,
             epoch: 0,
             next_sequence: 0,
-            rescan_in_progress: false,
             root_identity,
             complete,
             original_work: original.map(crate::NativeMaterializationWork::allocation_work),
@@ -2644,12 +2688,8 @@ impl NativeWatch {
         &mut self,
         work: &mut W,
     ) -> Result<WatchBatch, NativeWatchError> {
-        self.begin_rescan_with_work(work)?;
-        let result = self.finish_rescan_with_work(work);
-        if result.is_err() {
-            self.abandon_rescan();
-        }
-        result
+        let rescan = self.begin_rescan_with_work(work)?;
+        self.finish_rescan_with_work(rescan, work)
     }
 
     /// Returns the exact root identity admitted when the watcher opened.
@@ -2681,7 +2721,7 @@ impl NativeWatch {
     }
 
     /// Starts a baseline scan and atomically discards only pre-scan hints.
-    pub fn begin_rescan(&mut self) -> Result<u64, NativeWatchError> {
+    pub fn begin_rescan(&mut self) -> Result<NativeWatchRescan, NativeWatchError> {
         let cancellation = CancellationToken::new();
         self.begin_rescan_with_work(&mut crate::demand::DemandWork::new(
             WorkBudget::UNBOUNDED,
@@ -2692,15 +2732,27 @@ impl NativeWatch {
     fn begin_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         work: &mut W,
-    ) -> Result<u64, NativeWatchError> {
+    ) -> Result<NativeWatchRescan, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
-        if self.rescan_in_progress {
+        if self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .rescan
+            .is_some()
+        {
             return Err(NativeWatchError::RescanAlreadyInProgress);
         }
         match self.prepare_rescan_with_work(work) {
             Ok(epoch) => {
-                self.rescan_in_progress = true;
-                Ok(epoch)
+                self.shared
+                    .lock()
+                    .map_err(|_| NativeWatchError::StatePoisoned)?
+                    .rescan = Some(epoch);
+                Ok(NativeWatchRescan {
+                    shared: Arc::clone(&self.shared),
+                    epoch,
+                })
             }
             Err(error) => {
                 self.abandon_rescan();
@@ -2713,8 +2765,8 @@ impl NativeWatch {
     // received no scan. Partial native cleanup stays owned by this watcher;
     // its hints remain unusable until a complete baseline succeeds.
     fn abandon_rescan(&mut self) {
-        self.rescan_in_progress = false;
         if let Ok(mut shared) = self.shared.lock() {
+            shared.rescan = None;
             shared
                 .invalidation
                 .get_or_insert(WatchInvalidationReason::BackendError);
@@ -2793,14 +2845,12 @@ impl NativeWatch {
         &mut self,
         checkpoint: crate::WindowsUsnCheckpoint,
     ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
-        if self.rescan_in_progress {
-            return Err(NativeWatchError::RescanAlreadyInProgress);
-        }
         let mut shared = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
-        if shared.invalidation != Some(WatchInvalidationReason::InitialSnapshotRequired)
+        if shared.rescan.is_some()
+            || shared.invalidation != Some(WatchInvalidationReason::InitialSnapshotRequired)
             || self.epoch != 0
         {
             return Err(NativeWatchError::RescanAlreadyInProgress);
@@ -2825,21 +2875,25 @@ impl NativeWatch {
     }
 
     /// Seals the caller's baseline scan.
-    pub fn finish_rescan(&mut self) -> Result<WatchBatch, NativeWatchError> {
+    pub fn finish_rescan(
+        &mut self,
+        rescan: NativeWatchRescan,
+    ) -> Result<WatchBatch, NativeWatchError> {
         let cancellation = CancellationToken::new();
-        self.finish_rescan_with_work(&mut crate::demand::DemandWork::new(
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        self.finish_rescan_with_work(
+            rescan,
+            &mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
     }
 
     fn finish_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
+        rescan: NativeWatchRescan,
         work: &mut W,
     ) -> Result<WatchBatch, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
-        if !self.rescan_in_progress {
-            return Err(NativeWatchError::NoRescanInProgress);
+        if !Arc::ptr_eq(&self.shared, &rescan.shared) || self.epoch != rescan.epoch {
+            return Err(NativeWatchError::RescanOwnerMismatch);
         }
         let unchanged = self
             .root_unchanged_with_work(work)
@@ -2849,10 +2903,13 @@ impl NativeWatch {
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if shared.rescan != Some(rescan.epoch) {
+            return Err(NativeWatchError::RescanOwnerMismatch);
+        }
         if !unchanged {
             shared.invalidation = Some(WatchInvalidationReason::RootChanged);
         }
-        self.rescan_in_progress = false;
+        shared.rescan = None;
         Ok(shared.seal_invalidation().map_or(
             WatchBatch::Changes {
                 epoch: self.epoch,
@@ -2866,22 +2923,6 @@ impl NativeWatch {
                 reason,
             },
         ))
-    }
-
-    /// Aborts an in-progress baseline and returns the watcher to an explicitly invalidated, retryable state.
-    pub fn abort_rescan(
-        &mut self,
-        reason: WatchInvalidationReason,
-    ) -> Result<(), NativeWatchError> {
-        if !self.rescan_in_progress {
-            return Err(NativeWatchError::NoRescanInProgress);
-        }
-        self.rescan_in_progress = false;
-        self.shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?
-            .invalidation = Some(reason);
-        Ok(())
     }
 
     /// Stops reporting hints for events wholly inside `subtrees`.
@@ -3517,7 +3558,13 @@ impl NativeWatch {
         if maximum_changes == 0 {
             return Err(NativeWatchError::ZeroPollLimit);
         }
-        if self.rescan_in_progress {
+        if self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .rescan
+            .is_some()
+        {
             return Err(NativeWatchError::RescanInProgress);
         }
         // Data always drops before either its old payload or new buffer guards.
@@ -4265,9 +4312,9 @@ pub enum NativeWatchError {
     /// A baseline scan is already active.
     #[error("native watcher baseline scan is already active")]
     RescanAlreadyInProgress,
-    /// No baseline scan is active.
-    #[error("native watcher baseline scan is not active")]
-    NoRescanInProgress,
+    /// The supplied scan does not own this watcher's active baseline.
+    #[error("baseline scan owner does not belong to this active watcher")]
+    RescanOwnerMismatch,
     /// Polling while a baseline is being built is ambiguous.
     #[error("native watcher baseline scan is in progress")]
     RescanInProgress,
@@ -4410,8 +4457,8 @@ mod demand_admission_tests {
         assert!(held.watched_directories.is_empty());
         // Whole-tree registration and rescan reuse the same physical producer.
         held.watch_tree(&[])?;
-        held.begin_rescan()?;
-        held.finish_rescan()?;
+        let rescan = held.begin_rescan()?;
+        held.finish_rescan(rescan)?;
         let NativeWatchDriver::Source(source) = &held.watcher else {
             return Err("native producer identity changed".into());
         };
@@ -4600,7 +4647,7 @@ mod demand_admission_tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
-        held.begin_rescan()?;
+        let _rescan = held.begin_rescan()?;
         assert!(held.windows_directories.is_empty());
         Ok(())
     }

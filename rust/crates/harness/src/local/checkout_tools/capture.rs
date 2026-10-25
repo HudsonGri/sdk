@@ -53,9 +53,9 @@ impl Cursor {
 
     pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
         let mut cursor = Self::open(workspace, policy)?;
-        cursor.watcher.begin_rescan().map_err(storage)?;
+        let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
         cursor.watcher.watch_tree(EXCLUDED).map_err(storage)?;
-        cursor.initial = Some(cursor.watcher.finish_rescan().map_err(storage)?);
+        cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
         Ok(cursor)
     }
 }

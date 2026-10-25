@@ -326,7 +326,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let trailing = {
         let mut attempt = 0;
         loop {
-            session.watcher.begin_rescan().map_err(engine)?;
+            let rescan = session.watcher.begin_rescan().map_err(engine)?;
             let policy = session.capture_policy.clone();
             let capture = crate::capture_baseline(
                 &mut session.checkout,
@@ -337,9 +337,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             )
             .await;
             if let Err(error) = capture {
-                let _ = session
-                    .watcher
-                    .abort_rescan(WatchInvalidationReason::BackendError);
+                rescan.abort(WatchInvalidationReason::BackendError);
                 let _ = persist_session_state(
                     session,
                     SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
@@ -348,7 +346,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 discard_unpublished_capture(session).await?;
                 return Err(engine(error));
             }
-            let batch = session.watcher.finish_rescan().map_err(engine)?;
+            let batch = session.watcher.finish_rescan(rescan).map_err(engine)?;
             if matches!(
                 batch,
                 WatchBatch::RescanRequired {
@@ -1760,7 +1758,7 @@ mod tests {
     ) -> Result<crate::GenerationId, Box<dyn std::error::Error>> {
         let mut session = source.inner.lock().await;
         begin_source_operation(&mut session, key, operation).await?;
-        session.watcher.begin_rescan()?;
+        let rescan = session.watcher.begin_rescan()?;
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
         crate::capture_baseline(
@@ -1771,7 +1769,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .await?;
-        let trailing = session.watcher.finish_rescan()?;
+        let trailing = session.watcher.finish_rescan(rescan)?;
         crate::capture_watch_batch(
             &mut session.checkout,
             trailing,
