@@ -18,7 +18,8 @@ pub(super) struct MountDestinationGuard {
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
     pub(super) registry_file: Option<MountLockFile>,
-    pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+    pub(super) cleanup_name:
+        Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
     // Allocated and funded before shutdown; retained on a failed exact cleanup.
     destination_cleanup: Option<(
@@ -341,7 +342,7 @@ impl MountDestinationGuard {
         native: &NativeMaterializationWork,
     ) -> Result<
         (
-            Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+            Option<crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>>,
             Option<crate::NativeWorkReservation>,
         ),
         NativeMountError,
@@ -373,7 +374,9 @@ impl MountDestinationGuard {
     }
 
     fn acquire_files(
-        cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+        cleanup_name: Option<
+            crate::native_host::PreparedAsciiLeaf<{ NATIVE_FENCE_NAME_BYTES + 1 }>,
+        >,
         birth_cleanup: Option<crate::NativeWorkReservation>,
         parent_directory: cap_std::fs::Dir,
         name: [u8; NATIVE_FENCE_NAME_BYTES],
@@ -385,11 +388,11 @@ impl MountDestinationGuard {
         let work = &mut &*native;
         let registry = registry::open(work)?;
         lock_mount_file_with_work(&registry, true, work)?;
-        let file = crate::native_host::open_leaf(
+        let file = crate::native_host::open_ascii_leaf(
             &parent_directory,
-            Path::new(
-                std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
-            ),
+            cleanup_name
+                .as_ref()
+                .ok_or(NativeMountError::ControlPending)?,
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
         )?;

@@ -3,7 +3,7 @@
 #![cfg(windows)]
 
 use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
+    CancellationToken, Fs, IdempotencyKey, LocalOptions,
     NativeMaterializationWork, WorkBudget,
 };
 use bytes::Bytes;
@@ -34,8 +34,8 @@ async fn local_workspace(
         .value)
 }
 
-fn manual_mount_options() -> MountOptions {
-    MountOptions::read_write().publication(MountPublication::Manual)
-}
+#[path = "../support/native_access.rs"]
+mod native_access;
+use native_access::manual_mount_options;
 
 include!("../../src/native_mount/projfs/tests/enumeration.rs");

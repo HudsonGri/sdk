@@ -3,7 +3,6 @@ use crate::kernel::KernelAccounting;
 use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode};
 use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
 use crate::native_mount::{MountFilesystem, MountPath};
-use crate::{MountOptions, MountPublication};
 use std::sync::Arc;
 
 pub(super) type MemorySource =
@@ -158,7 +157,9 @@ pub(super) async fn writes_only_promised_content(
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    let mount = lazy
+        .mount(&destination, manual_mount_options(lazy.workspace()).await?)
+        .await?;
     if listed_first {
         assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
     }
@@ -244,6 +245,4 @@ pub(super) async fn local_workspace(
         .value)
 }
 
-pub(super) fn manual_mount_options() -> MountOptions {
-    MountOptions::read_write().publication(MountPublication::Manual)
-}
+pub(super) use crate::native_mount::fixture_access::manual_mount_options;

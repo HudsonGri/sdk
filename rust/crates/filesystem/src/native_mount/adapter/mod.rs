@@ -153,7 +153,7 @@ impl From<FsError> for MountSourceError {
 mod runtime;
 pub use runtime::initialize_native_mount_services;
 use runtime::invoke;
-pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
+pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait, native_future};
 mod source_io;
 pub use source_io::NativeSourceIoLease;
 include!("file_callbacks.rs");

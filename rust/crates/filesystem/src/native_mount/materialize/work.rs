@@ -21,6 +21,9 @@ where
     Ok(())
 }
 
+mod index;
+pub(super) use index::GenerationIndex;
+
 /// Native traversal and host work share the original ledger; standalone SDK reads contribute their measured prefixes.
 pub(super) struct GenerationReceipt {
     pub(super) value: MaterializationReceipt,

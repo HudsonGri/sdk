@@ -4,8 +4,8 @@ use acyclic_fs::model::{
     VolumeConfig,
 };
 use acyclic_fs::{
-    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountOptions,
-    MountPath, MountPublication, SharedCheckout, WorkBudget,
+    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem,
+    MountPath, SharedCheckout, WorkBudget,
 };
 use bytes::Bytes;
 use std::sync::Arc;
@@ -130,6 +130,6 @@ pub(super) async fn local_workspace(
         .value)
 }
 
-pub(super) fn manual_mount_options() -> MountOptions {
-    MountOptions::read_write().publication(MountPublication::Manual)
-}
+#[path = "support/native_access.rs"]
+mod native_access;
+pub(super) use native_access::manual_mount_options;

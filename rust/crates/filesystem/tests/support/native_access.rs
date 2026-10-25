@@ -129,3 +129,18 @@ where
         })
     }
 }
+
+/// Uses the shared fixture authority for a writable manually published mount.
+#[cfg(windows)]
+pub async fn manual_mount_options<
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+>(
+    workspace: &Workspace<A, O>,
+) -> Result<MountOptions, Box<dyn std::error::Error>> {
+    options(
+        workspace,
+        MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
+    )
+    .await
+}
