@@ -1,6 +1,10 @@
 //! Shared policy-chain traversal for execution, clients and host adapters.
 use super::{ApprovalPolicy, ApprovalReviewFile, Approver, RuleVerdict};
-use crate::{Error, Result, TaskId, interaction::ApprovalDecisionFile, task_volume::{Component, FileKey, FileValue, TaskFile}};
+use crate::{
+    Error, Result, TaskId,
+    interaction::ApprovalDecisionFile,
+    task_volume::{Component, FileKey, FileValue, TaskFile},
+};
 use std::collections::BTreeMap;
 
 /// Active stage selected from the immutable request and retained review files.
@@ -111,7 +115,8 @@ fn retained_review(
     expected: &ApprovalReviewFile,
 ) -> Result<Option<ApprovalReviewFile>> {
     file.map(|file| {
-        let review: ApprovalReviewFile = serde_json::from_slice(&file.bytes).map_err(|error| Error::Storage(error.to_string()))?;
+        let review: ApprovalReviewFile = serde_json::from_slice(&file.bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
         if review.principal != expected.principal
             || review.request_sha256 != expected.request_sha256
             || review.policy_digest != expected.policy_digest
@@ -126,4 +131,3 @@ fn retained_review(
 
 #[cfg(test)]
 mod tests;
-

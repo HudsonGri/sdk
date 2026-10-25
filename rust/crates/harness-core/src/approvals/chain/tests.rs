@@ -33,23 +33,51 @@ fn retain(
 #[test]
 fn shared_chain_escalates_in_order_and_never_trusts_human_review_files() -> Result<()> {
     let policy = ApprovalPolicy {
-        approvers: vec![rules("rules"), Approver::Llm { principal: "model".into(), model: "reviewer".into(), prompt: "Review the exact request".into() }, Approver::Human { principal: "human".into() }],
+        approvers: vec![
+            rules("rules"),
+            Approver::Llm {
+                principal: "model".into(),
+                model: "reviewer".into(),
+                prompt: "Review the exact request".into(),
+            },
+            Approver::Human {
+                principal: "human".into(),
+            },
+        ],
     };
     let digest = policy.bind()?.identity().digest;
     let request = request()?;
     let mut files = BTreeMap::new();
     for stage in 0..3 {
-        let NextStage::Review { mut expected, .. } = next_stage(&policy, digest, None, &request, &files, 0)? else {
+        let NextStage::Review { mut expected, .. } =
+            next_stage(&policy, digest, None, &request, &files, 0)?
+        else {
             panic!("chain decided before its active approver");
         };
         assert_eq!(expected.stage, stage);
-        expected.verdict = if stage == 2 { RuleVerdict::Allow } else { RuleVerdict::Ask };
+        expected.verdict = if stage == 2 {
+            RuleVerdict::Allow
+        } else {
+            RuleVerdict::Ask
+        };
         retain(&mut files, &request, &expected)?;
     }
-    assert!(matches!(next_stage(&policy, digest, None, &request, &files, 0)?, NextStage::Review {
-        approver: Approver::Human { .. }, retained: Some(ApprovalReviewFile { verdict: RuleVerdict::Allow, .. }), ..
-    }), "a review file cannot replace an authenticated human decision");
-    let NextStage::Decided(exhausted) = next_stage(&policy, digest, None, &request, &files, 3)? else {
+    assert!(
+        matches!(
+            next_stage(&policy, digest, None, &request, &files, 0)?,
+            NextStage::Review {
+                approver: Approver::Human { .. },
+                retained: Some(ApprovalReviewFile {
+                    verdict: RuleVerdict::Allow,
+                    ..
+                }),
+                ..
+            }
+        ),
+        "a review file cannot replace an authenticated human decision"
+    );
+    let NextStage::Decided(exhausted) = next_stage(&policy, digest, None, &request, &files, 3)?
+    else {
         panic!("exhausted chain did not decide");
     };
     assert_eq!(exhausted.verdict, RuleVerdict::Deny);
@@ -58,16 +86,26 @@ fn shared_chain_escalates_in_order_and_never_trusts_human_review_files() -> Resu
 
 #[test]
 fn shared_chain_binds_parent_to_the_admitted_parent_task() -> Result<()> {
-    let policy = ApprovalPolicy { approvers: vec![Approver::Parent] };
+    let policy = ApprovalPolicy {
+        approvers: vec![Approver::Parent],
+    };
     let digest = policy.bind()?.identity().digest;
     let request = request()?;
     let files = BTreeMap::new();
     let parent = TaskId::new();
-    let NextStage::Review { expected, .. } = next_stage(&policy, digest, Some(parent), &request, &files, 0)? else {
+    let NextStage::Review { expected, .. } =
+        next_stage(&policy, digest, Some(parent), &request, &files, 0)?
+    else {
         panic!("admitted parent did not receive its review");
     };
     assert_eq!(expected.principal, format!("parent:{parent}"));
-    assert!(matches!(next_stage(&policy, digest, None, &request, &files, 0)?, NextStage::Decided(ApprovalReviewFile { verdict: RuleVerdict::Deny, .. })));
+    assert!(matches!(
+        next_stage(&policy, digest, None, &request, &files, 0)?,
+        NextStage::Decided(ApprovalReviewFile {
+            verdict: RuleVerdict::Deny,
+            ..
+        })
+    ));
     Ok(())
 }
 

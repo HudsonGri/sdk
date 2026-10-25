@@ -2,7 +2,10 @@
 use super::*;
 use crate::package::harness::worker::DriveState;
 use crate::{
-    approvals::{ApprovalReviewFile, Approver, RuleVerdict, NextStage, next_stage, request_id, review_key, fingerprint},
+    approvals::{
+        ApprovalReviewFile, Approver, NextStage, RuleVerdict, fingerprint, next_stage, request_id,
+        review_key,
+    },
     interaction::{ApprovalDecisionFile, Interaction},
     runtime::{TaskStateProvider, ToolPolicy},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile},
