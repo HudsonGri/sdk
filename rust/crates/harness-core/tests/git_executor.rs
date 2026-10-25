@@ -840,10 +840,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let identity = work.root_identity(&root)?;
     let operation = OperationId::new();
     let publication = acyclic_harness_core::filesystem::CheckoutPublication::new(
-        &root,
-        identity,
-        operation,
-        &work,
+        &root, identity, operation, &work,
     )?;
     let options = MaterializeOptions {
         destination: publication.directory().join("target"),
