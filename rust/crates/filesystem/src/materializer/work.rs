@@ -66,7 +66,14 @@ impl NativeMaterializationWork {
         budget: WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, (NativeTreeMaterializationError, Box<WorkCounters>)> {
-        let mut state = crate::demand::DemandWork::new(budget, cancellation);
+        Self::from_demand(crate::demand::DemandWork::new(budget, cancellation))
+    }
+
+    /// Retains the same admitted demand ledger when a native producer outlives
+    /// preparation. Preparation work and cancellation are never reset.
+    pub(crate) fn from_demand(
+        mut state: crate::demand::DemandWork,
+    ) -> Result<Self, (NativeTreeMaterializationError, Box<WorkCounters>)> {
         state
             .claim_allocation(
                 Self::accounting_state_bytes(),

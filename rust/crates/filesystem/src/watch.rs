@@ -157,7 +157,8 @@ pub enum WatchBatch {
 #[derive(Debug, Default)]
 pub struct WatchBatchOriginal {
     allocations: Vec<[Option<crate::NativeAllocation>; 2]>,
-    // A zero-byte split of the actual externally returned change-vector guard.
+    // Ordinary polling retains the full vector guard here; guarded polling
+    // retains its zero-byte witness while the caller owns the full guard.
     storage: Option<crate::NativeAllocation>,
 }
 
@@ -1526,6 +1527,21 @@ impl NativeWatch {
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<Self>, NativeWatchError> {
         let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        // The notify adapter handles recursive inotify or an unsupported host. Every held native producer retains its original
+        // ledger, independently of which public constructor its caller uses.
+        if cfg!(any(target_os = "linux", target_os = "macos", windows))
+            && !(cfg!(target_os = "linux") && options.recursive)
+        {
+            let root = Self::ordinary_root(root.as_ref(), options, &mut work)
+                .map_err(|error| OperationFailure::new(error, work.receipt()))?;
+            let native = crate::NativeMaterializationWork::from_demand(work)
+                .map_err(|(error, spent)| OperationFailure::new(error.into(), *spent))?;
+            let result = Self::open_with_profile_with_native_work(&root, profile, options, &native);
+            let spent = native.receipt();
+            return result
+                .map(|value| OperationReceipt { value, work: spent })
+                .map_err(|error| OperationFailure::new(error, spent));
+        }
         let result =
             Self::open_with_profile_engine(root.as_ref(), profile, options, &mut work, None);
         let spent = work.receipt();
@@ -1548,6 +1564,29 @@ impl NativeWatch {
             &mut crate::NativeMaterializationWork::clone(original),
             Some(original),
         )
+    }
+
+    fn ordinary_root<W: crate::demand::SourceDemandReadWork>(
+        requested: &Path,
+        options: NativeWatchOptions,
+        work: &mut W,
+    ) -> Result<PathBuf, NativeWatchError> {
+        work.check().map_err(demand_watch_error)?;
+        options.validate()?;
+        work.started_io(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(demand_watch_error)?;
+        if requested.symlink_metadata()?.file_type().is_symlink() {
+            return Err(NativeWatchError::RootIsNotDirectory);
+        }
+        work.started_io(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(demand_watch_error)?;
+        Ok(requested.canonicalize()?)
     }
 
     fn copy_startup_path<W: crate::demand::SourceDemandReadWork>(
@@ -1614,20 +1653,7 @@ impl NativeWatch {
         let root_path = if original.is_some() {
             requested_root
         } else {
-            work.started_io(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(demand_watch_error)?;
-            if requested_root.symlink_metadata()?.file_type().is_symlink() {
-                return Err(NativeWatchError::RootIsNotDirectory);
-            }
-            work.started_io(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(demand_watch_error)?;
-            ordinary_root = requested_root.canonicalize()?;
+            ordinary_root = Self::ordinary_root(requested_root, options, work)?;
             &ordinary_root
         };
         let cleanup = original
@@ -3458,14 +3484,18 @@ impl NativeWatch {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        match self.poll_with_work(maximum_changes, &mut work, None, |_| Ok(())) {
-            Ok((value, _)) => Ok(OperationReceipt {
-                value,
-                work: work.work,
-            }),
-            Err(error) => Err(OperationFailure::new(error, work.work)),
-        }
+        let original = crate::NativeMaterializationWork::new(budget, cancellation)
+            .map_err(|(error, spent)| OperationFailure::new(error.into(), *spent))?;
+        let result = self.poll_with_native_work_guarded(maximum_changes, &original, |_| Ok(()));
+        let spent = original.receipt();
+        result
+            .map(|(mut value, allocation)| {
+                if let WatchBatch::Changes { original, .. } = &mut value {
+                    original.storage = Some(allocation);
+                }
+                OperationReceipt { value, work: spent }
+            })
+            .map_err(|error| OperationFailure::new(error, spent))
     }
 
     /// Runs the consumer's guarded publication before committing watch progress.

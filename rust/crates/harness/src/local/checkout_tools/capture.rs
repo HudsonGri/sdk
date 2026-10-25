@@ -24,8 +24,6 @@ pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
     unreadable_diff_source: bool,
-    #[cfg(target_os = "macos")]
-    work: acyclic_fs::NativeMaterializationWork,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     injection: Option<tests::Injection>,
 }
@@ -40,25 +38,8 @@ impl Cursor {
         // FSEvents observes the whole root recursively. Inotify and Windows
         // register individual directories as capture discovers them.
         options.recursive = cfg!(target_os = "macos");
-        #[cfg(not(target_os = "macos"))]
         let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
-        // FSEvents' held-source adapter requires retained native custody. Linux
-        // and Windows already select their held source for a nonrecursive watch.
-        #[cfg(target_os = "macos")]
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| storage(cause))?;
-        #[cfg(target_os = "macos")]
-        let mut watcher = NativeWatch::open_with_profile_with_native_work(
-            &workspace.path,
-            config.profile,
-            options,
-            &work,
-        )
-        .map_err(storage)?;
         watcher
             .exclude_subtrees(policy.excluded_prefixes())
             .map_err(storage)?;
@@ -66,8 +47,6 @@ impl Cursor {
             watcher,
             initial: None,
             unreadable_diff_source: false,
-            #[cfg(target_os = "macos")]
-            work,
             #[cfg(all(test, not(acyclic_harness_loom)))]
             injection: None,
         })

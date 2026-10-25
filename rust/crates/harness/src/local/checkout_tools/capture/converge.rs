@@ -13,16 +13,6 @@ impl Cursor {
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<(WatchBatch, Option<acyclic_fs::NativeAllocation>)> {
-        #[cfg(target_os = "macos")]
-        {
-            let (batch, owner) = self
-                .watcher
-                .poll_with_native_work_guarded(MAXIMUM_PATHS, &self.work, |_| Ok(()))
-                .map_err(storage)?;
-            let _ = cancellation;
-            Ok((batch, Some(owner)))
-        }
-        #[cfg(not(target_os = "macos"))]
         Ok((
             self.watcher
                 .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)

@@ -14,6 +14,47 @@ pub(super) fn measured_watch_startup_work() -> WorkCounters {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn ordinary_watch_retains_preparation_custody_and_owns_polled_storage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let mut options = measured_watch_options();
+    options.recursive = cfg!(target_os = "macos");
+    let opened = NativeWatch::open_with_profile_measured(
+        directory.path(),
+        FilesystemProfile::Portable,
+        options,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )?;
+    let mut watch = opened.value;
+    let birth = watch
+        .original_work
+        .as_ref()
+        .ok_or("ordinary constructor lost native birth custody")?
+        .clone();
+    assert_eq!(birth.receipt(), opened.work);
+    assert!(opened.work.backend_read_operations >= 2);
+    watch.accept_lazy_baseline_with_native_work(&birth)?;
+    let polled = watch.poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+    let WatchBatch::Changes { original, .. } = &polled.value else {
+        return Err("quiet admitted watch lost continuity".into());
+    };
+    assert!(original.has_native_changes_storage_custody());
+    cancellation.cancel();
+    let fresh =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    assert!(watch.shutdown_with_native_work(&fresh)?);
+    assert!(watch.held_root.root.is_none());
+    // The interval, including its storage owner, remains valid after producer
+    // shutdown and after the invocation which prepared that producer cancels.
+    assert!(matches!(&polled.value, WatchBatch::Changes { changes, .. } if changes.is_empty()));
+    Ok(())
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[test]
 fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn std::error::Error>>
