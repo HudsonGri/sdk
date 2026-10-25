@@ -14,7 +14,7 @@ where
         scope: Scope,
         id: InteractionId,
     ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
-        self.verifier.verify(&scope, &mut None)?;
+        self.verifier().verify(&scope, &mut None)?;
         let result = self.read(id, None).await?;
         if let Some((ticket, _)) = &result
             && !scope.capabilities().contains(&ticket.viewer_grant())
@@ -127,7 +127,7 @@ where
         scope: &Scope,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        with_history_io(io, |work| self.verifier.verify(scope, work))?;
+        with_history_io(io, |work| self.verifier().verify(scope, work))?;
         let grant = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("interaction:respond:{id}"), work)
         })?;

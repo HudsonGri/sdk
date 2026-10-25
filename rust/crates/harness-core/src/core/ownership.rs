@@ -1,7 +1,7 @@
 //! Logical ownership of the main reducer's records.
 use super::*;
 mod walk;
-pub(crate) use walk::{OwnedBytes, owned_enum, owned_struct, owned_tuple};
+pub(crate) use walk::{OwnedBytes, owned_enum, owned_struct, owned_tuple, tree_insertion_bytes};
 #[cfg(test)]
 mod tests;
 

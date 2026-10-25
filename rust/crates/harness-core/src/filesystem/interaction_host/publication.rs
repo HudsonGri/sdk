@@ -34,7 +34,7 @@ where
             let result = self
                 .execute(
                     operation_id,
-                    scope.unwrap_or(&self.owner_scope),
+                    scope.unwrap_or(self.owner_scope()),
                     Action::OpenInteraction {
                         ticket: (copied).into(),
                     },
@@ -78,8 +78,8 @@ where
         let mut aggregate = self.aggregate(io).await?;
         let (committed, _) = crate::store::operations::bounded_operation_with_retained_quota(
             &self.stream,
-            self.verifier.audience(),
-            &self.verifier,
+            self.verifier().audience(),
+            self.verifier(),
             operation_id,
             2 * acyclic_stream::MAX_RECORD_BYTES as u64,
             true,
@@ -137,15 +137,14 @@ where
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);
         let authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(self.verifier.audience())?,
-            None => self.verifier.audience().clone(),
+            Some(work) => work.clone_authority(self.verifier().audience())?,
+            None => self.verifier().audience().clone(),
         };
-        let verifier = self.verifier.copy(&mut work)?;
+        let verifier = self.verifier().copy(&mut work)?;
         let schemas = self.schemas.copy(&mut work)?;
-        let content = FilesystemContentVerifier::new(
+        let content = FilesystemContentVerifier::from_authenticated(
             Arc::clone(&self.host),
-            &self.verifier,
-            &self.owner_scope,
+            &self.write_grant.authority,
             self.maximum_bytes,
             io,
         )?;

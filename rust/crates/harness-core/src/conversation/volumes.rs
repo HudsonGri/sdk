@@ -529,14 +529,44 @@ impl ContentGrant {
         maximum_bytes: u64,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
-        Self::build_in_quota(verifier, scope, quota, |scope, quota| {
-            Self::check_volume(scope, volume, operation, maximum_bytes, quota.work())?;
-            Ok(Boundary {
-                volume: volume.clone_in_quota(quota)?,
-                operation,
-                exact_file: None,
-                directory_prefix: None,
-            })
+        let authority = verifier.authenticate_scope(scope, quota.work())?;
+        quota.adopt(authority.logical_owned_bytes()?)?;
+        Self::bind_volume_in_quota(authority, volume, operation, maximum_bytes, quota)
+    }
+
+    /// Rebinds authenticated immutable evidence without repeating its signatures.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn from_authenticated_in_quota(
+        authority: &crate::core::VerifiedScope,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        maximum_bytes: u64,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        let authority = authority.copy_in_quota(quota)?;
+        Self::bind_volume_in_quota(authority, volume, operation, maximum_bytes, quota)
+    }
+
+    fn bind_volume_in_quota(
+        authority: crate::core::VerifiedScope,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        maximum_bytes: u64,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        Self::check_volume(
+            authority.scope(),
+            volume,
+            operation,
+            maximum_bytes,
+            quota.work(),
+        )?;
+        Ok(Self {
+            authority,
+            volume: volume.clone_in_quota(quota)?,
+            operation,
+            exact_file: None,
+            directory_prefix: None,
         })
     }
 

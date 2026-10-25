@@ -39,6 +39,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(in crate::filesystem) fn content_authority(&self) -> &crate::core::VerifiedScope {
+        &self.write_grant.authority
+    }
+
     fn invalidate_execution_caches(&mut self) {
         self.cache_identity = Default::default();
         *self.verified.get_mut() = SummaryCache::default();
@@ -240,19 +244,17 @@ where
         let schemas = schemas.copy(quota.work())?;
         let write_grant = journal_authority(verifier, scope, &volume, io, &mut quota)?;
         let interactions = match verifier.audience().kind {
-            crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
-                stream.clone(),
-                Arc::clone(&host),
-                verifier.audience(),
-                &schemas,
-                crate::filesystem::FilesystemJournalBinding {
-                    volume: &volume,
-                    verifier,
-                    scope,
-                    maximum_bytes: maximum_payload_bytes,
+            crate::core::AggregateKind::Conversation => {
+                Some(FilesystemInteractionHost::from_authenticated(
+                    stream.clone(),
+                    Arc::clone(&host),
+                    &schemas,
+                    &write_grant.authority,
+                    &volume,
+                    maximum_payload_bytes,
                     io,
-                },
-            )?),
+                )?)
+            }
             crate::core::AggregateKind::Task => None,
             _ => unreachable!("execution authority validated before assembly"),
         };

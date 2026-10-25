@@ -314,3 +314,65 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
     }
     Ok(())
 }
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn authenticated_scope_copy_preserves_live_trust_and_allocation_custody() -> Result<()> {
+    let (issuer, verifier, scope, _) = fixture()?;
+    let authenticated = verifier.authenticate_scope(&scope, &mut None)?;
+    let (copied, signatures) = acyclic_test_support::differential::observe(
+        || (),
+        |()| {
+            let mut work = None;
+            let mut quota = CodecQuota::new(&mut work, 0)?;
+            authenticated.copy_in_quota(&mut quota)
+        },
+    );
+    let copied = copied?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert!(
+        signatures.is_empty(),
+        "evidence copy repeated signature verification"
+    );
+    assert_eq!(copied.scope(), authenticated.scope());
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let probe = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
+    let required;
+    {
+        let mut observer = probe.history_io();
+        let mut work = Some(&mut observer as &mut dyn HistoryIo);
+        let mut quota = CodecQuota::new(&mut work, 0)?;
+        let copy = authenticated.copy_in_quota(&mut quota)?;
+        assert_eq!(probe.owned_bytes()?, copy.logical_owned_bytes()?);
+        required = budget.allocation_operations - probe.remaining()?.allocation_operations;
+        assert!(required > 3);
+        drop(copy);
+    }
+    assert_eq!(probe.owned_bytes()?, 0);
+    for operations in 0..required {
+        let mut limited = budget;
+        limited.allocation_operations = operations;
+        let io = crate::executor::PreparationIo::from_budget(limited, &cancellation)?;
+        {
+            let mut observer = io.history_io();
+            let mut work = Some(&mut observer as &mut dyn HistoryIo);
+            let mut quota = CodecQuota::new(&mut work, 0)?;
+            assert!(
+                authenticated.copy_in_quota(&mut quota).is_err(),
+                "copy bypassed original allocation cut {operations}"
+            );
+        }
+        assert_eq!(
+            io.owned_bytes()?,
+            0,
+            "partial copy leaked at allocation {operations}"
+        );
+    }
+    issuer.revoke_workload(&scope)?;
+    assert!(copied.recheck(&mut None).is_err());
+    let mut work = None;
+    let mut quota = CodecQuota::new(&mut work, 0)?;
+    assert!(authenticated.copy_in_quota(&mut quota).is_err());
+    Ok(())
+}

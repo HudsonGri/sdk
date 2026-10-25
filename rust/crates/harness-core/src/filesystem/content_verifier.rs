@@ -50,6 +50,32 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
+        Self::build(host, maximum_bytes, io, |quota| {
+            let authority = verifier.authenticate_scope(scope, quota.work())?;
+            quota.adopt(authority.logical_owned_bytes()?)?;
+            Ok(authority)
+        })
+    }
+
+    pub(in crate::filesystem) fn from_authenticated(
+        host: Arc<FilesystemHost<A, O>>,
+        authority: &crate::core::VerifiedScope,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Arc<Self>> {
+        Self::build(host, maximum_bytes, io, |quota| {
+            authority.copy_in_quota(quota)
+        })
+    }
+
+    fn build(
+        host: Arc<FilesystemHost<A, O>>,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+        authenticate: impl FnOnce(
+            &mut crate::wire_codec::CodecQuota<'_, '_>,
+        ) -> Result<crate::core::VerifiedScope>,
+    ) -> Result<Arc<Self>> {
         if maximum_bytes == 0 {
             return Err(stock_boundary(
                 io,
@@ -59,8 +85,7 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         }
         crate::executor::with_history_io(io, |work| -> Result<_> {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let authority = verifier.authenticate_scope(scope, quota.work())?;
-            quota.adopt(authority.logical_owned_bytes()?)?;
+            let authority = authenticate(&mut quota)?;
             if quota.work().is_some() {
                 #[cfg(not(target_arch = "wasm32"))]
                 let slot = acyclic_native_runtime::arc_allocation_bytes::<Self>() as u64;

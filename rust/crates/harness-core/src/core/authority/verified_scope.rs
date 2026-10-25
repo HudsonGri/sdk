@@ -73,6 +73,28 @@ impl VerifiedScope {
         self.verifier.copy(work)
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        self.recheck(quota.work())?;
+        let scope = self.scope.copy_in_quota(quota)?;
+        let verifier = self.verifier.copy(quota.work())?;
+        quota.adopt(verifier.logical_owned_bytes()?)?;
+        let evidence = self.evidence.try_clone_with(|bytes| -> Result<()> {
+            let bytes = bytes as u64;
+            quota.retain(bytes)?;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.admit_allocation(bytes)?;
+                io.copy_bytes(bytes)?;
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            scope,
+            verifier,
+            evidence,
+        })
+    }
+
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         crate::core::ownership::owned_sum([
             self.scope.logical_owned_bytes()?,

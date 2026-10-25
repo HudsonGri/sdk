@@ -160,7 +160,7 @@ fn tree_nodes<T>(len: usize) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("tree ownership overflows".into()))
 }
 
-pub(super) fn tree_insertion_bytes<T>(len: usize) -> Result<u64> {
+pub(crate) fn tree_insertion_bytes<T>(len: usize) -> Result<u64> {
     // A fresh root allocates one node. A non-full leaf root allocates none.
     // Otherwise a split can allocate a sibling at every level and a new root.
     // A height-h tree needs at least 2 * 6^h - 1 entries (five per non-root

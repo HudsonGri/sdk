@@ -16,6 +16,9 @@ enum Constructor {
     ExecutionJournal,
     WorkflowJournal,
     RecursiveMergeMetadata,
+    AuthenticatedContent,
+    AuthenticatedPublisher,
+    AuthenticatedInteraction,
 }
 
 impl Constructor {
@@ -95,6 +98,41 @@ impl Constructor {
                 &fixture.source,
                 io,
             )?),
+            Self::AuthenticatedContent
+            | Self::AuthenticatedPublisher
+            | Self::AuthenticatedInteraction => {
+                // The caller already owns this immutable evidence. Only its
+                // destination copies belong to the constructor's ledger.
+                let authority = verifier.authenticate_scope(&fixture.scope, &mut None)?;
+                match self {
+                    Self::AuthenticatedContent => {
+                        drop(FilesystemContentVerifier::from_authenticated(
+                            fixture.host.clone(),
+                            &authority,
+                            4096,
+                            io,
+                        )?)
+                    }
+                    Self::AuthenticatedPublisher => {
+                        drop(FilesystemContentPublisher::from_authenticated(
+                            fixture.host.clone(),
+                            &fixture.private,
+                            &authority,
+                            4096,
+                            io,
+                        )?)
+                    }
+                    _ => drop(FilesystemInteractionHost::from_authenticated(
+                        Arc::new(MemoryStream::default()),
+                        fixture.host.clone(),
+                        &SchemaRegistry::new(),
+                        &authority,
+                        &fixture.private,
+                        4096,
+                        io,
+                    )?),
+                }
+            }
         }
         Ok(())
     }
@@ -112,6 +150,55 @@ fn ledger(
     } else {
         PreparationIo::from_budget(budget, cancellation)
     }
+}
+
+#[tokio::test]
+async fn publisher_custody_covers_its_complete_physical_allocation() -> Result<()> {
+    let fixture = fixture().await?;
+    let verifier = fixture.issuer.verifier(&mut None)?;
+    let authority = verifier.authenticate_scope(&fixture.scope, &mut None)?;
+    for authenticated in [false, true] {
+        let construct = |io: Option<&PreparationIo>| {
+            if authenticated {
+                FilesystemContentPublisher::from_authenticated(
+                    fixture.host.clone(),
+                    &fixture.private,
+                    &authority,
+                    4096,
+                    io,
+                )
+            } else {
+                FilesystemContentPublisher::new(
+                    fixture.host.clone(),
+                    &fixture.private,
+                    &verifier,
+                    &fixture.scope,
+                    4096,
+                    io,
+                )
+            }
+        };
+        for native in [false, true] {
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let io = ledger(native, budget, &cancellation)?;
+            let before = io.remaining()?.peak_allocation_bytes;
+            let publisher = construct(Some(&io))?;
+            let retained = before - io.remaining()?.peak_allocation_bytes;
+            // Measure this exact funded value: copying with an observer can
+            // select different buffer capacities from an unobserved clone.
+            // Shared providers remain alive throughout the measurement.
+            let released = acyclic_test_support::measure(|| drop(publisher));
+            let physical = u64::try_from(-released.bytes_current)
+                .map_err(|_| Error::Invalid("publisher allocation measurement invalid".into()))?;
+            assert!(physical > 0);
+            assert!(
+                retained >= physical,
+                "publisher underfunded: authenticated={authenticated} native={native} retained={retained} physical={physical}"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -172,6 +259,9 @@ async fn failed_aggregate_constructors_release_every_allocation_boundary() -> Re
         Constructor::ExecutionJournal,
         Constructor::WorkflowJournal,
         Constructor::RecursiveMergeMetadata,
+        Constructor::AuthenticatedContent,
+        Constructor::AuthenticatedPublisher,
+        Constructor::AuthenticatedInteraction,
     ] {
         constructor.construct(&fixture, &verifier, None)?;
         for native in [false, true] {

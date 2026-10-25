@@ -32,6 +32,47 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
+        Self::build(host, volume, maximum_bytes, io, |quota| {
+            ContentGrant::verify_in_quota(
+                verifier,
+                scope,
+                volume,
+                VolumeOperation::Write,
+                io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
+                quota,
+            )
+        })
+    }
+
+    pub(in crate::filesystem) fn from_authenticated(
+        host: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef,
+        authority: &crate::core::VerifiedScope,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Arc<Self>> {
+        Self::build(host, volume, maximum_bytes, io, |quota| {
+            ContentGrant::from_authenticated_in_quota(
+                authority,
+                volume,
+                VolumeOperation::Write,
+                io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
+                quota,
+            )
+        })
+    }
+
+    fn build(
+        host: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+        authenticate: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ContentGrant>,
+    ) -> Result<Arc<Self>> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {
             return Err(stock_boundary(
                 io,
@@ -41,22 +82,15 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         }
         crate::executor::with_history_io(io, |work| -> Result<_> {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let grant = ContentGrant::verify_in_quota(
-                verifier,
-                scope,
-                volume,
-                VolumeOperation::Write,
-                io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
-                &mut quota,
-            )?;
+            let grant = authenticate(&mut quota)?;
             let volume = volume.copy_in_quota(&mut quota)?;
             if quota.work().is_some() {
-                quota.retain(std::mem::size_of::<Self>() as u64)?;
-                quota
-                    .observer()?
-                    .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let slot = acyclic_native_runtime::arc_allocation_bytes::<Self>() as u64;
+                #[cfg(target_arch = "wasm32")]
+                let slot = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64;
+                quota.retain(slot)?;
+                quota.observer()?.allocation_attempt(slot)?;
             }
             let _native_metadata = quota.into_custody()?;
             Ok(Arc::new(Self {

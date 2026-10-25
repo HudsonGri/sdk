@@ -25,9 +25,8 @@ use uuid::Uuid;
 pub struct FilesystemInteractionHost<P, A, O> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
-    verifier: AuthorityVerifier,
+    write_grant: ContentGrant,
     schemas: SchemaRegistry,
-    owner_scope: Scope,
     private_volume: VolumeRef,
     maximum_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -52,6 +51,42 @@ where
         schemas: &SchemaRegistry,
         binding: super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
+        Self::build(stream, host, authority, schemas, binding, None)
+    }
+
+    pub(in crate::filesystem) fn from_authenticated(
+        stream: Arc<P>,
+        host: Arc<FilesystemHost<A, O>>,
+        schemas: &SchemaRegistry,
+        authority: &crate::core::VerifiedScope,
+        volume: &VolumeRef,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        Self::build(
+            stream,
+            host,
+            authority.verifier().audience(),
+            schemas,
+            super::FilesystemJournalBinding {
+                volume,
+                verifier: authority.verifier(),
+                scope: authority.scope(),
+                maximum_bytes,
+                io,
+            },
+            Some(authority),
+        )
+    }
+
+    fn build(
+        stream: Arc<P>,
+        host: Arc<FilesystemHost<A, O>>,
+        authority: &Authority,
+        schemas: &SchemaRegistry,
+        binding: super::FilesystemJournalBinding<'_>,
+        authenticated: Option<&crate::core::VerifiedScope>,
+    ) -> Result<Self> {
         let super::FilesystemJournalBinding {
             volume: private_volume,
             verifier,
@@ -72,20 +107,32 @@ where
                     "interaction host requires a conversation, private volume, and positive limit",
                 ));
             }
-            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                ContentGrant::authorize_volume(
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let write_grant = match authenticated {
+                Some(owner) => ContentGrant::from_authenticated_in_quota(
+                    owner,
+                    private_volume,
+                    VolumeOperation::Write,
+                    u64::MAX,
+                    &mut quota,
+                )?,
+                None => ContentGrant::verify_in_quota(
                     verifier,
                     owner_scope,
                     private_volume,
-                    operation,
+                    VolumeOperation::Write,
                     u64::MAX,
-                    work,
-                )?;
-            }
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let verifier = verifier.copy_in_quota(&mut quota)?;
+                    &mut quota,
+                )?,
+            };
+            ContentGrant::authorize_authenticated_volume(
+                &write_grant.authority,
+                private_volume,
+                VolumeOperation::Read,
+                u64::MAX,
+                quota.work(),
+            )?;
             let schemas = schemas.copy(quota.work())?;
-            let owner_scope = owner_scope.copy_in_quota(&mut quota)?;
             let private_volume = private_volume.copy_in_quota(&mut quota)?;
             #[cfg(not(target_arch = "wasm32"))]
             if quota
@@ -99,15 +146,24 @@ where
             Ok(Self {
                 stream,
                 host,
-                verifier,
+                write_grant,
                 schemas,
-                owner_scope,
                 private_volume,
                 maximum_bytes,
                 #[cfg(not(target_arch = "wasm32"))]
                 _native_metadata,
             })
         })
+    }
+}
+
+impl<P, A, O> FilesystemInteractionHost<P, A, O> {
+    fn verifier(&self) -> &AuthorityVerifier {
+        self.write_grant.authority.verifier()
+    }
+
+    fn owner_scope(&self) -> &Scope {
+        self.write_grant.authority.scope()
     }
 }
 

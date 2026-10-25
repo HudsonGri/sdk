@@ -13,6 +13,17 @@ and supplies credentials and publication permits separately.
 Recovery verifies retained request and result artifacts and receipt identity.
 Failed or uncertain publication cannot become a successful task completion.
 
+Filesystem journals, interactions, readers and publishers retain immutable
+authenticated scope evidence. Creating a dependent adapter copies that evidence
+through the same admitted constructor rather than verifying its signatures again.
+The copy admits each string and vector before allocation; a partial copy retires
+its own custody. Every authorization still checks current trust and expiry, and
+the existing exact-volume/file checks remain the authorization boundary.
+`journal_and_content_adapters_reuse_one_authenticated_owner` covers construction
+and revocation; `copied_trust_evidence_admits_each_exact_buffer_before_allocation`
+compares admission with the counting allocator at every failure cut. Constructor
+custody coverage exercises both owned and native ledgers for all adapter forms.
+
 `WorkspaceGraph::fork` requires the exact ready parent registration before
 creating a child intent. The graph issues one creation input containing its
 authenticated generation, destination and operation identity. Authored and sparse

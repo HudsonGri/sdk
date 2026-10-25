@@ -81,6 +81,66 @@ fn every_admission_root_and_its_fields_have_accounting() {
     );
 }
 
+#[test]
+fn capability_accounting_covers_tree_storage_and_retained_empty_roots() -> Result<()> {
+    for count in [0, 1, 10, 11, 12, 32, 96] {
+        for retained in [false, true] {
+            let mut capabilities =
+                crate::Capabilities::new((0..count).map(|i| format!("grant-{i:04}")));
+            if retained {
+                capabilities.0.clear();
+            }
+            let accounted = capabilities.logical_owned_bytes()?;
+            let actual = measure(|| drop(capabilities)).bytes_current.unsigned_abs();
+            assert!(
+                accounted >= actual,
+                "capability tree underfunded: count={count} retained={retained} accounted={accounted} actual={actual}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn native_capability_copy_admits_and_retains_tree_nodes() -> Result<()> {
+    for count in [1, 11, 12, 32] {
+        let labels: Vec<_> = (0..count).map(|i| format!("grant-{i:04}")).collect();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let available = original.remaining()?.peak_allocation_bytes;
+        let (copied, custody) =
+            crate::Capabilities::copy(labels.iter().map(String::as_str), &original)?;
+        let retained = available - original.remaining()?.peak_allocation_bytes;
+        let actual = measure(|| drop(copied)).bytes_current.unsigned_abs();
+        assert!(
+            retained >= actual,
+            "native capability copy underfunded: count={count} retained={retained} actual={actual}"
+        );
+        drop(custody);
+        assert_eq!(original.remaining()?.peak_allocation_bytes, available);
+        // The former string-slot reservation cannot fund the first tree node.
+        // Retain the native ledger's own admitted storage in this bound.
+        let first = labels
+            .first()
+            .ok_or_else(|| Error::Invalid("empty capability fixture".into()))?;
+        let limited = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: budget.peak_allocation_bytes - available
+                    + size_of::<String>() as u64
+                    + first.len() as u64,
+                ..budget
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        assert!(crate::Capabilities::copy([first.as_str()], &limited).is_err());
+    }
+    Ok(())
+}
+
 #[repr(align(256))]
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct AlignedKey(u64);

@@ -293,6 +293,64 @@ impl TrustEvidence {
         self.view().check(trust, now_unix_seconds)
     }
 
+    /// Copies immutable evidence, admitting each allocation before it occurs.
+    ///
+    /// The callback receives the exact requested buffer bytes. It can reject a
+    /// copy without allocating that buffer; earlier buffers are then dropped.
+    /// Current trust and time must still be rechecked by the copied owner.
+    ///
+    /// # Errors
+    /// Returns the admission callback's error without changing this evidence.
+    pub fn try_clone_with<E>(
+        &self,
+        mut admit: impl FnMut(usize) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        fn text<E>(
+            value: &str,
+            admit: &mut impl FnMut(usize) -> Result<(), E>,
+        ) -> Result<String, E> {
+            if !value.is_empty() {
+                admit(value.len())?;
+            }
+            Ok(value.to_owned())
+        }
+        fn buffer<T: Copy, E>(
+            value: &[T],
+            admit: &mut impl FnMut(usize) -> Result<(), E>,
+        ) -> Result<Vec<T>, E> {
+            if !value.is_empty() {
+                admit(std::mem::size_of_val(value))?;
+            }
+            Ok(value.to_vec())
+        }
+        let environment = text(&self.environment, &mut admit)?;
+        let account = text(&self.account, &mut admit)?;
+        let issuers = buffer(&self.issuers, &mut admit)?;
+        let ids = buffer(&self.ids, &mut admit)?;
+        if !self.keys.is_empty() {
+            admit(std::mem::size_of_val(self.keys.as_slice()))?;
+        }
+        let mut keys = Vec::with_capacity(self.keys.len());
+        for key in &self.keys {
+            keys.push(Key {
+                id: text(&key.id, &mut admit)?,
+                epoch: key.epoch,
+            });
+        }
+        let next_keys = buffer(&self.next_keys, &mut admit)?;
+        Ok(Self {
+            environment,
+            account,
+            environment_issuer: self.environment_issuer,
+            issuers,
+            ids,
+            keys,
+            next_keys,
+            not_before: self.not_before,
+            expires_at: self.expires_at,
+        })
+    }
+
     /// Counts actual heap capacities retained by this owner.
     ///
     /// # Errors

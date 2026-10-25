@@ -347,12 +347,15 @@ impl Capabilities {
             if copied.contains(value) {
                 continue;
             }
-            let slot = std::mem::size_of::<String>() as u64;
-            let bytes = slot.checked_add(value.len() as u64).ok_or({
+            let nodes = crate::core::ownership::tree_insertion_bytes::<String>(copied.len())?;
+            let bytes = nodes.checked_add(value.len() as u64).ok_or({
                 acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)
             })?;
             io.admit_owned(bytes)?;
-            io.retain_owned(slot)?;
+            if nodes != 0 {
+                io.retain_owned(nodes)?;
+                io.allocation_attempt(nodes)?;
+            }
             let value = io.clone_text(value)?;
             copied.insert(value);
         }
@@ -361,12 +364,7 @@ impl Capabilities {
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.0.iter().try_fold(0u64, |total, value| {
-            total
-                .checked_add(std::mem::size_of::<String>() as u64)
-                .and_then(|total| total.checked_add(value.capacity() as u64))
-                .ok_or_else(|| Error::Invalid("capability capacity overflow".into()))
-        })
+        crate::core::ownership::OwnedBytes::owned_heap_bytes(self)
     }
 
     /// Builds a capability set.

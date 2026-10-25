@@ -205,9 +205,8 @@ where
             .unwrap_or(u64::MAX);
         with_history_io(io, |work| {
             reference.validate(work)?;
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.owner_scope,
+            ContentGrant::authorize_authenticated_volume(
+                &self.write_grant.authority,
                 reference.volume(),
                 VolumeOperation::Read,
                 maximum,
@@ -252,26 +251,11 @@ where
             })
         })?;
         let names_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-        let grant = with_history_io(io, |work| {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.owner_scope,
-                &self.private_volume,
-                VolumeOperation::Write,
-                io.map_or(Ok(u64::MAX), |io| {
-                    io.remaining().map(|budget| budget.bytes_encoded)
-                })?,
-                work,
-            )
-        })?;
-        let grant_hold = io
-            .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-            .transpose()?;
         let result = self
             .host
             .put_internal_content(
                 &self.private_volume,
-                &grant,
+                &self.write_grant,
                 &path,
                 &bytes,
                 "application/json",
@@ -282,9 +266,7 @@ where
                 io,
             )
             .await;
-        drop((
-            grant, grant_hold, key, name, path, names_hold, bytes, bytes_hold,
-        ));
+        drop((key, name, path, names_hold, bytes, bytes_hold));
         result
     }
 }

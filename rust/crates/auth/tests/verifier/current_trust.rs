@@ -148,3 +148,51 @@ fn compact_trust_storage_counts_actual_allocations_and_every_owned_buffer() -> T
     }
     Ok(())
 }
+
+#[test]
+fn copied_trust_evidence_admits_each_exact_buffer_before_allocation() -> TestResult {
+    for sealed in [false, true] {
+        let evidence = fixture(sealed)?.into_trust_evidence()?;
+        let mut count = 0;
+        let mut bytes = 0;
+        let mut copied = None;
+        let actual = acyclic_test_support::measure(|| {
+            copied = Some(evidence.try_clone_with(|size| -> Result<(), &'static str> {
+                count += 1;
+                bytes += size as u64;
+                Ok(())
+            }));
+        });
+        let copied = copied.ok_or("copy did not run")??;
+        assert!(count > 3, "copy did not visit evidence strings and vectors");
+        assert_eq!(
+            actual.count_total, count,
+            "evidence copy allocated without admission"
+        );
+        assert_eq!(actual.bytes_total, bytes);
+        assert_eq!(u64::try_from(actual.bytes_current)?, copied.owned_bytes()?);
+        for permitted in 0..count {
+            let mut admitted = 0;
+            let mut result = None;
+            let actual = acyclic_test_support::measure(|| {
+                result = Some(evidence.try_clone_with(|_| {
+                    if admitted == permitted {
+                        return Err("copy allocation denied");
+                    }
+                    admitted += 1;
+                    Ok(())
+                }));
+            });
+            assert!(
+                result.ok_or("copy did not run")?.is_err(),
+                "evidence copy bypassed allocation admission"
+            );
+            assert_eq!(
+                actual.count_total, permitted,
+                "allocation occurred before its admission"
+            );
+            assert_eq!(actual.bytes_current, 0, "partial evidence copy leaked");
+        }
+    }
+    Ok(())
+}

@@ -272,40 +272,36 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
-        let input = FilesystemContentVerifier::new(
+        let journal = FilesystemExecutionJournal::new(
+            stream.clone(),
             Arc::clone(&host),
-            &verifier,
-            &scope,
+            &SchemaRegistry::new(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &volume,
+                verifier: &verifier,
+                scope: &scope,
+                maximum_bytes: maximum_file_bytes,
+                io: None,
+            },
+        )?;
+        let input = FilesystemContentVerifier::from_authenticated(
+            Arc::clone(&host),
+            journal.content_authority(),
             maximum_file_bytes,
             None,
         )?;
-        let journal = Arc::new(
-            FilesystemExecutionJournal::new(
-                stream.clone(),
-                Arc::clone(&host),
-                &SchemaRegistry::new(),
-                crate::filesystem::FilesystemJournalBinding {
-                    volume: &volume,
-                    verifier: &verifier,
-                    scope: &scope,
-                    maximum_bytes: maximum_file_bytes,
-                    io: None,
-                },
-            )?
-            .with_input_verifier(input.clone()),
-        );
         bind_memory_conversation(&stream, &conversation, &verifier, &scope, agent).await?;
         let publisher = Arc::new(MemoryContentPublisher {
-            files: FilesystemContentPublisher::new(
+            files: FilesystemContentPublisher::from_authenticated(
                 Arc::clone(&host),
                 &volume,
-                &verifier,
-                &scope,
+                journal.content_authority(),
                 maximum_file_bytes,
                 None,
             )?,
             memory_store: memory_store.clone(),
         });
+        let journal = Arc::new(journal.with_input_verifier(input.clone()));
         Ok(Self {
             journal,
             content_verifier: input,
