@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from native_events import native_event_fixture
 
 
 def main():
@@ -24,6 +25,7 @@ def main():
                         '--permission-mode', 'default', '--model', 'claude-haiku-5-5'],
         'pi': ['--tools', 'read,write,bash'],
     }
+    fixture_path, _ = native_event_fixture(host)
     flags = policies[host]
     started = time.monotonic()
     with (
@@ -38,7 +40,7 @@ def main():
         barrier.bind(('127.0.0.1', 0))
         barrier.listen(4)
         env = {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
-               'FIXTURE_FLAGS': json.dumps(flags), 'FIXTURE_HOST': host,
+               'FIXTURE_EVENTS': str(fixture_path), 'FIXTURE_FLAGS': json.dumps(flags), 'FIXTURE_HOST': host,
                'FIXTURE_WORKSPACE': str(workspace),
                'FIXTURE_BARRIER': str(barrier.getsockname()[1]),
                'ACYCLIC_CACHED_DESCRIPTORS': '1', 'ACYCLIC_ADMITTED_DESCRIPTORS': '1'}
@@ -65,9 +67,7 @@ assert (cwd/'AGENTS.md').read_text()=='shared scale discovery fixture'
 prompt=sys.stdin.read()
 (cwd/(prompt+'.txt')).write_text(prompt)
 (cwd/'.volumes/scratch/private.txt').write_text(prompt)
-if host=='codex': print(json.dumps({'type':'thread.started','thread_id':'scale-fixture'}),flush=True)
-if host=='claude-code': print(json.dumps({'type':'system','subtype':'init','session_id':'scale-fixture'}),flush=True)
-if host=='pi': print(json.dumps({'type':'session','id':'scale-fixture'}),flush=True)
+sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 with socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_BARRIER']))) as gate:
  gate.sendall((prompt+'\n').encode())
  while True:

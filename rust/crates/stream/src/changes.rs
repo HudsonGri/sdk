@@ -31,12 +31,15 @@ pub struct ChangeEntryRef<'a> {
 const ATTRIBUTE: &str = "acyclic.record";
 const FORMAT: &[u8] = b"changes/v2";
 
-fn marks(attribute: &Attribute) -> bool {
-    attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT
+fn marks(name: &str, value: &OwnedBytes) -> bool {
+    name == ATTRIBUTE && value.as_ref() == FORMAT
 }
 
 pub(crate) fn marked(headers: &RecordHeaders) -> bool {
-    headers.attributes().iter().any(marks)
+    headers
+        .attributes()
+        .iter()
+        .any(|attribute| marks(attribute.name, attribute.value))
 }
 
 /// Whether `headers` belong to a change record.
@@ -317,7 +320,10 @@ pub(crate) fn record_headers(
     keys: Vec<OwnedBytes>,
     attributes: Vec<Attribute>,
 ) -> Result<RecordHeaders, StreamError> {
-    if !attributes.iter().any(marks) {
+    if !attributes
+        .iter()
+        .any(|attribute| marks(&attribute.name, &attribute.value))
+    {
         let headers = RecordHeaders::new(keys, attributes)?;
         validate(value, &headers)?;
         return Ok(headers);
@@ -409,7 +415,7 @@ impl AppendRecord {
                 .attributes()
                 .iter()
                 .filter(|attribute| attribute.name != ATTRIBUTE)
-                .cloned()
+                .map(crate::RecordAttribute::to_owned)
                 .collect(),
         )
         .map(Some)

@@ -10,6 +10,44 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
+/// The caller's task submission context, retained across a native worker turn.
+/// Entering it submits through the ordinary owned-task API and immediately
+/// leaves it; native IO callbacks still run outside the asynchronous runtime.
+pub struct TaskSpawner {
+    runtime: tokio::runtime::Handle,
+    #[cfg(feature = "test-support")]
+    context: Option<crate::testing::Context>,
+}
+
+impl TaskSpawner {
+    /// Captures the current runtime and original simulation task, if any.
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            runtime: tokio::runtime::Handle::current(),
+            #[cfg(feature = "test-support")]
+            context: crate::testing::Context::current(),
+        }
+    }
+
+    /// Transfers a native owner's future directly to the original task scope.
+    pub fn spawn<F>(&self, future: F) -> TaskHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let _runtime = self.runtime.enter();
+        #[cfg(feature = "test-support")]
+        {
+            crate::testing::spawn_in_context(self.context.clone(), future)
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            spawn(future)
+        }
+    }
+}
+
 /// Maps a Tokio join failure onto the shared task error contract.
 pub(crate) fn join_error(cause: tokio::task::JoinError) -> std::io::Error {
     if cause.is_cancelled() {

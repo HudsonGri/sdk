@@ -98,6 +98,36 @@ pub struct ProcessTree {
 }
 
 impl ProcessTree {
+    fn retire_owner(&mut self, retirement: &mut storage::Retirement) {
+        let result = (|| {
+            if self.guard.needs_kill() {
+                retirement.writes.attempt(|| self.guard.kill()).0?;
+            }
+            #[cfg(windows)]
+            if !self.guard.assigned
+                && !self.guard.direct_termination_sent
+                && let Some(child) = self.child.as_mut()
+            {
+                retirement.writes.attempt(|| child.kill()).0?;
+            }
+            if let Some(child) = self.child.as_mut() {
+                retirement.wait.attempt(|| child.wait()).0?;
+            }
+            #[cfg(windows)]
+            if self.guard.pending() {
+                retirement.writes.attempt(|| self.guard.close(None)).0?;
+            }
+            Ok::<_, io::Error>(())
+        })();
+        if let Err(error) = result {
+            #[cfg(unix)]
+            let recovery = format!("kill -TERM {}", std::process::id());
+            #[cfg(windows)]
+            let recovery = format!("taskkill /PID {} /T /F", std::process::id());
+            eprintln!("step=retire native process owner: {error}; recovery: {recovery}");
+        }
+    }
+
     /// Maximum observation time for each physical termination phase.
     pub const TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
 

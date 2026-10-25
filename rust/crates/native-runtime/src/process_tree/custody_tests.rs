@@ -118,7 +118,7 @@ fn published(root: &Path, owner: &mut std::process::Child) -> u32 {
 }
 
 /// An exit watch on one process, independent of its parentage.
-struct Watch {
+pub(super) struct Watch {
     #[cfg(unix)]
     fd: std::os::fd::OwnedFd,
     #[cfg(windows)]
@@ -130,7 +130,7 @@ struct Watch {
 impl Watch {
     /// None when no such process exists any more.
     #[cfg(unix)]
-    fn new(pid: u32) -> Option<Self> {
+    pub(super) fn new(pid: u32) -> Option<Self> {
         use std::os::fd::FromRawFd as _;
         // SAFETY: pidfd_open takes a PID and zero flags.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -150,7 +150,7 @@ impl Watch {
     }
 
     #[cfg(windows)]
-    fn new(pid: u32) -> Option<Self> {
+    pub(super) fn new(pid: u32) -> Option<Self> {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
         };
@@ -166,7 +166,7 @@ impl Watch {
     }
 
     /// Whether the process has exited, without waiting.
-    fn exited(&self) -> bool {
+    pub(super) fn exited(&self) -> bool {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd as _;

@@ -158,29 +158,13 @@ installed_graphcoder() {
   node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder"
 }
 
-# Keep external-host inputs pinned and exercise the source-built CLI, including
-# native lost-ack recovery and cancellation against the real installed Pi host.
-pinned_pi() {
-  local hosts="$PWD/plugin/tests/hosts" binary="$target_dir/debug/acyclic"
-  cargo build -p acyclic-plugin --bin acyclic --locked
-  export ACYCLIC_BINARY="$binary"
-  export ACYCLIC_PI_TEST_NODE="$(command -v node)"
-  export ACYCLIC_PI_TEST_CLI="$hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
-  export ACYCLIC_PI_TEST_PROVIDER_DIR="$hosts"
-  (
-    cd "$hosts"
-    npm ci --ignore-scripts --no-audit --no-fund
-    bun run test:pi-context
-    bun run test:pi-context-mail
-    bun run test:pi-bootstrap
-    bun run test:pi-session
-    bun run test:pi-installation
-    bun run test:pi-service
-    bun run test:pi-native-recursive
-    bun run test:pi-context-fresh
-    bun run test:pi-context-pages
-    bun run test:pi-builtin-paths
-  )
+# The native hosts own tools and providers. Qualify their thin adapters and the
+# shared lifecycle here; agent-host-qualification also runs scripted sessions.
+native_host_contracts() {
+  npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+  bun run --cwd plugin/tests/hosts test:shim
+  cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
+  cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
 }
 
 # Every shipped browser feature set, with its unit and integration tests,
@@ -327,7 +311,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi
     installed_graphcoder
-    pinned_pi
+    native_host_contracts
     stream_binding
     client_bindings
     # Warm the three isolated WASM targets concurrently; the complete workspace
@@ -554,7 +538,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked --doc
     native_mount_tests
     installed_graphcoder
-    pinned_pi
+    native_host_contracts
     ;;
   linux-arm64-bindings)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
@@ -589,7 +573,7 @@ case "$lane" in
     CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
     finish_macos
     installed_graphcoder
-    pinned_pi
+    native_host_contracts
     stream_binding
     client_bindings
     native_mount_tests

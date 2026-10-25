@@ -359,6 +359,14 @@ where
     )
 }
 
+pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    CURRENT.sync_scope(context, || spawn(future))
+}
+
 /// Executes the real blocking closure, retaining ownership after caller drop.
 pub fn spawn_blocking<F, T>(work: F) -> impl Future<Output = std::io::Result<T>> + Send
 where

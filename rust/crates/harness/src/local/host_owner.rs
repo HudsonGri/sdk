@@ -219,15 +219,7 @@ impl HostWorkspaceOwner {
                 self.attach_retained(task, true).await?;
                 self.location(task)
             }
-            HostAction::Capture { task } => {
-                self.attach(task).await?;
-                let attached = self.attached(task)?;
-                attached
-                    .workspace
-                    .capture(&attached.context, operation)
-                    .await?;
-                self.location(task)
-            }
+            HostAction::Capture { task } => self.capture_native(operation, task).await,
             HostAction::Fs { task, command } => self.native_fs(operation, task, &command).await,
             HostAction::Cancel { task } => {
                 self.require_native(task).await?;
@@ -416,6 +408,33 @@ impl HostWorkspaceOwner {
             self.views.insert(task, Attached { context, workspace });
             Ok(())
         })
+    }
+
+    async fn capture_native(&mut self, operation: OperationId, task: TaskId) -> Result<Value> {
+        self.attach(task).await?;
+        let attached = self.attached(task)?;
+        let _quiescence = if self.require_native(task).await?.is_some() {
+            Some(
+                super::host_process::HostProcessLease::acquire(
+                    self.local.workspace_path().ok_or_else(|| {
+                        Error::Invalid(
+                            "step=capture native task: workspace absent; recovery: acyclic agents"
+                                .into(),
+                        )
+                    })?,
+                    task,
+                    attached.workspace.path(),
+                )?
+                .quiescent(),
+            )
+        } else {
+            None
+        };
+        attached
+            .workspace
+            .capture(&attached.context, operation)
+            .await?;
+        self.location(task)
     }
 
     fn location(&self, task: TaskId) -> Result<Value> {

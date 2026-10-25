@@ -158,28 +158,12 @@ pub(super) fn launch(args: &[String]) -> Result<()> {
     let flags = flags.strip_prefix(&["--".to_owned()]).unwrap_or(flags);
     let cwd = env::current_dir()?;
     let flags = parent_flags(host, flags, &cwd)?;
-    let location = host_files::request(
+    let status = acyclic_harness::local::host_process::run_root_session(
         &cwd,
-        HostAction::Open {
-            host: host.clone(),
-            session: acyclic_harness::OperationId::new().to_string(),
-        },
+        host,
+        std::ffi::OsStr::new(program(host)?),
+        &flags,
     )?;
-    let task = serde_json::from_value(location.get("task").cloned().ok_or("native task absent")?)?;
-    let status = Command::new(program(host)?)
-        .args(&flags)
-        .current_dir(&cwd)
-        .env("ACYCLIC_HOST_ARGS", serde_json::to_string(&flags)?)
-        .env("ACYCLIC_WORKSPACE", &cwd)
-        .env(
-            "ACYCLIC_TASK",
-            location
-                .get("task")
-                .and_then(Value::as_str)
-                .ok_or("native task absent")?,
-        )
-        .status()?;
-    host_files::request(&cwd, HostAction::Capture { task })?;
     if !status.success() {
         return Err(format!("native {host} exited {status}").into());
     }
