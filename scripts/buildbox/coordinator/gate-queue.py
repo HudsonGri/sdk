@@ -8,6 +8,7 @@ the active queue until the drain acknowledges them, including partial clears,
 failed output delivery and coordinator death. Admission removes duplicates.
 """
 import argparse
+import hashlib
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -87,6 +88,48 @@ def acknowledge(state, prs):
     publish(claim, set(members(claim)) - set(prs))
 
 
+def baseline_state(current):
+    current.execute('CREATE TABLE IF NOT EXISTS baseline_ready (generation INTEGER NOT NULL, identity TEXT NOT NULL)')
+    current.execute("INSERT INTO baseline_ready SELECT 0, '' WHERE NOT EXISTS (SELECT 1 FROM baseline_ready)")
+    return current.execute('SELECT generation, identity FROM baseline_ready').fetchone()
+
+
+def baseline_generation(state):
+    with locked(state) as current:
+        return baseline_state(current)[0]
+
+
+def park_baseline(state, observed, prs):
+    if observed < 0 or any(not isinstance(p, int) or p <= 0 for p in prs):
+        raise ValueError('baseline parking requires a nonnegative generation and positive PR numbers')
+    with locked(state) as current:
+        generation, _ = baseline_state(current)
+        # Qualification may have finished after the selector looked, but
+        # before this parking transaction. That changed input belongs in the
+        # next dispatch, not in a queue waiting for another main run.
+        name = 'pending' if generation != observed else 'baseline-pending'
+        path = queue_path(state, name)
+        publish(path, [*members(path), *prs])
+        return name
+
+
+def publish_baseline(state, identity):
+    if not identity:
+        raise ValueError('baseline publication requires an evidence identity')
+    with locked(state) as current:
+        generation, previous = baseline_state(current)
+        if previous == identity:
+            return False
+        waiting = queue_path(state, 'baseline-pending')
+        pending = queue_path(state, 'pending')
+        # Persist destination custody before clearing the parked queue. Both
+        # orders of completion versus parking share this same transaction.
+        publish(pending, [*members(pending), *members(waiting)])
+        publish(waiting, [])
+        current.execute('UPDATE baseline_ready SET generation=?, identity=?', (generation+1, identity))
+        return True
+
+
 def dispatch(state, script):
     lease = locked(state, '.drain-lock.sqlite3', timeout=0)
     owned = False
@@ -129,11 +172,31 @@ def dispatch(state, script):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('state', type=Path)
-    parser.add_argument('operation', choices=['add', 'take', 'move', 'has', 'ack', 'dispatch'])
+    parser.add_argument('operation', choices=['add', 'take', 'move', 'has', 'ack', 'dispatch',
+                                            'baseline-version', 'baseline-park', 'baseline-ready'])
     parser.add_argument('queue')
     parser.add_argument('values', nargs='*')
     args = parser.parse_args()
     try:
+        if args.operation == 'baseline-ready':
+            if not args.values:
+                raise ValueError('baseline-ready requires a main commit and its qualified logs')
+            evidence = ':'.join(hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in args.values)
+            print(int(publish_baseline(args.state, args.queue+':'+evidence)))
+            return 0
+        if args.operation in ('baseline-version', 'baseline-park'):
+            if args.queue != 'baseline-pending':
+                raise ValueError('baseline operations require baseline-pending')
+            if args.operation == 'baseline-version':
+                if args.values:
+                    raise ValueError('baseline-version accepts no values')
+                print(baseline_generation(args.state))
+            else:
+                if len(args.values) < 2:
+                    raise ValueError('baseline-park requires the observed generation and PR numbers')
+                destination = park_baseline(args.state, int(args.values[0]), list(map(int, args.values[1:])))
+                print(f'GATE_BASELINE_HANDOFF destination={destination}', file=sys.stderr)
+            return 0
         if args.operation == 'dispatch':
             if args.values:
                 raise ValueError('dispatch accepts one drain script')
@@ -166,7 +229,8 @@ def main():
                 sys.stdout.flush()
         return 0
     except (OSError, ValueError, sqlite3.Error) as error:
-        print(f'GATE preparation-INFRA: queue: {error}', file=sys.stderr)
+        print(f'GATE preparation-INFRA: queue {args.operation} step failed: {error}; '
+              f'recovery command: python {Path(__file__).as_posix()} {args.state.as_posix()} has pending', file=sys.stderr)
         return 6
 
 

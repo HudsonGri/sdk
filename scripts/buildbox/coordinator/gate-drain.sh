@@ -12,6 +12,7 @@ prep(){ python "$T/gate-prepare.py" "$@" --repo "${GATE_REPO:-Q:/sdk}" --worktre
 route(){ nohup bash "$T/route.sh" "$@" >> "$L/route.out" 2>&1 < /dev/null & }
 run_gate(){
   local reason rc p
+  baseline_seen=$(queue baseline-version baseline-pending) || return 6
   reason=$(mktemp "$L/route-verdict.XXXXXXXX.out") || return 6
   bash "$T/pr-gate.sh" "$@" > "$reason" 2>&1; rc=$?
   cat "$reason"
@@ -95,7 +96,7 @@ gate_group(){
         group=("${rest[@]}");;
       0) merge "${group[@]}"; break;;
       4) enqueue "${group[@]}"; infra=1; break;;
-      5) queue add baseline-pending "${group[@]}" || preparation_infra=1; break;;
+      5) queue baseline-park baseline-pending "$baseline_seen" "${group[@]}" || preparation_infra=1; break;;
       6) enqueue "${group[@]}"; preparation_infra=1; break;;
       *)
         if [ ${#group[@]} -gt 1 ]; then
