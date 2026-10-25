@@ -35,6 +35,10 @@ impl GenerationReceipt {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, MaterializeError> {
         let custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+        // Every traversal and restore first admits this preparation context.
+        // Process-wide pools must exist before metered native files or jobs;
+        // an earlier mount in the process is not a prerequisite for this API.
+        acyclic_native_runtime::initialize_native_io_services()?;
         Ok(Self {
             value: MaterializationReceipt::default(),
             custody,
