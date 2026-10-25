@@ -54,7 +54,7 @@ fn authenticate_record(
         attributes,
         last,
     });
-    retained.record = Some(RetainedAuthentication::new(encoded, record.clone(), work)?);
+    retained.record = RetainedAuthentication::new(encoded, record.clone(), work)?;
     Ok(record)
 }
 

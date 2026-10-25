@@ -58,11 +58,11 @@ fn authenticate(
             .verify(&scope.workload, trust, timestamp)
             .map_err(unauthorized)?,
     )?;
-    retained.latest = Some(RetainedAuthentication::new(
+    retained.latest = RetainedAuthentication::new(
         &scope.workload,
         authenticated.clone(),
         work,
-    )?);
+    )?;
     Ok(authenticated)
 }
 

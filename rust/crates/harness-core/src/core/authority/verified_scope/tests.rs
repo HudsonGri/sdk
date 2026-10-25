@@ -165,9 +165,8 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
         )
         .is_err()
     );
-    // Authentication belongs to the shared authority, even when this grant
-    // is denied. Its exact wire remains funded until that owner retires.
-    assert_eq!(io.owned_bytes()?, denied.workload.len() as u64);
+    // The shared authority owns authentication; this attempt owns no grant.
+    assert_eq!(io.owned_bytes()?, 0);
     let grant = ContentGrant::verify(
         &verifier,
         &scope,
@@ -178,16 +177,17 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
     )?;
     assert_eq!(
         io.owned_bytes()?,
-        grant.logical_owned_bytes()? + scope.workload.len() as u64,
-        "grant or authority omitted retained custody"
+        grant.logical_owned_bytes()?,
+        "grant custody was not separated from the authority"
     );
     let custody = io.guard_owned(grant.logical_owned_bytes()?)?;
     drop((grant, custody));
-    assert_eq!(io.owned_bytes()?, scope.workload.len() as u64);
+    assert_eq!(io.owned_bytes()?, 0);
+    assert!(io.remaining()?.peak_allocation_bytes < 1_000_000);
     drop((verifier, issuer));
     assert_eq!(
-        io.owned_bytes()?,
-        0,
+        io.remaining()?.peak_allocation_bytes,
+        1_000_000,
         "retired authority leaked wire custody"
     );
     Ok(())
@@ -304,15 +304,15 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
     )?;
     assert_eq!(
         probe.owned_bytes()?,
-        grant.logical_owned_bytes()? + scope.workload.len() as u64
+        grant.logical_owned_bytes()?
     );
     let required = budget.allocation_operations - probe.remaining()?.allocation_operations;
     assert!(required > 3, "grant did not reach the metadata copies");
     let custody = probe.guard_owned(grant.logical_owned_bytes()?)?;
     drop((grant, custody, verifier, issuer));
     assert_eq!(
-        probe.owned_bytes()?,
-        0,
+        probe.remaining()?.peak_allocation_bytes,
+        budget.peak_allocation_bytes,
         "retired grant and authority leaked custody"
     );
     for operations in 0..required {
@@ -336,8 +336,8 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
         drop(result);
         drop((verifier, issuer));
         assert_eq!(
-            io.owned_bytes()?,
-            0,
+            io.remaining()?.peak_allocation_bytes,
+            budget.peak_allocation_bytes,
             "partial grant or authority allocation leaked retained custody: operations={operations}"
         );
     }

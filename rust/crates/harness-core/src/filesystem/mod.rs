@@ -46,7 +46,7 @@ mod fork_preparer;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
-pub use fork_preparer::bounded_io::PreparationIo;
+pub use fork_preparer::bounded_io::{PreparationCustody, PreparationIo};
 #[doc(hidden)]
 pub use fork_preparer::bounded_io::PreparationRecord;
 #[doc(hidden)]

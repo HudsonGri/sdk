@@ -10,6 +10,8 @@ use std::sync::Mutex;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod charge_tests;
 mod codec;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod custody_tests;
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
 mod codec_properties;
@@ -34,6 +36,16 @@ pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
 };
 use standalone_custody::{StandaloneCustody, StandaloneLedger};
+
+/// Retained storage transferred from the original preparation ledger.
+#[doc(hidden)]
+pub enum PreparationCustody {
+    /// A share of the standalone ledger.
+    Standalone(StandaloneCustody),
+    /// A share of the native invocation ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(acyclic_fs::NativeAllocation),
+}
 
 /// Work and retained ownership for one preparation attempt.
 pub enum PreparationIo {
@@ -65,6 +77,20 @@ pub enum PreparationIo {
 }
 
 impl PreparationIo {
+    /// Moves storage to an output owner without releasing or charging it again.
+    #[doc(hidden)]
+    pub fn take_owned_custody(&self, bytes: u64) -> Result<PreparationCustody> {
+        self.check_cancellation()?;
+        match self {
+            Self::Owned { custody, .. } => custody
+                .split_off(bytes)
+                .map(PreparationCustody::Standalone)
+                .map_err(|error| acyclic_fs::FsError::from(error).into()),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { .. } => self.take_native_custody(bytes).map(PreparationCustody::Native),
+        }
+    }
+
     /// Owns one attempt's storage while sharing its original work allowances.
     pub(in crate::filesystem) fn scoped(&self) -> Result<Self> {
         self.check_cancellation()?;

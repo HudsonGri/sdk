@@ -8,7 +8,7 @@ pub(super) struct RetainedAuthentication<T> {
     wire: zeroize::Zeroizing<Vec<u8>>,
     proof: Arc<T>,
     #[cfg(feature = "filesystem")]
-    _custody: crate::NativeCustody,
+    _custody: Option<crate::filesystem::PreparationCustody>,
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
@@ -30,7 +30,7 @@ mod tests {
             b"authenticated",
             Arc::new(7),
             &mut Some(&mut io.history_io()),
-        )?;
+        )?.expect("native observer transfers custody");
         assert!(work.receipt().allocation_operations > before.allocation_operations);
         assert!(work.live_allocation_bytes() > live);
         assert!(
@@ -61,19 +61,28 @@ impl<T> RetainedAuthentication<T> {
         encoded: &[u8],
         proof: Arc<T>,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Self> {
+    ) -> Result<Option<Self>> {
+        let measured = work.is_some();
         let mut quota = CodecQuota::new(work, 0)?;
         let wire = zeroize::Zeroizing::new(copying::copy_copy_vector(encoded, &mut quota)?);
         #[cfg(feature = "filesystem")]
-        let _custody = quota.into_custody()?;
+        let _custody = quota.take_owned_custody()?;
+        #[cfg(feature = "filesystem")]
+        if measured && _custody.is_none() {
+            return Ok(None);
+        }
+        #[cfg(not(feature = "filesystem"))]
+        if measured {
+            return Ok(None);
+        }
         #[cfg(not(feature = "filesystem"))]
         quota.transfer();
-        Ok(Self {
+        Ok(Some(Self {
             wire,
             proof,
             #[cfg(feature = "filesystem")]
             _custody,
-        })
+        }))
     }
 
     pub(super) fn get(
