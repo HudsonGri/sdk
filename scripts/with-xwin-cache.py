@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -18,7 +19,8 @@ def snapshot(seed, destination):
     with (seed / ".win-test.lock").open("a") as lease:
         fcntl.flock(lease, fcntl.LOCK_EX)
         subprocess.run(["cargo", "xwin", "cache", "xwin"],
-                       env=dict(os.environ, XWIN_CACHE_DIR=str(seed), XWIN_ACCEPT_LICENSE="1"), check=True)
+                       env=dict(os.environ, XWIN_CACHE_DIR=str(seed), XWIN_ACCEPT_LICENSE="1"),
+                       stdout=sys.stderr, check=True)
         subprocess.run(["cp", "-a", "--reflink=auto", "--", str(seed / "xwin" / "crt"),
                         str(seed / "xwin" / "sdk"), str(seed / "xwin" / "DONE"), str(sdk)], check=True)
         for entry in sdk.rglob("*"):
