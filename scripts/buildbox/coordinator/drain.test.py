@@ -9,7 +9,7 @@ HERE = Path(__file__).resolve().parent
 
 
 class DispatchTests(unittest.TestCase):
-    def run_drain(self, body, *, draft=False, negative=False, unchecked=False, onepass=False, first='', pending='1\n2\n3\n', fence_error=False, negative_fence=False):
+    def run_drain(self, body, *, draft=False, negative=False, unchecked=False, onepass=False, first='', pending='1\n2\n3\n', fence_error=False, negative_fence=False, negative_baseline=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state = root/'state'; state.mkdir()
@@ -38,6 +38,8 @@ class DispatchTests(unittest.TestCase):
             source = (HERE/'gate-drain.sh').read_text()
             if negative_fence:
                 source = source.replace('prep repair \"$@\"', 'prep hold \"$@\"')
+            if negative_baseline:
+                source = source.replace('queue baseline-park baseline-pending "$baseline_seen"', 'queue add baseline-pending')
             if negative:
                 source = source.replace('deferred+=("$c")', 'enqueue "$c"')
             if unchecked:

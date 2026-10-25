@@ -7,6 +7,20 @@ last=$(ls -t "$L"/wide/[0-9a-f]*.log "$L"/[0-9a-f]*.log 2>/dev/null | head -1 | 
 if [ -s "$L/.last-input" ]; then last=$(cat "$L/.last-input");
 elif [ -n "$last" ]; then last=$(git -C Q:/sdk rev-parse --verify "$last^{commit}" 2>/dev/null || printf '%s' "$last"); fi
 remember_input(){ printf '%s\n' "$tip" > "$L/.last-input.$$" && mv -f "$L/.last-input.$$" "$L/.last-input"; }
+# Complete exact-base check phases can qualify despite an unrelated main
+# test failure. Publish a durable evidence generation even when no PR has
+# parked yet; the queue closes the completion-before-parking race.
+notify_baseline(){
+  local clippy_log feature_log changed ready_rc
+  clippy_log=$(python Q:/lanes/gate-baseline.py "$W" "$tip" --phase clippy --exact 2>/dev/null) || return 0
+  feature_log=$(python Q:/lanes/gate-baseline.py "$W" "$tip" --phase features --exact 2>/dev/null) || return 0
+  changed=$(python Q:/lanes/gate-queue.py Q:/lanes/pr-gate baseline-ready "$tip" "$clippy_log" "$feature_log"); ready_rc=$?
+  if [ "$ready_rc" != 0 ]; then
+    echo "preparation-INFRA: baseline handoff step failed; recovery command: python Q:/lanes/gate-queue.py Q:/lanes/pr-gate baseline-ready $tip $clippy_log $feature_log"
+  elif [ "$changed" = 1 ]; then
+    ( trap - EXIT; exec bash Q:/lanes/gate-drain.sh ) >> Q:/lanes/pr-gate/baseline-resume.out 2>&1 < /dev/null &
+  fi
+}
 # Single runner: a second copy (e.g. a restart whose old shell survived) would run the same tip twice and post two results.
 mkdir $L/.runner 2>/dev/null || { echo "main-gate already running (remove $L/.runner if not)"; exit 0; }; trap "rmdir $L/.runner" EXIT
 while :; do
@@ -20,6 +34,8 @@ while :; do
     sleep 300; continue
   fi
   tip=$(git -C Q:/sdk rev-parse --verify 'origin/main^{commit}') || { sleep 300; continue; }
+  # Startup also hands off already completed evidence without rebuilding main.
+  notify_baseline
   # .rerun: gate the current tip again (e.g. after gate-checks.sh changed); the old log stays the PR baseline until replaced.
   if [ "$tip" != "$last" ] || [ -e $L/.rerun ]; then rm -f $L/.rerun
     remember_input || { echo 'main input hold could not be persisted'; exit 6; }; last=$tip
@@ -64,26 +80,11 @@ while :; do
     if [ "$rc" = 0 ] && python -c 'import importlib.util,sys,pathlib; s=importlib.util.spec_from_file_location("baseline","Q:/lanes/gate-baseline.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); sys.exit(0 if m.eligible(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")) else 1)' "$log"; then
       cp "$log" "$L/$tip.log"
       echo "$(date -u +%FT%T.000Z) main-gate MAIN_GATE GREEN $tip: complete workspace baseline; $res log=$L/$tip.log" >> ~/.codex-fleet/alerts.log
-      # Qualification failures do not repeatedly rebuild or route PRs. A new
-      # complete baseline makes these parked scopes eligible again.
-      if [ -s Q:/lanes/pr-gate/baseline-pending.txt ]; then
-        (
-          trap - EXIT
-          # The PR drain writes this queue under its gate lock. Transfer under
-          # the same lock, so a concurrent append cannot be lost to removal.
-          until mkdir Q:/lanes/pr-gate/.lock 2>/dev/null; do sleep 1; done
-          trap 'rmdir Q:/lanes/pr-gate/.lock' EXIT
-          if [ -s Q:/lanes/pr-gate/baseline-pending.txt ]; then
-            python Q:/lanes/gate-queue.py Q:/lanes/pr-gate move baseline-pending pending || exit 6
-          fi
-          rmdir Q:/lanes/pr-gate/.lock; trap - EXIT
-          exec bash Q:/lanes/gate-drain.sh
-        ) >> Q:/lanes/pr-gate/baseline-resume.out 2>&1 < /dev/null &
-      fi
     else
       baseline=$(python Q:/lanes/gate-baseline.py "$W" "$tip" 2>/dev/null || true)
       echo "MAIN_WIDE $st $tip; PR baseline retained: ${baseline:-unavailable}"
     fi
+    notify_baseline
     last=$tip
   fi
   sleep 300
