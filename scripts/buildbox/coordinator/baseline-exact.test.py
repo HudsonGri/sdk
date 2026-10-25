@@ -12,10 +12,35 @@ FIXTURES = HERE/'fixtures'
 spec = importlib.util.spec_from_file_location('baseline', HERE/'gate-baseline.py')
 baseline = importlib.util.module_from_spec(spec); spec.loader.exec_module(baseline)
 PHASES = (FIXTURES/'main-32b799-phases.txt').read_text()
+RED_FEATURES = (FIXTURES/'main-da7eee-red-features.txt').read_text()
 CAPTURED_HEAD = '32b79969bc504e875bb6e9f65611bf0d02ea45e9'
 
 
 class ExactBaselineTests(unittest.TestCase):
+    def test_completed_red_matrix_counts_sets_not_failed_commands(self):
+        self.assertTrue(baseline.check_complete(RED_FEATURES, 'features'))
+        # This is actual main109/110: one all-targets command failed and is
+        # printed both immediately and in the final summary.
+        lines = RED_FEATURES.splitlines(keepends=True)
+        failed = [line for line in lines if line.startswith('GATE_FEATURES FAILED cargo ')]
+        completed = [line for line in lines if line.startswith('GATE_FEATURE_CHECK feature check: ')]
+        self.assertEqual(len(failed), 2)
+        self.assertEqual(len(completed), 110)
+        self.assertTrue(baseline.check_complete(RED_FEATURES+''.join(failed), 'features'),
+                        'repeated command summaries do not change set completion')
+        missing = RED_FEATURES.replace(completed[-1], '')
+        self.assertFalse(baseline.check_complete(missing, 'features'))
+        self.assertFalse(baseline.check_complete(missing+completed[0], 'features'),
+                         'duplicate completed sets cannot replace an uncompleted set')
+        # The actual former command-count comparison rejects this complete run.
+        source = (HERE/'gate-baseline.py').read_text()
+        old = source.replace('and len(completed) == len(set(completed)) == total',
+            "and len(completed) == total and len(re.findall(r'^GATE_FEATURES FAILED cargo ', native, re.M)) == total-passed")
+        self.assertNotEqual(old, source)
+        namespace = {'__name__': 'old_command_count_control'}
+        exec(compile(old, 'old-command-count-control', 'exec'), namespace)
+        self.assertFalse(namespace['check_complete'](RED_FEATURES, 'features'))
+
     def test_exact_check_selection_never_uses_a_newer_dated_ancestor(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); repo = root/'repo'; repo.mkdir()
