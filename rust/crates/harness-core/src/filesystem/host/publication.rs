@@ -68,7 +68,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key.as_str()
         };
         let receipt_path =
-            content_identity_path_io(receipt_identity, true, ".system/harness-uploads/", Some(io))?;
+            content_receipt_path_io(receipt_identity, internal_class.is_some(), true, Some(io))?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
         let receipt =
@@ -237,10 +237,7 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         read_generation(original, &metadata_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
     let hold = io.guard_bytes(&metadata)?;
     let metadata = (metadata, hold);
-    let encoded = io.encode(&recorded.0, UPLOAD_RECORD_BYTES, false)?;
-    let hold = io.guard_bytes(&encoded)?;
-    let encoded = (encoded, hold);
-    if encoded.0.as_ref() != metadata.0.as_ref() {
+    if canonical.0.as_ref() != metadata.0.as_ref() {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
@@ -248,6 +245,21 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         ));
     }
     Ok(())
+}
+
+/// Decode the one canonical publication record used by recovery and all readers.
+pub(in crate::filesystem) fn decode_content_metadata<'a>(
+    bytes: &[u8],
+    io: &'a PreparationIo,
+) -> Result<(FileRef, DecodeReservation<'a>)> {
+    let ((file, expected), mut hold) = io.decode(
+        PhantomData::<(FileRef, Option<GenerationRef>)>,
+        bytes,
+        crate::wire::ErrorCode::Storage,
+    )?;
+    drop(expected);
+    hold.substitute(file.logical_owned_bytes()?)?;
+    Ok((file, hold))
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {

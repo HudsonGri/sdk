@@ -27,7 +27,7 @@ fn validate_descriptor(
     Ok(())
 }
 
-pub(super) fn conversation_journal(
+pub(crate) fn conversation_journal(
     filesystem: &Arc<PiNativeFilesystem>,
     stream: &Arc<LocalStream>,
     protected: &PiOwnerConfig,
@@ -104,26 +104,27 @@ pub(crate) fn open_prepared_approval<'a>(
             .task_host()
             .journal_owner(task, fence, Some(&io))
             .await?;
-        let journal = Journal::for_task(
-            current,
-            descriptor.operation,
-            context.id(),
-            Arc::clone(filesystem),
-            acyclic_harness::filesystem::FilesystemJournalBinding {
-                volume: &protected.policy().journal,
-                verifier: &storage.verifier,
-                scope: &storage.signed,
-                maximum_bytes: protected.policy().maximum_payload_bytes,
-                io: Some(&io),
-            },
-        )?
-        .with_interaction_owner(
-            &verifier,
-            &SchemaRegistry::new(),
-            &authority.0.2,
-            descriptor.private_volume,
-            Some(&io),
-        )?;
+        let journal = runtime
+            .execution_journal(
+                current,
+                descriptor.operation,
+                context.id(),
+                Arc::clone(filesystem),
+                acyclic_harness::filesystem::FilesystemJournalBinding {
+                    volume: &protected.policy().journal,
+                    verifier: &storage.verifier,
+                    scope: &storage.signed,
+                    maximum_bytes: protected.policy().maximum_payload_bytes,
+                    io: Some(&io),
+                },
+            )?
+            .with_interaction_owner(
+                &verifier,
+                &SchemaRegistry::new(),
+                &authority.0.2,
+                descriptor.private_volume,
+                Some(&io),
+            )?;
         let prompt = work.display(&format_args!(
             "Publish selected Pi writeback {}",
             descriptor.command.sdk_operation,
@@ -132,6 +133,7 @@ pub(crate) fn open_prepared_approval<'a>(
             prompt: prompt.0,
             operation_id: descriptor.operation,
             action_digest: pi_operator::parse_digest(descriptor.approval_digest)?,
+            subject: acyclic_harness::interaction::ApprovalSubject::Opaque {},
         };
         let id = acyclic_harness::durable_host::task_interaction_id(
             task,
@@ -152,25 +154,6 @@ pub(crate) fn open_prepared_approval<'a>(
         )
         .await?;
         owner.verify(false, &mut Some(&mut history)).await
-    }
-}
-
-pub(crate) fn require_resolved_approval<'a>(
-    filesystem: &'a Arc<PiNativeFilesystem>,
-    stream: &'a Arc<LocalStream>,
-    protected: &'a PiOwnerConfig,
-    descriptor: &'a ApprovalRef<'a>,
-    work: &'a NativeMaterializationWork,
-) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
-    async move {
-        let (journal, id) = conversation_journal(filesystem, stream, protected, descriptor, work)?;
-        ToolApprovalVerifier::verify(
-            &journal,
-            id,
-            descriptor.operation,
-            pi_operator::parse_digest(descriptor.approval_digest)?,
-        )
-        .await
     }
 }
 

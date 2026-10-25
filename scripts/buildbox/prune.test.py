@@ -27,38 +27,51 @@ class RetirementTests(unittest.TestCase):
                 result=pruner.prune(root,mirror,locks,max_count=0,active=set())
                 self.assertEqual(result['errors'][0]['source'],'old')
                 self.assertIn('ownership control',result['errors'][0]['error'])
-                self.assertEqual([p.name for p in root.iterdir()],['.prune-old'])
+                self.assertEqual([p.name for p in root.iterdir()],['old'])
+                self.assertTrue((locks/pruner.RETIREMENT_DIRECTORY/'old').is_dir())
         with (locks/'old.lock').open('a') as lease:
             fcntl.flock(lease,fcntl.LOCK_SH)
             result=pruner.prune(root,mirror,locks,max_count=0,active=set())
             self.assertEqual(result['held'],['old']);self.assertTrue(result['over_cap'])
         result=pruner.prune(root,mirror,locks,max_count=0,active=set())
         self.assertEqual(result['removed'],['old']);self.assertEqual(list(root.iterdir()),[])
-        # Former naming included the tomb itself and a new PID every time;
-        # even the original source lease no longer protected that directory.
-        original=root/'.prune-old-123';original.mkdir()
-        old={'__name__':'old_pruner'}
-        code=Path(pruner.__file__).read_text().replace("name=p.name.removeprefix('.prune-').removesuffix('.prep')","name=p.name.removesuffix('.prep')")
-        code=code.replace("tomb=p if p.name.startswith('.prune-') else root/('.prune-'+p.name)","tomb=root/('.prune-'+p.name+'-'+str(os.getpid()))")
-        exec(compile(code,'old-retirement','exec'),old)
-        with (locks/'old.lock').open('a') as lease:
-            fcntl.flock(lease,fcntl.LOCK_SH)
-            with patch.object(old['remove_tree'].__globals__['shutil'],'rmtree',side_effect=PermissionError('old control')):
-                self.assertEqual(old['prune'](root,mirror,locks,max_count=0,active=set())['errors'][0]['source'],'.prune-old-123')
-        self.assertTrue(next(root.iterdir()).name.startswith('.prune-.prune-old-123-'))
+
+    def test_retirement_survives_partial_deletion_without_pressure(self):
+        root=self.d/'copies';root.mkdir();source=root/'old';source.mkdir()
+        (source/'payload').write_text('owned')
+        locks=self.d/'locks'
+        def partial(path):
+            (path/'payload').unlink()
+            raise InterruptedError('interrupted after content deletion')
+        with patch.object(pruner,'remove_tree',side_effect=partial):
+            result=pruner.prune(root,self.d/'mirror',locks,max_count=0,active=set())
+        self.assertEqual(len(result['errors']),1)
+        self.assertEqual(list(source.iterdir()),[])
+        with patch.object(Path,'rename',side_effect=AssertionError('retirement renamed source')):
+            result=pruner.prune(root,self.d/'mirror',locks,active=set())
+        self.assertEqual(result['removed'],['old'])
+        self.assertFalse((locks/pruner.RETIREMENT_DIRECTORY/'old').exists())
+        # The former unmarked state forgets a partial retirement without pressure.
+        source.mkdir();(source/'payload').write_text('old control')
+        with patch.object(pruner,'remove_tree',side_effect=partial):
+            pruner.prune(root,self.d/'mirror',locks,max_count=0,active=set())
+        (locks/pruner.RETIREMENT_DIRECTORY/'old').rmdir()
+        result=pruner.prune(root,self.d/'mirror',locks,active=set())
+        self.assertEqual(result['removed'],[])
+        self.assertTrue(source.exists())
 
     def test_one_failed_retirement_does_not_prevent_healthy_peer_cleanup(self):
         root=self.d/'copies';root.mkdir()
         for name in ['a-bad','b-good']:(root/name).mkdir()
         remove=pruner.remove_tree
         def retire(path):
-            if path.name=='.prune-a-bad':raise PermissionError('foreign owner')
+            if path.name=='a-bad':raise PermissionError('foreign owner')
             remove(path)
         with patch.object(pruner,'remove_tree',side_effect=retire):
             result=pruner.prune(root,self.d/'mirror',self.d/'locks',max_count=0,active=set())
         self.assertEqual(result['removed'],['b-good'])
         self.assertEqual([row['source'] for row in result['errors']],['a-bad'])
-        self.assertEqual([p.name for p in root.iterdir()],['.prune-a-bad'])
+        self.assertEqual([p.name for p in root.iterdir()],['a-bad'])
         # The former global exception aborts before b-good is even visited.
         (root/'b-good').mkdir()
         code=Path(pruner.__file__).read_text().replace("errors.append({'source':name,'error':str(error),'errno':error.errno})",'raise')

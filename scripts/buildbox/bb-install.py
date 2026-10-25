@@ -19,7 +19,7 @@ BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # Dependencies precede consumers. Every replacement remains a complete file;
 # in-flight interpreters retain their old inode and loaded module generation.
-TOOLS = ['sccache-rustc', 'admission_policy.py', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
+TOOLS = ['sccache-rustc', 'admission_policy.py', 'job_exports.py', 'job_custody.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
 
 
@@ -77,23 +77,41 @@ def publish(destination, data, mode=0o555):
 
 
 def qualify(source, user):
-    commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs'],
+    commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs', 'namespace.test.mjs'],
                 [NODE, '--test', 'receipt-outcome.test.mjs'],
                 [NODE, '--test', 'prune-admission.test.mjs'],
                 ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
                 ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
                 ['python3', 'prune.test.py'],
                 ['python3', 'reaping.test.py'],
-                ['python3', 'cargo_cache.test.py']]
+                ['python3', 'cargo_cache.test.py'], ['python3', 'custody.test.py'],
+                ['python3', 'command_custody.test.py'], ['python3', 'windows-input.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
         subprocess.run(['runuser', '-u', user, '--', *command], cwd=source, check=True, stdout=sys.stderr)
 
 
+def stage_qualification_inputs(source, stage):
+    """Freeze the canonical Windows input closure beside the buildbox sources."""
+    for name in ['windows-test.sh', 'windows-runner.py', 'graphcoder-e2e/artifacts.mjs']:
+        base = Path(source).resolve().parent
+        relative = Path(name)
+        original = base/relative
+        if any((base/Path(*relative.parts[:index])).is_symlink() for index in range(1,len(relative.parts)+1)) or not original.is_file():
+            raise ValueError('missing regular qualification input: '+str(original))
+        destination = stage.parent/name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.chmod(0o755)
+        publish(destination, original.read_bytes(), 0o444)
+
+
 def prepare(source):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo; direct tool edits are refused')
     account = pwd.getpwnam('var')
-    stage = Path(tempfile.mkdtemp(prefix='bb-install-', dir='/mnt/bb/tmp')); stage.chmod(0o755)
+    bundle = Path(tempfile.mkdtemp(prefix='bb-install-', dir='/mnt/bb/tmp')); bundle.chmod(0o755)
+    stage = bundle/'scripts'/'buildbox'
+    stage.parent.mkdir(); stage.parent.chmod(0o755)
+    stage.mkdir(); stage.chmod(0o755)
     try:
         # Copy only regular source files. No symlinks or mutable shared test
         # dependencies enter the qualification generation.
@@ -103,7 +121,9 @@ def prepare(source):
             if item.is_file() and not item.name.endswith('.bak-gatespeed'):
                 destination=stage/item.relative_to(source)
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.parent.chmod(0o755)
                 publish(destination, item.read_bytes(), 0o444)
+        stage_qualification_inputs(source, stage)
         hashes = {name: hashlib.sha256((stage/name).read_bytes()).hexdigest() for name in TOOLS}
         # Fence only the selected publication destinations. Unrelated runtime
         # modules may advance while this candidate qualifies and stay intact.
@@ -131,11 +151,13 @@ def select_tools(only):
 def publish_candidate(candidate, only=None):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
     stage=Path(candidate)
-    if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():
+    bundle=stage.parent.parent
+    if (stage != bundle/'scripts'/'buildbox' or bundle.parent != Path('/mnt/bb/tmp')
+            or not bundle.name.startswith('bb-install-')):
         raise ValueError('not an installer candidate')
     token=stage/'.qualified.json'; fence=stage/'.predecessors.json'
     selected=select_tools(only)
-    for file in [stage, token, fence, *[stage/name for name in TOOLS]]:
+    for file in [bundle, stage.parent, stage, token, fence, *[stage/name for name in TOOLS]]:
         if file.is_symlink() or file.stat().st_uid != 0 or file.stat().st_mode & 0o022:
             raise PermissionError('candidate custody is unproven: '+str(file))
     hashes=json.loads(token.read_text())

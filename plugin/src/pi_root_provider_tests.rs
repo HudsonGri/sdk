@@ -436,6 +436,300 @@ fn project() -> PiRootIntent {
     }
 }
 
+// Internal authority model for the publication boundary. Real authenticated
+// file/journal settlement is exercised by execution_journal::approvals_tests.
+#[derive(Clone, Copy)]
+struct PublicationDecision {
+    id: acyclic_harness::InteractionId,
+    operation: acyclic_harness::OperationId,
+    digest: [u8; 32],
+    approved: bool,
+}
+impl acyclic_harness::tool::ToolApprovalVerifier for PublicationDecision {
+    fn verify<'a>(
+        &'a self,
+        _: acyclic_harness::InteractionId,
+        _: acyclic_harness::OperationId,
+        _: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<()>> {
+        Box::pin(std::future::ready(Err(
+            acyclic_harness::Error::Unsupported(
+                "selected approval requires original native work".into(),
+            ),
+        )))
+    }
+    fn verify_with_native_work<'a>(
+        &'a self,
+        id: acyclic_harness::InteractionId,
+        operation: acyclic_harness::OperationId,
+        digest: [u8; 32],
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, ()>> {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
+            if self.approved
+                && id == self.id
+                && operation == self.operation
+                && digest == self.digest
+            {
+                Ok(())
+            } else {
+                Err(acyclic_harness::Error::Unauthorized(
+                    "publication decision is absent, denied or foreign".into(),
+                ))
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged_edits() {
+    use crate::pi_inspection::{
+        PiWritebackRoot, build_writeback_generations, prepare_writeback, publish_writeback,
+        writeback_digest_value,
+    };
+    let fixture = Fixture::new(project()).await;
+    for name in [".git", ".system", ".volumes"] {
+        std::fs::write(fixture.native.join(name), "host-owned").unwrap();
+    }
+    assert!(matches!(
+        fixture.execute().await.unwrap().0,
+        EffectStatus::Succeeded { .. }
+    ));
+    // Root allocation and the later writeback are separate service commands.
+    // Keep custody on its original ledger and use the production per-command
+    // window rather than charging this entire recovered session as one call.
+    let publication_work = fixture.startup.invocation_window().unwrap();
+    assert!(publication_work.shares_ledger(&fixture.startup));
+    let work = &publication_work;
+    let handles = fixture.provider.take_created_handles().await;
+    let (key, handle) = handles.iter().next().unwrap();
+    let original = handle
+        .workspace
+        .snapshot(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        })
+        .await
+        .unwrap();
+    let workspace = handle.workspace.workspace();
+    workspace
+        .write_text("/untouched.txt", "approved candidate")
+        .await
+        .unwrap();
+    let candidate = workspace.head(work, work.cancellation()).await.unwrap();
+    let operation = OperationId::new();
+    let request_bytes = canonical_pi_value(&fixture.request, 1_048_576, work).unwrap();
+    let request = guarded_pi_decode::<PiRootRequest>(
+        &request_bytes.0,
+        1_048_576,
+        1_048_576,
+        ErrorCode::Invalid,
+        JsonValueSchema::None,
+        0,
+        work,
+    )
+    .unwrap();
+    let root = PiWritebackRoot::new(
+        (
+            fixture.owner.clone(),
+            &fixture.resources,
+            fixture.filesystem.clone(),
+            fixture.stream.clone(),
+        ),
+        (
+            fixture.provider.preparation.context.clone(),
+            fixture.provider.journal_owner.as_ref().unwrap().clone(),
+        ),
+        request,
+        (
+            key,
+            original,
+            &fixture.native,
+            operation,
+            work.root_identity(&fixture.native).unwrap(),
+        ),
+        work,
+    )
+    .await
+    .unwrap();
+    let paths = vec!["untouched.txt".into()];
+    let generations =
+        build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
+            .await
+            .unwrap();
+    let options =
+        acyclic_fs::MaterializeOptions::native(root.publication.directory().to_path_buf());
+    let prepared = prepare_writeback(
+        &root,
+        &generations,
+        &fixture.resources.store,
+        &options,
+        work,
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "selected preparation refused: {error:?}; remaining work: {:?}",
+            work.remaining()
+        )
+    });
+    let digest = digest_pi_value(
+        &writeback_digest_value(&root, &generations, &prepared).unwrap(),
+        1_048_576,
+        work,
+    )
+    .unwrap()
+    .to_hex()
+    .to_string();
+    let approval_id = acyclic_harness::InteractionId::from_bytes([97; 16]);
+    let verifier = PublicationDecision {
+        id: approval_id,
+        operation,
+        digest: crate::pi_operator::parse_digest(&digest).unwrap(),
+        approved: true,
+    };
+    // Recover after candidate publication, before host publication. The fork
+    // owner's original generation must remain the exact approval baseline.
+    let recovery_work = fixture.startup.invocation_window().unwrap();
+    assert!(recovery_work.shares_ledger(work));
+    let work = &recovery_work;
+    let recovered =
+        build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "recovery refused: {error:?}; remaining work: {:?}",
+                    work.remaining()
+                )
+            });
+    assert_eq!(
+        digest_pi_value(
+            &writeback_digest_value(&root, &recovered, &prepared).unwrap(),
+            1_048_576,
+            work,
+        )
+        .unwrap()
+        .to_hex()
+        .to_string(),
+        digest
+    );
+    assert!(
+        publish_writeback(
+            &root,
+            &recovered,
+            &prepared,
+            &options,
+            &fixture.resources.store,
+            ("forged exact-digest approval", &verifier, approval_id),
+            work
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
+        b"original native bytes"
+    );
+    let denied = PublicationDecision {
+        approved: false,
+        ..verifier
+    };
+    assert!(
+        publish_writeback(
+            &root,
+            &recovered,
+            &prepared,
+            &options,
+            &fixture.resources.store,
+            (&digest, &denied, approval_id),
+            work,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
+        b"original native bytes"
+    );
+    let applied = publish_writeback(
+        &root,
+        &recovered,
+        &prepared,
+        &options,
+        &fixture.resources.store,
+        (&digest, &verifier, approval_id),
+        work,
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied.phase, acyclic_fs::MaterializationPhase::Applied);
+    assert_eq!(
+        std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
+        b"approved candidate"
+    );
+    for name in [".git", ".system", ".volumes"] {
+        assert_eq!(
+            std::fs::read_to_string(fixture.native.join(name)).unwrap(),
+            "host-owned"
+        );
+    }
+    assert!(!root.publication.directory().exists());
+    std::fs::write(
+        fixture.native.join("untouched.txt"),
+        "edit after acknowledgement",
+    )
+    .unwrap();
+    let acknowledged_work = fixture.startup.invocation_window().unwrap();
+    assert!(acknowledged_work.shares_ledger(work));
+    let work = &acknowledged_work;
+    let recovered_after_ack =
+        build_writeback_generations(&root, handle, original, &candidate, &paths, operation, work)
+            .await
+            .unwrap();
+    publish_writeback(
+        &root,
+        &recovered_after_ack,
+        &prepared,
+        &options,
+        &fixture.resources.store,
+        (&digest, &verifier, approval_id),
+        work,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture.native.join("untouched.txt")).unwrap(),
+        "edit after acknowledgement"
+    );
+    // Restoring the former direct native publication path cannot acknowledge
+    // the retained completion after the shared owner retired its staging tree.
+    let old = acyclic_fs::publish_native_generation_transition(
+        generations.candidate(),
+        generations.candidate(),
+        &fixture.resources.store,
+        acyclic_fs::NativeWorkspacePublication {
+            root: root.publication.root(),
+            source_root_identity: root.identity,
+            operation_directory: root.publication.directory(),
+            operation_id: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+            from: generations.candidate().id(),
+            to: generations.candidate().id(),
+            excluded_names: &[".git"],
+            options: &options,
+            budget: work.budget(),
+            cancellation: work.cancellation(),
+        },
+        work.clone(),
+        || std::future::ready(Ok(())),
+    )
+    .await;
+    assert!(old.is_err());
+    assert_eq!(
+        std::fs::read_to_string(fixture.native.join("untouched.txt")).unwrap(),
+        "edit after acknowledgement"
+    );
+}
+
 #[tokio::test]
 async fn provider_requires_the_issued_context_fence() {
     let fixture = Fixture::new(PiRootIntent::ScratchOnly {}).await;

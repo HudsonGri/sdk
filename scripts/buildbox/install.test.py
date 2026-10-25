@@ -1,7 +1,10 @@
+import ast
 import concurrent.futures
 import importlib.util
+import inspect
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,13 +17,59 @@ spec=importlib.util.spec_from_file_location('installer',HERE/'bb-install.py')
 installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
 
 
-def python(*argv):
-    # sudo resets the environment, including PYTHONDONTWRITEBYTECODE. The
-    # interpreter flag must cross every privileged process boundary itself.
-    return [sys.executable, '-B', *map(str, argv)]
+def isolated_python(*args):
+    return [sys.executable,'-I','-B',*map(str,args)]
+
+
+def without_qualification(suite):
+    """Remove one actual qualification command, independent of source formatting."""
+    tree=ast.parse(inspect.getsource(installer.qualify))
+    commands=[node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+              and any(isinstance(target,ast.Name) and target.id=='commands' for target in node.targets)]
+    if len(commands)!=1 or not isinstance(commands[0].value,ast.List):
+        raise AssertionError('qualification command list must have one owner')
+    entries=commands[0].value.elts
+    removed=[entry for entry in entries if isinstance(entry,ast.List)
+             and any(isinstance(value,ast.Constant) and value.value==suite for value in entry.elts)]
+    if len(removed)!=1:
+        raise AssertionError('negative control must remove exactly one qualification')
+    commands[0].value.elts=[entry for entry in entries if entry is not removed[0]]
+    namespace=dict(installer.__dict__)
+    exec(compile(ast.fix_missing_locations(tree),'<missing-qualification-control>','exec'),namespace)
+    return namespace['qualify']
 
 
 class InstallTests(unittest.TestCase):
+    def test_frozen_qualification_consumes_canonical_windows_sources(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary)
+            for missing in [False, True]:
+                bundle=root/str(missing);bundle.mkdir()
+                def qualify(stage, user):
+                    self.assertEqual(stage,bundle/'scripts'/'buildbox')
+                    for name in ['windows-test.sh','windows-runner.py','graphcoder-e2e/artifacts.mjs']:
+                        self.assertEqual((stage.parent/name).read_bytes(),(HERE.parent/name).read_bytes())
+                    for directory in [stage,stage.parent,stage.parent/'graphcoder-e2e']:
+                        self.assertEqual(directory.stat().st_mode & 0o555,0o555)
+                    self.assertFalse((stage/'win-test.sh').exists(),'a second Windows runtime must not enter qualification')
+                    result=subprocess.run([sys.executable,str(stage/'windows-input.test.py')],capture_output=True)
+                    self.assertEqual(result.returncode,0,result.stderr.decode())
+                with (patch.object(installer.os,'geteuid',return_value=0),
+                      patch.object(installer.pwd,'getpwnam',return_value=type('Account',(),{'pw_name':'fixture'})()),
+                      patch.object(installer.tempfile,'mkdtemp',return_value=str(bundle)),
+                      patch.object(installer,'qualify',side_effect=qualify)):
+                    if missing:
+                        # Actual former preparation omitted the shared files;
+                        # the unchanged frozen-source oracle must refuse it.
+                        with patch.object(installer,'stage_qualification_inputs',return_value=None):
+                            with self.assertRaises(FileNotFoundError):installer.prepare(HERE)
+                        self.assertFalse((bundle/'scripts/buildbox/.qualified.json').exists())
+                    else:
+                        previous_umask=os.umask(0o077)
+                        try:stage=installer.prepare(HERE)
+                        finally:os.umask(previous_umask)
+                        self.assertTrue((stage/'.qualified.json').is_file())
+
     def test_privileged_import_keeps_source_immutable_without_inherited_environment(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             source=Path(temporary)/'module.py';source.write_text('VALUE=1\n')
@@ -28,16 +77,32 @@ class InstallTests(unittest.TestCase):
             env={k:v for k,v in os.environ.items() if k!='PYTHONDONTWRITEBYTECODE'}
             cache=source.parent/'__pycache__'
             try:
-                subprocess.run(['sudo','-n',*python('-c',driver,source)],env=env,check=True)
+                subprocess.run(['sudo','-n',*isolated_python('-c',driver,source)],env=env,check=True)
                 self.assertFalse(cache.exists())
                 # The former sudo entry lost the env flag and wrote a root
                 # directory into the upload, preventing unprivileged pruning.
-                old=python('-c',driver,source);old.remove('-B')
+                old=isolated_python('-c',driver,source);old.remove('-B')
                 subprocess.run(['sudo','-n',*old],env=env,check=True)
                 self.assertTrue(cache.exists());self.assertEqual(cache.stat().st_uid,0)
             finally:
                 if cache.exists():
-                    subprocess.run(['sudo','-n',*python('-c','import shutil,sys;shutil.rmtree(sys.argv[1])',cache)],check=True)
+                    subprocess.run(['sudo','-n',*isolated_python('-c','import shutil,sys;shutil.rmtree(sys.argv[1])',cache)],check=True)
+
+    def test_published_worker_imports_only_the_declared_tool_generation(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            root=Path(temporary)
+            for name in installer.TOOLS:shutil.copyfile(HERE/name,root/name)
+            command=[sys.executable,'-I','-B','-c',
+                     'import runpy,sys;sys.path.insert(0,sys.argv[1]);'
+                     'runpy.run_path(sys.argv[1]+"/bb-job.py",run_name="installed_worker")',str(root)]
+            good=subprocess.run(command,cwd=root,capture_output=True)
+            self.assertEqual(good.returncode,0,good.stderr.decode())
+            # The former publication list omitted a runtime import even though
+            # qualification had copied every source file into its stage.
+            (root/'job_custody.py').unlink()
+            bad=subprocess.run(command,cwd=root,capture_output=True)
+            self.assertNotEqual(bad.returncode,0)
+            self.assertIn(b"No module named 'job_custody'",bad.stderr)
 
     def test_fifty_concurrent_exec_jobs_see_complete_generations(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
@@ -56,7 +121,7 @@ class InstallTests(unittest.TestCase):
                 # Publication is a separate process, as in production. A fork
                 # from a writer thread can inherit another thread's open write
                 # fd before CLOEXEC and manufacture ETXTBSY unrelated to rename.
-                writer=subprocess.Popen(python('-c',
+                writer=subprocess.Popen(isolated_python('-c',
                     'import importlib.util,sys;from pathlib import Path;'
                     's=importlib.util.spec_from_file_location("i",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);'
                     '[m.publish(Path(sys.argv[2]),bytes.fromhex(sys.argv[3+n%2])) for n in range(80)]',
@@ -69,6 +134,18 @@ class InstallTests(unittest.TestCase):
             tool.chmod(0o755)
             with tool.open('wb'):
                 with self.assertRaises(OSError):subprocess.run([str(tool)],check=True)
+
+    def test_command_custody_failure_is_a_publication_barrier(self):
+        def run(command, **kwargs):
+            if 'command_custody.test.py' in command:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(installer.subprocess, 'run', side_effect=run):
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.qualify(Path('/unused-frozen-candidate'), 'var')
+            # Negative control executes the former qualification policy: the
+            # same failed command-custody suite cannot block publication.
+            without_qualification('command_custody.test.py')(Path('/unused-frozen-candidate'), 'var')
 
     def test_failed_qualification_never_publishes(self):
         self.assertIn('sccache-rustc',installer.TOOLS)
@@ -90,27 +167,33 @@ class InstallTests(unittest.TestCase):
                     with self.assertRaises(subprocess.CalledProcessError):installer.qualify(Path('/fixture'),'var')
                 self.assertEqual(calls[-1][-1],suite)
                 # The former omission admitted an otherwise failing suite.
-                old=Path(installer.__file__).read_text().replace(
-                    ",\n                ['python3', '"+suite+"']",'').replace(
-                    ",\n                [NODE, '--test', '"+suite+"']",'')
-                namespace={};exec(compile(old,'old-qualification','exec'),namespace)
-                with patch.object(installer.subprocess,'run',side_effect=run):namespace['qualify'](Path('/fixture'),'var')
+                with patch.object(installer.subprocess,'run',side_effect=run):without_qualification(suite)(Path('/fixture'),'var')
 
     def test_selected_publication_preserves_peers_and_fences_stale_predecessors(self):
         driver='''import importlib.util,sys,tempfile,shutil,json,os
 from pathlib import Path
 source=Path(sys.argv[1]);s=importlib.util.spec_from_file_location('installer',source);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-stage=Path(tempfile.mkdtemp(prefix='bb-install-control-',dir='/mnt/bb/tmp'))
-live=stage/'live';live.mkdir()
+fixture=Path(tempfile.mkdtemp(prefix='bb-install-control-',dir='/mnt/bb/tmp'))
+live=fixture/'live';live.mkdir()
+for name in m.TOOLS:m.publish(live/name,('old-'+name).encode())
+m.BIN=live;m.secure_bin=lambda:live
+# Exercise the real prepare-to-publish path; qualification commands have their
+# own exhaustive controls and must not recursively launch this test here.
+m.qualify=lambda stage,user:None
+stage=m.prepare(source.parent)
 try:
- for name in m.TOOLS:
-  m.publish(stage/name,(source.parent/name).read_bytes(),0o444)
-  m.publish(live/name,('old-'+name).encode())
  hashes={name:m.file_hash(stage/name) for name in m.TOOLS}
- previous={name:m.file_hash(live/name) for name in m.TOOLS}
- m.publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
- m.publish(stage/'.predecessors.json',json.dumps(previous).encode(),0o400)
- m.BIN=live;m.secure_bin=lambda:live
+ assert stage.parent.name=='scripts' and stage.name=='buildbox'
+ # The exact former flat-layout validator rejects the actual prepared output.
+ old={'__file__':str(source),'__name__':'old_layout_installer'}
+ before="if (stage != bundle/'scripts'/'buildbox' or bundle.parent != Path('/mnt/bb/tmp')\\n            or not bundle.name.startswith('bb-install-')):"
+ code=source.read_text();assert before in code
+ code=code.replace(before,"if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():")
+ exec(compile(code,'flat-layout-installer','exec'),old)
+ old['BIN']=live;old['secure_bin']=lambda:live
+ try:old['publish_candidate'](stage,['bb-install.py'])
+ except ValueError as error:assert str(error)=='not an installer candidate'
+ else:raise AssertionError('former layout admitted the nested generation')
  peer=live/'bb-job.py';m.publish(peer,b'newer peer runtime')
  for selection in [[],['unknown'],['bb-install.py','bb-install.py']]:
   try:m.publish_candidate(stage,selection)
@@ -134,15 +217,28 @@ try:
  old['BIN']=live;old['secure_bin']=lambda:live
  old['publish_candidate'](stage,['bb_target_store.py'])
  assert before['bb_target_store.py']!=m.file_hash(live/'bb_target_store.py')
-finally:shutil.rmtree(stage)
+finally:
+ shutil.rmtree(stage.parent.parent)
+ shutil.rmtree(fixture)
 '''
-        subprocess.run(['sudo','-n',*python('-c',driver,HERE/'bb-install.py')],check=True)
+        subprocess.run(['sudo','-n',*isolated_python('-c',driver,HERE/'bb-install.py')],check=True)
+
+    def test_proxy_storage_failure_blocks_tool_qualification(self):
+        def rejected(command, **kwargs):
+            if 'cargo_cache.test.py' in command:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(installer.subprocess, 'run', side_effect=rejected):
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.qualify(HERE, 'var')
+            # The old publication boundary accepts this failing proxy suite.
+            without_qualification('cargo_cache.test.py')(HERE, 'var')
 
     def test_privileged_publication_refuses_direct_lane_edits(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             tool=Path(temporary)/'tool'
             script='from pathlib import Path;import sys,os;p=Path(sys.argv[1]);p.write_bytes(b"qualified");os.chown(p,0,0);p.chmod(0o555)'
-            subprocess.run(['sudo','-n',*python('-c',script,tool)],check=True)
+            subprocess.run(['sudo','-n',*isolated_python('-c',script,str(tool))],check=True)
             with self.assertRaises(PermissionError):tool.write_bytes(b'partial')
             self.assertEqual(tool.read_bytes(),b'qualified')
             # The former var-owned mode admits exactly the same write.
@@ -166,13 +262,13 @@ subprocess.run(['runuser','-u','var','--','python3','-B','-c',probe,str(alias)],
 assert (alias/'tool').read_text()=='updated'
 '''
             try:
-                subprocess.run(['sudo','-n','unshare','--mount','--propagation','private',*python('-c',driver,HERE/'bb-install.py',alias,store)],check=True)
+                subprocess.run(['sudo','-n','unshare','--mount','--propagation','private',*isolated_python('-c',driver,str(HERE/'bb-install.py'),str(alias),str(store))],check=True)
                 # The old unmounted root-owned entry is still movable from a
                 # writable parent: ownership of files alone is insufficient.
                 alias.rename(root/'old-replaced');self.assertTrue((root/'old-replaced/tool').exists())
             finally:
-                subprocess.run(['sudo','-n',*python('-c','import shutil,sys;shutil.rmtree(sys.argv[1],ignore_errors=True)',store)],check=True)
-                subprocess.run(['sudo','-n',*python('-c','import os,sys;from pathlib import Path;[(os.chown(p,int(sys.argv[2]),int(sys.argv[3]))) for p in Path(sys.argv[1]).iterdir() if p.is_dir()]',root,os.getuid(),os.getgid())],check=True)
+                subprocess.run(['sudo','-n',*isolated_python('-c','import shutil,sys;shutil.rmtree(sys.argv[1],ignore_errors=True)',str(store))],check=True)
+                subprocess.run(['sudo','-n',*isolated_python('-c','import os,sys;from pathlib import Path;[(os.chown(p,int(sys.argv[2]),int(sys.argv[3]))) for p in Path(sys.argv[1]).iterdir() if p.is_dir()]',str(root),str(os.getuid()),str(os.getgid()))],check=True)
 
 
 if __name__=='__main__':unittest.main()

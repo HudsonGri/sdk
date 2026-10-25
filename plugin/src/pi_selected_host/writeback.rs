@@ -122,7 +122,6 @@ impl PiControlHost<'_> {
                 .approval_digest
                 .as_deref()
                 .ok_or_else(|| denied("applied writeback has no exact user approval"))?;
-            validate_applied_writeback(&root, &generations, &journal, digest, work)?;
             let approved = crate::pi_operator_host::read_prepared_approval(
                 &self.runtime,
                 &self.filesystem,
@@ -141,11 +140,18 @@ impl PiControlHost<'_> {
             {
                 return Err(denied("applied writeback changed its original approval"));
             }
-            crate::pi_operator_host::require_resolved_approval(
+            let authorization = crate::pi_operator_host::conversation_journal(
                 &self.filesystem,
                 &self.stream,
                 &self.protected,
                 &(&approved.0).into(),
+                work,
+            )?;
+            validate_applied_writeback(
+                &root,
+                &generations,
+                &journal,
+                (digest, &authorization.0, authorization.1),
                 work,
             )
             .await?;
@@ -170,12 +176,8 @@ impl PiControlHost<'_> {
         }
         let journal =
             prepare_writeback(&root, &generations, &self.resources.store, &options, work).await?;
-        let digest_value = writeback_digest_value(&root, &generations, &journal);
-        let digest = crate::pi_root_provider::digest_pi_value(
-            &digest_value,
-            work.budget().bytes_encoded,
-            work,
-        )?;
+        let digest_value = writeback_digest_value(&root, &generations, &journal)?;
+        let digest = blake3::Hash::from_bytes(digest_value.digest(work)?);
         let mut digest = work.display(&digest)?;
         let mut encoded = crate::pi_root_provider::canonical_pi_value(
             &digest_value,
@@ -240,21 +242,20 @@ impl PiControlHost<'_> {
         if approval != descriptor.approval_digest {
             return Err(denied("approval differs from the exact original-root plan"));
         }
-        crate::pi_operator_host::require_resolved_approval(
+        let authorization = crate::pi_operator_host::conversation_journal(
             &self.filesystem,
             &self.stream,
             &self.protected,
             &descriptor,
             work,
-        )
-        .await?;
+        )?;
         let published = publish_writeback(
             &root,
             &generations,
             &journal,
             &options,
             &self.resources.store,
-            approval,
+            (approval, &authorization.0, authorization.1),
             work,
         )
         .await?;

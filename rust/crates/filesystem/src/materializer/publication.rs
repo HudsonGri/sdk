@@ -53,12 +53,11 @@ pub async fn prepare_native_generation_transition<
     to: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
     publication: NativeWorkspacePublication<'_>,
+    work: NativeMaterializationWork,
 ) -> Result<
     crate::OperationReceipt<MaterializationJournal>,
     (NativeWorkspacePublicationError, crate::WorkCounters),
 > {
-    let work = NativeMaterializationWork::new(publication.budget, publication.cancellation)
-        .map_err(|(cause, work)| (NativeWorkspacePublicationError::Native(cause), *work))?;
     let result = async {
         let mut guard = || std::future::ready(Ok::<_, NativeWorkspacePublicationError>(()));
         let (materializer, journal) =
@@ -84,14 +83,11 @@ pub async fn prepare_native_generation_transition<
 pub async fn load_native_materialization_journal(
     state: &crate::LocalCoreStateStore,
     operation: OperationId,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
+    work: NativeMaterializationWork,
 ) -> Result<
     crate::OperationReceipt<Option<MaterializationJournal>>,
     (NativeWorkspacePublicationError, crate::WorkCounters),
 > {
-    let work = NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(cause, work)| (NativeWorkspacePublicationError::Native(cause), *work))?;
     let result = async {
         let journal = state.materialization(work.clone()).load(operation).await?;
         if let Some(journal) = &journal {

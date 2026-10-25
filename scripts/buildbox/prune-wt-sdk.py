@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 
+RETIREMENT_DIRECTORY='retiring'
+
 def remove_tree(path):
     # Test fixtures and tools can leave unreadable directories. Make each
     # directory traversable before descending; never follow a directory link.
@@ -39,6 +41,8 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
     removed=[];held=[];errors=[]
     with (locks/'prune.lock').open('a') as global_lock:
         fcntl.flock(global_lock,fcntl.LOCK_EX)
+        retirements=locks/RETIREMENT_DIRECTORY
+        retirements.mkdir(exist_ok=True)
         groups={}
         for p in root.iterdir():
             if p.is_dir() and not p.is_symlink():
@@ -59,7 +63,8 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
             rows.append((max(stamps),name,paths))
         count=len(rows)
         for used,name,paths in sorted(rows):
-            if now-used<=max_age and count<=max_count:continue
+            retiring=(retirements/name).exists() or any(p.name.startswith('.prune-') for p in paths)
+            if not retiring and now-used<=max_age and count<=max_count:continue
             try:
                 with (locks/(name+'.lock')).open('a') as lease:
                     try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -67,13 +72,15 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                     if any(source==str(p) or source.startswith(str(p)+'/') for source in active for p in paths):
                         held.append(name);continue
                     for p in paths:
-                        # Only immediate, resolved children can be renamed/deleted.
+                        # Preserve the original source name and therefore its
+                        # lease through every interrupted deletion. A marker
+                        # makes retirement irrevocable without any rename or
+                        # NAME_MAX growth. The marker is outside the deleted
+                        # subtree, so partial deletion cannot erase retirement.
                         if p.parent!=root or p.resolve().parent!=root:raise ValueError('unsafe source path')
-                        tomb=p if p.name.startswith('.prune-') else root/('.prune-'+p.name)
-                        if p!=tomb:
-                            try:p.rename(tomb)
-                            except FileNotFoundError:continue
-                        remove_tree(tomb)
+                        (retirements/name).mkdir(exist_ok=True)
+                        remove_tree(p)
+                    (retirements/name).rmdir()
                     count-=1;removed.append(name)
             except OSError as error:
                 # A failed tomb remains evidence under its original lease.

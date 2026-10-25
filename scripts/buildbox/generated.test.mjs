@@ -1,10 +1,216 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
+import {copyBackDestination,gitPrepInvocation} from './buildbox.mjs';
+import {processOwner} from './buildbox-receipt.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('source preparation streams arbitrary launch and binary payload bytes through one bounded command',()=>{
+ const root=fs.mkdtempSync(path.join(tmpdir(),'streamed-launch-'));
+ const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+ try{
+  const prep=path.join(root,'prepare.mjs');
+  fs.writeFileSync(prep,`import fs from 'node:fs';
+const [root,...args]=process.argv.slice(2);
+fs.appendFileSync(root+'/preparations','prepared\\n');
+fs.writeFileSync(root+'/payload',fs.readFileSync(0));
+fs.writeFileSync(root+'/arguments',JSON.stringify(args));
+if(process.env.PREP_FAIL)process.exit(Number(process.env.PREP_FAIL));
+console.log('prepared');`);
+  const payload=Buffer.alloc(256*1024);
+  for(let i=0;i<payload.length;i++)payload[i]=i%256;
+  for(const repo of ['sdk','cloud']){
+   const directory=path.join(root,repo+' fixture');fs.mkdirSync(directory);
+   const job=path.join(directory,'job'),worktree=path.join(directory,'source');
+   const effect=path.join(directory,'effect');
+   const launch='#'+ 'x'.repeat(1024*1024)+'\n'+
+    `printf '%s' 'exact action' >> ${quote(effect)}\ntouch ${quote(job+'.wpid')}\necho launched\n`;
+   const invocation=gitPrepInvocation(repo,worktree,'a'.repeat(40),job,launch,payload);
+   assert.equal(invocation.command,'bash -s');
+   assert.equal(invocation.input.toString().split('/usr/local/bin/bb-git-prep').length,2);
+   const input=invocation.input.toString()
+    .replaceAll('/mnt/bb/locks/wt-sdk',path.join(root,'locks'))
+    .replace('/usr/local/bin/bb-git-prep',`${quote(process.execPath)} ${quote(prep)} ${quote(directory)}`);
+   const run=extra=>spawnSync('bash',['-s'],{input,env:{...process.env,...extra},encoding:'utf8'});
+   const current=run({});
+   assert.equal(current.status,0,current.stderr);
+   assert.match(current.stdout,/prepared\nlaunched\n$/);
+   assert.deepEqual(fs.readFileSync(path.join(directory,'payload')),payload);
+   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory,'arguments'))),
+    [worktree,'a'.repeat(40),...(repo==='sdk'?['sdk']:[])]);
+   assert.equal(fs.readFileSync(effect,'utf8'),'exact action');
+   assert.equal(run({}).status,0);
+   assert.equal(fs.readFileSync(path.join(directory,'preparations'),'utf8'),'prepared\n');
+   assert.equal(fs.readFileSync(effect,'utf8'),'exact action','acknowledged ownership cannot launch twice');
+   fs.unlinkSync(job+'.wpid');fs.unlinkSync(effect);
+   const refused=run({PREP_FAIL:'73'});
+   assert.equal(refused.status,73,refused.stderr);
+   assert.equal(fs.existsSync(effect),false,'failed preparation must block launch');
+   // Restore the former production transport: its full generated launch is
+   // one SSH exec argument. The actual kernel refuses it before any effect.
+   const former=`echo ${Buffer.from(launch).toString('base64')} | base64 -d | bash`;
+   const negative=spawnSync('bash',['-c',former],{input:payload});
+   assert.equal(negative.error?.code,'E2BIG');
+   assert.equal(fs.existsSync(effect),false);
+  }
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('copy-back failures retain their transport evidence in the terminal receipt',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'copy-back-evidence-'));
+ const saved=process.env.BUILD_SLOT_REMOTE_FETCH;
+ const savedDestination=process.env.BUILD_SLOT_REMOTE_FETCH_DIR;
+ try{
+  process.env.BUILD_SLOT_REMOTE_FETCH='artifact';
+  process.env.BUILD_SLOT_REMOTE_FETCH_DIR=cwd;
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  async function load(name,text){
+   const file=path.join(cwd,name+'.mjs');fs.writeFileSync(file,text+'\nexport {copyBack};\n');
+   return import(file);
+  }
+  const current=await load('current',source);
+  const former=await load('former',source
+   .replace("throw copyBackFailure('archive read', group.archive, result)","throw new Error('missing declared-output archive')")
+   .replace('copy_back_failure: ctx.copyBackFailure ?? null, ',''));
+  const prefix='/mnt/bb/jobs/fixture',archive=prefix+'.exports/0.tar.gz';
+  const manifest=Buffer.from(JSON.stringify([{archive,count:1,target:false}]));
+  const stages=[
+   {stage:'manifest read',path:prefix+'.exports/manifest.json',status:255,signal:'SIGKILL',timedOut:true,stderr:'transport interrupted',stdout:Buffer.alloc(0)},
+   {stage:'archive read',path:archive,status:255,signal:null,timedOut:false,stderr:'connection closed',stdout:Buffer.from([0,255,1])},
+   {stage:'archive extraction',path:archive,status:2,signal:null,timedOut:false,stderr:Buffer.from('invalid gzip header'),stdout:Buffer.alloc(0)},
+  ];
+  async function fail(module,row){
+   const commands=[];
+   const run=async command=>{
+    commands.push(command);
+    assert.ok(command.startsWith('cat '),'failed exports must remain owned for diagnosis');
+    if(row.stage==='manifest read'||command===`cat ${archive}`&&row.stage==='archive read')return row;
+    return {status:0,stdout:command===`cat ${prefix}.exports/manifest.json`?manifest:Buffer.from('archive'),stderr:''};
+   };
+   const extract=(program,args,options)=>{
+    assert.equal(row.stage,'archive extraction');assert.equal(program,'tar');
+    assert.deepEqual(args,['-xzf','-','-C',cwd,'--no-same-owner']);
+    assert.deepEqual(options.input,Buffer.from('archive'));return row;
+   };
+   let error;
+   try{await module.copyBack(prefix,cwd,'unused','unused','.',{run,extract});}catch(caught){error=caught;}
+   assert.ok(error,'the failed transfer must reject');
+   assert.equal(commands.length,row.stage==='manifest read'?1:2,'there is no transfer retry or export deletion');
+   return error;
+  }
+  for(const [index,row] of stages.entries()){
+   const error=await fail(current,row);
+   const expected={stage:row.stage,path:row.path,exit_status:row.status,signal:row.signal,timed_out:row.timedOut,stderr:String(row.stderr),received_bytes:row.stdout.length};
+   assert.deepEqual(error.copyBack,expected,error.stack);
+   assert.match(error.message,/failed \(rc (255|2), signal/);
+   const metaFile=path.join(cwd,`meta-${index}.json`),receipt=path.join(cwd,`terminal-${index}.json`);
+   fs.writeFileSync(metaFile,JSON.stringify({owner:processOwner(),side:'client',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   const terminal=current.endReceipt({metaFile,termination:'infra',copyBackFailure:error.copyBack},1);
+   assert.equal(terminal.exit_status,1);assert.equal(terminal.termination,'infra');
+   assert.deepEqual(JSON.parse(fs.readFileSync(receipt)).copy_back_failure,expected);
+  }
+  const oldError=await fail(former,stages[1]);
+  assert.equal(oldError.message,'missing declared-output archive');
+  assert.equal(oldError.copyBack,undefined,'former generic error loses transport identity');
+  const metaFile=path.join(cwd,'former-meta.json'),receipt=path.join(cwd,'former-terminal.json');
+  fs.writeFileSync(metaFile,JSON.stringify({owner:processOwner(),side:'client',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+  assert.equal(former.endReceipt({metaFile,termination:'infra',copyBackFailure:stages[1]},1).copy_back_failure,undefined,'former terminal writer loses even captured evidence');
+ }finally{
+  if(saved===undefined)delete process.env.BUILD_SLOT_REMOTE_FETCH;else process.env.BUILD_SLOT_REMOTE_FETCH=saved;
+  if(savedDestination===undefined)delete process.env.BUILD_SLOT_REMOTE_FETCH_DIR;else process.env.BUILD_SLOT_REMOTE_FETCH_DIR=savedDestination;
+  fs.rmSync(cwd,{recursive:true,force:true});
+ }
+});
+
+test('launch acknowledgement always has a published wrapper owner',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'launch-owner-'));
+ try{
+  const file=path.join(cwd,'generator.mjs');
+  fs.writeFileSync(file,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport {launchScript};\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {launchScript}=await import(file);
+  const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
+  const generated=launchScript('/mnt/bb/wt-sdk/fixture','sdk/fixture','.', ['bash','fixture'], '/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv:['bash','fixture']});
+  const launch=generated.slice(generated.indexOf('touch $J.t0'));
+  assert.ok(launch.includes('echo $! > $J.wpid'));
+  for(const negative of [false,true]){
+   const root=path.join(cwd,String(negative));fs.mkdirSync(root);
+   assert.equal(spawnSync('mkfifo',[path.join(root,'ready'),path.join(root,'release')]).status,0);
+   // Delay initialization with an owned FIFO, independently of elapsed time.
+   fs.writeFileSync(path.join(root,'job.wrap'),'printf "%s\\n" "$$" > "$FIX/ready"\nread -r release < "$FIX/release"\n');
+   const body=negative?launch.replace('echo $! > $J.wpid','for i in $(seq 50); do [ -s $J.wpid ] && break; sleep 0.1; done'):launch;
+   // Advance the former polling cadence virtually: no constructor progress
+   // occurs during any of its fifty observations.
+   const child=spawn('bash',['-c','J="$FIX/job"\nsleep(){ :; }\n'+body+'\nread -r owner < "$FIX/ready"\nprintf "fixture_owner=%s\\n" "$owner"\nwait "$owner"\n'],{env:{...process.env,FIX:root},stdio:['ignore','pipe','pipe']});
+   let output='',errors='',observed=false,published=false;
+   child.stderr.on('data',data=>{errors+=data;});
+   child.stdout.on('data',data=>{
+    output+=data;
+    const match=output.match(/^fixture_owner=(\d+)$/m);
+    if(match&&!observed){
+     observed=true;
+     const ownerFile=path.join(root,'job.wpid');
+     published=fs.existsSync(ownerFile)&&fs.readFileSync(ownerFile,'utf8').trim()===match[1];
+     fs.writeFileSync(path.join(root,'release'),'complete\n');
+    }
+   });
+   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
+   assert.equal(code,0,errors);assert.ok(observed,output);
+   assert.equal(published,!negative,'the former launcher acknowledges an unobservable owner');
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('remote completion follows the live owner rather than expiring the job age',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'remote-completion-'));
+ try{
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  async function load(name,text){
+   const file=path.join(cwd,name+'.mjs');fs.writeFileSync(file,text+'\nexport {remoteRc};\n');
+   return (await import(file)).remoteRc;
+  }
+  const current=await load('current',source);
+  const former=await load('former',source
+   .replace('let lostAt = null;\n  for (;;) {\n    const r = await run(', 'const started = now();\n  for (;;) {\n    const r = await run(')
+   .replace(/    \/\/ A live remote owner[\s\S]*?    await pause\(/,'    if (now() - started > REATTACH_SEC * 1000) return null;\n    await pause('));
+  async function observe(poll,replies){
+   let clock=0,calls=0;
+   const result=await poll('/fixture/job',{
+    run:async()=>{assert.ok(calls<replies.length,'unexpected poll');const reply=replies[calls++];return {status:reply===null?255:0,stdout:reply??''};},
+    now:()=>clock,pause:async()=>{clock+=1_300_000;},
+   });
+   return {result,calls};
+  }
+  assert.deepEqual(await observe(current,['running','running','17']),{result:17,calls:3});
+  assert.deepEqual(await observe(former,['running','running','17']),{result:null,calls:2},'former job-age clock abandons a positively live owner');
+  assert.deepEqual(await observe(current,[null,'running',null,'running','0']),{result:0,calls:5},'each live owner observation ends the loss interval');
+  assert.deepEqual(await observe(current,[null,null]),{result:null,calls:2},'uninterrupted connection loss keeps the existing budget');
+  assert.deepEqual(await observe(current,['gone']),{result:null,calls:1});
+  assert.deepEqual(await observe(current,['101']),{result:101,calls:1});
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test('declared output stays outside the source snapshot during cleanup',()=>{
+ const root=fs.mkdtempSync(path.join(tmpdir(),'source-output-custody-'));
+ try{
+  const source=path.join(root,'source'),records=path.join(root,'records');
+  fs.mkdirSync(source);
+  const env={BUILD_SLOT_REMOTE_FETCH_DIR:records};
+  const destination=copyBackDestination({target:false},source,'.',env);
+  fs.mkdirSync(destination,{recursive:true});
+  const artifact=path.join(destination,'windows-artifacts.tar.gz');
+  fs.writeFileSync(artifact,'owned output');fs.unlinkSync(artifact);
+  assert.deepEqual(fs.readdirSync(source),[],'output lifetime cannot mutate source inputs');
+  assert.equal(copyBackDestination({target:false},source,'.',{}),source,'negative control: former output destination was the source tree');
+  assert.equal(copyBackDestination({target:true},source,'.',env),path.join(source,'target'));
+  assert.throws(()=>copyBackDestination({target:false},source,'.',{BUILD_SLOT_REMOTE_FETCH_DIR:'relative'}),/must be absolute/);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 
 test('gate execution never replays a historical PASS verdict',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-no-verdict-replay-'));
@@ -144,10 +350,11 @@ for(const gate of [false,true])for(const input of [['bash','-c','echo okay'],['c
 const argv=pinGlibc(input);
 const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
 const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.',argv,'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{repo:'sdk',argv,gate_log:gate?'Q:/lanes/pr-gate/fixture.log':null});
-const bodies=[script,...[...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted)\b/g)].map(m=>Buffer.from(m[1],'base64').toString())];
-if(bodies.length!==4)throw Error('missing generated shell');
+const generated=Object.fromEntries([...script.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.(sh|wrap|admitted|setup)\b/g)].map(m=>[m[2],Buffer.from(m[1],'base64').toString()]));
+const bodies=[script,...Object.values(generated)];
+if(bodies.length!==5)throw Error('missing generated shell');
 for(const body of bodies){const r=spawnSync('bash',['-n'],{input:body,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);}
-const inner=bodies[1];
+const inner=generated.sh;
 const cold=process.env.BUILD_SLOT_REMOTE_COLD==='1';
 const disable='export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1';
 if(inner.includes(disable)!==cold || (cold && inner.indexOf(disable)>inner.indexOf('exec python3 /home/var/bin/bb-job.py')))throw Error('cold jobs can restore or publish snapshots');
@@ -158,16 +365,20 @@ if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo byp
 if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
 if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
 if(inner.includes('ulimit -n'))throw Error('job overrides caller nofile limit');
-if(!bodies[2].includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
-if(!bodies[2].includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
-captureBeforeNode(bodies[3]);
-for(const broken of [bodies[3].replaceAll('capture-limits','missing-capture'),bodies[3].replaceAll('node $J.receipt-tool.mjs','missing-node')]){
+if(!generated.setup.includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
+if(!generated.admitted.includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
+if(!generated.admitted.includes('bb-job.py outer-setup /mnt/bb/jobs/fixture.receipt-meta.v2.json.runtime /mnt/bb/jobs/fixture bash /mnt/bb/jobs/fixture.setup'))throw Error('scratch bypasses custody constructor');
+if([script,generated.wrap,generated.admitted].some(body=>/mkdir -p[^\n]*(?:fixture\.targets|\$J\.tmp)/.test(body)))throw Error('scratch precedes custody publication');
+if(!generated.setup.includes('mkdir -p $J.tmp') || !generated.setup.includes('mkdir -p $T /mnt/bb/jobs/fixture.targets'))throw Error('scratch not owned by setup');
+captureBeforeNode(generated.wrap);
+for(const broken of [generated.wrap.replaceAll('capture-limits','missing-capture'),generated.wrap.replaceAll('node $J.receipt-tool.mjs','missing-node')]){
 let rejected=false;try{captureBeforeNode(broken);}catch{rejected=true;}if(!rejected)throw Error('missing capture/Node negative control passed');
 }
 if(!inner.includes('CARGO_TARGET_DIR="$BB_JOB_TARGET"'))throw Error('target escaped job lifetime');
 if(!inner.includes('BB_JOB_EXPORT_SPEC='))throw Error('outputs not archived');
 if(input[1]==='build' && !inner.includes('"targetMapping":{"triple":"x86_64-unknown-linux-gnu","profiles":["debug","release"]}'))throw Error('glibc-pinned output mapping lost');
-if(!bodies[2].includes('rm -rf -- /mnt/bb/jobs/fixture.targets'))throw Error('outer targets not cleaned');
+if(bodies.slice(1).some(body=>body.includes('rm -rf -- /mnt/bb/jobs/fixture.targets') || body.includes('rm -rf $J.tmp')))throw Error('unjoined outer deletion');
+if(!bodies.slice(1).some(body=>body.includes('receipt-tool.mjs finish')))throw Error('missing custody-owned cleanup');
 if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target survived');
 }
 `;
@@ -184,6 +395,9 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
   fs.writeFileSync(generator,original.replaceAll('BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1','BB_COLD_DISABLED_CONTROL=1'));
   const coldNegative=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:'1'}});
   assert.notEqual(coldNegative.status,0);assert.match(coldNegative.stderr,/cold jobs can restore or publish snapshots/);
+  fs.writeFileSync(generator,original.replace('bb-job.py outer-setup','bb-job.py missing-outer-setup'));
+  const custodyNegative=spawnSync(process.execPath,[file],{encoding:'utf8'});
+  assert.notEqual(custodyNegative.status,0);assert.match(custodyNegative.stderr,/scratch bypasses custody constructor/);
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });
 
@@ -299,13 +513,11 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
   for(const [negative,expected] of [[false,224],[true,0]]){
    const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("rc = 224; category = 'infra';",''):source);
    const meta=path.join(cwd,`meta-${negative}.json`);const receipt=path.join(cwd,`done-${negative}.json`);
-   const stat=fs.readFileSync(`/proc/${process.pid}/stat`,'utf8').split(') ').pop().split(' ');
-   const identity=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()+':'+stat[19];
-   fs.writeFileSync(meta,JSON.stringify({owner:{pid:process.pid,identity,pid_namespace:fs.readlinkSync('/proc/self/ns/pid')},side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
+   fs.writeFileSync(meta,JSON.stringify({owner:processOwner(),side:'bb2',job_prefix:'/mnt/bb/jobs/cleanup-control',receipt_file:receipt,argv:[],worktree:cwd,admission_start:new Date().toISOString()}));
    const result=spawnSync(process.execPath,[module,'finish',meta,'0','command'],{encoding:'utf8'});
    assert.equal(result.status,expected,result.stderr);
    const terminal=JSON.parse(fs.readFileSync(receipt));assert.equal(terminal.exit_status,expected);
-   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.outer_cleanup_error,/forced outer cleanup refusal/);
+   assert.equal(terminal.termination,negative?'command':'infra');assert.match(terminal.cleanup_error,/forced outer cleanup refusal/);
   }
  }finally{fs.rmSync(cwd,{recursive:true,force:true});}
 });

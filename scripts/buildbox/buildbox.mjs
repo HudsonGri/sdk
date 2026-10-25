@@ -126,12 +126,12 @@ async function diskGate(argv) {
 function sshRun(cmd, { input, timeout = 60000, host = HOST, connect = 15 } = {}) {
   return new Promise((resolve) => {
     const p = spawn('ssh', [...SSH, '-o', `ConnectTimeout=${connect}`, '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3', host, cmd], { stdio: ['pipe', 'pipe', 'pipe'] });
-    const out = [], err = []; let done = false;
-    const t = setTimeout(() => { if (!done) p.kill('SIGKILL'); }, timeout);
+    const out = [], err = []; let done = false, timedOut = false;
+    const t = setTimeout(() => { if (!done) { timedOut = true; p.kill('SIGKILL'); } }, timeout);
     p.stdout.on('data', (b) => out.push(b)); p.stderr.on('data', (b) => err.push(b));
     p.on('error', (e) => { err.push(Buffer.from(e.message)); });
     p.stdin.on('error', (e) => { err.push(Buffer.from(`stdin: ${e.message}\n`)); });  // remote exited early: its rc says why
-    p.on('close', (code) => { done = true; clearTimeout(t); resolve({ status: code ?? 255, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }); });
+    p.on('close', (code, signal) => { done = true; clearTimeout(t); resolve({ status: code ?? 255, signal, timedOut, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() }); });
     p.stdin.end(input ?? '');
   });
 }
@@ -460,6 +460,20 @@ function identityShared(co) {
   } catch {}
   return id;
 }
+// Variable-size source and launch bytes travel on stdin, never in exec argv.
+// This is the sole constructor for both repository adapters.
+export function gitPrepInvocation(repo, wt, head, J, launch, payload) {
+  const repoArg = repo === 'cloud' ? '' : ` ${repo}`;
+  const prepLease = repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>${q(`/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock`)}; flock -s 6; ` : '';
+  const input = `${prepLease}if [ -e ${q(J + '.wpid')} ]; then echo launched; else
+ o=$(printf '%s' '${payload.toString('base64')}' | base64 -d | /usr/local/bin/bb-git-prep ${q(wt)} ${head}${repoArg}); r=$?
+ printf '%s\n' "$o"; [ $r = 0 ] || exit $r
+ case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac
+ printf '%s' '${Buffer.from(launch).toString('base64')}' | base64 -d | bash
+fi`;
+  return { command: 'bash -s', input: Buffer.from(input) };
+}
+
 // One ssh: prepare the worktree and launch. Returns 'launched', 'unreachable' (ssh could not connect) or 'fallback'.
 async function gitPrepLaunch(co, wt, launch, notes, J, id) {
   let sshFails = 0;
@@ -472,9 +486,8 @@ async function gitPrepLaunch(co, wt, launch, notes, J, id) {
     const t0 = Date.now();
     // Retry-safe: once this job's wrapper exists (an earlier attempt launched it and only its reply was lost), nothing
     // touches the worktree again. cloud's command line is unchanged; other repos name theirs.
-    const repoArg = co.repo === 'cloud' ? '' : ` ${co.repo}`;
-    const prepLease = co.repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock; flock -s 6; ` : '';
-    const r = await sshRun(`${prepLease}if [ -e ${J}.wpid ]; then echo launched; else o=$(/usr/local/bin/bb-git-prep ${q(wt)} ${p.head}${repoArg}); r=$?; printf '%s\n' "$o"; [ $r = 0 ] || exit $r; case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac; echo ${Buffer.from(launch).toString('base64')} | base64 -d | bash; fi`, { input: p.buf, timeout: 300000 });
+    const invocation = gitPrepInvocation(co.repo, wt, p.head, J, launch, p.buf);
+    const r = await sshRun(invocation.command, { input: invocation.input, timeout: 300000 });
     const out = r.stdout.toString();
     if (r.status === 0 && /launched/.test(out)) { writeHave(co, [p.head]); notes.push(`${p.desc}, ${((Date.now() - t0) / 1000).toFixed(1)}s${sshFails ? ` after ${sshFails} ssh retries` : ''}`); return 'launched'; }
     if (r.status === 97) { writeHave(co, out.split('\n').filter((s) => /^[0-9a-f]{40}$/.test(s)), true); notes.push('VM lacked the bundle base; rebundled'); continue; }
@@ -704,7 +717,6 @@ receipt_done() {
   case $rc in 222|224) category=infra;; esac
   [ ! -f $J.interrupted ] || category=interrupted
   [ ! -f $J.cancelled ] || category=cancelled
-  rm -rf -- ${TD}
   node $J.receipt-tool.mjs finish $J.receipt-meta.v2.json $rc $category >> $J.out 2>> $J.err
   finished=$?; [ $finished = 0 ] || rc=$finished
   echo $rc > $J.rc.tmp && mv $J.rc.tmp $J.rc
@@ -716,7 +728,6 @@ trap 'exit 129' HUP
 mkdir -p /mnt/bb/locks/wt-sdk
 exec 6>${leaseFile}
 flock -s 6
-echo $$ > $J.wpid
 while [ "$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)" -lt 24 ] || [ "$(awk -F'[= ]' '/^some/{print int($3)}' /proc/pressure/memory 2>/dev/null || echo 0)" -gt 10 ]; do sleep 5; done
 # Warm restore (2026-10-18, crit-bslot): after a fresh /mnt/bb, bb-warm restore copies sccache back from the persistent disk
 # /mnt/bbp first; jobs wait for it (max 10 min) so no sccache server starts on a half-copied dir.
@@ -761,7 +772,7 @@ chmod go-w ${SH ? `/mnt/bb/targets ${SH} ` : ''}$T /mnt/bb /mnt/bb/home /mnt/bb/
 # scope to var, so jobs (local e2e's heap cgroups, via /home/var/bin/bbcg/systemd-run) can build cgroups inside the job.
 # Only a cgroup that is a bbjobs.slice scope is ever touched.
 S=; [ -e /etc/systemd/system/bbjobs.slice ] && S='systemd-run --scope -q --slice=bbjobs.slice -p Delegate=yes --'
-setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; mount --bind ${src} /work/src && mount --bind '"$T"' /work/target && mount --bind ${TD}/.host-targets /mnt/bb/home/targets && mount --bind ${TD}/.host-src /mnt/bb/home/src && mount --bind ${J}.tmp /tmp && exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh' >> $J.out 2>> $J.err < /dev/null 8>&- &
+setsid sudo -n --preserve-env=BB_CALLER_RLIMITS_JSON $S unshare -m --propagation private bash -c 'C=/sys/fs/cgroup$(sed -n s/^0:://p /proc/self/cgroup); case $C in /sys/fs/cgroup/bbjobs.slice/run-*.scope) { mkdir $C/job && echo $$ > $C/job/cgroup.procs && echo "+cpu +memory +pids" > $C/cgroup.subtree_control && chown var $C $C/cgroup.procs $C/cgroup.subtree_control $C/cgroup.threads && chown -R var $C/job; } || echo "[buildbox] job cgroup delegation failed" >&2;; esac; exec python3 /home/var/bin/bb-job.py outer-setup ${J}.receipt-meta.v2.json.runtime ${J} bash ${J}.setup' >> $J.out 2>> $J.err < /dev/null 8>&- &
 p=$!; echo $p > $J.pid
 node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 # Hang reaper (2026-10-18, crit-bslot): the job's scope cgroup must use 5 s of CPU per 10 min; a job under that (a deadlocked
@@ -782,11 +793,23 @@ node $J.receipt-tool.mjs job $J.receipt-meta.v2.json $p
 wait $p; rc=$?; [ -e $J.ceiling ] && rc=124; [ -e $J.idle ] && rc=124
 # Last use for bb-target-prune's LRU (2026-10-20 lane-loop): it reads the unit dir's own mtime, which builds inside
 # .host-targets/ never change, so an inner-loop target used minutes ago was evicted as the oldest (solo-hib, lane-loop).
-touch ${TD} $T 2>/dev/null || true
+touch ${TD} 2>/dev/null || true
 rm -f $J.sh
-rm -rf -- ${TD}
-rm -rf $J.tmp 2>/dev/null || sudo -n rm -rf $J.tmp
 exit $rc`;
+  // Scratch and mount preparation belong to the same descendant set as the
+  // payload. The constructor publishes custody before this script can run.
+  const setupStart = wrapper.indexOf(`T=${TD}\n`);
+  const setupEnd = wrapper.indexOf('# Each job is its own Delegate=yes scope');
+  if (setupStart < 0 || setupEnd <= setupStart) throw new Error('missing outer setup boundary');
+  const setup = `set -eu\nJ=${J}\n` + wrapper.slice(setupStart, setupEnd) + `
+chown -R var ${TD} ${J}.tmp
+mount --bind ${src} /work/src
+mount --bind "$T" /work/target
+mount --bind ${TD}/.host-targets /mnt/bb/home/targets
+mount --bind ${TD}/.host-src /mnt/bb/home/src
+mount --bind ${J}.tmp /tmp
+exec python3 /home/var/bin/admission_policy.py exec-user var -- bash ${J}.sh`;
+  wrapper = wrapper.slice(0, setupStart) + wrapper.slice(setupEnd);
   const boundary = wrapper.indexOf('while [ "$(awk');
   if (boundary < 0) throw new Error('missing remote admission boundary');
   const admissionSave = q("import {atomic} from '/home/var/bin/buildbox-receipt.mjs';atomic(process.argv[1],{tier:process.env.BB_ADMIT_TIER,tenant:process.env.BB_ADMIT_TENANT,wait_seconds:Number(process.env.BB_ADMIT_WAIT_SECONDS),build_jobs:Number(process.env.CARGO_BUILD_JOBS)});");
@@ -797,16 +820,18 @@ exit $rc`;
 /home/var/bin/bb-admit ${jobTier} ${q(tenant)} -- bash ${J}.admitted >> ${J}.out 2>> ${J}.err
 exit $?`;
   return `set -eu
-J=${J}; mkdir -p /mnt/bb/jobs ${TD} ${src} /mnt/bb/home/src /mnt/bb/home/targets
+J=${J}; mkdir -p /mnt/bb/jobs ${src} /mnt/bb/home/src /mnt/bb/home/targets
 [ ! -e $J.wpid ] || { echo launched; exit 0; }  # idempotent: a retried launch never starts a second job
 echo ${Buffer.from(RECEIPT_TOOL).toString('base64')} | base64 -d > $J.receipt-tool.mjs
 echo ${Buffer.from(JSON.stringify({ ...receipt, ledger: undefined, receipt_file: J + '.receipt.json', log_file: J + '.out', stderr_file: J + '.err', job_prefix: J, side: 'bb2' })).toString('base64')} | base64 -d > $J.receipt-meta.v2.json
 echo ${Buffer.from(inner).toString('base64')} | base64 -d > $J.sh
+echo ${Buffer.from(setup).toString('base64')} | base64 -d > $J.setup
 echo ${Buffer.from(admitted).toString('base64')} | base64 -d > $J.admitted
 echo ${Buffer.from(wrapper).toString('base64')} | base64 -d > $J.wrap
 touch $J.t0 $J.hb $J.out $J.err
 setsid nohup bash $J.wrap > /dev/null 2>&1 < /dev/null &
-for i in $(seq 50); do [ -s $J.wpid ] && break; sleep 0.1; done
+# The launcher owns publication; constructor progress cannot precede its PID.
+echo $! > $J.wpid
 echo launched`;
 }
 
@@ -833,32 +858,55 @@ async function followStream(J, f, sink, st) {
   }
 }
 
-async function remoteRc(J) {
-  const t0 = Date.now();
+async function remoteRc(J, { run = sshRun, pause = sleep, now = Date.now } = {}) {
+  let lostAt = null;
   for (;;) {
-    const r = await sshRun(`cat ${J}.rc 2>/dev/null || { w=$(cat ${J}.wpid 2>/dev/null); [ -n "$w" ] && kill -0 $w 2>/dev/null && echo running || echo gone; }`, { timeout: 45000 });
+    const r = await run(`cat ${J}.rc 2>/dev/null || { w=$(cat ${J}.wpid 2>/dev/null); [ -n "$w" ] && kill -0 $w 2>/dev/null && echo running || echo gone; }`, { timeout: 45000 });
     const s = r.stdout.toString().trim();
     if (r.status === 0 && /^\d+$/.test(s)) return Number(s);
     if (r.status === 0 && s === 'gone') return null;
-    if (Date.now() - t0 > REATTACH_SEC * 1000) return null;
-    await sleep(r.status === 0 ? 2000 : 5000);
+    // A live remote owner is evidence of connectivity, regardless of job age.
+    // Only an uninterrupted loss of valid status consumes the reattach budget.
+    if (r.status === 0 && s === 'running') lostAt = null;
+    else {
+      if (lostAt === null) lostAt = now();
+      if (now() - lostAt > REATTACH_SEC * 1000) return null;
+    }
+    await pause(r.status === 0 ? 2000 : 5000);
   }
 }
 
-async function copyBack(J, top, src, tkey, rel) {
+export function copyBackDestination(group, top, rel, env = process.env) {
+  if (group.target) return env.CARGO_TARGET_DIR || path.join(top, 'target');
+  const destination = env.BUILD_SLOT_REMOTE_FETCH_DIR || path.join(top, rel);
+  if (!path.isAbsolute(destination)) throw new Error('copy-back destination must be absolute');
+  return destination;
+}
+
+function copyBackFailure(stage, file, result) {
+  const evidence = { stage, path: file, exit_status: result.status, signal: result.signal ?? null,
+    timed_out: result.timedOut ?? false, stderr: String(result.stderr || result.error?.message || ''),
+    received_bytes: result.stdout?.length ?? 0 };
+  const error = new Error(`declared-output ${stage} failed (rc ${evidence.exit_status}, signal ${evidence.signal}, timed_out ${evidence.timed_out}): ${evidence.stderr}`);
+  error.copyBack = evidence;
+  return error;
+}
+
+async function copyBack(J, top, src, tkey, rel, { run = sshRun, extract = spawnSync } = {}) {
   if (!(process.env.BUILD_SLOT_REMOTE_FETCH || '').trim()) return;
-  const m = await sshRun(`cat ${J}.exports/manifest.json`, { timeout: 45000 });
-  if (m.status !== 0) throw new Error('missing declared-output manifest');
+  const manifest = `${J}.exports/manifest.json`;
+  const m = await run(`cat ${q(manifest)}`, { timeout: 45000 });
+  if (m.status !== 0) throw copyBackFailure('manifest read', manifest, m);
   for (const group of JSON.parse(m.stdout.toString())) {
-    const result = await sshRun(`cat ${q(group.archive)}`, { timeout: 600000 });
-    if (result.status !== 0) throw new Error('missing declared-output archive');
-    const dest = group.target ? (process.env.CARGO_TARGET_DIR || path.join(top, 'target')) : path.join(top, rel);
+    const result = await run(`cat ${q(group.archive)}`, { timeout: 600000 });
+    if (result.status !== 0) throw copyBackFailure('archive read', group.archive, result);
+    const dest = copyBackDestination(group, top, rel);
     fs.mkdirSync(dest, { recursive: true });
-    const extract = spawnSync('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
-    if (extract.status !== 0) throw new Error(`copy-back extract rc ${extract.status}`);
+    const extracted = extract('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
+    if (extracted.status !== 0) throw copyBackFailure('archive extraction', group.archive, extracted);
     say(`copy-back: ${group.count} file(s) from job export into ${dest}`);
   }
-  await sshRun(`rm -rf -- ${J}.exports`, { timeout: 45000 });
+  await run(`rm -rf -- ${J}.exports`, { timeout: 45000 });
 }
 
 // Returns the job's rc, or 222 when the VM cannot take it (the caller then tries Daytona).
@@ -1040,7 +1088,7 @@ export function beginReceipt(argv) {
 }
 export function endReceipt(ctx, rc) {
   return finish(ctx.metaFile, rc, ctx.termination || ctx.remote?.termination || (cause || rc === 224 || rc === 222 ? 'infra' : rc >= 128 ? 'interrupted' : 'command'),
-    { reason: ctx.failure?.cause || cause || ctx.remote?.reason || null, detail: ctx.failure?.detail || causeDetail || ctx.remote?.detail || null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
+    { reason: ctx.failure?.cause || cause || ctx.remote?.reason || null, detail: ctx.failure?.detail || causeDetail || ctx.remote?.detail || null, copy_back_failure: ctx.copyBackFailure ?? null, remote_receipt: ctx.remote, cache: ctx.remote?.cache, admission: ctx.remote?.admission, disk_free: ctx.remote?.disk_free, home_removed: ctx.remote?.home_removed, home_leaks: ctx.remote?.home_leaks });
 }
 export async function run(argv, sharedReceipt) {
   if (sharedReceipt) return runTracked(argv, sharedReceipt);
@@ -1309,7 +1357,7 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   if (rc === 0 && process.env.BUILD_SLOT_REMOTE_FETCH) jobTdir = String((await sshRun(`cat ${J}.tdir 2>/dev/null`, { timeout: 45000 })).stdout || '').trim();
   if (rc === 0) {
     try { await copyBack(J, top, src, tkey, rel); }
-    catch (e) { say(`copy-back FAILED (${e.message.slice(0, 200)}); the job passed remotely but its declared outputs are not local`); rc = 1; ctx.termination = 'infra'; }
+    catch (e) { say(`copy-back FAILED (${e.message.slice(0, 200)}); the job passed remotely but its declared outputs are not local`); rc = 1; ctx.termination = 'infra'; ctx.copyBackFailure = e.copyBack ?? { stage: 'copy-back', detail: e.message }; }
   }
   if (rc === 0 && vkey && vbytes <= VC_MAX_BYTES) verdictPut(vkey, { at: new Date().toISOString(), rc, wall: Math.round((Date.now() - t0) / 1000), label: process.env.BUILD_SLOT_LABEL || path.basename(cwd), cwd, tree: `${id.commit} ${id.tree} ${id.content}`, cmd: argv.join(' ').slice(0, 300) }, Buffer.concat(vo), Buffer.concat(ve));
   // Keep bb2 logs, metadata and terminal receipt together for accounting/recovery.
