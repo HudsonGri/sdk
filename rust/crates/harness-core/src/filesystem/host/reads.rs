@@ -112,36 +112,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             feature = "native-execution",
             not(target_arch = "wasm32")
         ))]
-        let resolved_skill = if let Some(sources) = self.skill_sources(volume)?
-            && sources.owns_path(volume, path)
-        {
-            let source_generation = expected_generation
-                .filter(|generation| sources.matches(volume, generation, path))
-                .ok_or(Error::ToolRejected {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "private skill source does not match its retained identity",
-                })?;
-            Some(
-                if let Some(retained) = sources.materialized(source_generation)? {
-                    retained
-                } else {
-                    self.materialize_skill(
-                        &sources,
-                        SkillRead {
-                            volume,
-                            grant,
-                            path,
-                            source_generation,
-                            maximum_bytes,
-                            access: crate::conversation::ContentAccess { ceiling, io },
-                        },
-                    )
-                    .await?
-                },
+        let resolved_skill = self
+            .private_skill_generation(
+                (volume, path, expected_generation),
+                grant,
+                maximum_bytes,
+                crate::conversation::ContentAccess { ceiling, io },
             )
-        } else {
-            None
-        };
+            .await?;
         #[cfg(all(
             feature = "filesystem-local",
             feature = "native-execution",
@@ -341,6 +319,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io,
         )
     }
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    async fn private_skill_generation(
+        &self,
+        (volume, path, expected): (&VolumeRef, &str, Option<&GenerationRef>),
+        grant: &ContentGrant,
+        maximum_bytes: u64,
+        access: crate::conversation::ContentAccess<'_, '_>,
+    ) -> Result<Option<GenerationRef>> {
+        let Some(sources) = self.skill_sources(volume)? else {
+            return Ok(None);
+        };
+        if !sources.owns_path(volume, path) {
+            return Ok(None);
+        }
+        let source_generation = expected
+            .filter(|generation| sources.matches(volume, generation, path))
+            .ok_or(Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "private skill source does not match its retained identity",
+            })?;
+        if let Some(retained) = sources.materialized(source_generation)? {
+            return Ok(Some(retained));
+        }
+        self.materialize_skill(
+            &sources,
+            SkillRead {
+                volume,
+                grant,
+                path,
+                source_generation,
+                maximum_bytes,
+                access,
+            },
+        )
+        .await
+        .map(Some)
+    }
+
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
