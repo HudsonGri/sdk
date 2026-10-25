@@ -125,16 +125,6 @@ impl Parent {
                 .bytes,
             context.scope().limits().file_bytes,
         )?;
-        let spawn_grant = if plan.native_input.is_some() {
-            "task:spawn:acyclic.native_host@1"
-        } else {
-            "tool:call:spawn"
-        };
-        if !context.scope().grants().contains(spawn_grant) {
-            return Err(Error::Unauthorized(
-                "child parent lacks the spawn capability".into(),
-            ));
-        }
         let narrowed = crate::task_volume::child_scope(
             context.scope(),
             request.tools.as_deref(),
@@ -153,16 +143,29 @@ impl Parent {
     async fn preparer(
         &self,
         harness: &LocalHarness,
+        native_host: bool,
     ) -> Result<Arc<FilesystemForkPreparer<LocalAuthorityBackend, LocalObjectBackend>>> {
         let VolumeOwner::Agent(agent) = self.private.owner() else {
             return Err(Error::Unauthorized(
                 "child source private volume has no agent".into(),
             ));
         };
-        let signed = harness
-            .runtime
-            .fork_source_scope(self.context.owned_task_binding(None)?.0, self.fence.clone())
-            .await?;
+        let task = self.context.owned_task_binding(None)?.0;
+        let signed = if native_host {
+            let definition = harness
+                .runtime
+                .harness()
+                .task::<Value, Value>(super::super::super::host_task::TASK)?;
+            harness
+                .runtime
+                .fork_source_scope_for_task(task, self.fence.clone(), definition.as_ref())
+                .await?
+        } else {
+            harness
+                .runtime
+                .fork_source_scope(task, self.fence.clone())
+                .await?
+        };
         if signed.agent() != Some(*agent) || signed.capabilities() != self.context.scope().grants()
         {
             return Err(Error::Unauthorized(
@@ -225,7 +228,9 @@ impl<'a> Admission<'a> {
             acyclic_fs::performance::work_budget(65_536, harness.limits.file_bytes),
             &cancellation,
         )?;
-        let preparer = parent.preparer(harness).await?;
+        let preparer = parent
+            .preparer(harness, plan.native_input.is_some())
+            .await?;
         let publisher = harness.input_publisher_with_limit(parent.narrowed.limits().file_bytes)?;
         let source_workspace = io.sdk(
             workspace
