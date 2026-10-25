@@ -427,6 +427,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::initialize_native_mount_services()?;
     let (source, around) = shared_sources(posix_config())?;
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(
