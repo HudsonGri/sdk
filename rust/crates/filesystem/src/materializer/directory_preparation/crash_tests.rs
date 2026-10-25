@@ -35,11 +35,71 @@ fn succeeds(child: Child) -> TestResult {
 
 acyclic_test_support::partitioned_tests! {
     #[test] fn -> TestResult;
-    WRITE_PARTITIONS, 4, publication_writes;
+    WRITE_PARTITIONS, 64, publication_writes;
     0 => every_native_publication_write_recovers_without_stale_capture,
     1 => every_native_publication_write_recovers_without_stale_capture_part_1,
     2 => every_native_publication_write_recovers_without_stale_capture_part_2,
     3 => every_native_publication_write_recovers_without_stale_capture_part_3,
+    4 => every_native_publication_write_recovers_without_stale_capture_part_4,
+    5 => every_native_publication_write_recovers_without_stale_capture_part_5,
+    6 => every_native_publication_write_recovers_without_stale_capture_part_6,
+    7 => every_native_publication_write_recovers_without_stale_capture_part_7,
+    8 => every_native_publication_write_recovers_without_stale_capture_part_8,
+    9 => every_native_publication_write_recovers_without_stale_capture_part_9,
+    10 => every_native_publication_write_recovers_without_stale_capture_part_10,
+    11 => every_native_publication_write_recovers_without_stale_capture_part_11,
+    12 => every_native_publication_write_recovers_without_stale_capture_part_12,
+    13 => every_native_publication_write_recovers_without_stale_capture_part_13,
+    14 => every_native_publication_write_recovers_without_stale_capture_part_14,
+    15 => every_native_publication_write_recovers_without_stale_capture_part_15,
+    16 => every_native_publication_write_recovers_without_stale_capture_part_16,
+    17 => every_native_publication_write_recovers_without_stale_capture_part_17,
+    18 => every_native_publication_write_recovers_without_stale_capture_part_18,
+    19 => every_native_publication_write_recovers_without_stale_capture_part_19,
+    20 => every_native_publication_write_recovers_without_stale_capture_part_20,
+    21 => every_native_publication_write_recovers_without_stale_capture_part_21,
+    22 => every_native_publication_write_recovers_without_stale_capture_part_22,
+    23 => every_native_publication_write_recovers_without_stale_capture_part_23,
+    24 => every_native_publication_write_recovers_without_stale_capture_part_24,
+    25 => every_native_publication_write_recovers_without_stale_capture_part_25,
+    26 => every_native_publication_write_recovers_without_stale_capture_part_26,
+    27 => every_native_publication_write_recovers_without_stale_capture_part_27,
+    28 => every_native_publication_write_recovers_without_stale_capture_part_28,
+    29 => every_native_publication_write_recovers_without_stale_capture_part_29,
+    30 => every_native_publication_write_recovers_without_stale_capture_part_30,
+    31 => every_native_publication_write_recovers_without_stale_capture_part_31,
+    32 => every_native_publication_write_recovers_without_stale_capture_part_32,
+    33 => every_native_publication_write_recovers_without_stale_capture_part_33,
+    34 => every_native_publication_write_recovers_without_stale_capture_part_34,
+    35 => every_native_publication_write_recovers_without_stale_capture_part_35,
+    36 => every_native_publication_write_recovers_without_stale_capture_part_36,
+    37 => every_native_publication_write_recovers_without_stale_capture_part_37,
+    38 => every_native_publication_write_recovers_without_stale_capture_part_38,
+    39 => every_native_publication_write_recovers_without_stale_capture_part_39,
+    40 => every_native_publication_write_recovers_without_stale_capture_part_40,
+    41 => every_native_publication_write_recovers_without_stale_capture_part_41,
+    42 => every_native_publication_write_recovers_without_stale_capture_part_42,
+    43 => every_native_publication_write_recovers_without_stale_capture_part_43,
+    44 => every_native_publication_write_recovers_without_stale_capture_part_44,
+    45 => every_native_publication_write_recovers_without_stale_capture_part_45,
+    46 => every_native_publication_write_recovers_without_stale_capture_part_46,
+    47 => every_native_publication_write_recovers_without_stale_capture_part_47,
+    48 => every_native_publication_write_recovers_without_stale_capture_part_48,
+    49 => every_native_publication_write_recovers_without_stale_capture_part_49,
+    50 => every_native_publication_write_recovers_without_stale_capture_part_50,
+    51 => every_native_publication_write_recovers_without_stale_capture_part_51,
+    52 => every_native_publication_write_recovers_without_stale_capture_part_52,
+    53 => every_native_publication_write_recovers_without_stale_capture_part_53,
+    54 => every_native_publication_write_recovers_without_stale_capture_part_54,
+    55 => every_native_publication_write_recovers_without_stale_capture_part_55,
+    56 => every_native_publication_write_recovers_without_stale_capture_part_56,
+    57 => every_native_publication_write_recovers_without_stale_capture_part_57,
+    58 => every_native_publication_write_recovers_without_stale_capture_part_58,
+    59 => every_native_publication_write_recovers_without_stale_capture_part_59,
+    60 => every_native_publication_write_recovers_without_stale_capture_part_60,
+    61 => every_native_publication_write_recovers_without_stale_capture_part_61,
+    62 => every_native_publication_write_recovers_without_stale_capture_part_62,
+    63 => every_native_publication_write_recovers_without_stale_capture_part_63,
 }
 
 fn publication_writes(selected: Vec<usize>) -> TestResult {
@@ -63,8 +123,16 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, *partition, |index| {
             index == 0 || index + 1 == total
         })?;
+    // The measured transition has 299 crash positions. Four partitions still
+    // admitted 76 durable cut/recovery pairs each. Keep the complete registry,
+    // including both witnesses, while bounding one fixture to seven pairs.
+    assert!(
+        assigned.len() <= 7,
+        "publication fixture exceeds its cut allowance"
+    );
     eprintln!("publication partition {partition}: {assigned:?} of {total} measured cuts");
     for index in assigned {
+        let started = std::time::Instant::now();
         let cut = u64::try_from(index)?.checked_add(1).ok_or("cut overflow")?;
         let path = root.path().join(cut.to_string());
         let output = spawn(&path, Some(cut))?.wait_with_output()?;
@@ -81,6 +149,7 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
             b"rebased generation"
         );
         assert_eq!(std::fs::read(path.join("checkout/added"))?, b"new file");
+        eprintln!("publication cut {cut} recovered in {:?}", started.elapsed());
     }
     Ok(())
 }
