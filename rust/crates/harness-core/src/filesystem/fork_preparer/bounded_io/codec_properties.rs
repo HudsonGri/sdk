@@ -182,3 +182,111 @@ fn codec_accounting_negative_controls() {
         }
     }
 }
+
+fn old_native_buffer(
+    custody: &mut acyclic_fs::NativeAllocation,
+    charge: JsonCodecCharge,
+) -> Result<()> {
+    use acyclic_fs::{NativeTreeMaterializationError, WorkError};
+    if let JsonCodecCharge::Release { bytes } = charge {
+        return custody.release(bytes).map_err(crate::Error::from);
+    }
+    use crate::store::HistoryIo;
+    let work = custody.work();
+    work.cancellation()
+        .check()
+        .map_err(|_| NativeTreeMaterializationError::Cancelled)?;
+    match charge {
+        JsonCodecCharge::Read { bytes } => work
+            .charge(WorkCounters {
+                source_bytes_read: bytes,
+                ..WorkCounters::default()
+            })
+            .map_err(crate::Error::from),
+        JsonCodecCharge::Admission {
+            maximum_owned_bytes,
+            ..
+        } => {
+            custody.resize(maximum_owned_bytes)?;
+            Ok(())
+        }
+        JsonCodecCharge::Retain { bytes } => {
+            let retained = custody
+                .bytes()
+                .checked_add(bytes)
+                .ok_or(NativeTreeMaterializationError::Work(WorkError::Overflow))?;
+            custody.resize(retained)?;
+            Ok(())
+        }
+        JsonCodecCharge::Release { .. } => unreachable!(),
+        charge => crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )
+        .codec_charge(charge),
+    }
+}
+
+#[test]
+fn native_buffer_codec_matches_the_former_adapter_at_every_limit() {
+    use JsonCodecCharge as Charge;
+    let events = [
+        Charge::Inspect { items: 1 },
+        Charge::Work { bytes: 3, items: 2 },
+        Charge::CopyAdmission { bytes: 4 },
+        Charge::Copy { bytes: 4 },
+        Charge::AllocationOperation { bytes: 8 },
+        Charge::AllocationOperations { operations: 3 },
+        Charge::Read { bytes: 5 },
+        Charge::Retain { bytes: 8 },
+        Charge::Release { bytes: 8 },
+        Charge::Work {
+            bytes: u64::MAX,
+            items: u64::MAX,
+        },
+    ];
+    for mode in 0..4 {
+        for limit in [0, 3, 128, u64::MAX] {
+            for cancel_at in [None, Some(0), Some(4), Some(8)] {
+                let run = |old: bool| {
+                    let cancellation = CancellationToken::new();
+                    let mut budget = acyclic_fs::performance::work_budget(128, 16_000_000);
+                    budget.bytes_encoded = limit;
+                    budget.source_bytes_read = limit;
+                    budget.items_examined = limit;
+                    budget.bytes_copied = limit;
+                    let work =
+                        acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+                    let work = if mode & 1 != 0 {
+                        work.native_volume_work(budget).unwrap()
+                    } else {
+                        work
+                    };
+                    let work = if mode & 2 != 0 {
+                        work.invocation_window().unwrap()
+                    } else {
+                        work
+                    };
+                    let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+                    let mut trace = Vec::new();
+                    for (step, event) in events.into_iter().enumerate() {
+                        if cancel_at == Some(step) {
+                            cancellation.cancel();
+                        }
+                        let result = if old {
+                            old_native_buffer(&mut custody, event)
+                        } else {
+                            PreparationIo::native_buffer_codec_charge(&mut custody, event)
+                        };
+                        trace.push((format!("{result:?}"), work.receipt(), custody.bytes()));
+                    }
+                    trace
+                };
+                assert_eq!(
+                    run(false),
+                    run(true),
+                    "mode={mode} limit={limit} cancellation={cancel_at:?}"
+                );
+            }
+        }
+    }
+}

@@ -453,51 +453,8 @@ impl PreparationIo {
 
     #[doc(hidden)]
     pub fn codec_charge(&self, charge: Charge, encode: bool) -> Result<()> {
-        let next = match charge {
-            Charge::Retain { bytes } => return self.retain_owned(bytes).map_err(Into::into),
-            Charge::Release { bytes } => return self.release(bytes).map_err(Into::into),
-            Charge::AllocationOperation { bytes } => return self.allocation_attempt(bytes),
-            Charge::AllocationOperations { operations } => WorkCounters {
-                allocation_operations: operations,
-                ..Default::default()
-            },
-            Charge::CopyAdmission { bytes } => {
-                return self
-                    .preflight(WorkCounters {
-                        bytes_copied: bytes,
-                        ..Default::default()
-                    })
-                    .map_err(Into::into);
-            }
-            Charge::Admission { .. } => {
-                return Err(self.invalid("trusted decode admission requires a scoped reservation"));
-            }
-            Charge::Copy { bytes } => WorkCounters {
-                bytes_copied: bytes,
-                ..Default::default()
-            },
-            Charge::Read { bytes } => WorkCounters {
-                source_bytes_read: bytes,
-                ..Default::default()
-            },
-            Charge::Inspect { items } => WorkCounters {
-                items_examined: items,
-                ..Default::default()
-            },
-            Charge::Work { bytes, items } => WorkCounters {
-                bytes_encoded: if encode { bytes } else { 0 },
-                source_bytes_read: if encode { 0 } else { bytes },
-                items_examined: items,
-                ..Default::default()
-            },
-        };
-        // Charging admits under the same ledger guard before changing counters.
-        // Keep native denials typed, including at an exhausted allocation limit.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(native) = self.original_native_work() {
-            return native.charge(next).map_err(Into::into);
-        }
-        self.charge(next).map_err(Into::into)
+        let mut accounting = self;
+        charge_codec(&mut accounting, charge, encode)
     }
 }
 
@@ -546,4 +503,146 @@ pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -
     io.retain_owned((text.capacity() - capacity) as u64)?;
     io.charge(copied)?;
     Ok(text)
+}
+
+// One event interpretation for owned preparation and borrowed native buffers.
+// Adapters only provide custody and original-ledger operations.
+trait CodecAccounting {
+    fn retain(&mut self, bytes: u64) -> Result<()>;
+    fn release(&mut self, bytes: u64) -> Result<()>;
+    fn allocation_attempt(&mut self, bytes: u64) -> Result<()>;
+    fn admit_copy(&mut self, bytes: u64) -> Result<()>;
+    fn charge(&mut self, next: WorkCounters) -> Result<()>;
+    fn admission(&mut self, bytes: u64) -> Result<()>;
+}
+
+impl CodecAccounting for &PreparationIo {
+    fn retain(&mut self, bytes: u64) -> Result<()> {
+        self.retain_owned(bytes).map_err(Into::into)
+    }
+    fn release(&mut self, bytes: u64) -> Result<()> {
+        PreparationIo::release(self, bytes).map_err(Into::into)
+    }
+    fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
+        PreparationIo::allocation_attempt(self, bytes)
+    }
+    fn admit_copy(&mut self, bytes: u64) -> Result<()> {
+        self.preflight(WorkCounters {
+            bytes_copied: bytes,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(Into::into)
+    }
+    fn charge(&mut self, next: WorkCounters) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = self.original_native_work() {
+            return native.charge(next).map_err(Into::into);
+        }
+        PreparationIo::charge(self, next).map_err(Into::into)
+    }
+    fn admission(&mut self, _: u64) -> Result<()> {
+        Err(self.invalid("trusted decode admission requires a scoped reservation"))
+    }
+}
+
+fn charge_codec(accounting: &mut impl CodecAccounting, charge: Charge, encode: bool) -> Result<()> {
+    let next = match charge {
+        Charge::Retain { bytes } => return accounting.retain(bytes),
+        Charge::Release { bytes } => return accounting.release(bytes),
+        Charge::AllocationOperation { bytes } => return accounting.allocation_attempt(bytes),
+        Charge::CopyAdmission { bytes } => return accounting.admit_copy(bytes),
+        Charge::Admission {
+            maximum_owned_bytes,
+            ..
+        } => return accounting.admission(maximum_owned_bytes),
+        Charge::AllocationOperations { operations } => WorkCounters {
+            allocation_operations: operations,
+            ..WorkCounters::UNCHARGED
+        },
+        Charge::Copy { bytes } => WorkCounters {
+            bytes_copied: bytes,
+            ..WorkCounters::UNCHARGED
+        },
+        Charge::Read { bytes } => WorkCounters {
+            source_bytes_read: bytes,
+            ..WorkCounters::UNCHARGED
+        },
+        Charge::Inspect { items } => WorkCounters {
+            items_examined: items,
+            ..WorkCounters::UNCHARGED
+        },
+        Charge::Work { bytes, items } => WorkCounters {
+            bytes_encoded: if encode { bytes } else { 0 },
+            source_bytes_read: if encode { 0 } else { bytes },
+            items_examined: items,
+            ..WorkCounters::UNCHARGED
+        },
+    };
+    accounting.charge(next)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeBuffer<'a>(&'a mut acyclic_fs::NativeAllocation);
+#[cfg(not(target_arch = "wasm32"))]
+impl CodecAccounting for NativeBuffer<'_> {
+    fn retain(&mut self, bytes: u64) -> Result<()> {
+        let retained = self.0.bytes().checked_add(bytes).ok_or(
+            acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+        )?;
+        self.0.resize(retained).map_err(Into::into)
+    }
+    fn release(&mut self, bytes: u64) -> Result<()> {
+        self.0.release(bytes).map_err(Into::into)
+    }
+    fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
+        self.charge(WorkCounters {
+            allocation_operations: u64::from(bytes != 0),
+            ..WorkCounters::UNCHARGED
+        })
+    }
+    fn admit_copy(&mut self, bytes: u64) -> Result<()> {
+        let work = self.0.work();
+        KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        }
+        .admit(WorkCounters {
+            bytes_copied: bytes,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(Into::into)
+    }
+    fn charge(&mut self, next: WorkCounters) -> Result<()> {
+        self.0.work().charge(next).map_err(Into::into)
+    }
+    fn admission(&mut self, bytes: u64) -> Result<()> {
+        self.0.resize(bytes).map_err(Into::into)
+    }
+}
+
+impl PreparationIo {
+    /// Charges a JSON event against an existing native buffer and its original
+    /// ledger. No preparation owner or replacement allocation is constructed.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_buffer_codec_charge(
+        custody: &mut acyclic_fs::NativeAllocation,
+        charge: Charge,
+    ) -> Result<()> {
+        if !matches!(charge, Charge::Release { .. }) {
+            custody
+                .work()
+                .cancellation()
+                .check()
+                .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
+            // Preserve the former owner's validation of existing allowance
+            // before proposing work, without constructing that temporary owner.
+            if !matches!(
+                charge,
+                Charge::Read { .. } | Charge::Retain { .. } | Charge::Admission { .. }
+            ) {
+                custody.work().remaining()?;
+            }
+        }
+        charge_codec(&mut NativeBuffer(custody), charge, true)
+    }
 }

@@ -165,6 +165,8 @@ impl PreparationIo {
     /// Uses the original native invocation's ledger and execution lease.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        #[cfg(any(test, feature = "test-support"))]
+        acyclic_differential::record(("native-preparation-owner", 0_u64));
         work.remaining()?;
         Ok(Self::Native {
             work: work.clone(),

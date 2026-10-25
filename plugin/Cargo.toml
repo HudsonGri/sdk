@@ -55,6 +55,7 @@ windows-sys = { version = "0.61.2", features = [
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+acyclic-harness = { path = "../rust/crates/harness", default-features = false, features = ["test-support"] }
 acyclic-test-support = { path = "../rust/crates/test-support" }
 tokio = { workspace = true, features = ["test-util"] }
 async-trait.workspace = true

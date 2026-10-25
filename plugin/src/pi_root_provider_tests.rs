@@ -1341,3 +1341,50 @@ async fn staged_durable_inputs_are_canonical_json() {
         })
     ));
 }
+
+#[test]
+fn native_buffer_codec_keeps_the_existing_preparation_owner() {
+    use acyclic_fs::WorkCounters;
+    use acyclic_harness::executor::json::JsonCodecCharge as Charge;
+    let (receipt, trace) = acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+        || {
+            let work = crate::pi_fork::tests::work();
+            let custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+            (work, custody)
+        },
+        |(work, mut custody)| {
+            let before = work.receipt();
+            for charge in [
+                Charge::Inspect { items: 1 },
+                Charge::Work { bytes: 3, items: 2 },
+                Charge::CopyAdmission { bytes: 4 },
+                Charge::Copy { bytes: 4 },
+                Charge::AllocationOperation { bytes: 1 },
+                Charge::AllocationOperations { operations: 2 },
+                Charge::Read { bytes: 5 },
+                Charge::Retain { bytes: 8 },
+                Charge::Release { bytes: 8 },
+            ] {
+                super::native_buffer_codec_charge(&mut custody, charge).unwrap();
+            }
+            assert_eq!(custody.bytes(), 0);
+            let after = work.receipt();
+            assert_eq!(after.items_examined - before.items_examined, 3);
+            assert_eq!(after.bytes_encoded - before.bytes_encoded, 3);
+            assert_eq!(after.bytes_copied - before.bytes_copied, 4);
+            assert_eq!(after.source_bytes_read - before.source_bytes_read, 5);
+            assert_eq!(
+                after.allocation_operations - before.allocation_operations,
+                3
+            );
+            after
+        },
+    );
+    assert!(receipt.items_examined >= 3);
+    assert!(
+        !trace
+            .iter()
+            .any(|(kind, _)| *kind == "native-preparation-owner"),
+        "per-event preparation owners: {trace:?}"
+    );
+}
