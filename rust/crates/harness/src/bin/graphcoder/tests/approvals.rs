@@ -350,7 +350,7 @@ impl Fixture {
                 ),
                 1 => {
                     let result = tool_result(body);
-                    let file = result["file"].clone();
+                    let file = result.get("file").expect("setup write file").clone();
                     assert!(
                         file.is_object(),
                         "setup write did not return its immutable file: {result}"
@@ -610,6 +610,31 @@ struct Followed {
     submitted: bool,
     saw_decision: bool,
 }
+
+fn read_setup_approval(case: Case, file: &FileValue) -> bool {
+    if !case.read_file() {
+        return false;
+    }
+    let interaction: acyclic_harness::interaction::Interaction =
+        serde_json::from_slice(&file.bytes).unwrap();
+    let acyclic_harness::interaction::Interaction::Approval {
+        subject: acyclic_harness::interaction::ApprovalSubject::Tool { tool, arguments, .. },
+        ..
+    } = interaction else {
+        panic!("read call lost its exact approval subject")
+    };
+    if tool == "read" {
+        let input: acyclic_harness::tool::files::ReadFileInput =
+            serde_json::from_value(arguments).unwrap();
+        assert_eq!(input.file.path(), "probe.txt");
+        assert!(input.range.is_none());
+        false
+    } else {
+        assert_eq!(tool, "write", "unexpected setup approval");
+        true
+    }
+}
+
 impl Followed {
     fn observe(&mut self, case: Case, file: FileValue, stdin: &mut impl std::io::Write) {
         match &file.key {
@@ -617,28 +642,7 @@ impl Followed {
                 task,
                 file: TaskFile::ApprovalRequest(request),
             } => {
-                if case.read_file() {
-                    let interaction: acyclic_harness::interaction::Interaction =
-                        serde_json::from_slice(&file.bytes).unwrap();
-                    let acyclic_harness::interaction::Interaction::Approval {
-                        subject:
-                            acyclic_harness::interaction::ApprovalSubject::Tool {
-                                tool, arguments, ..
-                            },
-                        ..
-                    } = interaction
-                    else {
-                        panic!("read call lost its exact approval subject")
-                    };
-                    if tool == "read" {
-                        let input: acyclic_harness::tool::files::ReadFileInput =
-                            serde_json::from_value(arguments).unwrap();
-                        assert_eq!(input.file.path(), "probe.txt");
-                        assert!(input.range.is_none());
-                    } else {
-                        assert_eq!(tool, "write", "unexpected setup approval");
-                    }
-                }
+                read_setup_approval(case, &file);
                 self.requests.insert((task.clone(), request.clone()), file);
             }
             FileKey::Task {
@@ -695,10 +699,7 @@ impl Followed {
                     "{case:?}: {:?}",
                     file.key
                 );
-                let setup_write = case.read_file() && {
-                    let interaction: Value = serde_json::from_slice(&request.bytes).unwrap();
-                    interaction["subject"]["tool"] == "write"
-                };
+                let setup_write = read_setup_approval(case, request);
                 let root_tool =
                     setup_write || ((case.parent() || case.child_human()) && task == &self.root);
                 if !root_tool {
