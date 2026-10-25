@@ -56,14 +56,16 @@ pub(super) fn write_pipe(
         writer.0 = Some(std::sync::Arc::clone(&operation));
         operation
     };
-    match operation.take_written() {
-        Some(Ok(written)) => return Ok((Some(written), Ok(()))),
-        Some(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe => {
+    match operation.write_state() {
+        super::events::WriteState::Completed(Ok(written)) => return Ok((Some(written), Ok(()))),
+        super::events::WriteState::Completed(Err(error))
+            if error.kind() == io::ErrorKind::BrokenPipe =>
+        {
             return Ok((Some(0), Ok(())));
         }
-        Some(Err(error)) => return Err(error),
-        None if operation.pending() => return Ok((None, Ok(()))),
-        None => {}
+        super::events::WriteState::Completed(Err(error)) => return Err(error),
+        super::events::WriteState::Pending => return Ok((None, Ok(()))),
+        super::events::WriteState::Idle => {}
     }
     let (written, recorded) =
         super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {

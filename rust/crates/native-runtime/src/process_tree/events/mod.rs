@@ -27,7 +27,7 @@ mod platform;
 mod platform;
 
 #[cfg(windows)]
-pub(super) use platform::PipeOperation;
+pub(super) use platform::{PipeOperation, WriteState};
 
 #[cfg(test)]
 mod tests;
