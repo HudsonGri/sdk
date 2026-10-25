@@ -142,7 +142,7 @@ impl StockExecution<'_> {
             Some(ExecutionProgress::Rejected(reason))
                 if reason != crate::InteractionRejection::Cancelled =>
             {
-                let crate::Interaction::Approval { prompt, .. } = request else {
+                let Interaction::Approval { prompt, .. } = request else {
                     return Err(stock_boundary(self.io, crate::wire::ErrorCode::Conflict, "hook approval has no approval request"));
                 };
                 Ok(Some(HookApprovalStop::Refused(reason, prompt)))
