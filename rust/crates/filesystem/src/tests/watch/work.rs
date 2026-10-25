@@ -16,7 +16,7 @@ pub(super) fn measured_watch_startup_work() -> WorkCounters {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
-fn ordinary_watch_retains_preparation_custody_and_owns_polled_storage()
+fn ordinary_watch_retains_preparation_custody_through_shutdown()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
@@ -38,19 +38,47 @@ fn ordinary_watch_retains_preparation_custody_and_owns_polled_storage()
     assert_eq!(birth.receipt(), opened.work);
     assert!(opened.work.backend_read_operations >= 2);
     watch.accept_lazy_baseline_with_native_work(&birth)?;
-    let polled = watch.poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-    let WatchBatch::Changes { original, .. } = &polled.value else {
-        return Err("quiet admitted watch lost continuity".into());
-    };
-    assert!(original.has_native_changes_storage_custody());
     cancellation.cancel();
     let fresh =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
     assert!(watch.shutdown_with_native_work(&fresh)?);
     assert!(watch.held_root.root.is_none());
-    // The interval, including its storage owner, remains valid after producer
-    // shutdown and after the invocation which prepared that producer cancels.
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn ordinary_poll_returns_storage_custody_after_producer_shutdown()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let birth_cancel = CancellationToken::new();
+    let birth = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &birth_cancel)
+        .map_err(|(error, _)| error)?;
+    let mut options = measured_watch_options();
+    options.recursive = cfg!(target_os = "macos");
+    // An explicit native constructor keeps this oracle independent of ordinary
+    // startup custody, so each public entry point has its own causal control.
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
+        directory.path(),
+        FilesystemProfile::Portable,
+        options,
+        &birth,
+    )?;
+    watch.accept_lazy_baseline_with_native_work(&birth)?;
+    let polling = CancellationToken::new();
+    let polled = watch.poll(1, WorkBudget::UNBOUNDED, &polling)?;
+    let WatchBatch::Changes { original, .. } = &polled.value else {
+        return Err("quiet admitted watch lost continuity".into());
+    };
+    assert!(original.has_native_changes_storage_custody());
+    birth_cancel.cancel();
+    polling.cancel();
+    let fresh =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    assert!(watch.shutdown_with_native_work(&fresh)?);
+    // The returned interval survives both its producer and cancelled invocations.
     assert!(matches!(&polled.value, WatchBatch::Changes { changes, .. } if changes.is_empty()));
     Ok(())
 }

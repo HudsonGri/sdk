@@ -9,17 +9,12 @@ type Candidate = Checkout<LocalAuthorityBackend, LocalObjectBackend>;
 pub(super) const MAXIMUM_RESCANS: usize = 4;
 
 impl Cursor {
-    fn poll(
-        &mut self,
-        cancellation: &CancellationToken,
-    ) -> Result<(WatchBatch, Option<acyclic_fs::NativeAllocation>)> {
-        Ok((
-            self.watcher
-                .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)
-                .map_err(storage)?
-                .value,
-            None,
-        ))
+    fn poll(&mut self, cancellation: &CancellationToken) -> Result<WatchBatch> {
+        Ok(self
+            .watcher
+            .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)
+            .map_err(storage)?
+            .value)
     }
 
     async fn baseline(
@@ -155,8 +150,8 @@ async fn drain(
     let mut remaining = MAXIMUM_PATHS as usize;
     let mut pending = None;
     loop {
-        // Keep the producer's vector guard alive until replay has consumed it.
-        let (batch, _owner) = match pending.take() {
+        // The batch carries its vector custody through replay.
+        let batch = match pending.take() {
             Some(batch) => batch,
             None => cursor.poll(cancellation)?,
         };
@@ -187,7 +182,7 @@ async fn drain(
         // fence here: FSEvents correctly cannot promise synchronous delivery.
         if empty {
             let validated = cursor.poll(cancellation)?;
-            if matches!(&validated.0, WatchBatch::Changes { changes, .. } if changes.is_empty()) {
+            if matches!(&validated, WatchBatch::Changes { changes, .. } if changes.is_empty()) {
                 return Ok(true);
             }
             pending = Some(validated);
