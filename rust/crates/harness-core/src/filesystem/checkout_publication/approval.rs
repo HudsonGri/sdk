@@ -93,12 +93,12 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
             .publication
             ._custody
             .work()
-            .shares_allocation_context(work)
+            .shares_invocation_context(work)
             || self
                 .journal
                 .custody
                 .as_ref()
-                .is_none_or(|custody| !custody.work().shares_allocation_context(work))
+                .is_none_or(|custody| !custody.work().shares_invocation_context(work))
         {
             return Err(Error::Unauthorized(
                 "checkout approval changed its original work owner".into(),

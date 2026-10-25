@@ -464,48 +464,58 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
 
 #[tokio::test]
 async fn selected_approval_refuses_a_foreign_work_owner() -> TestResult {
-    let fixture = Fixture::new().await?;
-    let publication = fixture.publication(OperationId::new())?;
-    let options = MaterializeOptions::native(publication.directory().join("target"));
-    let paths = vec!["note".into()];
-    let journal = publication
-        .prepare_selected(
+    for kind in 0..3 {
+        let mut fixture = Fixture::new().await?;
+        let parent = fixture.work.clone();
+        fixture.work = parent.invocation_view()?.0;
+        let publication = fixture.publication(OperationId::new())?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        let paths = vec!["note".into()];
+        let journal = publication
+            .prepare_selected(
+                &fixture.from,
+                &fixture.to,
+                &fixture.state,
+                &options,
+                &fixture.work,
+                (&paths, "original creator"),
+            )
+            .await?;
+        let approval = publication.approval_value(
             &fixture.from,
             &fixture.to,
-            &fixture.state,
-            &options,
-            &fixture.work,
-            (&paths, "original creator"),
-        )
-        .await?;
-    let approval = publication.approval_value(
-        &fixture.from,
-        &fixture.to,
-        &paths,
-        &journal,
-        "original creator",
-    )?;
-    let digest = approval.digest(&fixture.work)?;
-    let interaction = crate::InteractionId::from_bytes([101; 16]);
-    let verifier = PublicationDecision {
-        id: interaction,
-        operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
-        digest,
-        approved: true,
-    };
-    let foreign = NativeMaterializationWork::new(fixture.work.budget(), &CancellationToken::new())
-        .map_err(|(cause, _)| cause)?;
-    assert!(!foreign.shares_allocation_context(&fixture.work));
-    fixture.work.cancellation().cancel();
-    assert!(
-        matches!(
-            approval.authorize(&verifier, interaction, &digest, &foreign).await,
-            Err(crate::Error::Unauthorized(message))
-                if message == "checkout approval changed its original work owner"
-        ),
-        "foreign work owner authorized"
-    );
-    assert!(!fixture.root.join("note").exists());
+            &paths,
+            &journal,
+            "original creator",
+        )?;
+        let digest = approval.digest(&fixture.work)?;
+        let interaction = crate::InteractionId::from_bytes([101; 16]);
+        let verifier = PublicationDecision {
+            id: interaction,
+            operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
+            digest,
+            approved: true,
+        };
+        let foreign = match kind {
+            0 => NativeMaterializationWork::new(fixture.work.budget(), &CancellationToken::new())
+                .map_err(|(cause, _)| cause)?,
+            1 => parent,
+            _ => fixture.work.native_volume_work(fixture.work.budget())?,
+        };
+        assert!(!foreign.shares_invocation_context(&fixture.work));
+        if kind != 2 {
+            fixture.work.cancellation().cancel();
+        }
+        assert!(
+            matches!(
+                approval.authorize(&verifier, interaction, &digest, &foreign).await,
+                Err(crate::Error::Unauthorized(message))
+                    if message == "checkout approval changed its original work owner"
+            ),
+            "foreign work owner authorized"
+        );
+        assert!(!fixture.root.join("note").exists());
+    }
     Ok(())
 }
 
