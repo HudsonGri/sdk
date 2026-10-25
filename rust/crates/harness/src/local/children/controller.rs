@@ -617,7 +617,9 @@ fn release_completed(
         if *accepted > position {
             break;
         }
-        let (_, reference) = completions.pop_first().expect("observed first completion");
+        let Some((_, reference)) = completions.pop_first() else {
+            unreachable!("the exclusively borrowed set contains its observed completion");
+        };
         active.remove(&reference);
         ready.insert(reference);
     }

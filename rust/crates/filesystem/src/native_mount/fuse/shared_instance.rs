@@ -42,6 +42,49 @@ struct InstanceState {
     guard: Option<MountDestinationGuard>,
 }
 
+impl InstanceState {
+    fn detach(&mut self, path: &std::ffi::CStr, root: &Path) -> bool {
+        let mut detached = !self.mount.pending();
+        if !detached {
+            let device = self.device.as_ref().map(std::os::fd::AsFd::as_fd);
+            match self.mount.stop(path, device) {
+                Ok(()) => {
+                    detached = device
+                        .is_none_or(|device| self.mount.device_detached(device).unwrap_or(false))
+                        || !self.mount.pending();
+                }
+                Err(error) => {
+                    tracing::warn!(%error, root = %root.display(), "shared FUSE unmount failed");
+                }
+            }
+        }
+        if !detached {
+            // Busy: detach the namespace now; the kernel ends the connection,
+            // and with it the worker, once the last open file closes.
+            match nix::mount::umount2(path, nix::mount::MntFlags::MNT_DETACH) {
+                Ok(()) => detached = true,
+                Err(error) => {
+                    tracing::warn!(%error, root = %root.display(), "shared FUSE detach failed");
+                }
+            }
+            drop(self.worker.take());
+        }
+        detached
+    }
+
+    fn join_worker(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "shared FUSE session ended with an error");
+                }
+                Err(_) => tracing::warn!("shared FUSE session panicked"),
+            }
+        }
+    }
+}
+
 /// One view of a shared instance. Dropping it retires the view, and the last
 /// view's drop tears the instance down.
 pub(in crate::native_mount) struct SharedFuseView {
@@ -135,40 +178,8 @@ impl SharedFuseInstance {
         let Ok(path) = std::ffi::CStr::from_bytes_with_nul(&self.path) else {
             return;
         };
-        let mut detached = !state.mount.pending();
-        if !detached {
-            let device = state.device.as_ref().map(std::os::fd::AsFd::as_fd);
-            match state.mount.stop(path, device) {
-                Ok(()) => {
-                    detached = device
-                        .is_none_or(|device| state.mount.device_detached(device).unwrap_or(false))
-                        || !state.mount.pending();
-                }
-                Err(error) => {
-                    tracing::warn!(%error, root = %self.root.display(), "shared FUSE unmount failed");
-                }
-            }
-        }
-        if !detached {
-            // Busy: detach the namespace now; the kernel ends the connection,
-            // and with it the worker, once the last open file closes.
-            match nix::mount::umount2(path, nix::mount::MntFlags::MNT_DETACH) {
-                Ok(()) => detached = true,
-                Err(error) => {
-                    tracing::warn!(%error, root = %self.root.display(), "shared FUSE detach failed");
-                }
-            }
-            drop(state.worker.take());
-        }
-        if let Some(worker) = state.worker.take() {
-            match worker.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "shared FUSE session ended with an error");
-                }
-                Err(_) => tracing::warn!("shared FUSE session panicked"),
-            }
-        }
+        let detached = state.detach(path, &self.root);
+        state.join_worker();
         self.views.stop_invalidator();
         if let Some(invalidator) = state.invalidator.take()
             && invalidator.join().is_err()
@@ -177,10 +188,8 @@ impl SharedFuseInstance {
         }
         state.device.take();
         if let Some(mut guard) = state.guard.take() {
-            if detached {
-                if let Err(error) = guard.release_cleanup(None) {
-                    tracing::warn!(%error, "shared FUSE fence release failed");
-                }
+            if detached && let Err(error) = guard.release_cleanup(None) {
+                tracing::warn!(%error, "shared FUSE fence release failed");
             }
             // An undetached root keeps its fence file; the next start for the
             // root detaches it.

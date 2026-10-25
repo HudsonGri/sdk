@@ -427,6 +427,7 @@ impl HostWorkspace {
             source.prepare_command().await?;
             let root = workspace::volumes::projection_root(&source.destination, relative)?;
             let options = volume_guard::options(
+                source.options.clone(),
                 Arc::clone(self.verify(context).await?),
                 Arc::clone(&self.mount_root),
                 mount.mode.read_only(),

@@ -297,8 +297,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
         root,
         source.view_stamp_with_meter(&original)?,
         true,
-        0,
-        0,
+        (0, 0),
         0,
         &original,
     )?;

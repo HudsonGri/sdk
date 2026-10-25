@@ -59,29 +59,7 @@ impl Opening {
         if let Some((model, _)) = &config.model {
             model.validate()?;
         }
-        let mut tools = ToolRegistry::default();
-        if config.default_tools {
-            crate::tools::bind_defaults(
-                &mut tools,
-                &mut Vec::new(),
-                None,
-                true,
-                cfg!(any(test, feature = "native-execution")),
-            )?;
-        }
-        for tool in std::mem::take(&mut config.tools) {
-            tools.register((tool, None), &mut None, None)?;
-        }
-        #[cfg(feature = "search-http")]
-        if passive && config.web_tools {
-            return Err(Error::Invalid(
-                "native host coordination cannot register web tools".into(),
-            ));
-        }
-        #[cfg(feature = "search-http")]
-        if config.web_tools {
-            web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
-        }
+        let tools = configure_tools(&mut config)?;
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let settings_configuration = if passive {
             None
@@ -495,6 +473,33 @@ impl PrivateVolumes {
             task_volume,
         })
     }
+}
+
+fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
+    let mut tools = ToolRegistry::default();
+    if config.default_tools {
+        crate::tools::bind_defaults(
+            &mut tools,
+            &mut Vec::new(),
+            None,
+            true,
+            cfg!(any(test, feature = "native-execution")),
+        )?;
+    }
+    for tool in std::mem::take(&mut config.tools) {
+        tools.register((tool, None), &mut None, None)?;
+    }
+    #[cfg(feature = "search-http")]
+    if config.model.is_none() && config.web_tools {
+        return Err(Error::Invalid(
+            "native host coordination cannot register web tools".into(),
+        ));
+    }
+    #[cfg(feature = "search-http")]
+    if config.web_tools {
+        web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
+    }
+    Ok(tools)
 }
 
 /// This owner's process custody. The first owner of the directory in this

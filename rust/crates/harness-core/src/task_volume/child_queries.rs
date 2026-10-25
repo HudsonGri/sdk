@@ -276,7 +276,10 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     fn reference(n: u32) -> Component {
-        Component::new(format!("worker-{n:06}")).unwrap()
+        match Component::new(format!("worker-{n:06}")) {
+            Ok(reference) => reference,
+            Err(_) => unreachable!("a u32 decimal child reference satisfies the component grammar"),
+        }
     }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
