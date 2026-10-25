@@ -447,6 +447,7 @@ fn physical_projfs_stop_joins_last_lease_after_caller_poll_bank_exhaustion()
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::ProjFsStop)
 }
 
+#[derive(Clone, Copy)]
 enum PhysicalCleanupPath {
     Source,
     DriverPacket,
