@@ -136,11 +136,10 @@ native_mount_tests() {
     --ignored --test-threads=1 native_mount::
 }
 
-# Black-box fork/join conformance through hooks, the CLI and live mounts. The
-# shared test support module carries ignored tests of its own, skipped here.
+# Native-host fork/capture/merge conformance uses the shared harness tests.
 fork_join_conformance() {
-  cargo test -p acyclic-plugin --locked --test fork_join -- \
-    --ignored --test-threads=1 --skip support::
+  cargo test -p acyclic-harness --all-features --locked --lib \
+    local::host_workspace::tests:: -- --test-threads=4
 }
 
 # Exercise the installed native host against its real local providers, not a
@@ -578,15 +577,13 @@ case "$lane" in
     finish_macos() {
       local status="${1:-0}" background_status=0
       trap - EXIT
-      finish napi x86_64 fork-join-build || background_status=$?
+      finish napi x86_64 || background_status=$?
       ((status != 0)) || status=$background_status
       return "$status"
     }
     CARGO_BUILD_JOBS=2 background napi native_binding
     CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
-    CARGO_BUILD_JOBS=1 background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join \
-      --no-run --target-dir "$target_dir-fork-join"
     trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
     CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked
     CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
@@ -596,7 +593,7 @@ case "$lane" in
     stream_binding
     client_bindings
     native_mount_tests
-    CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance
+    fork_join_conformance
     ;;
   *)
     echo "unknown qualification lane: $lane" >&2
