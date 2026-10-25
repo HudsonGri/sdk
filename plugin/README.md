@@ -142,6 +142,20 @@ mutations of a real capture. Existing native-session stand-ins and the scripted
 provider stream are synthetic protocol inputs; final external-output fixture
 qualification still requires captures and provenance from the real-host owner.
 
+The no-model CLI admission regression uses the actual native Codex 0.146.0 and
+0.164.0 executables, checking their output against those captures. Provide
+absolute admitted executable paths in `ACYCLIC_TEST_BINARY`,
+`ACYCLIC_TEST_CODEX_OLD` and `ACYCLIC_TEST_CODEX_CURRENT`, then run:
+
+```sh
+node --test --test-reporter=tap --test-concurrency=1 plugin/tests/hosts/version-admission.test.mjs
+```
+
+It checks both install and doctor reject the old host before reading the plugin
+package or changing configuration, and supported doctor retains the sandbox
+roots. Profiles are fresh and contain no login. Windows execution uses the
+shared process host and the fleet's serial Windows runner.
+
 The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:
 
