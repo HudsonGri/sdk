@@ -116,7 +116,8 @@ impl CheckoutTools {
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
-                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) }).await?;
+                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
+                    .await?;
                 state.watcher = if workspace.fresh {
                     Some(capture::Cursor::initial(&workspace, &capture_policy)?)
                 } else {

@@ -241,12 +241,14 @@ impl<A, O> FilesystemHost<A, O> {
                 quota.observer()?.allocation_attempt(bytes)?;
             }
             let _custody = quota.into_custody()?;
-            Ok(reference.with_publication_witness(Arc::new(PublicationWitness {
-                domain: Arc::clone(&self.publication_domain),
-                identity,
-                #[cfg(not(target_arch = "wasm32"))]
-                _custody,
-            })))
+            Ok(
+                reference.with_publication_witness(Arc::new(PublicationWitness {
+                    domain: Arc::clone(&self.publication_domain),
+                    identity,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    _custody,
+                })),
+            )
         })
     }
 

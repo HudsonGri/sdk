@@ -203,7 +203,9 @@ async fn native_publication_witness_retires_independently_of_host_metadata() -> 
 #[tokio::test]
 async fn publication_witness_failure_releases_every_allocation_boundary() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
-    let file = storage.stage(OperationId::new(), "proof", b"data", "text/plain", "proof").await?;
+    let file = storage
+        .stage(OperationId::new(), "proof", b"data", "text/plain", "proof")
+        .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = FINITE_CONTENT_BUDGET;
     for native in [false, true] {
@@ -221,7 +223,8 @@ async fn publication_witness_failure_releases_every_allocation_boundary() -> Res
         let setup = budget.allocation_operations - probe.remaining()?.allocation_operations;
         let setup_peak = probe.receipt().peak_allocation_bytes;
         drop(storage.host.seal_publication(file.clone(), Some(&probe))?);
-        let required = budget.allocation_operations - setup - probe.remaining()?.allocation_operations;
+        let required =
+            budget.allocation_operations - setup - probe.remaining()?.allocation_operations;
         assert!(required > 0);
         let peak = probe.receipt().peak_allocation_bytes;
         assert!(peak > setup_peak);
@@ -239,7 +242,12 @@ async fn publication_witness_failure_releases_every_allocation_boundary() -> Res
         for limited in cuts {
             let io = ledger(limited)?;
             io.retain_owned(17)?;
-            assert!(storage.host.seal_publication(file.clone(), Some(&io)).is_err());
+            assert!(
+                storage
+                    .host
+                    .seal_publication(file.clone(), Some(&io))
+                    .is_err()
+            );
             assert_eq!(io.owned_bytes()?, 17, "native={native}");
             io.release(17)?;
         }
