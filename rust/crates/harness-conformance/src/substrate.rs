@@ -22,6 +22,8 @@ use std::{
 
 #[cfg(test)]
 mod effect_tests;
+#[cfg(test)]
+mod install_tests;
 /// SDK single-node deployment using canonical Streams, fs and Actors services.
 pub mod localhost;
 mod supervised;
@@ -331,12 +333,23 @@ impl ResumableMachine for HarnessPackage {
 
 /// Runner side of the package protocol: only the public Actors and fs contracts.
 pub struct Actors<R, V> {
-    /// Public Actors runtime implementation.
-    pub runtime: R,
-    /// Resolved fs publication binding shared with the effect host.
-    pub volume: V,
-    /// Package deployment bindings.
-    pub bindings: Bindings,
+    runtime: R,
+    volume: V,
+    identity: MachineIdentity,
+}
+impl<R: ActorRuntime, V: Volume> Actors<R, V> {
+    /// Installs the pinned package once before publishing this host binding.
+    /// Cases can only create actors on this already installed deployment.
+    pub async fn install(runtime: R, volume: V, bindings: Bindings) -> TestResult<Self> {
+        let package = Arc::new(HarnessPackage::new(bindings));
+        let identity = package.identity().clone();
+        runtime.install(package).await?;
+        Ok(Self {
+            runtime,
+            volume,
+            identity,
+        })
+    }
 }
 impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
     fn capabilities(&self) -> BTreeSet<String> {
@@ -352,9 +365,7 @@ impl<R: ActorRuntime, V: Volume> Substrate for Actors<R, V> {
         paths: Vec<String>,
     ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
         Box::pin(async move {
-            let package = Arc::new(HarnessPackage::new(self.bindings.clone()));
-            let identity = package.identity().clone();
-            self.runtime.install(package).await?;
+            let identity = self.identity.clone();
             let operation = OperationId::new();
             let placement = Placement {
                 actor: AgentId::new(),
@@ -683,11 +694,7 @@ impl Substrate for InProcess {
                     #[cfg(test)]
                     self.deployments
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Actors {
-                        runtime: Supervised::new(runtime),
-                        volume,
-                        bindings,
-                    })
+                    Actors::install(Supervised::new(runtime), volume, bindings).await
                 })
                 .await?;
             actors.execute(recipe, paths).await

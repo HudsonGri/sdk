@@ -64,8 +64,7 @@ where
 pub struct Localhost {
     server: Option<Server>,
     endpoint: String,
-    client: client::Client,
-    volume: FixtureVolume,
+    actors: Actors<client::Client, FixtureVolume>,
     #[cfg(test)]
     deployments: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
@@ -121,8 +120,7 @@ impl Localhost {
         Ok(Self {
             server: None,
             endpoint: endpoint.to_owned(),
-            client,
-            volume,
+            actors: Actors::install(client, volume, fixture_bindings()).await?,
             #[cfg(test)]
             deployments: None,
         })
@@ -156,14 +154,6 @@ impl Substrate for Localhost {
         recipe: Value,
         paths: Vec<String>,
     ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
-        Box::pin(async move {
-            Actors {
-                runtime: self.client.clone(),
-                volume: self.volume.clone(),
-                bindings: fixture_bindings(),
-            }
-            .execute(recipe, paths)
-            .await
-        })
+        self.actors.execute(recipe, paths)
     }
 }

@@ -243,11 +243,12 @@ async fn lost_contract_observation_fails_and_filter_never_drops_cases()
             &bindings,
         )),
     );
-    let broken = Actors {
-        runtime: DropCompletion(substrate::Supervised::new(runtime)),
+    let broken = Actors::install(
+        DropCompletion(substrate::Supervised::new(runtime)),
         volume,
         bindings,
-    };
+    )
+    .await?;
     let report = runner::run(&corpus(), Arc::new(broken), Some("core/text.json"), 1).await?;
     assert_eq!(report.failed, 1);
     assert_eq!(report.passed, 0);
