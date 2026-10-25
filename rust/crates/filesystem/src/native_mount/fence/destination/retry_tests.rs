@@ -35,14 +35,22 @@ impl Fixture {
         // can distinguish its leaked lock from another fixture's valid lock.
         // All retirement, refill, unlink and unlock operations stay unchanged.
         let registry = root.path().join("registry.lock");
-        guard.as_mut().unwrap().registry_file = Some(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&registry)?
-                .into(),
-        );
+        let directory = guard
+            .as_ref()
+            .unwrap()
+            .registry_file
+            .as_ref()
+            .unwrap()
+            .directory
+            .try_clone()?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&registry)?;
+        guard.as_mut().unwrap().registry_file = Some(crate::sync::native::Arc::new(
+            registry::Registry::new(directory, file.into()),
+        ));
         let before = work.receipt();
         let live = work.live_allocation_bytes();
         let fence = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?.0;
@@ -173,16 +181,16 @@ fn legacy_release(guard: &mut MountDestinationGuard) -> Result<(), NativeMountEr
         wait: None,
         pending: None,
     };
-    lock_mount_file_with_work(registry, true, &mut work)?;
+    lock_mount_file_with_work(&registry.file, true, &mut work)?;
     let removed = crate::native_host::remove_ascii_leaf(
-        guard.fence_directory.as_ref().unwrap(),
+        &registry.directory,
         guard.cleanup_name.as_ref().unwrap(),
         &mut work,
     );
     let unlocked = crate::native_host::NativeHostWork::attempt_io(
         &mut work,
         crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-        || fence_io::unlock(registry),
+        || fence_io::unlock(&registry.file),
     );
     removed?;
     unlocked?;
@@ -220,9 +228,9 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
         .registry_file
         .as_ref()
         .unwrap();
-    fence_io::lock(private)?;
+    fence_io::lock(&private.file)?;
     assert!(!fixture.registry_is_unlocked()?);
-    fence_io::unlock(private)?;
+    fence_io::unlock(&private.file)?;
     assert!(fixture.registry_is_unlocked()?);
     global.unlock()?;
     Ok(())

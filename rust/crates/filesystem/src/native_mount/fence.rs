@@ -63,11 +63,9 @@ pub(super) struct MountDestinationGuard {
     pub(super) lock_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
-    // A destination may be below a different native mount. Its ownership
-    // witness must remain reachable even after that ancestor loses its server.
-    fence_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
-    pub(super) registry_file: Option<MountLockFile>,
+    // Directory and lock custody belong to the sole process-wide registry.
+    pub(super) registry_file: Option<crate::sync::native::Arc<registry::Registry>>,
     pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
     // Allocated and funded before shutdown; retained on a failed exact cleanup.
@@ -434,12 +432,11 @@ impl MountDestinationGuard {
         guard: &mut Option<Self>,
         native: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
-        let (fence_directory, registry) = registry::open_with_directory(work)?;
-        lock_mount_file_with_work(&registry, true, work)?;
+        let registry = registry::shared(work)?;
+        let held = registry.lock(work)?;
         let file = crate::native_host::open_leaf(
-            &fence_directory,
+            &registry.directory,
             Path::new(
                 std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
             ),
@@ -450,9 +447,8 @@ impl MountDestinationGuard {
             file: Some(file.into()),
             lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory),
-            fence_directory: Some(fence_directory),
             fence_name: Some(name),
-            registry_file: Some(registry),
+            registry_file: Some(crate::sync::native::Arc::clone(&registry)),
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,
@@ -480,28 +476,22 @@ impl MountDestinationGuard {
             )?;
             *guard = Some(admitted);
         }
-        let registry = guard
-            .as_ref()
-            .and_then(|guard| guard.registry_file.as_ref())
-            .ok_or(NativeMountError::ControlPending)?;
-        work.attempt_io(
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            || fence_io::unlock(registry),
-        )?;
-        Ok(())
+        held.unlock(work)
     }
 
     #[cfg(test)]
     pub(super) fn acquire_canonical(canonical: &Path) -> Result<Self, NativeMountError> {
-        let (lock_path, registry_path) = Self::paths_for_canonical(canonical)?;
-        let registry = acquire_mount_lock(&registry_path, true)?;
+        let (lock_path, _) = Self::paths_for_canonical(canonical)?;
+        let cancellation = crate::CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let registry = registry::shared(&mut work)?;
+        let held = registry.lock(&mut work)?;
         let file = acquire_mount_lock(&lock_path, false)?;
-        drop(registry);
+        held.unlock(&mut work)?;
         Ok(Self {
             file: Some(file),
             lock_path,
             parent_directory: None,
-            fence_directory: None,
             fence_name: None,
             registry_file: None,
             cleanup_name: None,
@@ -528,8 +518,11 @@ impl MountDestinationGuard {
     }
 
     pub(super) fn reclaim_canonical(canonical: &Path) -> Result<(), NativeMountError> {
-        let (lock_path, registry_path) = Self::paths_for_canonical(canonical)?;
-        let registry = acquire_mount_lock(&registry_path, true)?;
+        let (lock_path, _) = Self::paths_for_canonical(canonical)?;
+        let cancellation = crate::CancellationToken::new();
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let registry = registry::shared(&mut work)?;
+        let held = registry.lock(&mut work)?;
         if !lock_path
             .try_exists()
             .map_err(|error| NativeMountError::Driver(error.to_string()))?
@@ -543,8 +536,7 @@ impl MountDestinationGuard {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(NativeMountError::Driver(error.to_string())),
         }
-        drop(registry);
-        Ok(())
+        held.unlock(&mut work)
     }
 
     /// Administrative `LastDrop` closes only the original held fence.
@@ -570,8 +562,8 @@ impl MountDestinationGuard {
         let invalid = || {
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::InvalidLayout)
         };
-        let directory = self.fence_directory.as_ref().ok_or_else(invalid)?;
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
+        let directory = &registry.directory;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
         // Fund the whole transaction before acquiring the global registry.
@@ -589,7 +581,7 @@ impl MountDestinationGuard {
         // Retirement owns its original cleanup credit while the OS waits.
         // Contention is one blocking syscall, not repeated charged attempts
         // which could exhaust birth credit before the fence is removed.
-        lock_mount_file_with_work(registry, true, &mut work)?;
+        let held = registry.lock(&mut work)?;
         // Completing the accepted retirement owns its birth credit even if
         // the caller stops waiting after registry acquisition.
         work.wait = None;
@@ -597,15 +589,11 @@ impl MountDestinationGuard {
         // The held lock must be released on every unlink outcome. Caller
         // cancellation can stop new work, but cannot revoke this accepted
         // physical release and strand all future starters behind the lock.
-        let unlocked = crate::native_host::NativeHostWork::attempt_io(
-            &mut NativeFenceReleaseWork {
-                credit: &unlock,
-                wait: None,
-                pending: None,
-            },
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            || fence_io::unlock(registry),
-        );
+        let unlocked = held.unlock(&mut NativeFenceReleaseWork {
+            credit: &unlock,
+            wait: None,
+            pending: None,
+        });
         match removed {
             Ok(()) => {}
             Err(crate::NativeTreeMaterializationError::Io(error))
@@ -628,8 +616,8 @@ impl MountDestinationGuard {
             return Ok(());
         }
         let opened_directory;
-        let directory = if let Some(directory) = self.fence_directory.as_ref() {
-            directory
+        let directory = if let Some(registry) = self.registry_file.as_ref() {
+            &registry.directory
         } else {
             let parent = self
                 .lock_path
@@ -649,16 +637,15 @@ impl MountDestinationGuard {
                     .ok_or(NativeMountError::InvalidDestination)?,
             ),
         };
-        let registry = registry::open(work)?;
-        lock_mount_file_with_work(&registry, true, work)?;
+        let registry = registry::shared(work)?;
+        let held = registry.lock(work)?;
         match crate::native_host::remove_leaf(directory, lock_name, false, work) {
             Ok(()) => {}
             Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {}
             Err(error) => return Err(error.into()),
         }
         self.file.take();
-        drop(registry);
-        Ok(())
+        held.unlock(work)
     }
 }
 
@@ -700,6 +687,7 @@ impl Drop for MountDestinationGuard {
     }
 }
 
+#[cfg(test)]
 pub(super) fn acquire_mount_lock(
     path: &Path,
     blocking: bool,

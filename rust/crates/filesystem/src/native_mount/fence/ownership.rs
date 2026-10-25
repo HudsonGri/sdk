@@ -54,11 +54,11 @@ impl MountDestinationGuard {
             file.set_len(RECEIPT_BYTES as u64)
         })?;
         crate::native_host::sync_file_held(&**file, &mut &*original)?;
-        let fence_directory = self
-            .fence_directory
+        let registry = self
+            .registry_file
             .as_ref()
             .ok_or(NativeMountError::InvalidDestination)?;
-        crate::native_host::sync_directory_held(fence_directory, &mut &*original)?;
+        crate::native_host::sync_directory_held(&registry.directory, &mut &*original)?;
         crate::native_host::sync_directory_held(parent, &mut &*original)?;
         Ok(())
     }
