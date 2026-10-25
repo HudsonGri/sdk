@@ -214,10 +214,10 @@ async fn mounted_view_of_with_authored_work<D: DemandSource + 'static, S: LazyWo
     // startup ledger separate from the authored source's exhausted poll bank,
     // so this test cannot replenish the very credit whose exhaustion it proves.
     let startup = original
-        .map(|_| {
+        .map(|original| {
             crate::NativeMaterializationWork::new(
                 crate::performance::BOUNDARY_BUDGET,
-                &cancellation,
+                original.cancellation(),
             )
             .map_err(|(error, _)| error)
         })
