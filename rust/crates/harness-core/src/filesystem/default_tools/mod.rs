@@ -95,14 +95,22 @@ pub(in crate::filesystem) struct RecursiveForkToolBinding<P, A, O> {
 pub(in crate::filesystem) struct RecursiveMergeToolBinding<P, A, O> {
     pub filesystem: Arc<FilesystemHost<A, O>>,
     pub destination: StreamAggregate<P>,
+    pub metadata: MergeBindingMetadata,
+    pub source_generation: GenerationRef,
+    pub source_read: Option<crate::source_authorization::ProjectSourceReadHandle>,
+    pub notice: ConversationMessage,
+    // Last: metadata and aggregate storage retire before their scoped ledger.
+    pub _assembly: Option<super::PreparationIo>,
+}
+
+pub(in crate::filesystem) struct MergeBindingMetadata {
     pub verifier: AuthorityVerifier,
     pub scope: Scope,
     pub project: VolumeRef,
     pub source: Authority,
     pub source_project: VolumeRef,
-    pub source_generation: GenerationRef,
-    pub source_read: Option<crate::source_authorization::ProjectSourceReadHandle>,
-    pub notice: ConversationMessage,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -217,6 +225,7 @@ mod executor;
 mod fork;
 mod input;
 mod merge;
+mod merge_metadata;
 mod validation;
 use codec::*;
 use validation::*;

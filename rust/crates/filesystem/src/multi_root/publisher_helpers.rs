@@ -121,7 +121,7 @@ where
         Ok(plan)
     }
 
-    pub(super) async fn apply_plan(
+    pub(super) async fn prepare_plan(
         &self,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
@@ -129,22 +129,76 @@ where
         operation: IdempotencyKey,
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
         permit: PublicationPermit,
-    ) -> Result<JoinOutcome<A, O>, WorkspaceMultiRootPublisherError<R::Error>> {
+    ) -> Result<
+        (crate::PreparedJoin<A, O>, Option<Box<crate::MergePlan>>),
+        WorkspaceMultiRootPublisherError<R::Error>,
+    > {
         let options = ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: operation,
         };
-        let initial = plan.apply(options, BTreeMap::new(), permit).await?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        else {
-            return Ok(initial);
+        let cancellation = CancellationToken::new();
+        let prepared = plan
+            .prepare(options, permit, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let Some((conflicts, truncated)) = prepared.conflicts() else {
+            return Ok((prepared, None));
         };
         let typed = plan
             .describe_conflicts(conflicts.to_vec(), truncated)
             .await?;
+        let (candidate, conflict) = match self.select_candidate(root_id, root, typed, resolutions) {
+            Ok(candidate) => (candidate, None),
+            Err(WorkspaceMultiRootPublisherError::Conflicted { plan }) => {
+                if plan.truncated {
+                    return Err(WorkspaceMultiRootPublisherError::Candidate(
+                        "conflict frontier is truncated".to_owned(),
+                    ));
+                }
+                let resolutions = plan
+                    .conflicts
+                    .iter()
+                    .map(|view| {
+                        let choice = if view.kind == crate::ConflictKind::Text {
+                            DefaultTextMergeDriver
+                                .resolve(view)
+                                .unwrap_or(MergeResolution::Select(ConflictSide::Ours))
+                        } else {
+                            MergeResolution::Select(ConflictSide::Ours)
+                        };
+                        (view.key.clone(), choice)
+                    })
+                    .collect();
+                (
+                    UnpublishedMergeCandidate {
+                        plan: (*plan).clone(),
+                        resolutions,
+                    },
+                    Some(plan),
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        let resolutions = plan
+            .prepare_candidate(&candidate)
+            .await
+            .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))?;
+        prepared
+            .resolve(&resolutions, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map(|receipt| (receipt.value, conflict))
+            .map_err(|failure| failure.error.into())
+    }
+
+    fn select_candidate(
+        &self,
+        root_id: WorkspaceRootId,
+        root: &MultiRootMergeRoot,
+        typed: crate::MergePlan,
+        resolutions: &BTreeMap<ConflictKey, MergeResolution>,
+    ) -> Result<UnpublishedMergeCandidate, WorkspaceMultiRootPublisherError<R::Error>> {
         let automatic = child_wins_resolutions(&typed, &root.child_wins_bindings);
         let candidate = if resolutions.is_empty() && !typed.conflicts.is_empty() {
             let remaining = crate::MergePlan {
@@ -158,7 +212,7 @@ where
             };
             if remaining.conflicts.is_empty() {
                 UnpublishedMergeCandidate {
-                    plan: typed.clone(),
+                    plan: typed,
                     resolutions: automatic,
                 }
             } else {
@@ -178,7 +232,7 @@ where
                 })?;
                 match crate::resolve_merge_plan(remaining, registry, &mut *cache, false) {
                     Ok(mut candidate) => {
-                        candidate.plan = typed.clone();
+                        candidate.plan = typed;
                         candidate.resolutions.extend(automatic);
                         candidate
                     }
@@ -210,105 +264,9 @@ where
             })
         {
             return Err(WorkspaceMultiRootPublisherError::Conflicted {
-                plan: Box::new(candidate.plan.clone()),
+                plan: Box::new(candidate.plan),
             });
         }
-        plan.apply_candidate(options, &candidate, permit)
-            .await
-            .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))
-    }
-
-    pub(super) async fn preview(
-        &self,
-        operation_id: OperationId,
-        root_id: WorkspaceRootId,
-        root: &MultiRootMergeRoot,
-        resolutions: &BTreeMap<ConflictKey, MergeResolution>,
-    ) -> Result<bool, WorkspaceMultiRootPublisherError<R::Error>> {
-        let target = self
-            .resolver
-            .resolve(root.target_workspace_id)
-            .await
-            .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        if target
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-            .id()
-            != root.target_generation
-        {
-            return Ok(false);
-        }
-        // A prior preview may have been deleted after reporting conflicts.
-        // Reusing its fork identity would reopen that tombstone on continuation.
-        let preview_key = IdempotencyKey::new();
-        let preview_name = preview_workspace_name(operation_id, root_id, preview_key)?;
-        let target_generation = target
-            .generation(
-                root.target_generation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let preview = target
-            .fork::<_, _, crate::WorkspaceError>(
-                preview_name.as_str(),
-                ForkOptions::from_generation(target_generation, preview_key),
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                &mut |_| {
-                    std::future::ready(Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    }))
-                },
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let result = async {
-            let preview_generation = preview
-                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(|failure| failure.error)?
-                .value;
-            let preview_root = MultiRootMergeRoot {
-                target_workspace_id: preview.id(),
-                target_generation: preview_generation.id(),
-                ..root.clone()
-            };
-            let plan = self
-                .pinned_plan(&preview_root, Some(preview.clone()))
-                .await?;
-            Ok(matches!(
-                self.apply_plan(
-                    root_id,
-                    root,
-                    &plan,
-                    publisher_key(operation_id, root_id, b"preview-apply"),
-                    resolutions,
-                    PublicationPermit::Unrestricted,
-                )
-                .await?,
-                JoinOutcome::Applied(_)
-                    | JoinOutcome::AlreadyApplied(_)
-                    | JoinOutcome::NoChanges(_)
-            ))
-        }
-        .await;
-        let cleanup = preview
-            .delete(publisher_key(operation_id, root_id, b"preview-delete"))
-            .await?;
-        if !matches!(
-            cleanup,
-            WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted
-        ) {
-            return Err(WorkspaceMultiRootPublisherError::PreviewCleanup);
-        }
-        result
+        Ok(candidate)
     }
 }

@@ -27,8 +27,9 @@ mod page_codec;
 #[cfg(test)]
 use page_codec::record_copied_bytes;
 pub(crate) use page_codec::{
-    decode_file_record, encode_file_record, encode_file_table_internal_children,
-    encode_file_table_leaf_records, file_record_encoded_length, file_table_page_decode_shape,
+    decode_file_record, decode_record, encode_file_record, encode_file_table_internal_children,
+    encode_file_table_leaf_records, encode_record, file_record_encoded_length,
+    file_table_page_decode_shape,
 };
 pub use page_codec::{decode_file_table_page, encode_file_table_page, file_table_page_id};
 

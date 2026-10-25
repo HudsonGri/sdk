@@ -92,25 +92,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 }
             }
             for held in collection.held() {
-                match held {
-                    crate::collection::Held::Checkout {
-                        base,
-                        working,
-                        config,
-                        ..
-                    } => {
-                        marker.set_limits(DecodeLimits::for_volume(config));
-                        marker
-                            .generation(GenerationId::new(base.digest))
-                            .await
-                            .map_err(mark_error)?;
-                        marker.working(&working).await.map_err(mark_error)?;
-                    }
-                    crate::collection::Held::Record { record, config } => {
-                        marker.set_limits(DecodeLimits::for_volume(config));
-                        marker.record(&record).await.map_err(mark_error)?;
-                    }
-                }
+                marker.held(held).await.map_err(mark_error)?;
             }
             marker.set_limits(shadow_limits);
             marker.lineage_roots().await.map_err(mark_error)?;
@@ -302,22 +284,74 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             return Ok(());
         }
         let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)?;
+        self.mark_local_retention(marker, authority_id, head, retained, widest, cancellation)
+            .await
+    }
+
+    async fn mark_local_retention(
+        &self,
+        marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
+        authority_id: crate::foundation::AuthorityId,
+        head: Head,
+        retained: crate::kernel::RetentionCreated,
+        widest: &mut DecodeLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        if retention_authority_id(retained.volume_id, retained.kind, &retained.label)
+            != authority_id
+        {
+            return Err(FsError::InvalidAuthorityHistory);
+        }
         let owner = match retained.kind {
             RetentionKind::ForkBase => hex::decode(&retained.label)
                 .ok()
                 .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
                 .map(VolumeId::from_bytes)
                 .ok_or(FsError::InvalidAuthorityHistory)?,
-            RetentionKind::Checkpoint | RetentionKind::Pin => retained.volume_id,
+            RetentionKind::Checkpoint | RetentionKind::Pin | RetentionKind::PreparedJoin => {
+                retained.volume_id
+            }
         };
         if self.local_volume_ended(owner, cancellation).await? {
             self.retire_local_authority(authority_id, cancellation)
                 .await?;
             return Ok(());
         }
+        if head.sequence != Sequence::new(1) {
+            if head.sequence != Sequence::new(2) || !retained.kind.releasable() {
+                return Err(FsError::InvalidAuthorityHistory);
+            }
+            let terminal = self
+                .local_records(authority_id, Sequence::new(1), 1, cancellation)
+                .await?;
+            let terminal = terminal.first().ok_or(FsError::InvalidAuthorityHistory)?;
+            let released = crate::kernel::decode_retention_released(
+                &terminal.payload,
+                MAXIMUM_VOLUME_EVENT_BYTES,
+            )?;
+            if released.authority_id != authority_id
+                || released.generation.digest() != retained.generation_root.digest
+            {
+                return Err(FsError::InvalidAuthorityHistory);
+            }
+            // Keep the terminal receipt while the owner is live: a reused label
+            // must never silently resurrect a released root.
+            return Ok(());
+        }
         let limits = DecodeLimits::for_volume(retained.config);
         *widest = widest_limits(*widest, limits);
         marker.set_limits(limits);
+        if retained.kind == RetentionKind::PreparedJoin
+            && let Some(program) = PreparedJoinCheckpoint::program_from_label(&retained.label)?
+        {
+            marker
+                .merge_program(ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: program,
+                })
+                .await
+                .map_err(mark_error)?;
+        }
         marker
             .generation(GenerationId::new(retained.generation_root.digest))
             .await

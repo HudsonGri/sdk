@@ -111,6 +111,12 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 .map_err(|error| Error::Storage(error.to_string()))?,
             &provider,
             None,
+            acyclic_fs::WorkspaceLineageStorage::Local(
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                    directory.path().join("workspace"),
+                )
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            ),
         )?;
         let stream = Arc::new(
             LocalStream::open(&stream_root, LocalStreamLimits::default())
@@ -436,6 +442,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .map_err(|error| Error::Storage(error.to_string()))?,
         &provider,
         None,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.path().join("workspace"))
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ),
     )?;
     let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())

@@ -291,7 +291,14 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     drop(reader);
     drop(host);
     let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
-    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
+    let cold = acyclic_harness::filesystem::FilesystemHost::new(
+        cold,
+        volume.provider(),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     for (path, expected) in &case.expect.files {
         let actual = cold
             .read(&workspace, None, &format!("/{path}"), 65_536, None)

@@ -56,68 +56,77 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<crate::PublicationHold, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            accounting.check()?;
-            let proven_at = self.inner.objects.collection_sweeps();
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                let (closure, _allocation) = crate::kernel::closure::ProofContext::new(
-                    &self.inner.objects,
-                    closure_limits(config),
-                    crate::kernel::closure::ProofMeter::Native {
-                        original,
-                        cancellation,
-                    },
-                )
-                .prove_record_closure(records)
-                .await?;
-                return self
-                    .flush_publication(
-                        crate::PublicationScope::Closure {
-                            objects: &closure,
-                            proven_at,
-                        },
-                        &mut accounting,
-                        cancellation,
-                    )
-                    .await;
-            }
-            let meter = match crate::kernel::closure::ProofMeter::standalone(
-                accounting.remaining()?,
-                cancellation,
-            ) {
-                Ok(meter) => meter,
-                Err(error) => {
-                    merge_creation_backend_work(&mut accounting, WorkCounters::UNCHARGED)?;
-                    return Err(FsError::from(crate::kernel::closure::closure_error(error)));
-                }
-            };
-            let proof = crate::kernel::closure::ProofContext::new(
-                &self.inner.objects,
-                closure_limits(config),
-                meter.clone(),
-            )
-            .prove_record_closure(records)
+        let result = self
+            .make_records_durable_with_accounting(config, records, &mut accounting, cancellation)
             .await;
-            let spent = meter.work();
-            drop(meter);
-            merge_creation_backend_work(&mut accounting, spent)?;
-            let (closure, guard) = proof
-                .map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
-            drop(guard);
-            self.flush_publication(
-                crate::PublicationScope::Closure {
-                    objects: &closure,
-                    proven_at,
-                },
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
         budget.finish(result, &accounting)
     }
+    pub(crate) async fn make_records_durable_with_accounting(
+        &self,
+        config: VolumeConfig,
+        records: &[FileRecord],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, FsError> {
+        accounting.check()?;
+        let proven_at = self.inner.objects.collection_sweeps();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let (closure, _allocation) = crate::kernel::closure::ProofContext::new(
+                &self.inner.objects,
+                closure_limits(config),
+                crate::kernel::closure::ProofMeter::Native {
+                    original,
+                    cancellation,
+                },
+            )
+            .prove_record_closure(records)
+            .await?;
+            return self
+                .flush_publication(
+                    crate::PublicationScope::Closure {
+                        objects: &closure,
+                        proven_at,
+                    },
+                    accounting,
+                    cancellation,
+                )
+                .await;
+        }
+        let meter = match crate::kernel::closure::ProofMeter::standalone(
+            accounting.remaining()?,
+            cancellation,
+        ) {
+            Ok(meter) => meter,
+            Err(error) => {
+                merge_creation_backend_work(accounting, WorkCounters::UNCHARGED)?;
+                return Err(FsError::from(crate::kernel::closure::closure_error(error)));
+            }
+        };
+        let proof = crate::kernel::closure::ProofContext::new(
+            &self.inner.objects,
+            closure_limits(config),
+            meter.clone(),
+        )
+        .prove_record_closure(records)
+        .await;
+        let spent = meter.work();
+        drop(meter);
+        merge_creation_backend_work(accounting, spent)?;
+        let (closure, guard) =
+            proof.map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
+        drop(guard);
+        self.flush_publication(
+            crate::PublicationScope::Closure {
+                objects: &closure,
+                proven_at,
+            },
+            accounting,
+            cancellation,
+        )
+        .await
+    }
+
     /// Holds the authenticated closure across an external durable publication.
     pub(crate) async fn make_generation_durable<W: FsWork>(
         &self,
@@ -127,37 +136,72 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<crate::PublicationHold, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
+        let result = self
+            .make_generation_durable_with_accounting(
+                volume,
+                generation,
+                &[],
+                &mut accounting,
+                cancellation,
+            )
+            .await;
+        budget.finish(result, &accounting)
+    }
+
+    pub(crate) async fn make_generation_durable_with_accounting(
+        &self,
+        volume: &Volume<A, O>,
+        generation: GenerationId,
+        additional_objects: &[ObjectId],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PublicationHold, WorkspaceError> {
+        accounting.check()?;
+        if !self.same_deployment(&volume.fs) {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let publication = self
+            .retention_publication_with_accounting(
+                volume,
+                ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: generation.digest(),
+                },
+                accounting,
+                cancellation,
+            )
+            .await?;
+        let Owned {
+            value: publication,
+            allocation,
+            bytes,
+        } = publication;
+        let mut closure = Owned::new(publication.objects, allocation, bytes);
         let result = async {
-            accounting.check()?;
-            if !self.same_deployment(&volume.fs) {
-                return Err(WorkspaceError::ForeignGeneration);
+            for &object in additional_objects {
+                closure.ensure_for_push(usize::MAX, accounting)?;
+                let copied = WorkCounters {
+                    bytes_copied: usize_to_u64(size_of::<ObjectId>()),
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(copied)?;
+                closure.value.push(object);
+                accounting.record_completed(copied)?;
             }
-            let publication = self
-                .retention_publication_with_accounting(
-                    volume,
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: generation.digest(),
-                    },
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            let result = self
-                .flush_publication(
-                    crate::PublicationScope::Closure {
-                        objects: &publication.value.objects,
-                        proven_at: publication.value.proven_at,
-                    },
-                    &mut accounting,
-                    cancellation,
-                )
-                .await;
-            publication.retire(&mut accounting)?;
-            result.map_err(Into::into)
+            self.flush_publication(
+                crate::PublicationScope::Closure {
+                    objects: &closure.value,
+                    proven_at: publication.proven_at,
+                },
+                accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
-        budget.finish(result, &accounting)
+        closure.retire(accounting)?;
+        result.map_err(Into::into)
     }
 
     pub(crate) async fn restore_workspace_generation(

@@ -127,7 +127,6 @@ async fn fork_capture_workspace<
 
                 permit: crate::PublicationPermit::Unrestricted,
             },
-            |child| child,
         )
         .await
 }

@@ -94,17 +94,7 @@ pub(super) fn copy_workspace_label(
     identity: &WorkspaceName,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<crate::kernel::Owned<String>, WorkspaceError> {
-    let copied = copy_work(identity.retained_bytes());
-    accounting.admit(copied)?;
-    let mut label = crate::kernel::Owned::<Vec<u8>>::allocate(identity.as_str().len(), accounting)?;
-    accounting.admit(copied)?;
-    label.value.extend_from_slice(identity.as_str().as_bytes());
-    accounting.record_completed(copied)?;
-    Ok(crate::kernel::Owned::new(
-        String::from_utf8(label.value).map_err(WorkspaceError::engine)?,
-        label.allocation,
-        label.bytes,
-    ))
+    crate::kernel::Owned::<String>::copy(identity.as_str(), accounting).map_err(Into::into)
 }
 
 pub(super) fn merge_workspace_backend<T, E: Into<WorkspaceError>>(

@@ -482,5 +482,6 @@ impl IndexedDbObjectStore {
 mod tests;
 
 mod authority;
+mod lineage;
 mod objects;
 mod work;

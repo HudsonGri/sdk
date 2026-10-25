@@ -70,6 +70,15 @@ pub enum AccountingTransition {
         /// Authenticated logical file size in this generation.
         logical_regular_file_bytes: u128,
     },
+    /// An exact explicit pin or SDK preparation stopped retaining its root.
+    RetentionReleased {
+        /// Volume whose retained root was released.
+        volume_id: VolumeId,
+        /// Retention reason authenticated by the creation record.
+        kind: RetentionKind,
+        /// Exact root that is no longer retained by this authority.
+        generation_root: ObjectId,
+    },
     /// A workspace ceased retaining its generation history.
     WorkspaceDeleted {
         /// Workspace whose publications and owned retentions are released.
@@ -84,6 +93,8 @@ pub enum AccountingOperationClass {
     CustomerMutation,
     /// Supporting retention created as part of a workspace fork.
     InternalForkRetention,
+    /// Supporting retention for an unpublished SDK merge candidate.
+    InternalMergePreparation,
 }
 
 /// One authenticated authority fact.

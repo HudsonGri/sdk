@@ -27,17 +27,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         replanning: bool,
         permit: crate::PublicationPermit,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        let initial = self.apply(options, BTreeMap::new(), permit).await?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        else {
-            return Ok(initial);
+        let cancellation = CancellationToken::new();
+        let prepared = self
+            .prepare(options, permit, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let Some((conflicts, truncated)) = prepared.conflicts() else {
+            return prepared
+                .publish(WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error.into());
         };
-        let plan = self.describe_conflicts(conflicts, truncated).await?;
+        let plan = self
+            .describe_conflicts(conflicts.to_vec(), truncated)
+            .await?;
         let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
-        self.apply_candidate(options, &candidate, permit).await
+        let resolutions = self.prepare_candidate(&candidate).await?;
+        let resolved = prepared
+            .resolve(&resolutions, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        resolved
+            .publish(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error.into())
     }
 
     /// Applies caller-selected immutable sides after validating the exact conflict set.
@@ -46,33 +63,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         options: ApplyOptions,
         selections: BTreeMap<MergeConflict, ConflictSide>,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        let initial = self
-            .apply(
+        let cancellation = CancellationToken::new();
+        let prepared = self
+            .prepare(
                 options,
-                BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
             )
-            .await?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        else {
-            return Ok(initial);
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let Some((conflicts, truncated)) = prepared.conflicts() else {
+            return prepared
+                .publish(WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error.into());
         };
-        let cancellation = crate::CancellationToken::new();
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
-        validate_join_side_selections(&conflicts, truncated, &selections, &mut accounting)?;
+        validate_join_side_selections(conflicts, truncated, &selections, &mut accounting)?;
         let resolutions = selections
             .into_iter()
             .map(|(conflict, side)| (conflict, side_resolution(side)))
             .collect();
-        self.apply(options, resolutions, crate::PublicationPermit::Unrestricted)
+        let resolved = prepared
+            .resolve(&resolutions, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(Into::into)
+            .map_err(|failure| failure.error)?
+            .value;
+        resolved
+            .publish(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error.into())
     }
 
     /// Validates and publishes a declarative candidate under one writer permit.

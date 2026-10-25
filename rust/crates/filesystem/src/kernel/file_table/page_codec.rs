@@ -301,7 +301,7 @@ pub(crate) fn file_record_encoded_length(
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
-fn encode_record(encoder: &mut Encoder, record: FileRecord) {
+pub(crate) fn encode_record(encoder: &mut Encoder, record: FileRecord) {
     encoder.fixed(&record.file_id.into_bytes());
     encoder.u8(record.kind.tag());
     encoder.u64(record.link_count);
@@ -538,7 +538,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
 }
 
 // Let the page caller insert the record without returning its full aggregate.
-fn decode_record<E: From<CanonicalDecodeError>, T>(
+pub(crate) fn decode_record<E: From<CanonicalDecodeError>, T>(
     decoder: &mut Decoder<'_>,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     finish: impl FnOnce(FileRecord) -> T,

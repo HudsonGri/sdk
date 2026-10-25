@@ -25,7 +25,14 @@ async fn fixture_with_filesystem(
     filesystem: acyclic_fs::MemoryFs,
 ) -> Result<(Journal, crate::core::AuthorityIssuer)> {
     let provider = ProviderRef::new("future".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider,
@@ -85,7 +92,14 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
     let (first, _runtime) = fixture_with_filesystem(first_fs).await?;
     let second = FilesystemExecutionJournal::new(
         first.stream.clone(),
-        FilesystemHost::new(second_fs, first.volume.provider(), None)?,
+        FilesystemHost::new(
+            second_fs,
+            first.volume.provider(),
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?,
         &first.schemas,
         crate::filesystem::FilesystemJournalBinding {
             volume: &first.volume,

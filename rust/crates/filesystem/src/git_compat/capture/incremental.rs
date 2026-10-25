@@ -14,6 +14,9 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
+    let full_capture = || {
+        capture_git_compatible_generation(graph, workspace, policy, already_tracked, operation_id)
+    };
     let live = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -22,14 +25,7 @@ where
     // A capture that still holds host-owned paths is rebuilt from the live
     // tree, so no later commit inherits them.
     if policy.tracks_reserved(already_tracked) {
-        return capture_git_compatible_generation(
-            graph,
-            workspace,
-            policy,
-            already_tracked,
-            operation_id,
-        )
-        .await;
+        return full_capture().await;
     }
     let changes = previous_live
         .diff_to(
@@ -50,14 +46,7 @@ where
     for change in changed {
         let path = portable_changed_path(&change.path)?;
         if path.rsplit('/').next() == Some(".gitignore") {
-            return capture_git_compatible_generation(
-                graph,
-                workspace,
-                policy,
-                already_tracked,
-                operation_id,
-            )
-            .await;
+            return full_capture().await;
         }
         portable.push((path, change.before, change.after));
     }

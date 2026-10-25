@@ -428,51 +428,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         let mut accounting = work.accounting(cancellation);
         let result: Result<(WorkspaceName, Generation<A, O>), WorkspaceError> = async {
             let identity = WorkspaceName::with_accounting(identity.as_ref(), &mut accounting)?;
-            let mut label = copy_workspace_label(&identity, &mut accounting)?;
-            if accounting.standalone_parts().is_some() {
-                accounting.release_owned(&mut label.allocation, label.bytes)?;
-            }
+            let label = copy_workspace_label(&identity, &mut accounting)?;
             let publication = self.publication_closure.as_ref().and_then(|slot| {
                 slot.lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
             });
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.workspace
-                    .volume
-                    .fs
-                    .retain_workspace_generation(
-                        &self.workspace.volume,
-                        self.id,
-                        crate::kernel::RetentionKind::Pin,
-                        label,
-                        publication,
-                        original,
-                        cancellation,
-                    )
-                    .await?;
-                return Ok((identity, self.clone()));
-            }
-            let retained = self
-                .workspace
+            let publication = publication
+                .map(|publication| {
+                    crate::kernel::Owned::take_boxed(&mut Some(publication), &mut accounting)
+                })
+                .transpose()?;
+            self.workspace
                 .volume
                 .fs
-                .retain_workspace_generation(
+                .update_workspace_retention(
                     &self.workspace.volume,
                     self.id,
                     crate::kernel::RetentionKind::Pin,
                     label,
-                    publication,
-                    accounting.remaining()?,
+                    crate::facade::RetentionUpdate::Retain(publication),
+                    &mut accounting,
                     cancellation,
                 )
-                .await;
-            let (allocations, spent, budget, _) = accounting
-                .standalone_parts()
-                .ok_or(crate::WorkError::Overflow)?;
-            merge_workspace_backend(retained, spent, allocations.live_bytes())?;
-            spent.verify(budget)?;
+                .await?;
             Ok((identity, self.clone()))
         }
         .await;

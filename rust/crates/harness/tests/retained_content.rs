@@ -76,6 +76,9 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
         &provider,
         None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
     )?;
     host.create_volume(&volume).await?;
     let admitted = host
@@ -262,7 +265,14 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     fs.collect_local_garbage(None, &CancellationToken::new())
         .await
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    let reopened = FilesystemHost::new(fs, &provider, None)?;
+    let reopened = FilesystemHost::new(
+        fs,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let recovered = reopened
         .content_for_operation(
             &volume,

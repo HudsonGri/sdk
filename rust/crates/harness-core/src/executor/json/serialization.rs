@@ -68,6 +68,8 @@ impl Drop for Scope<'_> {
 mod buffers;
 use buffers::{output, reserve_output};
 
+type DigestSink<'a> = dyn FnMut(&[u8]) -> Result<()> + 'a;
+
 type State<'a, 'b> = RefCell<&'a mut Scope<'b>>;
 struct Writer<'a, 'b, 'c, 'd> {
     state: &'a State<'b, 'c>,
@@ -77,7 +79,7 @@ struct Writer<'a, 'b, 'c, 'd> {
     written: u64,
     maximum: u64,
     output: Option<&'a mut Vec<u8>>,
-    digest: Option<&'a mut (dyn FnMut(&[u8]) -> Result<()> + 'd)>,
+    digest: Option<&'a mut DigestSink<'d>>,
     compare: Option<(&'a [u8], &'a mut bool)>,
 }
 impl Write for Writer<'_, '_, '_, '_> {
@@ -237,87 +239,7 @@ impl Formatter for Format<'_, '_, '_> {
         }
         let (mut value, owned) = {
             let mut scope = self.state.borrow_mut();
-            let result = (|| {
-                let bounds = JsonBounds {
-                    maximum_depth: scope
-                        .bounds
-                        .maximum_depth
-                        .checked_sub(scope.lexical.depth)
-                        .ok_or_else(|| boundary("JSON nesting limit exceeded", scope.code))?,
-                    maximum_items: scope
-                        .bounds
-                        .maximum_items
-                        .saturating_sub(scope.lexical.items),
-                    ..scope.bounds
-                };
-                let code = scope.code;
-                if fragment.len() as u64 > bounds.maximum_bytes {
-                    return Err(boundary("JSON input exceeds declared byte bound", code));
-                }
-                let mut lexical = admission::Lexical::default();
-                {
-                    let mut forward = |event| scope.event(event);
-                    let charge =
-                        RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
-                    for byte in fragment.as_bytes() {
-                        charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
-                        lexical.byte(*byte, bounds, code, &charge)?;
-                    }
-                }
-                if lexical.string || lexical.depth != 0 {
-                    return Err(boundary("incomplete JSON document", code));
-                }
-                let shape = JsonValueShape {
-                    longest_string: 0,
-                    input_bytes: fragment.len() as u64,
-                    lexical_items: lexical.items,
-                    containers: lexical.containers,
-                    virtual_items: 0,
-                    raw_bytes: 0,
-                    raw_frames: 0,
-                    unresolved_raw: false,
-                    origin: Origin::Slice,
-                };
-                let owned = json_value_decode_owned_bytes(shape)?;
-                scope.retain(owned)?;
-                let prefix = super::arrays::bytes(lexical.arrays)?;
-                let length = checked(
-                    fragment.len().checked_add(prefix),
-                    "JSON indexed buffer overflow",
-                )?;
-                let bytes = length as u64;
-                scope.event(JsonCodecCharge::CopyAdmission { bytes })?;
-                scope.retain(bytes)?;
-                if bytes != 0 {
-                    scope.event(JsonCodecCharge::AllocationOperation { bytes })?;
-                }
-                let mut buffer = Vec::new();
-                buffer
-                    .try_reserve_exact(length)
-                    .map_err(Error::Allocation)?;
-                scope.retain(buffer.capacity() as u64 - bytes)?;
-                buffer.resize(prefix, 0);
-                let mut index = super::arrays::Index::default();
-                let mut lexical = admission::Lexical::default();
-                for byte in fragment.as_bytes() {
-                    if prefix != 0 {
-                        let depth = lexical.depth;
-                        let string = lexical.string;
-                        let item =
-                            lexical.byte(*byte, bounds, code, &RefCell::new(&mut |_| Ok(())))?;
-                        index.byte(&mut buffer[..prefix], *byte, depth, string, item)?;
-                    }
-                    buffer.push(*byte);
-                }
-                index.finish(&buffer[..prefix])?;
-                scope.event(JsonCodecCharge::Copy { bytes })?;
-                let (table, document) = buffer.split_at_mut(prefix);
-                let value = super::decode::value(document, table, &mut scope)?;
-                let capacity = buffer.capacity() as u64;
-                drop(buffer);
-                scope.release(capacity)?;
-                Ok((value, owned))
-            })();
+            let result = raw_fragment_value(fragment, &mut scope);
             match result {
                 Ok(value) => value,
                 Err(error) => {
@@ -336,11 +258,91 @@ impl Formatter for Format<'_, '_, '_> {
         })
     }
 }
+fn raw_fragment_value(fragment: &str, scope: &mut Scope<'_>) -> Result<(Value, u64)> {
+    let bounds = JsonBounds {
+        maximum_depth: scope
+            .bounds
+            .maximum_depth
+            .checked_sub(scope.lexical.depth)
+            .ok_or_else(|| boundary("JSON nesting limit exceeded", scope.code))?,
+        maximum_items: scope
+            .bounds
+            .maximum_items
+            .saturating_sub(scope.lexical.items),
+        ..scope.bounds
+    };
+    let code = scope.code;
+    if fragment.len() as u64 > bounds.maximum_bytes {
+        return Err(boundary("JSON input exceeds declared byte bound", code));
+    }
+    let mut lexical = admission::Lexical::default();
+    {
+        let mut forward = |event| scope.event(event);
+        let charge = RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
+        for byte in fragment.as_bytes() {
+            charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
+            lexical.byte(*byte, bounds, code, &charge)?;
+        }
+    }
+    if lexical.string || lexical.depth != 0 {
+        return Err(boundary("incomplete JSON document", code));
+    }
+    let shape = JsonValueShape {
+        input_bytes: fragment.len() as u64,
+        value_string_bytes: 0,
+        lexical_items: lexical.items,
+        containers: lexical.containers,
+        virtual_items: 0,
+        raw_bytes: 0,
+        raw_frames: 0,
+        unresolved_raw: false,
+        origin: Origin::Slice,
+    };
+    let owned = json_value_decode_owned_bytes(shape)?;
+    scope.retain(owned)?;
+    let prefix = super::arrays::bytes(lexical.arrays)?;
+    let length = checked(
+        fragment.len().checked_add(prefix),
+        "JSON indexed buffer overflow",
+    )?;
+    let bytes = length as u64;
+    scope.event(JsonCodecCharge::CopyAdmission { bytes })?;
+    scope.retain(bytes)?;
+    if bytes != 0 {
+        scope.event(JsonCodecCharge::AllocationOperation { bytes })?;
+    }
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(length)
+        .map_err(Error::Allocation)?;
+    scope.retain(buffer.capacity() as u64 - bytes)?;
+    buffer.resize(prefix, 0);
+    let mut index = super::arrays::Index::default();
+    let mut lexical = admission::Lexical::default();
+    for byte in fragment.as_bytes() {
+        if prefix != 0 {
+            let depth = lexical.depth;
+            let string = lexical.string;
+            let item = lexical.byte(*byte, bounds, code, &RefCell::new(&mut |_| Ok(())))?;
+            index.byte(&mut buffer[..prefix], *byte, depth, string, item)?;
+        }
+        buffer.push(*byte);
+    }
+    index.finish(&buffer[..prefix])?;
+    scope.event(JsonCodecCharge::Copy { bytes })?;
+    let (table, document) = buffer.split_at_mut(prefix);
+    let value = super::decode::value(document, table, scope)?;
+    let capacity = buffer.capacity() as u64;
+    drop(buffer);
+    scope.release(capacity)?;
+    Ok((value, owned))
+}
+
 fn write<T: Serialize + ?Sized>(
     value: &T,
     scope: &mut Scope<'_>,
     output: Option<&mut Vec<u8>>,
-    digest: Option<&mut dyn FnMut(&[u8]) -> Result<()>>,
+    digest: Option<&mut DigestSink<'_>>,
     compare: Option<(&[u8], &mut bool)>,
     maximum: u64,
     canonical: bool,
@@ -372,7 +374,7 @@ fn write_classified<T: Serialize + ?Sized>(
     value: &T,
     scope: &mut Scope<'_>,
     output: Option<&mut Vec<u8>>,
-    digest: Option<&mut dyn FnMut(&[u8]) -> Result<()>>,
+    digest: Option<&mut DigestSink<'_>>,
     compare: Option<(&[u8], &mut bool)>,
     maximum: u64,
     canonical: bool,

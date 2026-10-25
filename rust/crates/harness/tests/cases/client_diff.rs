@@ -221,7 +221,14 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
 impl Fixture {
     async fn new() -> Result<Self> {
         let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let host = FilesystemHost::new(
+            Fs::memory(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,

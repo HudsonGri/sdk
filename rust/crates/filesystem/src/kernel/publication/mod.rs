@@ -163,6 +163,7 @@ use accounting::*;
 mod codec;
 pub(crate) use codec::decode_publication_evidence_with_accounting;
 pub use codec::decode_published_generation;
+pub(crate) use codec::permit_context;
 use codec::*;
 mod construction;
 pub(crate) use construction::contextual_publication_fingerprint;

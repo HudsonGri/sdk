@@ -119,7 +119,6 @@ impl ControlPlane {
 
                                 permit: acyclic_fs::PublicationPermit::Unrestricted,
                             },
-                            |result| result.0.workspace(),
                         )
                         .await;
                 let child = created.map_err(display)?.0;

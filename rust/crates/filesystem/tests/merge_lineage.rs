@@ -412,7 +412,6 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
 
                 permit: acyclic_fs::PublicationPermit::Unrestricted,
             },
-            |child| child,
         )
         .await?;
     let grandchild_key = IdempotencyKey::from_bytes([2; 16]);
@@ -428,7 +427,6 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
 
                 permit: acyclic_fs::PublicationPermit::Unrestricted,
             },
-            |child| child,
         )
         .await?;
     drop(graph);

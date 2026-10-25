@@ -188,8 +188,16 @@ impl Opening {
             _ => acyclic_fs::Fs::local(options).await,
         }
         .map_err(storage)?;
+        let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+            .map_err(storage)?
+            .with_ownership_anchor(self.config.test_state.clone());
         let provider_ref = owner.project.provider();
-        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
+        let files = FilesystemHost::new(
+            filesystem.clone(),
+            provider_ref,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Local(store.clone()),
+        )?;
         let issuer = AuthorityIssuer::new(
             "acyclic.local",
             owner.key,
@@ -205,12 +213,19 @@ impl Opening {
         } = PrivateVolumes::open(&files, &owner).await?;
         #[cfg(any(test, feature = "native-execution"))]
         let workspace = self
-            .workspace(&filesystem, &directory, &owner, &scratch, checkout, &issuer)
+            .workspace(
+                &filesystem,
+                &directory,
+                &owner,
+                &scratch,
+                checkout,
+                &issuer,
+                store,
+            )
             .await?;
         #[cfg(any(test, feature = "native-execution"))]
         let files = match &workspace {
-            Some(workspace) => files
-                .with_project_family(workspace.view().workspace().id(), workspace.store.clone())?,
+            Some(workspace) => files.with_project_family(workspace.view().workspace().id())?,
             None => files,
         };
         // A configured project is opened, never silently replaced by an empty volume.
@@ -253,13 +268,11 @@ impl Opening {
         scratch: &VolumeRef,
         checkout: Option<owner::Checkout>,
         issuer: &AuthorityIssuer,
+        store: acyclic_fs::LocalCoreStateStore,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
         // Retain the existing owned WAL instead of reopening/checkpointing it
         // for every transaction. Embedded bind() retains shared-store semantics.
-        let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
-            .map_err(storage)?
-            .with_ownership_anchor(self.config.test_state.clone());
         // This process now holds the state exclusively. Before anything
         // reads the checkout or records an interruption, every tool tree a
         // dead previous owner left is dead; owners in this process share it.

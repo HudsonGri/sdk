@@ -244,10 +244,12 @@ impl WasmTaskRuntime {
             IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
                 .await
                 .map_err(|error| js_error(Error::Storage(error.to_string())))?;
+        let lineage = authority.clone();
         let filesystem = FilesystemHost::new(
             Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
             &options.filesystem_provider,
             None,
+            acyclic_fs::WorkspaceLineageStorage::Browser(lineage),
         )
         .map_err(js_error)?;
         let limits = options.stream_limits;

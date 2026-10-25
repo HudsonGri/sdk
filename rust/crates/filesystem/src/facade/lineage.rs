@@ -1,6 +1,7 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WorkspaceCommonAncestor {
     pub id: GenerationId,
     pub volume_id: VolumeId,

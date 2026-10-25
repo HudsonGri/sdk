@@ -15,6 +15,7 @@ enum Constructor {
     Interaction,
     ExecutionJournal,
     WorkflowJournal,
+    RecursiveMergeMetadata,
 }
 
 impl Constructor {
@@ -36,6 +37,7 @@ impl Constructor {
                 Fs::memory(),
                 &fixture.host.provider,
                 io,
+                fixture.host.workspace_graph().store().clone(),
             )?),
             Self::Content => drop(FilesystemContentVerifier::new(
                 Arc::clone(&fixture.host),
@@ -85,6 +87,14 @@ impl Constructor {
                 "constructor-custody",
                 binding,
             )?),
+            Self::RecursiveMergeMetadata => drop(MergeBindingMetadata::new(
+                &fixture.issuer,
+                &fixture.scope,
+                &fixture.project,
+                fixture.parent.reducer().authority(),
+                &fixture.source,
+                io,
+            )?),
         }
         Ok(())
     }
@@ -104,6 +114,47 @@ fn ledger(
     }
 }
 
+#[test]
+fn metadata_sizing_releases_diagnostics_at_every_denied_allocation() -> Result<()> {
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    for native in [false, true] {
+        let probe = ledger(native, budget, &cancellation)?;
+        probe.retain_owned(17)?;
+        let before = probe.remaining()?.allocation_operations;
+        crate::executor::with_history_io(Some(&probe), |work| {
+            crate::executor::json::json_byte_length(&["metadata"; 3], 4096, work)
+        })?;
+        let required = before - probe.remaining()?.allocation_operations;
+        assert!(required > 0);
+        for cut in 0..required {
+            let mut limited = budget;
+            limited.allocation_operations -= before - cut;
+            let io = ledger(native, limited, &cancellation)?;
+            io.retain_owned(17)?;
+            let available = io.remaining()?.peak_allocation_bytes;
+            let result = crate::executor::with_history_io(Some(&io), |work| {
+                crate::executor::json::json_byte_length(&["metadata"; 3], 4096, work)
+            });
+            assert!(result.is_err(), "native={native} cut={cut}/{required}");
+            drop(result);
+            assert_eq!(io.owned_bytes()?, 17, "native={native} cut={cut}");
+            assert_eq!(io.remaining()?.peak_allocation_bytes, available);
+        }
+        let io = ledger(native, budget, &cancellation)?;
+        io.retain_owned(17)?;
+        let available = io.remaining()?.peak_allocation_bytes;
+        let result = crate::executor::with_history_io(Some(&io), |work| {
+            crate::executor::json::json_byte_length(&["metadata"; 3], 1, work)
+        });
+        assert!(result.is_err());
+        drop(result);
+        assert_eq!(io.owned_bytes()?, 17);
+        assert_eq!(io.remaining()?.peak_allocation_bytes, available);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn failed_aggregate_constructors_release_every_allocation_boundary() -> Result<()> {
     let fixture = fixture().await?;
@@ -120,6 +171,7 @@ async fn failed_aggregate_constructors_release_every_allocation_boundary() -> Re
         Constructor::Interaction,
         Constructor::ExecutionJournal,
         Constructor::WorkflowJournal,
+        Constructor::RecursiveMergeMetadata,
     ] {
         constructor.construct(&fixture, &verifier, None)?;
         for native in [false, true] {

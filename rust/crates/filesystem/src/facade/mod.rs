@@ -18,13 +18,9 @@ use crate::heap_future::in_heap;
 use crate::kernel::{
     list_attributes_async_with_accounting, lookup_file_record_async_with_accounting,
     lookup_path_async_with_accounting, lookup_paths_with_accounting,
-    merge_generation_with_borrowed_map_resolutions_with_accounting,
     plan_extent_range_with_accounting, read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::kernel::merge_generation_with_borrowed_resolutions_with_accounting;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::publish_generation_async_guarded_with_native_work;
@@ -162,6 +158,8 @@ mod fs;
 mod generation;
 mod generation_cache;
 mod generation_position;
+mod join_checkpoint;
+mod join_frontier;
 mod join_publication;
 mod join_request;
 mod join_witness;
@@ -187,6 +185,7 @@ mod reader;
 mod rebase;
 mod resolved_read;
 mod retention;
+pub(crate) use retention::RetentionUpdate;
 mod retirement;
 mod staging;
 mod transactions;
@@ -259,15 +258,18 @@ pub use generation::Volume;
 use generation::generation_from_record;
 pub(crate) use generation::read_generation_root;
 use generation::record_logical_bytes;
-use join_publication::checkout_commit_outcome;
+pub use join_checkpoint::PreparedJoinCheckpoint;
+pub(crate) use join_checkpoint::PreparedJoinCheckpointState;
+pub(crate) use join_publication::checkout_commit_outcome;
 use join_request::WORKSPACE_JOIN_OPERATION_DOMAIN;
 pub(crate) use join_request::WorkspaceJoinOutcome;
+pub(crate) use join_request::WorkspaceJoinPublication;
 pub(crate) use join_request::WorkspaceJoinRequest;
 pub(crate) use join_request::WorkspaceJoinResolutions;
 use join_request::hash_join_resolutions;
-use join_request::workspace_join_conflict_bytes;
-use join_request::workspace_join_context;
 use join_request::workspace_join_scalar;
+use join_request::{PendingWorkspaceJoin, WorkspaceJoinContext};
+pub(crate) use join_request::{PreparedWorkspaceJoin, WorkspaceJoinPreparation};
 pub use join_witness::JoinCommitWitness;
 use join_witness::hash_merge_resolution;
 use lineage::RebaseLineage;

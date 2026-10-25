@@ -56,7 +56,14 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         ));
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let key = crate::identity::fresh_uuid().to_string();
     #[cfg(test)]
     let key = MEMORY_VOLUME_KEY.get().map_or(key, str::to_owned);

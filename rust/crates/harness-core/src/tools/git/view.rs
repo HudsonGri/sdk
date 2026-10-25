@@ -152,7 +152,6 @@ impl<'a> View<'a> {
 
                             permit,
                         },
-                        |result| result.0.workspace(),
                     )
                     .await?;
                 Ok(OwnedView::Checkout(child))
@@ -169,7 +168,6 @@ impl<'a> View<'a> {
 
                         permit,
                     },
-                    |child| child,
                 )
                 .await
                 .map(OwnedView::Volume),

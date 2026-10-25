@@ -142,7 +142,7 @@ impl Fixture {
         )
         .unwrap();
         crate::pi_owner::tests::publish_owner(&owner, &session, &startup).unwrap();
-        let filesystem = Host::new(resources.fs.clone(), &provider, None).unwrap();
+        let filesystem = Host::new(resources.fs.clone(), &provider, None, acyclic_fs::WorkspaceLineageStorage::Local(resources.store.clone())).unwrap();
         filesystem.create_volume(&journal).await.unwrap();
         let (root, projects) = match root {
             PiRootIntent::ScratchOnly {} => (PiRootIntent::ScratchOnly {}, BTreeMap::new()),

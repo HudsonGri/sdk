@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn checkout_commit_outcome(
+pub(crate) fn checkout_commit_outcome(
     receipt: &crate::kernel::PublicationReceipt,
 ) -> LivePublicationObservation {
     let generation_id = receipt.proof.generation_id;

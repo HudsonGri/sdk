@@ -1,5 +1,7 @@
 use super::*;
-use crate::{Digest, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot};
+use crate::{
+    Digest, ForkOptions, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot,
+};
 use std::path::PathBuf;
 
 #[derive(Debug, Error)]
@@ -80,7 +82,7 @@ impl MultiRootPublisher for Publisher {
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        _conflict: Option<&crate::MergePlan>,
+        _fence: &MultiRootFence,
     ) -> Result<GenerationId, Self::Error> {
         Ok(root.target_generation)
     }
@@ -218,7 +220,7 @@ async fn parent_claim_allows_only_one_unacknowledged_publication() {
     else {
         panic!("expected applied publication");
     };
-    for version in [0, 2, u32::MAX] {
+    for version in [0, 1, u32::MAX] {
         let mut obsolete = retained.clone();
         obsolete.version = version;
         assert!(matches!(

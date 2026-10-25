@@ -49,7 +49,30 @@ impl<'a, A, O> WorkspaceForkCreation<'a, A, O> {
 /// Implementations borrow the original accounting for the complete future.
 /// The explicit future contract also permits native hosts to move a fork task
 /// between executor threads without constraining an async closure's lifetimes.
+/// The creator itself must identify its output workspace; a caller cannot
+/// supply an independent output selector after creation.
+///
+/// ```compile_fail
+/// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Workspace, WorkspaceError};
+/// use acyclic_fs::kernel::KernelAccounting;
+/// use acyclic_fs::lineage::{WorkspaceForkCreation, WorkspaceForkCreator};
+/// struct Creator;
+/// impl<A: AsyncAuthorityStore, O: AsyncObjectStore>
+///     WorkspaceForkCreator<A, O, Workspace<A, O>, WorkspaceError> for Creator
+/// {
+///     async fn create(
+///         self,
+///         _creation: WorkspaceForkCreation<'_, A, O>,
+///         _accounting: &mut KernelAccounting<'_>,
+///     ) -> Result<Workspace<A, O>, WorkspaceError> {
+///         Err(WorkspaceError::IncompatibleWorkspace)
+///     }
+/// }
+/// ```
 pub trait WorkspaceForkCreator<A: AsyncAuthorityStore, O: AsyncObjectStore, T, E> {
+    /// Borrows the created workspace that must match the graph's durable intent.
+    fn workspace(output: &T) -> &Workspace<A, O>;
+
     /// Creates or reopens the child from the graph's immutable parent cut.
     fn create(
         self,
@@ -125,6 +148,10 @@ where
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<WorkspaceError>>
     WorkspaceForkCreator<A, O, Workspace<A, O>, E> for GenerationFork<'_, A, O>
 {
+    fn workspace(output: &Workspace<A, O>) -> &Workspace<A, O> {
+        output
+    }
+
     async fn create(
         self,
         creation: WorkspaceForkCreation<'_, A, O>,
@@ -145,6 +172,10 @@ where
     G::Error: Into<E>,
     E: From<crate::FsError> + From<WorkspaceError> + Send,
 {
+    fn workspace(output: &Workspace<A, O>) -> &Workspace<A, O> {
+        output
+    }
+
     async fn create(
         self,
         creation: WorkspaceForkCreation<'_, A, O>,
@@ -174,6 +205,12 @@ where
     S: crate::LazyWorkspaceStore,
     E: From<crate::LazyWorkspaceError>,
 {
+    fn workspace(
+        output: &(crate::LazyWorkspace<A, O, D, S>, crate::LazySnapshotRef),
+    ) -> &Workspace<A, O> {
+        output.0.workspace()
+    }
+
     async fn create(
         self,
         creation: WorkspaceForkCreation<'_, A, O>,

@@ -13,7 +13,14 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         &mut None,
     )?;
     let filesystem = Fs::memory();
-    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem.clone(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -143,7 +150,14 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,

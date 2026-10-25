@@ -93,7 +93,6 @@ impl LocalWorkspace {
                     destination: &destination,
                     operation,
                 },
-                |result| result.1.workspace(),
             )
             .await
     }
@@ -119,6 +118,12 @@ impl
         Error,
     > for PreparedChildFork<'_>
 {
+    fn workspace(
+        output: &(ForkReport, workspace::View),
+    ) -> &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {
+        output.1.workspace()
+    }
+
     async fn create(
         self,
         creation: acyclic_fs::lineage::WorkspaceForkCreation<

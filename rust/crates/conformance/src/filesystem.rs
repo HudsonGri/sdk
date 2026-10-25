@@ -1906,7 +1906,11 @@ pub fn selected_workload_corpus_json(
             SelectedCorpusError::Serialization(serde_json::Error::io(error))
         }
     })?;
-    bytes.truncate(written as usize);
+    bytes.truncate(
+        usize::try_from(written).map_err(|_| SelectedCorpusError::OutputLimit {
+            limit: limits.maximum_json_bytes,
+        })?,
+    );
     String::from_utf8(bytes).map_err(|error| {
         SelectedCorpusError::Serialization(serde_json::Error::io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,

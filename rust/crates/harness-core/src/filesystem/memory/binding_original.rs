@@ -17,7 +17,14 @@ pub(super) async fn content(
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>> =
-        FilesystemHost::new(filesystem, &provider, None)?;
+        FilesystemHost::new(
+            filesystem,
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
     let volume = VolumeRef::new(
         provider,
         key,

@@ -702,6 +702,9 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
                 .map_err(|error| Error::Storage(error.to_string()))?,
             &provider,
             None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
         )?;
         let volume = VolumeRef::new(
             provider,

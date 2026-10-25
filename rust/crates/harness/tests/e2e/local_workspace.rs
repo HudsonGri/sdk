@@ -36,6 +36,11 @@ pub(super) async fn seed(
         Fs::local(LocalOptions::new(directory)).await?,
         &provider,
         None,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                directory.join("workspace-lineage"),
+            )?,
+        ),
     )?;
     let volume = VolumeRef::new(
         provider,

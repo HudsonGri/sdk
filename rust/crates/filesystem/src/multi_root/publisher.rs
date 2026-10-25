@@ -16,67 +16,93 @@ where
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
     ) -> Result<MultiRootPrepare, Self::Error> {
         let cancellation = CancellationToken::new();
-        let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        match self.preview(operation_id, root_id, root, resolutions).await {
-            Ok(true) => {}
-            Ok(false) => return Ok(MultiRootPrepare::Stale),
-            Err(WorkspaceMultiRootPublisherError::Conflicted { plan }) => {
-                return Ok(MultiRootPrepare::Conflicted(plan));
-            }
-            Err(error) => return Err(error),
-        }
         let target = self
             .resolver
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let authority_head = target
-            .volume
-            .fs
-            .authority()
-            .head(target.authority_id(), &mut authority_work)
+        let head = target
+            .head(WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(WorkspaceError::engine)?;
-        let reservation = match target
-            .volume
-            .fs
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
+            .map_err(|failure| failure.error)?
+            .value;
+        if head.id() != root.target_generation {
+            return Ok(MultiRootPrepare::Stale);
+        }
+        let plan = self.pinned_plan(root, Some(target.clone())).await?;
+        let reservation = self
+            .reserve_operation(
+                &target,
                 operation_id,
-                &mut authority_work,
+                "publication target changed while being fenced",
             )
-            .await
-            .map_err(WorkspaceError::engine)?
-        {
-            ReservationOutcome::Reserved(reservation)
-            | ReservationOutcome::AlreadyReserved(reservation) => reservation,
-            ReservationOutcome::Conflict { .. } => return Ok(MultiRootPrepare::Stale),
-        };
-        Ok(MultiRootPrepare::Ready(MultiRootFence {
-            token: serde_json::to_vec(&WorkspacePublicationFence {
+            .await?;
+        let result = async {
+            let (prepared, conflict) = self
+                .prepare_plan(
+                    root_id,
+                    root,
+                    &plan,
+                    publisher_key(operation_id, root_id, b"publish"),
+                    resolutions,
+                    PublicationPermit::Reservation {
+                        operation_id: operation_id.into_bytes(),
+                        gate_tail: reservation.gate_tail,
+                        expected: reservation.expected,
+                    },
+                )
+                .await?;
+            let checkpoint = Some(
+                prepared
+                    .checkpoint(WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value,
+            );
+            let token = serde_json::to_vec(&WorkspacePublicationFence {
+                root_id,
                 target_workspace_id: target.id(),
                 reservation,
+                checkpoint,
             })
-            .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))?,
-        }))
+            .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))?;
+            let fence = MultiRootFence { token };
+            Ok(match conflict {
+                Some(plan) => MultiRootPrepare::Conflicted { plan, fence },
+                None => MultiRootPrepare::Ready(fence),
+            })
+        }
+        .await;
+        if !matches!(
+            &result,
+            Ok(MultiRootPrepare::Ready(_) | MultiRootPrepare::Conflicted { .. })
+        ) {
+            self.release_operation_reservation(&target, operation_id)
+                .await?;
+        }
+        result
     }
 
     async fn release(
         &self,
         operation_id: OperationId,
-        _root_id: WorkspaceRootId,
+        root_id: WorkspaceRootId,
         fence: &MultiRootFence,
     ) -> Result<(), Self::Error> {
         let cancellation = CancellationToken::new();
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let decoded = decode_reservation(operation_id, fence)?;
+        let decoded = decode_reservation(operation_id, root_id, fence)?;
         let target = self
             .resolver
             .resolve(decoded.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
+        if let Some(checkpoint) = decoded.checkpoint {
+            target
+                .release_prepared_join(&checkpoint, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(|failure| failure.error)?;
+        }
         target
             .volume
             .fs
@@ -92,102 +118,19 @@ where
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: Option<&crate::MergePlan>,
+        fence: &MultiRootFence,
     ) -> Result<GenerationId, Self::Error> {
-        let cancellation = CancellationToken::new();
-        let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let target = self
-            .resolver
-            .resolve(root.target_workspace_id)
-            .await
-            .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let projection_key = publisher_key(operation_id, root_id, b"conflict-project");
-        let reservation_operation = conflict_projection_operation_id(operation_id, root_id);
-        if let Some(generation) = target
-            .operation_generation(
-                projection_key,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value
+        match self
+            .publish(operation_id, root_id, root, &BTreeMap::new(), fence)
+            .await?
         {
-            self.release_operation_reservation(&target, reservation_operation)
-                .await?;
-            return Ok(generation.id());
-        }
-        if target
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-            .id()
-            != root.target_generation
-        {
-            return Err(WorkspaceMultiRootPublisherError::Candidate(
-                "conflict projection target changed".to_owned(),
-            ));
-        }
-        let plan = self.pinned_plan(root, Some(target.clone())).await?;
-        let mut resolutions = BTreeMap::new();
-        if let Some(conflict) = conflict {
-            if conflict.truncated {
-                return Err(WorkspaceMultiRootPublisherError::Candidate(
-                    "conflict projection plan changed".to_owned(),
-                ));
+            MultiRootPublishRoot::Published(generation)
+            | MultiRootPublishRoot::AlreadyPublished(generation) => Ok(generation),
+            MultiRootPublishRoot::UnexpectedTarget => {
+                Err(WorkspaceMultiRootPublisherError::Candidate(
+                    "conflict projection target changed".to_owned(),
+                ))
             }
-            for view in &conflict.conflicts {
-                let resolution = if view.kind == crate::ConflictKind::Text {
-                    DefaultTextMergeDriver
-                        .resolve(view)
-                        .unwrap_or(MergeResolution::Select(ConflictSide::Ours))
-                } else {
-                    MergeResolution::Select(ConflictSide::Ours)
-                };
-                resolutions.insert(view.key.clone(), resolution);
-            }
-        }
-        let reservation = self
-            .reserve_operation(
-                &target,
-                reservation_operation,
-                "conflict projection reservation changed",
-            )
-            .await?;
-        let outcome = self
-            .apply_plan(
-                root_id,
-                root,
-                &plan,
-                projection_key,
-                &resolutions,
-                PublicationPermit::Reservation {
-                    operation_id: reservation_operation.into_bytes(),
-                    gate_tail: reservation.gate_tail,
-                    expected: reservation.expected,
-                },
-            )
-            .await;
-        let release = target
-            .volume
-            .fs
-            .authority()
-            .release_publication(reservation, &mut authority_work)
-            .await
-            .map_err(WorkspaceError::engine);
-        if let Err(error) = release {
-            return Err(error.into());
-        }
-        let outcome = outcome?;
-        match outcome {
-            JoinOutcome::Applied(generation) | JoinOutcome::AlreadyApplied(generation) => {
-                Ok(generation.generation.id())
-            }
-            JoinOutcome::NoChanges(generation) => Ok(generation.id()),
-            _ => Err(WorkspaceMultiRootPublisherError::Candidate(
-                "conflict projection did not produce a generation".to_owned(),
-            )),
         }
     }
 
@@ -430,8 +373,10 @@ where
             generation: current.id(),
             fence: MultiRootFence {
                 token: serde_json::to_vec(&WorkspacePublicationFence {
+                    root_id,
                     target_workspace_id: target.id(),
                     reservation,
+                    checkpoint: None,
                 })
                 .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))?,
             },
@@ -443,13 +388,23 @@ where
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        resolutions: &BTreeMap<ConflictKey, MergeResolution>,
+        _resolutions: &BTreeMap<ConflictKey, MergeResolution>,
         fence: &MultiRootFence,
     ) -> Result<MultiRootPublishRoot, Self::Error> {
         let cancellation = CancellationToken::new();
-        let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let decoded = decode_reservation(operation_id, fence)?;
-        if decoded.target_workspace_id != root.target_workspace_id {
+        let decoded = decode_reservation(operation_id, root_id, fence)?;
+        if decoded.target_workspace_id != root.target_workspace_id
+            || decoded.checkpoint.is_some_and(|checkpoint| {
+                checkpoint.join.source_workspace
+                    != root
+                        .merge_workspace_id
+                        .unwrap_or(root.source_workspace_id)
+                        .volume_id()
+                    || checkpoint.join.source_generation != root.source_generation
+                    || checkpoint.join.expected_target != root.target_generation
+                    || checkpoint.join.base.id != root.base_generation
+            })
+        {
             return Err(WorkspaceMultiRootPublisherError::InvalidFence);
         }
         let target = self
@@ -457,6 +412,22 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
+        let checkpoint = decoded
+            .checkpoint
+            .ok_or(WorkspaceMultiRootPublisherError::InvalidFence)?;
+        if decoded.reservation.authority_id != target.authority_id()
+            || checkpoint.target != target.id()
+            || checkpoint.expected != decoded.reservation.expected
+        {
+            return Err(WorkspaceMultiRootPublisherError::InvalidFence);
+        }
+        // Replayed completion is authorized by the same retained descriptor as
+        // the first publication, even when the target head has already moved.
+        let prepared = target
+            .resume_prepared_join(&checkpoint, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         if target
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -475,35 +446,15 @@ where
                 .map_err(|failure| failure.error)?
                 .value
             {
-                target
-                    .volume
-                    .fs
-                    .authority()
-                    .release_publication(decoded.reservation, &mut authority_work)
-                    .await
-                    .map_err(WorkspaceError::engine)?;
                 return Ok(MultiRootPublishRoot::AlreadyPublished(generation.id()));
             }
             return Ok(MultiRootPublishRoot::UnexpectedTarget);
         }
-        if decoded.reservation.authority_id != target.authority_id() {
-            return Err(WorkspaceMultiRootPublisherError::InvalidFence);
-        }
-        let plan = self.pinned_plan(root, Some(target.clone())).await?;
-        let outcome = match self
-            .apply_plan(
-                root_id,
-                root,
-                &plan,
-                publisher_key(operation_id, root_id, b"publish"),
-                resolutions,
-                PublicationPermit::Reservation {
-                    operation_id: operation_id.into_bytes(),
-                    gate_tail: decoded.reservation.gate_tail,
-                    expected: decoded.reservation.expected,
-                },
-            )
-            .await?
+        let outcome = match prepared
+            .publish(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
         {
             JoinOutcome::Applied(generation) => {
                 MultiRootPublishRoot::Published(generation.generation.id())
@@ -512,23 +463,8 @@ where
             JoinOutcome::AlreadyApplied(generation) => {
                 MultiRootPublishRoot::AlreadyPublished(generation.generation.id())
             }
-            JoinOutcome::StaleTarget(_)
-            | JoinOutcome::Fenced
-            | JoinOutcome::IdempotencyConflict
-            | JoinOutcome::Conflicted { .. } => MultiRootPublishRoot::UnexpectedTarget,
+            _ => MultiRootPublishRoot::UnexpectedTarget,
         };
-        if matches!(
-            outcome,
-            MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
-        ) {
-            target
-                .volume
-                .fs
-                .authority()
-                .release_publication(decoded.reservation, &mut authority_work)
-                .await
-                .map_err(WorkspaceError::engine)?;
-        }
         Ok(outcome)
     }
 }

@@ -24,6 +24,7 @@ pub(super) struct Restart {
 pub(super) async fn run<P, A, O>(
     stream: std::sync::Arc<P>,
     filesystem: Fs<A, O>,
+    lineage: acyclic_fs::WorkspaceLineageStorage,
     seed: &Restart,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
@@ -34,7 +35,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let issuer = issuer();
-    let files = FilesystemHost::new(filesystem, seed.destination.provider(), None)?;
+    let files = FilesystemHost::new(filesystem, seed.destination.provider(), None, lineage)?;
     let runtime = task::open(
         stream.clone(),
         files.clone(),

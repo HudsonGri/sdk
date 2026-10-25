@@ -157,7 +157,6 @@ async fn sparse_fork_cas_loser_authenticates_one_winner_without_republishing() {
                                     cut,
                                     permit: crate::PublicationPermit::Unrestricted,
                                 },
-                                |result| result.0.workspace(),
                             )
                             .await
                     } else {

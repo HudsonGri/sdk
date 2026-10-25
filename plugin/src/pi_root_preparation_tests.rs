@@ -380,6 +380,12 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
         fixture.raw.clone(),
         fixture.owner.policy.journal.provider(),
         None,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                fixture.session.path().join("workspace"),
+            )
+            .unwrap(),
+        ),
     )
     .unwrap();
     fixture.runtime = open(

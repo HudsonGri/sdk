@@ -4,10 +4,10 @@
 //! representation valid and deterministic in every target language.
 
 use crate::{
-    ConflictKey, GenerationId, MergePlan, MergeResolution, MultiRootFence, MultiRootMergeCandidate,
+    ConflictKey, GenerationId, MergePlan, MergeResolution, MultiRootMergeCandidate,
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationPhase,
-    OperationId, Publication, UnpublishedMergeCandidate, WorkspaceContextId, WorkspaceId,
-    WorkspaceRootId,
+    MultiRootRetainedFence, OperationId, Publication, UnpublishedMergeCandidate,
+    WorkspaceContextId, WorkspaceId, WorkspaceRootId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,7 +78,7 @@ struct MultiRootCandidatePayload {
 #[serde(rename_all = "camelCase")]
 struct RootFenceEntry {
     root_id: WorkspaceRootId,
-    fence: MultiRootFence,
+    fence: MultiRootRetainedFence,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -612,7 +612,7 @@ pub fn decode_publication_payload(json: &str) -> Result<String, CompatibilityWir
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Digest;
+    use crate::{Digest, MultiRootFence};
 
     fn generation(byte: u8) -> GenerationId {
         GenerationId::new(Digest::from_bytes([byte; 32]))
@@ -689,7 +689,10 @@ mod tests {
             phase: MultiRootPublicationPhase::Applied,
             published_roots: BTreeSet::from([root_id]),
             published_generations: BTreeMap::from([(root_id, generation)]),
-            fences: BTreeMap::from([(root_id, MultiRootFence { token: vec![7] })]),
+            fences: BTreeMap::from([(
+                root_id,
+                MultiRootRetainedFence::Prepared(MultiRootFence { token: vec![7] }),
+            )]),
             conflicts: BTreeMap::new(),
             projected_roots: BTreeMap::new(),
             declared_conflicts: BTreeMap::new(),
@@ -710,6 +713,27 @@ mod tests {
             decode_publication(&encoded),
             Err(CompatibilityWireError::InvalidValue)
         ));
+    }
+
+    #[test]
+    fn retained_fence_wire_requires_and_preserves_its_cleanup_phase() {
+        let root_id = WorkspaceRootId::from_bytes([4; 16]);
+        let fence = MultiRootFence { token: vec![7] };
+        for retained in [
+            MultiRootRetainedFence::Prepared(fence.clone()),
+            MultiRootRetainedFence::Finished(fence.clone()),
+        ] {
+            let entry = RootFenceEntry {
+                root_id,
+                fence: retained,
+            };
+            let encoded = serde_json::to_string(&entry).expect("encode retained fence");
+            let decoded: RootFenceEntry =
+                serde_json::from_str(&encoded).expect("decode retained fence");
+            assert_eq!(decoded, entry);
+            let untyped = serde_json::json!({ "rootId": root_id, "fence": fence });
+            assert!(serde_json::from_value::<RootFenceEntry>(untyped).is_err());
+        }
     }
 
     #[test]

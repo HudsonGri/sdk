@@ -35,20 +35,34 @@ pub(crate) fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()>
     let no_conflict_state = journal.conflicts.is_empty()
         && journal.projected_roots.is_empty()
         && journal.declared_conflicts.is_empty();
+    let finished_roots: BTreeSet<_> = journal
+        .fences
+        .iter()
+        .filter_map(|(root, fence)| {
+            matches!(fence, MultiRootRetainedFence::Finished(_)).then_some(*root)
+        })
+        .collect();
+    let all_prepared = finished_roots.is_empty();
     let phase_valid = match journal.phase {
         MultiRootPublicationPhase::Validating => {
-            no_publication_progress
+            all_prepared
+                && no_publication_progress
                 && journal.projected_roots.is_empty()
                 && journal.declared_conflicts.is_empty()
                 && fence_roots.is_subset(&roots)
+                && journal
+                    .conflicts
+                    .keys()
+                    .all(|root| fence_roots.contains(root))
                 && journal.paused_root.is_none()
         }
-        MultiRootPublicationPhase::Conflicted => {
-            no_publication_progress
-                && journal.fences.is_empty()
-                && !journal.conflicts.is_empty()
-                && journal.paused_root.is_none()
-        }
+        MultiRootPublicationPhase::Conflicted => valid_conflict_progress(
+            journal,
+            &roots,
+            &fence_roots,
+            &generation_roots,
+            &finished_roots,
+        ),
         MultiRootPublicationPhase::Aborting => {
             journal.published_generations.is_empty()
                 && journal.fences.is_empty()
@@ -57,19 +71,22 @@ pub(crate) fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()>
                 && journal.paused_root.is_none()
         }
         MultiRootPublicationPhase::Committed => {
-            no_publication_progress
+            all_prepared
+                && no_publication_progress
                 && no_conflict_state
                 && fence_roots == roots
                 && journal.paused_root.is_none()
         }
         MultiRootPublicationPhase::Publishing => {
-            no_conflict_state
+            all_prepared
+                && no_conflict_state
                 && fence_roots == roots
                 && generation_roots == journal.published_roots
                 && journal.paused_root.is_none()
         }
         MultiRootPublicationPhase::Paused => {
-            no_conflict_state
+            all_prepared
+                && no_conflict_state
                 && fence_roots == roots
                 && generation_roots == journal.published_roots
                 && journal.paused_root.is_some_and(|root| {
@@ -77,7 +94,13 @@ pub(crate) fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()>
                 })
         }
         MultiRootPublicationPhase::Applied => {
-            journal.conflicts.is_empty()
+            journal.fences.values().all(|fence| {
+                if journal.declared_conflicts.is_empty() {
+                    matches!(fence, MultiRootRetainedFence::Prepared(_))
+                } else {
+                    matches!(fence, MultiRootRetainedFence::Finished(_))
+                }
+            }) && journal.conflicts.is_empty()
                 && journal.projected_roots.is_empty()
                 && fence_roots == roots
                 && journal.published_roots == roots
@@ -102,4 +125,28 @@ pub(crate) fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()>
         return Err(());
     }
     validate_candidate(&journal.candidate)
+}
+
+fn valid_conflict_progress(
+    journal: &MultiRootPublication,
+    roots: &BTreeSet<WorkspaceRootId>,
+    fence_roots: &BTreeSet<WorkspaceRootId>,
+    generation_roots: &BTreeSet<WorkspaceRootId>,
+    finished_roots: &BTreeSet<WorkspaceRootId>,
+) -> bool {
+    journal.published_roots.is_empty()
+        && generation_roots == finished_roots
+        && fence_roots.is_subset(roots)
+        && journal.fences.iter().all(|(root, fence)| match fence {
+            MultiRootRetainedFence::Prepared(_) => true,
+            MultiRootRetainedFence::Finished(_) => {
+                journal.projected_roots.contains_key(root)
+                    && journal.published_generations.get(root) == journal.projected_roots.get(root)
+            }
+        })
+        && roots
+            .iter()
+            .all(|root| fence_roots.contains(root) || journal.projected_roots.contains_key(root))
+        && !journal.conflicts.is_empty()
+        && journal.paused_root.is_none()
 }

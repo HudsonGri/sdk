@@ -112,7 +112,7 @@ pub(crate) fn decode_publication_evidence_with_accounting<'a>(
     .map(|(value, _guard)| value)
 }
 
-pub(super) fn permit_context(
+pub(crate) fn permit_context(
     context: Option<Digest>,
     permit: PublicationPermit,
     accounting: &mut KernelAccounting<'_>,

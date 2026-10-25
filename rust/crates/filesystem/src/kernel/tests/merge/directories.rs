@@ -51,6 +51,11 @@ async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dy
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let directory_id = FileId::from_bytes([7; 16]);
+    let entries = put_tree(&store, Vec::new()).await?;
+    let directory = |file, metadata, links, _| FileRecord {
+        payload: FilePayload::Directory { entries },
+        ..directory(file, metadata, links, 8)
+    };
 
     // Authored metadata (the mode) changed differently on each side: a real conflict.
     let with_metadata = |metadata| FileRecord {
@@ -146,6 +151,64 @@ fn tree_mutation_preserves_exact_names_and_file_identity() -> Result<(), Box<dyn
             if entry == after && expected_file_id == before.file_id
     ));
     assert!(tree_mutation(name, None, None).is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_scalar_conflicts_do_not_hide_binding_conflicts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let directory_id = FileId::from_bytes([7; 16]);
+    let name = LogicalName::new(NameEncoding::Utf8, b"entry".to_vec(), 8)?;
+    let mut records = Vec::new();
+    for (identity, mode) in [(1, 0o755), (2, 0o700), (3, 0o770)] {
+        let entries = put_tree(
+            &store,
+            vec![TreeEntry {
+                name: name.clone(),
+                file_id: FileId::from_bytes([identity; 16]),
+                kind: FileKind::Regular,
+            }],
+        )
+        .await?;
+        records.push(FileRecord {
+            file_id: directory_id,
+            kind: FileKind::Directory,
+            link_count: 1,
+            metadata: put_metadata(&store, timed(1, mode)).await?,
+            payload: FilePayload::Directory { entries },
+        });
+    }
+    let [base, ours, theirs]: [FileRecord; 3] =
+        records.try_into().map_err(|_| "three inputs required")?;
+    for maximum_conflicts in [1, 2] {
+        let result = merge_directory_record_async(
+            &store,
+            directory_id,
+            base,
+            ours,
+            theirs,
+            1,
+            maximum_conflicts,
+            DecodeLimits::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+        assert!(result.record.is_none());
+        assert_eq!(result.examined_changes, 1);
+        assert_eq!(result.truncated, maximum_conflicts == 1);
+        let expected = [
+            MergeConflict::File(directory_id),
+            MergeConflict::Binding {
+                directory_id,
+                name: name.clone(),
+            },
+        ];
+        assert_eq!(result.conflicts, expected[..maximum_conflicts as usize]);
+    }
     Ok(())
 }
 
@@ -333,4 +396,188 @@ async fn deleting_a_record_with_remaining_links_is_rejected()
     .ok_or("remaining-link deletion unexpectedly succeeded")?;
     assert!(matches!(failure.error, MergeGenerationError::InvalidDiff));
     Ok(())
+}
+
+#[tokio::test]
+async fn pruning_deep_unbound_directories_visits_each_transition_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    const DEPTH: u8 = 128;
+    let store = MemoryObjectStore::default();
+    let mut records = BTreeMap::new();
+    let mut descendant = record(DEPTH, 1, 1, FilePayload::Empty, FileKind::Fifo);
+    records.insert(descendant.file_id, (None, Some(descendant)));
+    for index in (0..DEPTH).rev() {
+        let entries = put_tree(
+            &store,
+            vec![TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 8)?,
+                file_id: descendant.file_id,
+                kind: descendant.kind,
+            }],
+        )
+        .await?;
+        descendant = record(
+            index,
+            1,
+            1,
+            FilePayload::Directory { entries },
+            FileKind::Directory,
+        );
+        records.insert(descendant.file_id, (None, Some(descendant)));
+    }
+    let mut remaining = u32::from(DEPTH) * 2;
+    let budget = WorkBudget {
+        items_examined: u64::from(DEPTH) * 256,
+        ..WorkBudget::UNBOUNDED
+    };
+    let mut work = WorkCounters::UNCHARGED;
+    adjust_test_link_counts(
+        &store,
+        &mut records,
+        &mut remaining,
+        DecodeLimits::default(),
+        budget,
+        &CancellationToken::new(),
+        &mut work,
+    )
+    .await?;
+    work.verify(budget)?;
+    assert_eq!(
+        remaining, 0,
+        "each binding is introduced and removed exactly once"
+    );
+    assert!(records.values().all(|(_, resolved)| resolved.is_none()));
+    Ok(())
+}
+
+#[test]
+fn link_delta_insertion_accounts_for_every_copied_element() -> Result<(), Box<dyn std::error::Error>>
+{
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut deltas = Owned::allocate(0, &mut accounting)?;
+    for index in (0..=u8::MAX).rev() {
+        add_delta(
+            &mut deltas,
+            FileId::from_bytes([index; 16]),
+            1,
+            &mut accounting,
+        )?;
+    }
+    let inserted = accounting.spent();
+    assert!(inserted.items_examined >= 256);
+    assert!(
+        inserted.bytes_copied >= 256 * crate::foundation::usize_to_u64(size_of::<(FileId, i64)>())
+    );
+    deltas.retire(&mut accounting)?;
+    Ok(())
+}
+
+mod link_graph_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    async fn check_graph(edges: &[u8], roots: u8) -> Result<(), Box<dyn std::error::Error>> {
+        let store = MemoryObjectStore::default();
+        let mut records = BTreeMap::new();
+        let binding = |index: u8| -> Result<TreeEntry, Box<dyn std::error::Error>> {
+            Ok(TreeEntry {
+                name: LogicalName::new(NameEncoding::Utf8, vec![b'a' + index], 8)?,
+                file_id: FileId::from_bytes([index + 1; 16]),
+                kind: FileKind::Directory,
+            })
+        };
+        let mut reachable = [false; 8];
+        let mut links = [0_u64; 8];
+        let mut root_entries = Vec::new();
+        for (index, reached) in reachable.iter_mut().enumerate().take(edges.len()) {
+            if roots & (1 << index) != 0 {
+                *reached = true;
+                links[index] += 1;
+                root_entries.push(binding(u8::try_from(index)?)?);
+            }
+        }
+        let empty = put_tree(&store, Vec::new()).await?;
+        let before = record(
+            0,
+            1,
+            1,
+            FilePayload::Directory { entries: empty },
+            FileKind::Directory,
+        );
+        let after = FileRecord {
+            payload: FilePayload::Directory {
+                entries: put_tree(&store, root_entries).await?,
+            },
+            ..before
+        };
+        records.insert(before.file_id, (Some(before), Some(after)));
+        // Every edge points forward, so reachability and exact link counts have
+        // a one-pass independent oracle, including shared descendants.
+        for (index, mask) in edges.iter().enumerate() {
+            let mut entries = Vec::new();
+            for target in index + 1..edges.len() {
+                if mask & (1 << target) != 0 {
+                    entries.push(binding(u8::try_from(target)?)?);
+                    if reachable[index] {
+                        reachable[target] = true;
+                        links[target] += 1;
+                    }
+                }
+            }
+            let value = record(
+                u8::try_from(index + 1)?,
+                1,
+                1,
+                FilePayload::Directory {
+                    entries: put_tree(&store, entries).await?,
+                },
+                FileKind::Directory,
+            );
+            records.insert(value.file_id, (None, Some(value)));
+        }
+        let cancellation = CancellationToken::new();
+        let mut work = WorkCounters::UNCHARGED;
+        adjust_test_link_counts(
+            &store,
+            &mut records,
+            &mut 256,
+            DecodeLimits::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            &mut work,
+        )
+        .await?;
+        for index in 0..edges.len() {
+            let id = FileId::from_bytes([u8::try_from(index + 1)?; 16]);
+            let actual = records.get(&id).ok_or("missing graph record")?.1;
+            assert_eq!(
+                actual.is_some(),
+                reachable[index],
+                "node {index}, graph {edges:?}, roots {roots}"
+            );
+            if let Some(actual) = actual {
+                assert_eq!(actual.link_count, links[index]);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pruning_keeps_shared_children_reachable_from_an_independent_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        check_graph(&[4, 4, 0], 2).await
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn pruning_matches_reachable_graph_and_shared_link_counts(
+            edges in proptest::collection::vec(any::<u8>(), 1..=8), roots in any::<u8>(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().build()
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            runtime.block_on(check_graph(&edges, roots)).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        }
+    }
 }

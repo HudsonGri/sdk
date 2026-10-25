@@ -268,7 +268,7 @@ pub(crate) async fn wait_service_lock(data: PathBuf) -> Result<ServiceLock, Stri
 
 /// Serializes publication of a service endpoint with startup and drain callers.
 /// The file lives outside the replaceable data directory, like the lifecycle lock.
-/// All platforms use the canonical explicitly released FileLock implementation.
+/// All platforms use the canonical explicitly released `FileLock` implementation.
 pub(crate) async fn service_startup_lock(
     data: PathBuf,
 ) -> Result<acyclic_native_runtime::FileLock, String> {

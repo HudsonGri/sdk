@@ -74,10 +74,14 @@ async fn run_on<P: StreamProvider>(
     lost_response: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let filesystem = Fs::memory();
+    let lineage = acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+        acyclic_fs::MemoryWorkspaceLineageStore::new(),
+    ));
     let evidence = prepare_on(
         mcp,
         stream.clone(),
         filesystem.clone(),
+        lineage.clone(),
         receipt_fault,
         lost_response,
         None,
@@ -92,6 +96,7 @@ async fn run_on<P: StreamProvider>(
     recovery::run(
         stream,
         filesystem,
+        lineage,
         &evidence.restart,
         receipt_fault,
         lost_response,
@@ -150,6 +155,7 @@ async fn prepare_on<P, A, O>(
     mcp: Option<&'static str>,
     stream: std::sync::Arc<P>,
     filesystem: Fs<A, O>,
+    lineage: acyclic_fs::WorkspaceLineageStorage,
     receipt_fault: Option<(&str, bool)>,
     lost_response: bool,
     restart_path: Option<&std::path::Path>,
@@ -159,7 +165,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let storage = prepare_storage(mcp, filesystem).await?;
+    let storage = prepare_storage(mcp, filesystem, lineage).await?;
     let work = capture::work()?;
     let task = prepare_task(storage, &stream, &work).await?;
     let prepared = prepare_view(task, &work, restart_path).await?;
@@ -211,6 +217,7 @@ fn approval_scope(
 async fn prepare_storage<A, O>(
     mcp: Option<&'static str>,
     filesystem: Fs<A, O>,
+    lineage: acyclic_fs::WorkspaceLineageStorage,
 ) -> ExampleResult<ExampleStorage<A, O>>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -219,7 +226,7 @@ where
     acyclic_native_runtime::initialize_native_io_services()?;
     acyclic_fs::initialize_native_mount_services()?;
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let files = FilesystemHost::new(filesystem, &provider, None)?;
+    let files = FilesystemHost::new(filesystem, &provider, None, lineage)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = |name| {
         VolumeRef::new(

@@ -145,7 +145,14 @@ async fn retained_command(
 // Compile registry schemas once, retaining fresh volume and stream state for
 // every generated case. No task, file, or admission survives between cases.
 async fn isolated_fixture(template: &Fixture) -> Result<Fixture> {
-    let filesystem = FilesystemHost::new(Fs::memory(), template.volume.provider(), None)?;
+    let filesystem = FilesystemHost::new(
+        Fs::memory(),
+        template.volume.provider(),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     filesystem.create_volume(&template.volume).await?;
     Ok(Fixture {
         stream: Arc::new(MemoryStream::default()),

@@ -18,7 +18,14 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,

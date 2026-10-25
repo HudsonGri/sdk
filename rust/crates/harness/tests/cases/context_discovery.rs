@@ -190,7 +190,14 @@ impl Fixture {
             "2".into(),
             &mut None,
         )?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let host = FilesystemHost::new(
+            Fs::memory(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,

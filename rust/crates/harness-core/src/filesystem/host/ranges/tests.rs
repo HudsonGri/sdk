@@ -16,7 +16,14 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
         VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     host.create_volume(&volume).await?;
     let grant = grant(&volume, VolumeOperation::Write)?;
     let file = host

@@ -31,7 +31,14 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "parent".into(),

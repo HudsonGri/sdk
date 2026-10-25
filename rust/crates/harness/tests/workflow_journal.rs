@@ -69,7 +69,14 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let volume = VolumeRef::new(
         provider,
         "counter-private".into(),

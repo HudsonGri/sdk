@@ -133,6 +133,12 @@ pub enum Error {
     /// A raw filesystem adapter cannot enforce this effective access view.
     #[error("filesystem access configuration unsupported on {0}")]
     FilesystemAccessConfiguration(&'static str),
+    /// The canonical graph's typed failure, retained without diagnostic copies.
+    #[cfg(feature = "filesystem")]
+    #[error(transparent)]
+    FilesystemLineage(
+        #[from] acyclic_fs::WorkspaceLineageError<acyclic_fs::WorkspaceLineageStorageError>,
+    ),
     /// The invocation's cancellation token fired before the operation finished.
     #[error("operation cancelled")]
     Cancelled,
@@ -481,6 +487,12 @@ impl Error {
                 crate::task_volume::Error::Storage(_) => ErrorCode::Storage,
             },
             Self::NotFound(_) => ErrorCode::NotFound,
+            #[cfg(feature = "filesystem")]
+            Self::FilesystemLineage(error) => match error {
+                acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => ErrorCode::Unauthorized,
+                acyclic_fs::WorkspaceLineageError::ConflictingRegistration => ErrorCode::Conflict,
+                _ => ErrorCode::Storage,
+            },
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
@@ -619,6 +631,12 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
+            #[cfg(feature = "filesystem")]
+            Self::FilesystemLineage(error) => matches!(
+                error,
+                acyclic_fs::WorkspaceLineageError::Store(_)
+                    | acyclic_fs::WorkspaceLineageError::Workspace(_)
+            ),
             Self::TaskFiles(_)
             | Self::NotFound(_)
             | Self::Conflict(_)

@@ -261,3 +261,5 @@ async fn adjust_test_link_counts(
 
 mod directories;
 mod generations;
+
+mod frontier;

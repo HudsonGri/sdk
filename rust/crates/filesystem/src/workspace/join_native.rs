@@ -74,7 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .map_err(E::from)
     }
 
-    /// Validates the ordinary conflict set, then seals the same second application.
+    /// Resolves the retained frontier once, then publishes under the original live seal.
     pub async fn apply_sides_with_permit_guarded_with_native_work<'original, F, Fut, E>(
         &self,
         options: ApplyOptions,
@@ -92,49 +92,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<FsError> + From<WorkspaceError> + From<DrivenJoinError> + Send + 'static,
     {
-        let (initial, allocation) = self
-            .apply_with_native_work(
-                options,
-                &[],
-                permit,
-                original,
-                cancellation,
-                before_publication,
-            )
-            .await?;
-        let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        else {
-            return Ok((initial, allocation));
+        if options.if_target != self.target_head.id {
+            return self
+                .apply_with_native_work(
+                    options,
+                    &[],
+                    permit,
+                    original,
+                    cancellation,
+                    before_publication,
+                )
+                .await;
+        }
+        let prepared = self
+            .prepare(options, permit, original, cancellation)
+            .await
+            .map_err(E::from)?;
+        let Some((conflicts, truncated)) = prepared.conflicts() else {
+            return prepared
+                .publish_with_native_work(original, cancellation, before_publication)
+                .await;
         };
-        let bytes = allocation.bytes();
-        let conflicts = crate::kernel::Owned::new(
-            conflicts,
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation),
-            bytes,
-        );
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let validation =
-            validate_join_side_selections(&conflicts.value, truncated, selections, &mut accounting);
-        conflicts.retire(&mut accounting).map_err(E::from)?;
-        validation.map_err(E::from)?;
+        validate_join_side_selections(conflicts, truncated, selections, &mut accounting)
+            .map_err(E::from)?;
         let resolutions = native_join_side_resolutions(selections, &mut accounting, cancellation)
             .map_err(E::from)?;
-        let applied = self
-            .apply_with_native_work(
-                options,
-                &resolutions.value,
-                permit,
-                original,
-                cancellation,
-                before_publication,
-            )
+        let resolved = prepared
+            .resolve_slice(&resolutions.value, original, cancellation)
             .await;
         resolutions.retire(&mut accounting).map_err(E::from)?;
-        applied
+        resolved
+            .map_err(E::from)?
+            .publish_with_native_work(original, cancellation, before_publication)
+            .await
     }
 }
 

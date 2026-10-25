@@ -94,7 +94,6 @@ async fn guarded_graph_fork_retains_issued_guard_paths_and_original_cut() {
                         },
                         Some(vec!["/selected".into()]),
                     ),
-                    |child| child,
                 )
                 .await;
             assert!(called.load(std::sync::atomic::Ordering::SeqCst) > 0);
@@ -206,7 +205,6 @@ async fn graph_fork_requires_the_exact_ready_parent_before_admitting_child_inten
                         called: Some(&called),
                         refuse: false,
                     },
-                    |child| child,
                 )
                 .await;
             if state == 3 {
@@ -694,7 +692,6 @@ async fn dropped_external_creator_cannot_publish_lineage_or_change_the_recovery_
             called: None,
             refuse: false,
         },
-        |child| child,
     ));
     tokio::select! {
         _ = &mut attempt => panic!("creator unexpectedly returned before its interruption point"),
@@ -725,7 +722,6 @@ async fn dropped_external_creator_cannot_publish_lineage_or_change_the_recovery_
                 called: None,
                 refuse: false,
             },
-            |child| child,
         )
         .await
         .unwrap();
@@ -753,7 +749,6 @@ async fn fork_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 parent,
                 permit: crate::PublicationPermit::Unrestricted,
             },
-            |child| child,
         )
         .await
 }
@@ -801,7 +796,6 @@ async fn fork_refuses_the_original_work_budget_before_any_creator_or_durable_int
                 called: Some(&called),
                 refuse: false,
             },
-            |child| child,
         )
         .await;
     assert!(attempt.is_err());
@@ -833,7 +827,6 @@ async fn fork_refuses_the_original_work_budget_before_any_creator_or_durable_int
                 called: Some(&called),
                 refuse: true,
             },
-            |child| child,
         )
         .await;
     assert!(matches!(
@@ -938,6 +931,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore>
         WorkspaceLineageError<MemoryWorkspaceLineageStoreError>,
     > for TestFork<'_, A, O>
 {
+    fn workspace(output: &Workspace<A, O>) -> &Workspace<A, O> {
+        output
+    }
+
     async fn create(
         self,
         creation: WorkspaceForkCreation<'_, A, O>,

@@ -37,6 +37,14 @@ struct State {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Held {
+    MergeProgram {
+        root: ObjectId,
+        config: crate::model::VolumeConfig,
+    },
+    Generation {
+        root: ObjectId,
+        config: crate::model::VolumeConfig,
+    },
     Checkout {
         base: ObjectId,
         working: GenerationRoot,

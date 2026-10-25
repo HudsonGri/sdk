@@ -74,7 +74,15 @@ async fn storage(
         .await
         .unwrap();
     (
-        FilesystemHost::new(raw, provider, None).unwrap(),
+        FilesystemHost::new(
+            raw,
+            provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Local(
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(path.join("workspace")).unwrap(),
+            ),
+        )
+        .unwrap(),
         Arc::new(
             LocalStream::open(path.join("stream"), LocalStreamLimits::default())
                 .await

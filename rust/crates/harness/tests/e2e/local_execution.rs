@@ -495,7 +495,14 @@ async fn verify_cold_files(
     files: &std::collections::BTreeMap<String, Option<String>>,
 ) -> TestResult {
     let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory)).await?;
-    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
+    let cold = acyclic_harness::filesystem::FilesystemHost::new(
+        cold,
+        volume.provider(),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     for (path, expected) in files {
         let read = cold
             .read(workspace, None, &format!("/{path}"), 65_536, None)

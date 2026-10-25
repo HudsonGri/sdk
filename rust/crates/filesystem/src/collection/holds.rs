@@ -117,6 +117,34 @@ impl Collection {
         })
     }
 
+    pub(crate) fn hold_generation_with_accounting(
+        collection: Option<&Arc<Self>>,
+        root: ObjectId,
+        config: crate::model::VolumeConfig,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Hold>, crate::FsError> {
+        accounting.check()?;
+        collection
+            .map(|collection| {
+                collection.register_with_accounting(Held::Generation { root, config }, accounting)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn hold_merge_program_with_accounting(
+        collection: Option<&Arc<Self>>,
+        root: ObjectId,
+        config: crate::model::VolumeConfig,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Hold>, crate::FsError> {
+        accounting.check()?;
+        collection
+            .map(|collection| {
+                collection.register_with_accounting(Held::MergeProgram { root, config }, accounting)
+            })
+            .transpose()
+    }
+
     pub(crate) fn hold_record_with_accounting(
         collection: Option<&Arc<Self>>,
         record: crate::kernel::FileRecord,

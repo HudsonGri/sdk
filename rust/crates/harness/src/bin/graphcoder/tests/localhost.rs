@@ -108,9 +108,13 @@ async fn shipping_prompt_jsonl_replay_and_scope_use_the_deployed_package()
     Ok(())
 }
 
-async fn deploy(endpoint: &str, scope: Scope, digest: [u8; 32])
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut api = wire::actors_service_client::ActorsServiceClient::new(client::channel(endpoint).await?);
+async fn deploy(
+    endpoint: &str,
+    scope: Scope,
+    digest: [u8; 32],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut api =
+        wire::actors_service_client::ActorsServiceClient::new(client::channel(endpoint).await?);
     let deployment = wire::DeploymentRequest {
         name: scope.namespace,
         account_id: scope.account,
@@ -126,10 +130,10 @@ async fn deploy(endpoint: &str, scope: Scope, digest: [u8; 32])
     api.deploy_namespace(deployment.clone()).await?;
     let mut wrong = deployment;
     wrong.account_id = b"another-account".to_vec();
-    assert_eq!(
-        api.deploy_namespace(wrong).await.unwrap_err().code(),
-        tonic::Code::PermissionDenied
-    );
+    let Err(denied) = api.deploy_namespace(wrong).await else {
+        return Err("foreign account deployment was admitted".into());
+    };
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn conflicted_publication_abort_restores_premerge_generation()
+async fn interrupted_continue_can_abort_and_restore_premerge_generation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let parent = fs
@@ -147,10 +147,9 @@ async fn conflicted_publication_abort_restores_premerge_generation()
         WorkspaceMultiRootPublisher::new(resolver).with_merge_drivers(std::sync::Arc::new(drivers)),
         Allow,
     );
-    assert!(matches!(
-        aborting.publish(abort_candidate).await?,
-        Publication::Conflicted(_)
-    ));
+    let Publication::Conflicted(mut journal) = aborting.publish(abort_candidate).await? else {
+        return Err("expected conflicted publication".into());
+    };
     let mut unrelated = parent
         .begin_transaction(
             IdempotencyKey::new(),
@@ -180,6 +179,40 @@ async fn conflicted_publication_abort_restores_premerge_generation()
     else {
         return Err("unrelated edit did not commit".into());
     };
+    // Continue can finish a root and persist its retained generation before the
+    // final Applied decision. Resume abort from that exact durable cut.
+    let root = journal
+        .candidate
+        .plan
+        .roots
+        .get(&root_id)
+        .ok_or("missing root")?;
+    let projected = *journal
+        .projected_roots
+        .get(&root_id)
+        .ok_or("missing projection")?;
+    let finished = aborting
+        .publisher
+        .finish_conflict(abort_operation, root_id, root, projected)
+        .await?;
+    journal.projected_roots.insert(root_id, finished.generation);
+    journal
+        .published_generations
+        .insert(root_id, finished.generation);
+    journal
+        .fences
+        .insert(root_id, MultiRootRetainedFence::Finished(finished.fence));
+    super::super::validation::validate_journal(&journal)
+        .map_err(|()| "invalid continuation cut")?;
+    let revision = journal.revision;
+    journal.revision += 1;
+    assert!(
+        aborting
+            .store
+            .compare_and_swap(abort_operation, revision, journal)
+            .await?
+    );
+    let aborting = MultiRootPublicationCoordinator::new(aborting.store, aborting.publisher, Allow);
     aborting
         .abort_conflicted(abort_operation, WorkspaceContextId::from_bytes([76; 16]))
         .await?;

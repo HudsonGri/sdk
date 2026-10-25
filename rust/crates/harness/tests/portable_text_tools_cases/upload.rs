@@ -70,7 +70,14 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         let fs = Fs::local(options.clone())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let host = FilesystemHost::new(fs, &provider, None)?;
+        let host = FilesystemHost::new(
+            fs,
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         host.create_volume(&volume).await?;
         let io = acyclic_harness::filesystem::PreparationIo::from_budget(
             CONTENT_WORK_BUDGET,
@@ -119,7 +126,14 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let fs = Fs::local(options)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(fs, &provider, None)?;
+    let host = FilesystemHost::new(
+        fs,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(
         CONTENT_WORK_BUDGET,
         &cancellation,

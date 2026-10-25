@@ -195,7 +195,6 @@ impl CheckoutTools {
 
                     permit: PublicationPermit::Unrestricted,
                 },
-                |result| result.0.workspace(),
             )
             .await?;
         owner.verify_owner(io)?.await?;

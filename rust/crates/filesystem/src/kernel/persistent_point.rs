@@ -40,7 +40,114 @@ impl<T> Owned<T> {
     }
 }
 
+impl<T> Owned<Box<T>> {
+    pub(crate) fn unbox(self, accounting: &mut KernelAccounting<'_>) -> Result<T, crate::FsError> {
+        let Self {
+            value,
+            mut allocation,
+            bytes,
+        } = self;
+        let value = *value;
+        accounting.release_owned(&mut allocation, bytes)?;
+        Ok(value)
+    }
+
+    /// Moves a retained value only after its box and copy have been admitted.
+    /// An error leaves the value in its caller-owned slot for exact retirement.
+    pub(crate) fn take_boxed(
+        slot: &mut Option<T>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        if slot.is_none() {
+            return Err(crate::FsError::InvalidDiff);
+        }
+        let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<T>());
+        let copied = crate::WorkCounters {
+            bytes_copied: bytes,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied)?;
+        let mut allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+        if let Err(error) = accounting.admit(copied) {
+            accounting.release_owned(&mut allocation, bytes)?;
+            return Err(error);
+        }
+        let Some(value) = slot.take() else {
+            unreachable!("admitted slot remains owned by this call");
+        };
+        let value = Box::new(value);
+        if let Err(error) = accounting.record_completed(copied) {
+            *slot = Some(*value);
+            accounting.release_owned(&mut allocation, bytes)?;
+            return Err(error);
+        }
+        Ok(Self::new(value, allocation, bytes))
+    }
+}
+
+impl Owned<String> {
+    pub(crate) fn copy(
+        value: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let copied = crate::WorkCounters {
+            bytes_copied: crate::foundation::usize_to_u64(value.len()),
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied)?;
+        let mut bytes = Owned::<Vec<u8>>::allocate(value.len(), accounting)?;
+        let result = accounting.admit(copied).and_then(|()| {
+            bytes.value.extend_from_slice(value.as_bytes());
+            accounting.record_completed(copied)
+        });
+        if let Err(error) = result {
+            bytes.retire(accounting)?;
+            return Err(error);
+        }
+        let Owned {
+            value,
+            allocation,
+            bytes,
+        } = bytes;
+        match String::from_utf8(value) {
+            Ok(value) => Ok(Self::new(value, allocation, bytes)),
+            Err(error) => {
+                Owned::new(error.into_bytes(), allocation, bytes).retire(accounting)?;
+                Err(crate::FsError::InvalidAuthorityHistory)
+            }
+        }
+    }
+}
+
 impl<T> Owned<Vec<T>> {
+    pub(crate) fn push_accounted(
+        &mut self,
+        value: T,
+        maximum: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let copied = crate::WorkCounters {
+            items_examined: 1,
+            bytes_copied: crate::foundation::usize_to_u64(std::mem::size_of::<T>()),
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied)?;
+        self.ensure_for_push(maximum, accounting)?;
+        accounting.admit(copied)?;
+        self.value.push(value);
+        accounting.record_completed(copied)
+    }
+}
+
+impl<T> Owned<Vec<T>> {
+    pub(crate) fn clear(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let empty = Self::allocate(0, accounting)?;
+        std::mem::replace(self, empty).retire(accounting)
+    }
+
     pub(crate) fn allocate(
         count: usize,
         accounting: &mut KernelAccounting<'_>,

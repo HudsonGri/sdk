@@ -281,6 +281,9 @@ async fn disk_restart(
         Some(method),
         stream.clone(),
         filesystem,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(storage.path().join("workspace"))?,
+        ),
         receipt_fault,
         lost_response,
         None,
@@ -304,6 +307,9 @@ async fn disk_restart(
     super::recovery::run(
         stream,
         filesystem,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(storage.path().join("workspace"))?,
+        ),
         &evidence.restart,
         receipt_fault,
         lost_response,
@@ -329,6 +335,9 @@ pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::
         Some("tools/call"),
         stream,
         filesystem,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(storage.join("workspace"))?,
+        ),
         None,
         true,
         Some(&storage.join("restart.json")),
@@ -369,8 +378,26 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         acyclic_stream::LocalStream::open(storage.path().join("coordinator"), Default::default())
             .await?,
     );
-    super::recovery::run(stream.clone(), filesystem.clone(), &seed, None, true).await?;
-    verify_pending_task(stream.clone(), filesystem, &seed).await?;
+    super::recovery::run(
+        stream.clone(),
+        filesystem.clone(),
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(storage.path().join("workspace"))?,
+        ),
+        &seed,
+        None,
+        true,
+    )
+    .await?;
+    verify_pending_task(
+        stream.clone(),
+        filesystem,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(storage.path().join("workspace"))?,
+        ),
+        &seed,
+    )
+    .await?;
     super::verify_mcp_calls(&seed.request, true)?;
     println!(
         "MCP actual host termination after application, launch-only disk recovery and no replay passed"
@@ -407,10 +434,11 @@ async fn host_ready(
 async fn verify_pending_task(
     stream: std::sync::Arc<acyclic_stream::LocalStream>,
     filesystem: Fs<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
+    lineage: acyclic_fs::WorkspaceLineageStorage,
     seed: &super::Restart,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let issuer = super::issuer();
-    let files = FilesystemHost::new(filesystem, seed.destination.provider(), None)?;
+    let files = FilesystemHost::new(filesystem, seed.destination.provider(), None, lineage)?;
     let task = super::task::open(
         stream.clone(),
         files.clone(),

@@ -300,6 +300,7 @@ impl PiSession {
             resources.0.fs.clone(),
             owner.policy().journal.provider(),
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            acyclic_fs::WorkspaceLineageStorage::Local(resources.0.store.clone()),
         )?;
         let stream = Arc::new(
             LocalStream::open(stream_path, LocalStreamLimits::default())

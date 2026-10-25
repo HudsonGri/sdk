@@ -39,6 +39,9 @@ fn host(
             &mut None,
         )?,
         None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
     )?;
     let content = crate::filesystem::FilesystemContentVerifier::new(
         files,

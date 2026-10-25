@@ -7,7 +7,14 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
         provider,

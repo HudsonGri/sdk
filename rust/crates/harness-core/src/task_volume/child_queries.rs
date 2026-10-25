@@ -107,7 +107,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             file: ChildFile::Request,
         };
         let snapshot = self
-            .snapshot_files(&[key.clone()], &Query::File(key))
+            .snapshot_files(std::slice::from_ref(&key), &Query::File(key.clone()))
             .await?;
         snapshot
             .files
@@ -275,8 +275,8 @@ fn reference_page(index: &Index, after: Option<&Component>, maximum: usize) -> V
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    fn reference(n: u32) -> Component {
-        Component::new(format!("worker-{n:06}")).unwrap()
+    fn reference(n: u32) -> Result<Component> {
+        Component::new(format!("worker-{n:06}"))
     }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
@@ -285,13 +285,13 @@ mod tests {
             admitted in proptest::collection::vec(0u32..512, 0..256), window in 1usize..17,
         ) {
             let mut index = Index::default();
-            let expected: std::collections::BTreeSet<_> = admitted.iter().map(|n| reference(*n)).collect();
+            let expected: std::collections::BTreeSet<_> = admitted.iter().map(|n| reference(*n)).collect::<Result<_>>()?;
             for n in 0..512 {
-                let key = FileKey::Child { reference: reference(n), file: ChildFile::Inbox(Component::new("mail").unwrap()) };
+                let key = FileKey::Child { reference: reference(n)?, file: ChildFile::Inbox(Component::new("mail")?) };
                 apply(&mut index, FileValue::new(key, Vec::new()), 1);
             }
             for n in admitted {
-                let key = FileKey::Child { reference: reference(n), file: ChildFile::Request };
+                let key = FileKey::Child { reference: reference(n)?, file: ChildFile::Request };
                 apply(&mut index, FileValue::new(key, Vec::new()), 1);
             }
             let mut after = None;
@@ -307,43 +307,49 @@ mod tests {
             prop_assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
         }
     }
-    fn populated() -> Index {
+    fn populated() -> Result<Index> {
         let mut index = Index::default();
         for n in 0..100_000 {
-            index.child_requests.insert(reference(n));
+            index.child_requests.insert(reference(n)?);
         }
-        index
+        Ok(index)
     }
     #[test]
-    fn one_child_page_is_bounded_with_one_hundred_thousand_siblings() {
-        let index = populated();
+    fn one_child_page_is_bounded_with_one_hundred_thousand_siblings() -> Result<()> {
+        let index = populated()?;
+        let after = reference(99_990)?;
         let (page, examined) = crate::test_support::measure_task_volume_work(|| {
-            reference_page(&index, Some(&reference(99_990)), 4)
+            reference_page(&index, Some(&after), 4)
         });
-        assert_eq!(page, (99_991..99_995).map(reference).collect::<Vec<_>>());
+        assert_eq!(
+            page,
+            (99_991..99_995)
+                .map(reference)
+                .collect::<Result<Vec<_>>>()?
+        );
         assert_eq!(examined, 4);
+        Ok(())
     }
 
     #[test]
-    fn child_observation_shares_one_cut_and_does_not_visit_unrelated_requests() {
+    fn child_observation_shares_one_cut_and_does_not_visit_unrelated_requests()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut index = Index::default();
         for n in 0..100_000 {
             let key = FileKey::Child {
-                reference: reference(n),
+                reference: reference(n)?,
                 file: ChildFile::Request,
             };
             apply(&mut index, FileValue::new(key, b"work".to_vec()), 1);
         }
-        let reference = reference(99_999);
+        let reference = reference(99_999)?;
         let task = crate::TaskId::from_bytes([83; 16]);
         let key = |file| FileKey::Child {
             reference: reference.clone(),
             file,
         };
         for turn in 2..=8 {
-            let inbox = key(ChildFile::Inbox(
-                Component::new(format!("mail-{turn}")).unwrap(),
-            ));
+            let inbox = key(ChildFile::Inbox(Component::new(format!("mail-{turn}"))?));
             apply(&mut index, FileValue::new(inbox, b"work".to_vec()), turn);
         }
         let status = ChildStatus {
@@ -354,15 +360,12 @@ mod tests {
         };
         apply(
             &mut index,
-            FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap()),
+            FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status)?),
             9,
         );
         apply(
             &mut index,
-            FileValue::new(
-                key(ChildFile::Delivered),
-                serde_json::to_vec(&(task, 8)).unwrap(),
-            ),
+            FileValue::new(key(ChildFile::Delivered), serde_json::to_vec(&(task, 8))?),
             10,
         );
         for turn in 1..=8 {
@@ -373,16 +376,13 @@ mod tests {
             };
             apply(
                 &mut index,
-                FileValue::new(
-                    key(ChildFile::Result(turn)),
-                    serde_json::to_vec(&result).unwrap(),
-                ),
+                FileValue::new(key(ChildFile::Result(turn)), serde_json::to_vec(&result)?),
                 10 + turn,
             );
         }
-        let (observed, examined) = crate::test_support::measure_task_volume_work(|| {
-            observation(&index, &reference, 4, 4).unwrap()
-        });
+        let (observed, examined) =
+            crate::test_support::measure_task_volume_work(|| observation(&index, &reference, 4, 4));
+        let observed = observed?;
         assert_eq!(observed.state, ChildState::Running);
         assert_eq!(observed.status, Some(status));
         assert_eq!(observed.pending_inputs, 0);
@@ -391,8 +391,8 @@ mod tests {
             observed
                 .results
                 .iter()
-                .map(|file| ChildTurnResult::parse(&file.bytes).unwrap().turn)
-                .collect::<Vec<_>>(),
+                .map(|file| ChildTurnResult::parse(&file.bytes).map(|result| result.turn))
+                .collect::<Result<Vec<_>>>()?,
             vec![5, 6, 7, 8]
         );
         assert_eq!(examined, 9);
@@ -410,18 +410,24 @@ mod tests {
             old > 100_000,
             "old broad projection escaped the bounded oracle"
         );
+        Ok(())
     }
     #[test]
     #[should_panic(expected = "child page exceeded its work bound")]
     fn negative_control_filtering_all_siblings_exceeds_the_page_bound() {
-        let index = populated();
+        let Ok(index) = populated() else {
+            panic!("invalid population fixture")
+        };
+        let Ok(after) = reference(99_990) else {
+            panic!("invalid cursor fixture")
+        };
         let (_, examined) = crate::test_support::measure_task_volume_work(|| {
             index
                 .child_requests
                 .iter()
                 .filter(|candidate| {
                     item_examined();
-                    *candidate > &reference(99_990)
+                    *candidate > &after
                 })
                 .take(4)
                 .cloned()

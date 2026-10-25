@@ -99,19 +99,9 @@ impl Scheduler {
         };
         self.apply_projected_event(event, child_slot, &cancellation, phase, work)?;
         if !cancelled {
-            self.operations
-                .get_mut(&id)
-                .ok_or_else(|| {
-                    diagnostic(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "validated operation is missing",
-                    )
-                })?
-                .revision += 1;
-            if let Some(parent) = parent {
+            for revised in Some(id).into_iter().chain(parent) {
                 self.operations
-                    .get_mut(&parent)
+                    .get_mut(&revised)
                     .ok_or_else(|| {
                         diagnostic(
                             work,

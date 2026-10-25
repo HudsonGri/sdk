@@ -22,7 +22,15 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     let fs = Fs::local(fs_options)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(fs.clone(), &provider, None)?;
+    let host = FilesystemHost::new(
+        fs.clone(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.path().join("workspace"))
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ),
+    )?;
     let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await

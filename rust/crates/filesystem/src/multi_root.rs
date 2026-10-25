@@ -8,13 +8,12 @@
 use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictKey,
-    ConflictSide, DefaultTextMergeDriver, DriverError, ForkOptions, GenerationId, IdempotencyKey,
-    JoinOutcome, MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry,
-    MergePlanResolutionError, MergeResolution, OperationId, PublicationPermit,
-    PublicationReservation, ReservationOutcome, UnpublishedMergeCandidate, WorkBudget, Workspace,
-    WorkspaceContextError, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextStore,
-    WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
-    WorkspaceLineageStore, WorkspaceName, WorkspaceRootId,
+    ConflictSide, DefaultTextMergeDriver, DriverError, GenerationId, IdempotencyKey, JoinOutcome,
+    MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry, MergePlanResolutionError,
+    MergeResolution, OperationId, PublicationPermit, PublicationReservation, ReservationOutcome,
+    UnpublishedMergeCandidate, WorkBudget, Workspace, WorkspaceContextError, WorkspaceContextId,
+    WorkspaceContextRegistry, WorkspaceContextStore, WorkspaceError, WorkspaceGraph, WorkspaceId,
+    WorkspaceLineageError, WorkspaceLineageStore, WorkspaceRootId,
 };
 use acyclic_stream::{ProviderPlatform, ProviderTask};
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use thiserror::Error;
 
-pub(crate) const MULTI_ROOT_VERSION: u32 = 1;
+pub(crate) const MULTI_ROOT_VERSION: u32 = 2;
 
 /// One root pinned by an immutable cross-root merge plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -75,8 +74,10 @@ pub struct MultiRootFence {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct WorkspacePublicationFence {
+    root_id: WorkspaceRootId,
     target_workspace_id: WorkspaceId,
     reservation: PublicationReservation,
+    checkpoint: Option<crate::PreparedJoinCheckpoint>,
 }
 
 /// Durable logical publication phase.
@@ -114,7 +115,7 @@ pub struct MultiRootPublication {
     /// Exact durable generation produced for each published root.
     pub published_generations: BTreeMap<WorkspaceRootId, GenerationId>,
     /// Per-root reservations acquired before the commit decision.
-    pub fences: BTreeMap<WorkspaceRootId, MultiRootFence>,
+    pub fences: BTreeMap<WorkspaceRootId, MultiRootRetainedFence>,
     /// Immutable typed conflicts pinned during validation.
     pub conflicts: BTreeMap<WorkspaceRootId, crate::MergePlan>,
     /// Parent generations containing the durable conflict projection.
@@ -125,6 +126,29 @@ pub struct MultiRootPublication {
     pub paused_root: Option<WorkspaceRootId>,
 }
 
+/// Durable ownership phase of one root's fence in the publication journal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MultiRootRetainedFence {
+    /// An immutable join candidate, retained until its outcome is journaled.
+    Prepared(MultiRootFence),
+    /// A resolved working generation fenced until the Applied decision.
+    Finished(MultiRootFence),
+}
+
+impl MultiRootRetainedFence {
+    fn fence(&self) -> &MultiRootFence {
+        match self {
+            Self::Prepared(fence) | Self::Finished(fence) => fence,
+        }
+    }
+    fn release_operation(&self, operation: OperationId, root: WorkspaceRootId) -> OperationId {
+        match self {
+            Self::Prepared(_) => operation,
+            Self::Finished(_) => conflict_finish_operation_id(operation, root),
+        }
+    }
+}
+
 /// Result of validating and reserving one root before the commit decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MultiRootPrepare {
@@ -133,7 +157,12 @@ pub enum MultiRootPrepare {
     /// The exact target changed before it could be reserved.
     Stale,
     /// Immutable typed conflicts require a later declarative resolution.
-    Conflicted(Box<crate::MergePlan>),
+    Conflicted {
+        /// Driver-ready conflicts for the user working copy.
+        plan: Box<crate::MergePlan>,
+        /// Durable prepared projection; publication never plans again.
+        fence: MultiRootFence,
+    },
 }
 
 /// Exact resolved generation and its durable publication reservation.
@@ -227,7 +256,7 @@ pub trait MultiRootPublisher: ProviderPlatform {
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: Option<&crate::MergePlan>,
+        fence: &MultiRootFence,
     ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Restores one projected root to its exact pre-merge generation.
@@ -447,7 +476,7 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
     /// Workspace resolution failed.
     #[error("workspace resolution failed: {0}")]
     Resolver(E),
-    /// Workspace planning, preview, or publication failed.
+    /// Workspace planning or publication failed.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
     /// Declarative conflict resolution did not match the pinned plan.
@@ -462,9 +491,6 @@ pub enum WorkspaceMultiRootPublisherError<E: std::error::Error + 'static> {
     /// The supplied opaque fence does not describe these exact inputs.
     #[error("multi-root publication fence is invalid")]
     InvalidFence,
-    /// Disposable validation state could not be reclaimed safely.
-    #[error("multi-root validation workspace could not be reclaimed")]
-    PreviewCleanup,
 }
 
 /// Authorization boundary for direct-parent and root-binding validation.

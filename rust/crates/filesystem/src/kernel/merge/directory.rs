@@ -33,7 +33,7 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
         let mut state = MergeState::new(maximum_changes, &mut accounting)?;
-        let record = merge_directory_record_with_resolutions_async(
+        let merged = merge_directory_record_with_resolutions_async(
             store,
             directory_id,
             base,
@@ -46,9 +46,27 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
             &mut accounting,
             cancellation,
         )
-        .await?;
+        .await;
+        let record = match merged {
+            Ok(record) => record,
+            Err(error) => {
+                state.retire(&mut accounting)?;
+                return Err(error);
+            }
+        };
+        state.records.retire(&mut accounting)?;
+        state.folds.retire(&mut accounting)?;
+        state.file_folds.retire(&mut accounting)?;
+        state.replacements.retire(&mut accounting)?;
+        state.pending_files.retire(&mut accounting)?;
+        state.pending_bindings.retire(&mut accounting)?;
+        state.pending_rebindings.retire(&mut accounting)?;
         Ok(DirectoryMergeResult {
-            record,
+            record: if state.conflicts.value.is_empty() && !state.truncated {
+                record
+            } else {
+                None
+            },
             conflicts: state.conflicts.value,
             truncated: state.truncated,
             examined_changes: maximum_changes - state.remaining_changes,
@@ -113,14 +131,16 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
         .await?
     };
     let link_count = resolve_three(&base.link_count, &ours.link_count, &theirs.link_count);
-    let (Some(metadata), Some(link_count)) = (metadata, link_count) else {
-        state.conflict(
-            MergeConflict::File(directory_id),
+    let scalars = metadata.zip(link_count);
+    if scalars.is_none() {
+        state.defer_file(
+            directory_id,
+            [Some(base), Some(ours), Some(theirs)],
+            true,
             maximum_conflicts,
             accounting,
         )?;
-        return Ok(None);
-    };
+    }
     let maximum = state.remaining_changes.max(1);
     let (ours_diff, allocation) = diff_tree_entries_with_accounting(
         store,
@@ -153,7 +173,6 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 return Err(FsError::MergeChangeLimit);
             }
             let mut indices = [0, 0];
-            let mut conflicted = false;
             while let Some([left, right]) = next_changes(
                 &ours_diff.value.changes,
                 &theirs_diff.value.changes,
@@ -234,32 +253,15 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     }
                 }
                 let Some(resolved) = resolved else {
-                    conflicted = true;
-                    if state.conflicts.value.len() < maximum_conflicts as usize {
-                        state
-                            .conflicts
-                            .ensure_for_push(maximum_conflicts as usize, accounting)?;
-                        let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
-                            name,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            None,
-                            0,
-                        )?;
-                        let bytes = TreeFormat::key_owned_bytes(&name);
-                        state
-                            .conflicts
-                            .value
-                            .push(MergeConflict::Binding { directory_id, name });
-                        state.conflicts.allocation.absorb(&mut allocation)?;
-                        state.conflicts.bytes = state
-                            .conflicts
-                            .bytes
-                            .checked_add(bytes)
-                            .ok_or(WorkError::Overflow)?;
-                    } else {
-                        state.truncated = true;
-                    }
+                    state.defer_binding(
+                        directory_id,
+                        name,
+                        [base_value, ours_value, theirs_value]
+                            .map(|entry| entry.map(|entry| (entry.file_id, entry.kind))),
+                        maximum_conflicts,
+                        limits,
+                        accounting,
+                    )?;
                     continue;
                 };
                 if resolved != ours_value {
@@ -308,9 +310,11 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                         .ok_or(WorkError::Overflow)?;
                 }
             }
-            if conflicted {
-                return Ok(None);
-            }
+            // Accepted binding mutations survive unrelated conflicts. These
+            // provisional scalars are private to the retained preparation;
+            // finishing is impossible while its conflict frontier is nonempty.
+            let metadata = metadata.unwrap_or(ours.metadata);
+            let link_count = link_count.unwrap_or(ours.link_count);
             let entries = if mutations.value.is_empty() {
                 ours_entries
             } else {

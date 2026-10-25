@@ -131,6 +131,5 @@ async fn fork_accounted<'original>(
             parent: &parent.inner,
             permit: acyclic_fs::PublicationPermit::Unrestricted,
         },
-        |child| child,
     ).await.map(|inner| NativeWorkspace { inner }).map_err(napi_error)
 }

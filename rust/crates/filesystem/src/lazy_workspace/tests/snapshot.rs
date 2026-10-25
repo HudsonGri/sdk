@@ -48,7 +48,6 @@ async fn graph_lazy_creator_rejects_another_cut_before_creating_a_child() {
 
                     permit: crate::PublicationPermit::Unrestricted,
                 },
-                |result| result.0.workspace(),
             )
             .await
     };

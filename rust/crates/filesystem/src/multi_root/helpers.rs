@@ -50,19 +50,6 @@ pub(super) fn materialization_operation_id(
     OperationId::from_bytes(bytes)
 }
 
-pub(super) fn conflict_projection_operation_id(
-    operation_id: OperationId,
-    root_id: WorkspaceRootId,
-) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic.multi-root-conflict-projection.v1\0");
-    hasher.update(&operation_id.into_bytes());
-    hasher.update(&root_id.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
-}
-
 pub(super) fn conflict_abort_materialization_operation_id(
     operation_id: OperationId,
     root_id: WorkspaceRootId,
@@ -142,31 +129,28 @@ pub(super) async fn generation_descends_from<A: AsyncAuthorityStore, O: AsyncObj
 
 pub(super) fn decode_reservation<E: std::error::Error + 'static>(
     operation_id: OperationId,
+    root_id: WorkspaceRootId,
     fence: &MultiRootFence,
 ) -> Result<WorkspacePublicationFence, WorkspaceMultiRootPublisherError<E>> {
     let decoded: WorkspacePublicationFence = serde_json::from_slice(&fence.token)
         .map_err(|_| WorkspaceMultiRootPublisherError::InvalidFence)?;
-    if decoded.reservation.operation_id != operation_id {
+    if decoded.reservation.operation_id != operation_id || decoded.root_id != root_id {
         return Err(WorkspaceMultiRootPublisherError::InvalidFence);
     }
+    if let Some(checkpoint) = decoded.checkpoint {
+        let permit = PublicationPermit::Reservation {
+            operation_id: operation_id.into_bytes(),
+            gate_tail: decoded.reservation.gate_tail,
+            expected: decoded.reservation.expected,
+        };
+        if checkpoint.target != decoded.target_workspace_id
+            || checkpoint.expected != decoded.reservation.expected
+            || checkpoint.permit != permit
+            || checkpoint.operation
+                != publisher_key(operation_id, root_id, b"publish").operation_id()
+        {
+            return Err(WorkspaceMultiRootPublisherError::InvalidFence);
+        }
+    }
     Ok(decoded)
-}
-
-pub(super) fn preview_workspace_name(
-    operation_id: OperationId,
-    root_id: WorkspaceRootId,
-    preview_key: IdempotencyKey,
-) -> Result<WorkspaceName, WorkspaceError> {
-    WorkspaceName::new(
-        format!(
-            "multi-root-preview-{}-{}-{}",
-            hex::encode(&operation_id.into_bytes()[..6]),
-            hex::encode(&root_id.into_bytes()[..6]),
-            hex::encode(preview_key.operation_id().into_bytes())
-        ),
-        &WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)
 }

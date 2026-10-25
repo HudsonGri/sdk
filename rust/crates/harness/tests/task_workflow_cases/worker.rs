@@ -241,6 +241,9 @@ pub(super) async fn worker_restart_with_options(
                     .map_err(|error| Error::Storage(error.to_string()))?,
                 &provider,
                 None,
+                acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                    acyclic_fs::MemoryWorkspaceLineageStore::new(),
+                )),
             )?;
             if !reopened {
                 filesystem.create_volume(&volume).await?;

@@ -350,6 +350,9 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             .map_err(|error| Error::Storage(error.to_string()))?,
         &provider,
         None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
     )?;
     let agent = AgentId::from_bytes([41; 16]);
     let private = VolumeRef::new(

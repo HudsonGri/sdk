@@ -4,6 +4,7 @@ use super::*;
 pub struct FilesystemHost<A, O> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
+    lineage: acyclic_fs::WorkspaceGraph<acyclic_fs::WorkspaceLineageStorage>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
     publication_pause: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
@@ -18,7 +19,7 @@ pub struct FilesystemHost<A, O> {
         >,
     >,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    project_family: Option<(acyclic_fs::WorkspaceId, acyclic_fs::LocalCoreStateStore)>,
+    project_family: Option<acyclic_fs::WorkspaceId>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -29,11 +30,19 @@ impl<A, O> FilesystemHost<A, O> {
         &self.filesystem
     }
 
+    /// The embedding service's canonical workspace graph, including on reopen.
+    pub const fn workspace_graph(
+        &self,
+    ) -> &acyclic_fs::WorkspaceGraph<acyclic_fs::WorkspaceLineageStorage> {
+        &self.lineage
+    }
+
     /// Binds a deployment and funds its shared descriptor on the optional ledger.
     pub fn new(
         filesystem: Fs<A, O>,
         provider: &ProviderRef,
         io: Option<&PreparationIo>,
+        lineage: acyclic_fs::WorkspaceLineageStorage,
     ) -> Result<Arc<Self>> {
         crate::executor::with_history_io(io, |work| provider.validate(work))?;
         if provider.family() != "filesystem" {
@@ -56,6 +65,7 @@ impl<A, O> FilesystemHost<A, O> {
             Ok(Arc::new(Self {
                 filesystem,
                 provider,
+                lineage: acyclic_fs::WorkspaceGraph::new(lineage),
                 workspace_binding: None,
                 #[cfg(test)]
                 publication_pause: None,
@@ -92,6 +102,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(Arc::new(Self {
             filesystem: self.filesystem.clone(),
             provider: self.provider.clone(),
+            lineage: acyclic_fs::WorkspaceGraph::new(self.lineage.store().clone()),
             workspace_binding: Some((
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
                 workspace,
@@ -149,11 +160,10 @@ impl<A, O> FilesystemHost<A, O> {
     pub fn with_project_family(
         mut self: Arc<Self>,
         root: acyclic_fs::WorkspaceId,
-        store: acyclic_fs::LocalCoreStateStore,
     ) -> Result<Arc<Self>> {
         Arc::get_mut(&mut self)
             .ok_or_else(|| Error::Conflict("bind the project before sharing its host".into()))?
-            .project_family = Some((root, store));
+            .project_family = Some(root);
         Ok(self)
     }
 }

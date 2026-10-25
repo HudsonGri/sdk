@@ -23,6 +23,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             .map_err(|error| Error::Storage(error.to_string()))?,
         &provider,
         None,
+        acyclic_fs::WorkspaceLineageStorage::Local(
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.path().join("workspace"))
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ),
     )?;
     let mut stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
@@ -333,6 +337,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     .map_err(|error| Error::Storage(error.to_string()))?,
                 &provider,
                 None,
+                acyclic_fs::WorkspaceLineageStorage::Local(
+                    acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                        directory.path().join("workspace"),
+                    )
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+                ),
             )?;
             stream = Arc::new(
                 LocalStream::open(&stream_root, LocalStreamLimits::default())

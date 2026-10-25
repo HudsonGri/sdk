@@ -4,6 +4,7 @@ use acyclic_harness::filesystem::PreparationIo;
 pub(crate) struct PiNativeRoot {
     allocation: Option<NativePreparationRoot>,
     filesystem: acyclic_fs::LocalFs,
+    store: acyclic_fs::LocalCoreStateStore,
     view_root: PathBuf,
     operation_root: PathBuf,
     task: acyclic_harness::TaskId,
@@ -206,6 +207,7 @@ impl PiNativeRoot {
                 self.filesystem.clone(),
                 volume.provider(),
                 Some(&io),
+                acyclic_fs::WorkspaceLineageStorage::Local(self.store.clone()),
             )?;
             let binding = BorrowedNativeVolumeBinding {
                 host: &host,
@@ -473,6 +475,7 @@ pub(crate) async fn native_root<'a>(
     Ok(PiNativeRoot {
         allocation: None,
         filesystem: resources.fs.clone(),
+        store: resources.store.clone(),
         view_root: view_root.0,
         operation_root: operation_root.0,
         task: owner.task_id(),

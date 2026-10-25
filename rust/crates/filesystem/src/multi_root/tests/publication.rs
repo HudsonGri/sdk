@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation()
+async fn workspace_publisher_resumes_its_candidate_without_resolving_the_source_again()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let parent = fs
@@ -135,7 +135,7 @@ async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation
         .await?
     {
         MultiRootPrepare::Ready(fence) => fence,
-        MultiRootPrepare::Stale | MultiRootPrepare::Conflicted(_) => {
+        MultiRootPrepare::Stale | MultiRootPrepare::Conflicted { .. } => {
             return Err("preview rejected a clean join".into());
         }
     };
@@ -146,6 +146,23 @@ async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation
             .value
             .id(),
         parent_head.id()
+    );
+    publisher
+        .resolver()
+        .workspaces
+        .lock()
+        .map_err(|_| "resolver lock")?
+        .remove(&child.id());
+    let mut forged = decode_reservation::<ResolverError>(operation, root_id, &fence)?;
+    forged.checkpoint = None;
+    let forged = MultiRootFence {
+        token: serde_json::to_vec(&forged)?,
+    };
+    assert!(
+        publisher
+            .publish(operation, root_id, &root, &resolutions, &forged)
+            .await
+            .is_err()
     );
     let published = publisher
         .publish(operation, root_id, &root, &resolutions, &fence)
@@ -191,6 +208,34 @@ async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation
             .publish(operation, root_id, &root, &resolutions, &fence)
             .await?,
         MultiRootPublishRoot::AlreadyPublished(published_generation)
+    );
+    assert!(
+        publisher
+            .publish(operation, root_id, &root, &resolutions, &forged)
+            .await
+            .is_err()
+    );
+    let mut changed = decode_reservation::<ResolverError>(operation, root_id, &fence)?;
+    changed
+        .checkpoint
+        .as_mut()
+        .ok_or("missing checkpoint")?
+        .candidate = base.id();
+    let changed = MultiRootFence {
+        token: serde_json::to_vec(&changed)?,
+    };
+    assert!(
+        publisher
+            .publish(operation, root_id, &root, &resolutions, &changed)
+            .await
+            .is_err()
+    );
+    publisher.release(operation, root_id, &fence).await?;
+    assert!(
+        publisher
+            .publish(operation, root_id, &root, &resolutions, &fence)
+            .await
+            .is_err()
     );
     Ok(())
 }
@@ -333,7 +378,7 @@ async fn automatic_text_markers_are_reported_not_published()
                 &BTreeMap::new(),
             )
             .await,
-        Ok(MultiRootPrepare::Conflicted(_))
+        Ok(MultiRootPrepare::Conflicted { .. })
     ));
     assert_eq!(
         parent
@@ -420,7 +465,7 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
         base_generation: base.id(),
         child_wins_bindings: BTreeSet::new(),
     };
-    let MultiRootPrepare::Conflicted(plan) = publisher
+    let MultiRootPrepare::Conflicted { plan, fence } = publisher
         .prepare(operation, root_id, &root, &BTreeMap::new())
         .await
         .map_err(|error| format!("initial preview: {error}"))?
@@ -439,6 +484,7 @@ async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
         binding.key.clone(),
         MergeResolution::Select(ConflictSide::Ours),
     )]);
+    publisher.release(operation, root_id, &fence).await?;
     root.child_wins_bindings.insert("/cache.tmp".to_owned());
     let MultiRootPrepare::Ready(fence) = publisher
         .prepare(operation, root_id, &root, &resolutions)
@@ -678,5 +724,182 @@ async fn independent_same_name_directory_creations_merge_by_path()
         b"*.tmp
 "
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_projection_and_unchanged_publication_survive_unrecorded_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    for conflict in [false, true] {
+        let cancellation = CancellationToken::new();
+        let fs = Fs::memory();
+        let parent = fs
+            .create_workspace("parent", WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        parent.write_text("/file", "base").await?;
+        let base = parent
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let child = parent
+            .fork::<_, _, WorkspaceError>(
+                "child",
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+                PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                &mut |_| {
+                    std::future::ready(Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await?
+            .value;
+        parent.write_text("/file", "ours").await?;
+        if conflict {
+            child.write_text("/file", "theirs").await?;
+            child.write_text("/accepted", "accepted").await?;
+        }
+        let mut candidate = candidate();
+        let operation = candidate.plan.operation_id;
+        let root_id = WorkspaceRootId::from_bytes([1; 16]);
+        let root = MultiRootMergeRoot {
+            source_workspace_id: child.id(),
+            merge_workspace_id: None,
+            source_generation: child
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .id(),
+            target_workspace_id: parent.id(),
+            target_generation: parent
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .id(),
+            base_generation: base.id(),
+            child_wins_bindings: BTreeSet::new(),
+        };
+        candidate.plan.roots = BTreeMap::from([(root_id, root.clone())]);
+        candidate.resolutions = BTreeMap::from([(root_id, BTreeMap::new())]);
+        let publisher = WorkspaceMultiRootPublisher::new(Resolver {
+            workspaces: Mutex::new(BTreeMap::from([
+                (parent.id(), parent.clone()),
+                (child.id(), child.clone()),
+            ])),
+        });
+        let (fence, conflicts) = match publisher
+            .prepare(operation, root_id, &root, &BTreeMap::new())
+            .await?
+        {
+            MultiRootPrepare::Ready(fence) if !conflict => (fence, BTreeMap::new()),
+            MultiRootPrepare::Conflicted { plan, fence } if conflict => {
+                (fence, BTreeMap::from([(root_id, *plan)]))
+            }
+            _ => return Err("preparation produced the wrong conflict state".into()),
+        };
+        let checkpoint = decode_reservation::<ResolverError>(operation, root_id, &fence)?
+            .checkpoint
+            .ok_or("missing prepared checkpoint")?;
+        assert_eq!(
+            checkpoint.state == crate::facade::PreparedJoinCheckpointState::Unchanged,
+            !conflict
+        );
+        // Model the real cut after the root completed but before the coordinator
+        // persisted its outcome. Both executions must use the same descriptor.
+        for _ in 0..2 {
+            assert!(matches!(
+                publisher
+                    .publish(operation, root_id, &root, &BTreeMap::new(), &fence)
+                    .await?,
+                MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
+            ));
+        }
+        assert!(
+            parent
+                .resume_prepared_join(&checkpoint, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .is_ok()
+        );
+        publisher
+            .resolver()
+            .workspaces
+            .lock()
+            .map_err(|_| "resolver lock")?
+            .remove(&child.id());
+        let coordinator = MultiRootPublicationCoordinator::new(
+            MemoryMultiRootPublicationStore::default(),
+            publisher,
+            Allow,
+        );
+        assert!(
+            coordinator
+                .store
+                .claim_parent(candidate.plan.parent_context_id, operation)
+                .await?
+        );
+        let journal = MultiRootPublication {
+            version: MULTI_ROOT_VERSION,
+            revision: 1,
+            candidate,
+            phase: MultiRootPublicationPhase::Validating,
+            fences: BTreeMap::from([(root_id, MultiRootRetainedFence::Prepared(fence))]),
+            conflicts,
+            published_roots: BTreeSet::new(),
+            published_generations: BTreeMap::new(),
+            projected_roots: BTreeMap::new(),
+            declared_conflicts: BTreeMap::new(),
+            paused_root: None,
+        };
+        assert!(
+            coordinator
+                .store
+                .compare_and_swap(operation, 0, journal)
+                .await?
+        );
+        let result = coordinator
+            .resume_retained(operation)
+            .await?
+            .ok_or("lost publication")?;
+        if conflict {
+            let Publication::Conflicted(projected) = result else {
+                return Err("lost conflict state".into());
+            };
+            assert_eq!(projected.projected_roots.len(), 1);
+            assert!(projected.fences.is_empty());
+            assert_eq!(
+                parent
+                    .read("/accepted", 32, WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value
+                    .as_ref(),
+                b"accepted"
+            );
+        } else {
+            let Publication::Applied(applied) = result else {
+                return Err("unchanged root did not settle".into());
+            };
+            assert!(
+                parent
+                    .resume_prepared_join(&checkpoint, WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .is_ok()
+            );
+            coordinator.acknowledge_applied(&applied).await?;
+        }
+        assert!(
+            parent
+                .resume_prepared_join(&checkpoint, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            parent.write_text("/after", "released").await?,
+            TransactionCommit::Committed(_)
+        ));
+    }
     Ok(())
 }

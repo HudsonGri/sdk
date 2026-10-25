@@ -394,7 +394,14 @@ mod tests {
             "2".into(),
             &mut None,
         )?;
-        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+        let host = FilesystemHost::new(
+            acyclic_fs::Fs::memory(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let reference = crate::filesystem::workspace_ref(provider, "first-winner")?;
         bounded_io::create(
             &host,

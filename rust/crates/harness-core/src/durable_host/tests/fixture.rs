@@ -143,7 +143,14 @@ where
     ) -> Result<Self> {
         let provider =
             ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let files = FilesystemHost::new(backend.clone(), &provider, None)?;
+        let files = FilesystemHost::new(
+            backend.clone(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let volume = |name: &str| {
             VolumeRef::new(
                 provider.clone(),

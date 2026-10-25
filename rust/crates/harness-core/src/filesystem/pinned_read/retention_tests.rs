@@ -37,7 +37,14 @@ impl Fixture {
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
-        let host = FilesystemHost::new(filesystem, &provider, None)?;
+        let host = FilesystemHost::new(
+            filesystem,
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         host.create_volume(&volume).await?;
         let reference = fork_preparer_io::content_workspace(&provider, &volume, None)?;
         let workspace = host.open(&reference, None).await?;

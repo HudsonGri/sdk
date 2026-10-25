@@ -35,7 +35,13 @@ async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> 
     }
     if !old && unbound {
         // Restore the removed opens through the actual original host path.
-        host = FilesystemHost::new(host.filesystem.clone(), &host.provider, None).unwrap();
+        host = FilesystemHost::new(
+            host.filesystem.clone(),
+            &host.provider,
+            None,
+            host.workspace_graph().store().clone(),
+        )
+        .unwrap();
     }
     let issuer = AuthorityIssuer::new(
         "binding-test",

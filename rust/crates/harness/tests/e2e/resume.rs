@@ -117,7 +117,14 @@ async fn journal<P: StreamProvider + 'static>(
 ) -> TestResult<Journal> {
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(files)).await?;
     let provider = ProviderRef::new("resume".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let volume = VolumeRef::new(
         provider,
         format!("journal-{}", identity.agent),

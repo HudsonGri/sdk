@@ -1,4 +1,5 @@
 use super::*;
+use crate::facade::FsWork as _;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Forks an exact generation with the supplied limits and publication guard.
@@ -126,22 +127,51 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
             .map_err(|failure| failure.error)?
             .value;
-        let text = label.as_str().to_owned();
-        let bytes = text.capacity() as u64;
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let text = copy_workspace_label(&label, &mut accounting)?;
         self.volume
             .fs
-            .retain_workspace_generation(
+            .update_workspace_retention(
                 &self.volume,
                 generation.id,
                 crate::kernel::RetentionKind::Checkpoint,
-                crate::kernel::Owned::new(text, KernelOwnedAllocation::Standalone, bytes),
-                None,
-                WorkBudget::UNBOUNDED,
+                text,
+                crate::facade::RetentionUpdate::Retain(None),
+                &mut accounting,
                 &cancellation,
             )
-            .await
-            .map_err(|failure| failure.error)?;
+            .await?;
         Ok((label, generation))
+    }
+
+    /// Releases one exact pin permanently. The terminal receipt survives object
+    /// collection, so the same release can finish after reopening the workspace.
+    pub async fn release_pin<W: crate::facade::FsWork>(
+        &self,
+        identity: impl AsRef<str>,
+        generation: GenerationId,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let identity = WorkspaceName::with_accounting(identity.as_ref(), &mut accounting)?;
+            let label = copy_workspace_label(&identity, &mut accounting)?;
+            self.volume
+                .fs
+                .update_workspace_retention(
+                    &self.volume,
+                    generation,
+                    crate::kernel::RetentionKind::Pin,
+                    label,
+                    crate::facade::RetentionUpdate::Release,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await
+        }
+        .await;
+        work.finish(result, &accounting)
     }
 
     /// Durably pins the current immutable generation.

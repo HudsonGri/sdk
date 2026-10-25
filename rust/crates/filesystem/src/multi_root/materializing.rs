@@ -39,11 +39,11 @@ where
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
-        conflict: Option<&crate::MergePlan>,
+        fence: &MultiRootFence,
     ) -> Result<GenerationId, Self::Error> {
         let to = self
             .publisher
-            .project_conflict(operation_id, root_id, root, conflict)
+            .project_conflict(operation_id, root_id, root, fence)
             .await?;
         let workspace = self
             .publisher

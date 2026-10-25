@@ -599,7 +599,9 @@ fn release_completed(
         if *accepted > position {
             break;
         }
-        let (_, reference) = completions.pop_first().expect("observed first completion");
+        let Some((_, reference)) = completions.pop_first() else {
+            break;
+        };
         active.remove(&reference);
         ready.insert(reference);
     }

@@ -426,7 +426,14 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
 {
     let mut fixture = Fixture::new().await?;
     let fs = Fs::memory();
-    fixture.filesystem = FilesystemHost::new(fs.clone(), fixture.volume.provider(), None)?;
+    fixture.filesystem = FilesystemHost::new(
+        fs.clone(),
+        fixture.volume.provider(),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     fixture.filesystem.create_volume(&fixture.volume).await?;
     let project = VolumeRef::new(
         fixture.volume.provider().clone(),

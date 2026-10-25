@@ -308,17 +308,22 @@ impl AuthorityIssuer {
 
     /// Copies the configured verifier using the caller's ledger.
     pub fn verifier(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<AuthorityVerifier> {
-        let mut quota = CodecQuota::new(work, 0)?;
-        let id = copying::copy_text(&self.id, &mut quota)?;
-        let audience = copying::copy_authority(&self.audience, &mut quota)?;
-        let verifier = AuthorityVerifier {
+        CodecQuota::produce(work, |quota| self.verifier_in_quota(quota))
+            .map(|(verifier, _)| verifier)
+    }
+
+    pub(crate) fn verifier_in_quota(
+        &self,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<AuthorityVerifier> {
+        let id = copying::copy_text(&self.id, quota)?;
+        let audience = copying::copy_authority(&self.audience, quota)?;
+        Ok(AuthorityVerifier {
             id,
             audience,
             public: self.runtime.public.clone(),
             admission: runtime_signing::AdmissionPort::new(&self.runtime),
-        };
-        quota.transfer();
-        Ok(verifier)
+        })
     }
 
     /// Public local account anchors. Callers must authenticate keyring updates

@@ -369,7 +369,14 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let project = |name: &str| {
         VolumeRef::new(
             provider.clone(),

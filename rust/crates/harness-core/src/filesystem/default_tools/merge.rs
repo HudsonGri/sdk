@@ -87,9 +87,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         let controller = ParentProjectController::new(
             binding.filesystem.as_ref(),
             binding.destination.reducer(),
-            &binding.verifier,
-            &binding.scope,
-            &binding.project,
+            &binding.metadata.verifier,
+            &binding.metadata.scope,
+            &binding.metadata.project,
             io,
         )?;
         let inspected = match &binding.source_read {
@@ -190,7 +190,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             }
             JoinOutcome::NoChanges(generation) | JoinOutcome::StaleTarget(generation) => {
                 let generation = crate::filesystem::fork_preparer_io::generation_ref(
-                    binding.project.provider(),
+                    binding.metadata.project.provider(),
                     generation.id(),
                     io,
                 )?;
@@ -272,7 +272,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             operation_id: context.operation_id(),
             idempotency_key: IdempotencyKey(key),
             expected_revision: binding.destination.reducer().revision(),
-            scope: binding.scope,
+            scope: crate::executor::with_history_io(io, |work| binding.metadata.scope.copy(work))?,
             causal_parent: None,
             action: Action::PublishProjectMerge { receipt: copy },
         };

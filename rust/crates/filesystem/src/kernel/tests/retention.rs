@@ -5,6 +5,62 @@ use crate::model::Lifecycle;
 use crate::{CancellationToken, WorkBudget, WorkError};
 
 #[test]
+fn retention_classes_have_distinct_canonical_authorities_and_wire_tags()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut identities = std::collections::BTreeSet::new();
+    let volume_id = VolumeId::from_bytes([7; 16]);
+    for kind in [
+        RetentionKind::Checkpoint,
+        RetentionKind::Pin,
+        RetentionKind::ForkBase,
+        RetentionKind::PreparedJoin,
+    ] {
+        let value = RetentionCreated {
+            volume_id,
+            kind,
+            label: "label".to_owned(),
+            generation_root: ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: Digest::from_bytes([9; 32]),
+            },
+            config: VolumeConfig::portable(Lifecycle::Durable),
+        };
+        let encoded = encode_retention_created(
+            &value,
+            |_| Ok::<_, crate::kernel::RetentionCreatedError>(()),
+            |_| {
+                crate::kernel::RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)
+            },
+        )?;
+        assert_eq!(decode_retention_created(&encoded, 1024)?, value);
+        assert!(identities.insert(retention_authority_id(volume_id, kind, "label")));
+    }
+    Ok(())
+}
+
+#[test]
+fn retention_release_is_exact_and_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let fact = RetentionReleased {
+        authority_id: AuthorityId::from_bytes([21; 16]),
+        generation: GenerationId::new(Digest::from_bytes([22; 32])),
+    };
+    let encoded = encode_retention_released(
+        fact,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    assert_eq!(decode_retention_released(&encoded, 1024)?, fact);
+    assert!(decode_retention_released(&encoded, 1).is_err());
+    for length in 0..encoded.len() {
+        assert!(decode_retention_released(&encoded[..length], 1024).is_err());
+    }
+    let mut trailing = encoded;
+    trailing.push(0);
+    assert!(decode_retention_released(&trailing, 1024).is_err());
+    Ok(())
+}
+
+#[test]
 fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([7; 16]);
     let value = RetentionCreated {

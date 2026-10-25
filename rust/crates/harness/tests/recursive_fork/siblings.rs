@@ -8,7 +8,14 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let root = volume(
         &provider,
         VolumeClass::Project,

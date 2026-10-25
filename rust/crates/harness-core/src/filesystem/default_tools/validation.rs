@@ -201,9 +201,18 @@ pub(super) fn validate_merge_binding<P: StreamProvider, A, O>(
 ) -> Result<()> {
     let grants = context.effective_scope().grants();
     deny(
-        !volume_granted(grants, &binding.project, VolumeOperation::Write, io)?
-            || (binding.source_read.is_none()
-                && !volume_granted(grants, &binding.source_project, VolumeOperation::Read, io)?),
+        !volume_granted(
+            grants,
+            &binding.metadata.project,
+            VolumeOperation::Write,
+            io,
+        )? || (binding.source_read.is_none()
+            && !volume_granted(
+                grants,
+                &binding.metadata.source_project,
+                VolumeOperation::Read,
+                io,
+            )?),
         io,
     )
 }

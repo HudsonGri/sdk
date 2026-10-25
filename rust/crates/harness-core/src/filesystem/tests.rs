@@ -6,6 +6,9 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner},
 };
 
+#[path = "tests/lineage.rs"]
+mod lineage;
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Result<()> {
@@ -15,7 +18,14 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
         "1".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &(provider), None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &(provider),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let issuer = AuthorityIssuer::new(
         "native-verifier-test",
         [4; 32],
@@ -109,7 +119,14 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
         .map_err(|failure| failure.error)
         .map_err(map_error)?;
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let reference = workspace_ref(provider, "adapter-test")?;
     let observed = host.resolve(&reference, None).await?;
     assert_eq!(
@@ -162,7 +179,14 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
 async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {
     let filesystem = Fs::memory();
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider,
@@ -631,7 +655,14 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
 
     let filesystem = Fs::memory();
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = AgentId::from_bytes([7; 16]);
     let volume = VolumeRef::new(
         provider,

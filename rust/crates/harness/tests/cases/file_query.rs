@@ -247,7 +247,14 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
     ) -> Result<Self> {
         let provider =
             ProviderRef::new("query".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
+        let host = FilesystemHost::new(
+            filesystem.clone(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             provider,

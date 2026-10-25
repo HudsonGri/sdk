@@ -23,7 +23,17 @@ async fn fixture() -> Result<(Arc<Host>, WorkspaceRef)> {
         .map_err(|failure| map_error(failure.error))?;
     let provider = ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?;
     let reference = workspace_ref(provider.clone(), "shared-bytes")?;
-    Ok((FilesystemHost::new(filesystem, &provider, None)?, reference))
+    Ok((
+        FilesystemHost::new(
+            filesystem,
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?,
+        reference,
+    ))
 }
 
 fn rejected(

@@ -99,7 +99,17 @@ impl Fixture {
             seed.restore(scenario, directory.path())?;
         } else {
             let fs = Fs::local(LocalOptions::new(root)).await.map_err(storage)?;
-            let files = FilesystemHost::new(fs, &reference, None)?;
+            let files = FilesystemHost::new(
+                fs,
+                &reference,
+                None,
+                acyclic_fs::WorkspaceLineageStorage::Local(
+                    acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                        directory.path().join("workspace"),
+                    )
+                    .map_err(storage)?,
+                ),
+            )?;
             for volume in &volumes {
                 files.create_volume(volume).await?;
             }
@@ -166,7 +176,17 @@ impl Fixture {
             .map_err(storage)?,
         );
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:stream");
-        let files = FilesystemHost::new(fs, self.volumes[0].provider(), None)?;
+        let files = FilesystemHost::new(
+            fs,
+            self.volumes[0].provider(),
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Local(
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(
+                    self.directory.path().join("workspace"),
+                )
+                .map_err(storage)?,
+            ),
+        )?;
         let verifier = self.issuer.verifier(&mut None)?;
         let mut tools = ToolRegistry::default();
         if matches!(self.scenario, Scenario::EffectAndContinuation) {

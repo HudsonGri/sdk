@@ -239,7 +239,14 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     });
     let storage_provider =
         ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem, &storage_provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &storage_provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = AgentId::from_bytes([2; 16]);
     let volume = VolumeRef::new(
         storage_provider,

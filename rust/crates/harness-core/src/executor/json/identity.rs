@@ -98,14 +98,18 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
         0,
         preparation_serde_diagnostic_label_bytes() + CONTEXT_LABEL_BYTES,
     )?;
-    observer.admit_owned(diagnostic)?;
-    observer.retain_owned(diagnostic)?;
+    let mut diagnostic_quota = crate::wire_codec::CodecQuota::new(work, diagnostic)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut custody = if native_code.is_some() {
-        Some(observer.take_native_custody(diagnostic)?)
+        let custody = diagnostic_quota
+            .observer()?
+            .take_native_custody(diagnostic)?;
+        diagnostic_quota.transfer();
+        Some(custody)
     } else {
         None
     };
+    let observer = diagnostic_quota.observer()?;
     let result = count_json_bytes_trusted(
         value,
         JsonBounds {
@@ -128,9 +132,6 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
             source,
             custody: custody.take(),
         });
-    }
-    if result.is_ok() && native_code.is_none() {
-        observer.release_owned(diagnostic)?;
     }
     result
 }

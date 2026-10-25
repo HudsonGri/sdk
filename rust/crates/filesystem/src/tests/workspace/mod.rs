@@ -85,6 +85,7 @@ mod generation;
 mod identity;
 
 mod joins;
+mod prepared_joins;
 
 mod materialization;
 

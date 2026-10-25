@@ -1,5 +1,45 @@
 use super::*;
 
+#[tokio::test]
+async fn retention_accounting_observes_exact_terminal_release() -> Result<(), Box<dyn Error>> {
+    let (fs, authority, objects) = fixture();
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("released-accounting", B, &cancel)
+        .await?
+        .value;
+    workspace.write_text("/file", "retained").await?;
+    let (_, generation) = workspace.pin("pin").await?;
+    let id = retention_authority_id(workspace.id().volume_id(), RetentionKind::Pin, "pin");
+    let retained = page(&authority, &objects, id, AccountingCursor::genesis(), 1).await?;
+    workspace
+        .release_pin("pin", generation.id(), B, &cancel)
+        .await?;
+    let released = page(&authority, &objects, id, retained.next, 1).await?;
+    assert!(released.complete);
+    assert_eq!(released.facts.len(), 1);
+    assert_eq!(
+        released.facts[0].transition,
+        AccountingTransition::RetentionReleased {
+            volume_id: workspace.id().volume_id(),
+            kind: RetentionKind::Pin,
+            generation_root: root(generation.id()),
+        }
+    );
+    assert_eq!(
+        released.facts[0].operation_class,
+        AccountingOperationClass::CustomerMutation
+    );
+    assert_eq!(
+        page(&authority, &objects, id, AccountingCursor::genesis(), 2)
+            .await?
+            .facts
+            .len(),
+        2
+    );
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]

@@ -84,7 +84,8 @@ mod bounded_encoder_tests {
         fn wire_bytes_are_unchanged_and_failed_messages_preserve_the_prefix(text in ".{0,256}") {
             let value = serde_json::json!({"message": text, "values": [null, true, 17]});
             let encoded = serde_json::to_vec(&value).unwrap();
-            let limit = Arc::new(AtomicU32::new(encoded.len() as u32));
+            let length = u32::try_from(encoded.len()).unwrap();
+            let limit = Arc::new(AtomicU32::new(length));
             let mut codec = BoundedCodec::new(Arc::clone(&limit));
             let prefix = b"an earlier message\n";
             let mut buffer = BytesMut::from(&prefix[..]);
@@ -92,7 +93,7 @@ mod bounded_encoder_tests {
             prop_assert_eq!(&buffer[prefix.len()..buffer.len() - 1], encoded.as_slice());
             prop_assert_eq!(buffer.last(), Some(&b'\n'));
             let completed = buffer.clone();
-            limit.store(encoded.len() as u32 - 1, Ordering::Release);
+            limit.store(length - 1, Ordering::Release);
             prop_assert!(codec.encode(value, &mut buffer).is_err());
             prop_assert_eq!(buffer, completed);
         }

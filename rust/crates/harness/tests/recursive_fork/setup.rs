@@ -32,7 +32,14 @@ pub(super) async fn setup() -> Result<RecursiveState> {
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let stream = Arc::new(MemoryStream::default());
     let stream_provider = ProviderRef::new(
         "qualification".into(),

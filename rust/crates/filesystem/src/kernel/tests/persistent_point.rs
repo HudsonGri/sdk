@@ -12,6 +12,163 @@ use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
 use acyclic_stream::OwnedBytes;
 
+#[test]
+fn owned_string_copy_admits_bytes_before_allocation_and_retires_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = crate::CancellationToken::new();
+    for limit in [0, 6, 7] {
+        let mut accounting = KernelAccounting::standalone(
+            WorkBudget {
+                bytes_copied: limit,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let result = Owned::<String>::copy("payload", &mut accounting);
+        if limit < 7 {
+            assert!(result.is_err());
+            assert_eq!(accounting.spent().allocation_operations, 0);
+            assert_eq!(accounting.spent().bytes_copied, 0);
+        } else {
+            let owned = result?;
+            assert_eq!(owned.value, "payload");
+            assert_eq!(accounting.spent().bytes_copied, 7);
+            owned.retire(&mut accounting)?;
+        }
+        assert_eq!(
+            accounting
+                .standalone_parts()
+                .ok_or("missing standalone ledger")?
+                .0
+                .live_bytes(),
+            0
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    for allocation_limit in [1, 2] {
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                allocation_operations: allocation_limit,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let result = Owned::<String>::copy("payload", &mut accounting);
+        if allocation_limit == 1 {
+            assert!(result.is_err());
+        } else {
+            result?.retire(&mut accounting)?;
+        }
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(original.receipt().allocation_operations <= allocation_limit);
+    }
+    Ok(())
+}
+
+#[test]
+fn owned_vector_clear_releases_capacity_and_original_quota()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut values = Owned::<Vec<u8>>::allocate(17, &mut accounting)?;
+    values.value.extend_from_slice(b"payload");
+    assert!(values.bytes >= 17);
+    assert!(
+        accounting
+            .standalone_parts()
+            .ok_or("missing ledger")?
+            .0
+            .live_bytes()
+            >= 17
+    );
+    values.clear(&mut accounting)?;
+    assert!(values.value.is_empty());
+    assert_eq!(values.value.capacity(), 0);
+    assert_eq!(values.bytes, 0);
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("missing ledger")?
+            .0
+            .live_bytes(),
+        0
+    );
+    values.clear(&mut accounting)?;
+    values.retire(&mut accounting)?;
+    Ok(())
+}
+
+#[test]
+fn owned_box_admits_before_taking_its_slot_and_retires_the_exact_buffer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = crate::CancellationToken::new();
+    for budget in [
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            bytes_copied: 191,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget::UNBOUNDED,
+    ] {
+        let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+        let mut slot = Some([7_u8; 192]);
+        if let Ok(owned) = Owned::take_boxed(&mut slot, &mut accounting) {
+            assert_eq!(budget, WorkBudget::UNBOUNDED);
+            assert!(slot.is_none());
+            assert_eq!(owned.bytes, 192);
+            assert_eq!(owned.unbox(&mut accounting)?, [7; 192]);
+        } else {
+            assert_ne!(budget, WorkBudget::UNBOUNDED);
+            assert_eq!(slot, Some([7; 192]));
+            assert_eq!(accounting.spent().bytes_copied, 0);
+        }
+        assert_eq!(
+            accounting
+                .standalone_parts()
+                .ok_or("missing ledger")?
+                .0
+                .live_bytes(),
+            0
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    for extra in [0, 1] {
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                allocation_operations: 1 + extra,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let mut slot = Some([7_u8; 192]);
+        let result = Owned::take_boxed(&mut slot, &mut accounting);
+        if extra == 0 {
+            assert!(result.is_err());
+            assert!(slot.is_some());
+        } else {
+            let owned = result?;
+            assert!(
+                matches!(&owned.allocation, KernelOwnedAllocation::NativeOriginal(allocation)
+                if allocation.bytes() == 192 && allocation.work().shares_ledger(&original))
+            );
+            assert_eq!(original.live_allocation_bytes(), baseline + 192);
+            owned.retire(&mut accounting)?;
+            assert!(slot.is_none());
+        }
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
 fn record(byte: u8) -> FileRecord {
     FileRecord {
         file_id: FileId::from_bytes([byte; 16]),

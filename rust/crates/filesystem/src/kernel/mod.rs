@@ -69,17 +69,17 @@ pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use content_eq::records_match_content;
-pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
+pub(crate) use file_read::{
+    OriginalReadAccounting, read_object_with_accounting, release_standalone_read_bytes,
+};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
 };
 pub(crate) use list::list_tree_entries_async_with_accounting;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
 pub(crate) use merge::{
-    ContentMerge, MergeGenerationBorrowedRequest, merge_generation_with_accounting,
-    merge_generation_with_borrowed_map_resolutions_with_accounting,
+    ContentMerge, GenerationMergePreparation, MergeGenerationBorrowedRequest,
+    merge_generation_with_accounting,
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
@@ -206,11 +206,11 @@ pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
-pub(crate) use publication::contextual_publication_fingerprint;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt,
     PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation,
 };
+pub(crate) use publication::{contextual_publication_fingerprint, permit_context};
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,
 };
@@ -234,8 +234,9 @@ pub use regular_mutation::RegularMutationError;
 pub(crate) use regular_mutation::{RegularMutation, apply_regular_mutation_async};
 pub(crate) use retention::encode_retention_created;
 pub use retention::{
-    RetentionCreated, RetentionCreatedError, RetentionKind, decode_retention_created,
-    decode_workspace_deleted, encode_workspace_deleted, retention_authority_id,
+    RetentionCreated, RetentionCreatedError, RetentionKind, RetentionReleased,
+    decode_retention_created, decode_retention_released, decode_workspace_deleted,
+    encode_retention_released, encode_workspace_deleted, retention_authority_id,
 };
 #[cfg(all(
     any(test, feature = "local"),

@@ -38,6 +38,36 @@ fn decode<T, E: std::fmt::Display>(result: Result<T, E>) -> Result<T, MarkError>
 }
 
 impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
+    /// Marks the one shared registry of live checkout, generation and record roots.
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    pub(crate) async fn held(&mut self, held: crate::collection::Held) -> Result<(), MarkError> {
+        match held {
+            crate::collection::Held::Checkout {
+                base,
+                working,
+                config,
+                ..
+            } => {
+                self.set_limits(DecodeLimits::for_volume(config));
+                self.generation(GenerationId::new(base.digest)).await?;
+                self.working(&working).await?;
+            }
+            crate::collection::Held::MergeProgram { root, config } => {
+                self.set_limits(DecodeLimits::for_volume(config));
+                self.merge_program(root).await?;
+            }
+            crate::collection::Held::Generation { root, config } => {
+                self.set_limits(DecodeLimits::for_volume(config));
+                self.generation(GenerationId::new(root.digest)).await?;
+            }
+            crate::collection::Held::Record { record, config } => {
+                self.set_limits(DecodeLimits::for_volume(config));
+                self.record(&record).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(store: &'a S, cancellation: &'a CancellationToken) -> Self {
         Self {
             store,
@@ -152,6 +182,34 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             self.limits,
             |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         ))
+    }
+
+    pub(crate) async fn merge_program(&mut self, object: ObjectId) -> Result<(), MarkError> {
+        let Some(bytes) = self.visit(object).await? else {
+            return Ok(());
+        };
+        let mut accounting = super::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            self.cancellation,
+        );
+        let program = decode(super::merge::GenerationMergePreparation::decode_program(
+            &bytes,
+            self.limits,
+            &mut accounting,
+        ))?;
+        let result = async {
+            for generation in program.generations() {
+                self.generation(GenerationId::new(generation.digest))
+                    .await?;
+            }
+            for record in program.records() {
+                self.record(&record).await?;
+            }
+            Ok(())
+        }
+        .await;
+        decode(program.retire(&mut accounting))?;
+        result
     }
 
     pub(crate) async fn working(&mut self, root: &GenerationRoot) -> Result<(), MarkError> {

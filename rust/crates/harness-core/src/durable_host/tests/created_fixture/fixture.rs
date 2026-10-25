@@ -18,7 +18,14 @@ impl CreationFixture {
             &mut None,
         )?;
         let backend = Fs::memory();
-        let filesystem = FilesystemHost::new(backend.clone(), &filesystem_provider, None)?;
+        let filesystem = FilesystemHost::new(
+            backend.clone(),
+            &filesystem_provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let payload = VolumeRef::new(
             filesystem_provider.clone(),
             "scheduler".into(),

@@ -68,37 +68,32 @@ impl LocalHarness {
                             result = &mut parent, if !parent_done => Wake::Parent(result),
                         },
                     };
-                    match event {
+                    let ready = match event {
                         Wake::File(change) => {
                             let change = change.ok_or_else(|| Error::Conflict("child folder follow ended".into()))?.map_err(storage)?;
                             let mut changed = changed_references(&change);
                             advance_fold(&mut children.values, &mut children.generation, change);
                             changed.extend(release_completed(children.generation.position, &mut children.active, &mut completions));
-                            for reference in changed {
-                                if children.active.contains(&reference) || !needs_work_count(&reference, &children.values, inherited_stopped,
-                                    observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? { continue; }
-                                let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                children.active.insert(reference.clone());
-                                children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
-                            }
+                            changed
                         }
                         Wake::Child(result) => {
                             let (reference, position) = result?;
                             completions.insert((position, reference));
-                            for reference in release_completed(children.generation.position, &mut children.active, &mut completions) {
-                                if needs_work_count(&reference, &children.values, inherited_stopped,
-                                    observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? {
-                                    let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
-                                    children.active.insert(reference.clone());
-                                    children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
-                                }
-                            }
+                            release_completed(children.generation.position, &mut children.active, &mut completions)
                         }
                         Wake::Parent(result) => {
                             parent_done = true;
                             result?;
+                            continue;
                         }
-                        Wake::Inherited => {}
+                        Wake::Inherited => continue,
+                    };
+                    for reference in ready {
+                        if children.active.contains(&reference) || !needs_work_count(&reference, &children.values, inherited_stopped,
+                            observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? { continue; }
+                        let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
+                        children.active.insert(reference.clone());
+                        children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                     }
                 }
             }).await;
@@ -132,30 +127,37 @@ impl LocalHarness {
         let jobs = FuturesUnordered::new();
         let mut after = None;
         loop {
-            let Some(page) = coordination(|| files.inner.child_references_page(after.as_ref(), 64)).await.map_err(storage)? else { continue; };
-            if page.is_empty() { break; }
+            let Some(page) = coordination(|| files.inner.child_references_page(after.as_ref(), 64))
+                .await
+                .map_err(storage)?
+            else {
+                continue;
+            };
+            if page.is_empty() {
+                break;
+            }
             after = page.last().cloned();
             for reference in page {
-            if needs_work_count(
-                &reference,
-                &values,
-                false,
-                coordination(|| files.inner.child_input_count(&reference))
-                    .await
-                    .map_err(storage)?,
-            )? {
-                active.insert(reference.clone());
-                let request = coordination(|| files.inner.child_request(&reference))
-                    .await
-                    .map_err(storage)?;
-                jobs.push(self.service_child(
-                    Arc::clone(files),
-                    reference,
-                    request,
-                    inherited.clone(),
-                ));
+                if needs_work_count(
+                    &reference,
+                    &values,
+                    false,
+                    coordination(|| files.inner.child_input_count(&reference))
+                        .await
+                        .map_err(storage)?,
+                )? {
+                    active.insert(reference.clone());
+                    let request = coordination(|| files.inner.child_request(&reference))
+                        .await
+                        .map_err(storage)?;
+                    jobs.push(self.service_child(
+                        Arc::clone(files),
+                        reference,
+                        request,
+                        inherited.clone(),
+                    ));
+                }
             }
-        }
         }
         Ok(ChildDrivers {
             cursor,

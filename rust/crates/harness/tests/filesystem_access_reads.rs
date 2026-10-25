@@ -73,7 +73,14 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             "2".into(),
             &mut None,
         )?;
-        let host = FilesystemHost::new(fs.clone(), &provider, None)?;
+        let host = FilesystemHost::new(
+            fs.clone(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         let volume = VolumeRef::new(
             provider,
             format!("project-{}", uuid::Uuid::new_v4()),

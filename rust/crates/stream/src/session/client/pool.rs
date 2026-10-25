@@ -205,36 +205,7 @@ impl Pool {
     fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
-            Command::Credential { slot, credential } => {
-                let total = self
-                    .credentials
-                    .values()
-                    .map(Bytes::len)
-                    .sum::<usize>()
-                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
-                    .and_then(|current| current.checked_add(credential.len()))
-                    .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
-                    .ok_or(StreamError::Capacity)?;
-                let _ = total;
-                let encoded = frame(
-                    0,
-                    0,
-                    Body::Credential(wire::SessionCredential {
-                        slot,
-                        credential: credential.clone(),
-                    }),
-                );
-                if credential.is_empty() {
-                    self.credentials.remove(&slot);
-                } else {
-                    self.credentials.insert(slot, credential);
-                }
-                let nodes = self.links.keys().cloned().collect::<Vec<_>>();
-                for node in nodes {
-                    self.send(&node, encoded.clone())?;
-                }
-                Ok(())
-            }
+            Command::Credential { slot, credential } => self.update_credential(slot, credential),
             Command::Open(open) => {
                 let OpenCommand {
                     id,
@@ -304,6 +275,36 @@ impl Pool {
                 }
             }
         }
+    }
+    fn update_credential(&mut self, slot: u32, credential: Bytes) -> Result<(), StreamError> {
+        let total = self
+            .credentials
+            .values()
+            .map(Bytes::len)
+            .sum::<usize>()
+            .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
+            .and_then(|current| current.checked_add(credential.len()))
+            .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
+            .ok_or(StreamError::Capacity)?;
+        let _ = total;
+        let encoded = frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential {
+                slot,
+                credential: credential.clone(),
+            }),
+        );
+        if credential.is_empty() {
+            self.credentials.remove(&slot);
+        } else {
+            self.credentials.insert(slot, credential);
+        }
+        let nodes = self.links.keys().cloned().collect::<Vec<_>>();
+        for node in nodes {
+            self.send(&node, encoded.clone())?;
+        }
+        Ok(())
     }
     fn released(&mut self, released: Released) -> Result<(), StreamError> {
         let Released {

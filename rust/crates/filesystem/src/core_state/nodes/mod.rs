@@ -71,15 +71,12 @@ pub(super) fn core_lazy_work(
         _ => unreachable!("native context has its original work"),
     };
     crate::NativeMaterializationWork::new(accounting.remaining()?, cancellation).map_err(
-        |(cause, work)| {
-            accounting
-                .accept_receipt::<(), _, crate::LazyWorkspaceError>(Err(
-                    crate::OperationFailure::new(
-                        crate::LazyWorkspaceError::NativeWork(cause),
-                        *work,
-                    ),
-                ))
-                .expect_err("failed native work construction has no value")
+        |(cause, work)| match accounting
+            .accept_receipt::<std::convert::Infallible, _, crate::LazyWorkspaceError>(Err(
+                crate::OperationFailure::new(crate::LazyWorkspaceError::NativeWork(cause), *work),
+            )) {
+            Err(error) => error,
+            Ok(impossible) => match impossible {},
         },
     )
 }

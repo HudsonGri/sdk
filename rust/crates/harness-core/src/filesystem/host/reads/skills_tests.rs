@@ -51,7 +51,14 @@ async fn fixture() -> Result<Fixture> {
         &mut None,
     )?;
     let filesystem = Fs::memory();
-    let mut host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
+    let mut host = FilesystemHost::new(
+        filesystem.clone(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "skill-race",
@@ -152,9 +159,15 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
         None,
         Vec::new(),
     )?;
-    let reopened =
-        FilesystemHost::new(fixture.filesystem.clone(), fixture.volume.provider(), None)?
-            .with_native_skills(sources.clone())?;
+    let reopened = FilesystemHost::new(
+        fixture.filesystem.clone(),
+        fixture.volume.provider(),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?
+    .with_native_skills(sources.clone())?;
     assert_eq!(fixture.read(&reopened).await?, original);
     assert!(sources.materialized(&source.generation)?.is_some());
     Ok(())

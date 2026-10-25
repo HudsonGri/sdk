@@ -69,7 +69,14 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         let filesystem = Fs::local(options.clone())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let host = FilesystemHost::new(filesystem, &provider, None)?;
+        let host = FilesystemHost::new(
+            filesystem,
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         host.create_volume(&volume).await?;
         let source = host
             .put_content(
@@ -107,7 +114,14 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     let filesystem = Fs::local(options)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let workspace = workspace_ref(provider, &volume.storage_name(&mut None)?)?;
     let head = host.resolve(&workspace, None).await?.generation;
     for maximum_bytes in [0, u64::MAX] {

@@ -217,9 +217,16 @@ async fn local_with_limits(
         acyclic_harness::conversation::VolumeOwner::Project("test".into()),
         &mut None,
     )?;
-    acyclic_harness::filesystem::FilesystemHost::new(fs, &reference, None)?
-        .create_volume(&volume)
-        .await?;
+    acyclic_harness::filesystem::FilesystemHost::new(
+        fs,
+        &reference,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?
+    .create_volume(&volume)
+    .await?;
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     LocalHarness::open(
         crate::client_commands::client_local::config(

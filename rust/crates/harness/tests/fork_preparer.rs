@@ -84,7 +84,14 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     )?;
     let stream_provider =
         ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "parent".into(),

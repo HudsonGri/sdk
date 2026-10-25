@@ -137,7 +137,14 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let volume = VolumeRef::new(
         provider,
         "scheduler-private".into(),

@@ -197,7 +197,7 @@ pub use facade::{
     DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
     FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff,
     JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, PreparedJoinCheckpoint,
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
@@ -247,7 +247,8 @@ pub use lazy_workspace::{
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
-    WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStore,
+    WorkspaceLineageError, WorkspaceLineageRecord, WorkspaceLineageStorage,
+    WorkspaceLineageStorageError, WorkspaceLineageStore,
 };
 pub use materializer::{
     JournaledMaterializer, MaterializationBackend, MaterializationEdit, MaterializationError,
@@ -293,8 +294,8 @@ pub use multi_root::{
     MultiRootFence, MultiRootMaterializer, MultiRootMergeCandidate, MultiRootMergePlan,
     MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationAuthorizer,
     MultiRootPublicationCoordinator, MultiRootPublicationError, MultiRootPublicationPhase,
-    MultiRootPublicationStore, MultiRootPublishRoot, MultiRootPublisher, Publication,
-    WorkspaceMultiRootPublisher, WorkspaceMultiRootPublisherError, WorkspaceResolver,
+    MultiRootPublicationStore, MultiRootPublishRoot, MultiRootPublisher, MultiRootRetainedFence,
+    Publication, WorkspaceMultiRootPublisher, WorkspaceMultiRootPublisherError, WorkspaceResolver,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
@@ -399,7 +400,7 @@ pub use windows_usn::{
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation, IdempotencyKey,
-    JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
+    JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, PreparedJoin, Transaction,
     TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
     WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,

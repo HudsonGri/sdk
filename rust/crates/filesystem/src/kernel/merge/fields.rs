@@ -17,12 +17,12 @@ fn resolve_optional(
     }
 }
 
-fn select_optional(
+fn select_optional<T: Copy>(
     side: MergeConflictSide,
-    base: Option<FileRecord>,
-    ours: Option<FileRecord>,
-    theirs: Option<FileRecord>,
-) -> Option<FileRecord> {
+    base: Option<T>,
+    ours: Option<T>,
+    theirs: Option<T>,
+) -> Option<T> {
     match side {
         MergeConflictSide::Base => base,
         MergeConflictSide::Ours => ours,

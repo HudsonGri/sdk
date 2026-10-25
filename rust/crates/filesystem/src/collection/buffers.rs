@@ -11,7 +11,7 @@ pub(super) fn held_owned_bytes(held: &Held) -> u64 {
         Held::Checkout { working, .. } => {
             working.parents.capacity() * std::mem::size_of::<crate::GenerationId>()
         }
-        Held::Record { .. } => 0,
+        Held::Record { .. } | Held::Generation { .. } | Held::MergeProgram { .. } => 0,
     };
     crate::foundation::usize_to_u64(std::mem::size_of::<Slot>() + parents)
 }

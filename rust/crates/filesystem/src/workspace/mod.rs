@@ -48,6 +48,7 @@ mod join_git;
 mod join_helpers;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_native;
+mod join_prepared;
 mod join_resolution;
 mod join_selection;
 mod lifecycle;
@@ -89,6 +90,7 @@ use join_helpers::{
     binding_conflict_view, conflict_file_id, kernel_conflict, logical_name_text,
     namespace_path_text, record_conflict_view, resolution_matches_conflict, side_resolution,
 };
+pub use join_prepared::PreparedJoin;
 use join_selection::validate_join_side_selections;
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
 pub(crate) use namespace_view::NamespaceView;

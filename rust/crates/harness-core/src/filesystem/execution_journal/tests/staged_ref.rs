@@ -24,7 +24,14 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        acyclic_fs::Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = AgentId::from_bytes([4; 16]);
     let volume = VolumeRef::new(
         provider,

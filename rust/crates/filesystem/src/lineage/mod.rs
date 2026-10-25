@@ -274,7 +274,6 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         selected: Option<GenerationId>,
         accounting: &mut KernelAccounting<'original>,
         create: F,
-        workspace: for<'a> fn(&'a T) -> &'a Workspace<A, O>,
     ) -> Result<T, E>
     where
         A: AsyncAuthorityStore,
@@ -309,7 +308,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 .await?;
             self.finish_fork(
                 parent,
-                workspace(&output),
+                F::workspace(&output),
                 &planned.value,
                 idempotency_key,
                 accounting,
@@ -379,47 +378,46 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     ) -> Result<Owned<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
         // First durable intent wins. Recovery uses that immutable cut,
         // even if the parent has advanced since this operation began.
-        let planned = match self.store.load_accounted(child_id, accounting).await? {
-            Some(record) => record,
-            None => {
-                let generation = match selected {
-                    Some(id) => {
-                        crate::accounted_fs!(
-                            accounting,
-                            WorkspaceLineageError<S::Error>,
-                            |work, cancellation| parent.generation(id, work, cancellation)
-                        )
-                    }
-                    None => {
-                        crate::accounted_fs!(
-                            accounting,
-                            WorkspaceLineageError<S::Error>,
-                            |work, cancellation| parent.head(work, cancellation)
-                        )
-                    }
-                }?;
-                let record = work::new_child::<S::Error, _, _>(
-                    parent,
-                    destination,
-                    child_id,
-                    idempotency_key,
-                    generation.id(),
-                    accounting,
-                )?;
-                match self
-                    .store
-                    .compare_accounted(child_id, 0, &record.value, accounting)
-                    .await
-                {
-                    Ok(true) => record,
-                    result => {
-                        record.retire(accounting)?;
-                        result?;
-                        self.store
-                            .load_accounted(child_id, accounting)
-                            .await?
-                            .ok_or(WorkspaceLineageError::IncompatibleState)?
-                    }
+        let planned = if let Some(record) = self.store.load_accounted(child_id, accounting).await? {
+            record
+        } else {
+            let generation = match selected {
+                Some(id) => {
+                    crate::accounted_fs!(
+                        accounting,
+                        WorkspaceLineageError<S::Error>,
+                        |work, cancellation| parent.generation(id, work, cancellation)
+                    )
+                }
+                None => {
+                    crate::accounted_fs!(
+                        accounting,
+                        WorkspaceLineageError<S::Error>,
+                        |work, cancellation| parent.head(work, cancellation)
+                    )
+                }
+            }?;
+            let record = work::new_child::<S::Error, _, _>(
+                parent,
+                destination,
+                child_id,
+                idempotency_key,
+                generation.id(),
+                accounting,
+            )?;
+            match self
+                .store
+                .compare_accounted(child_id, 0, &record.value, accounting)
+                .await
+            {
+                Ok(true) => record,
+                result => {
+                    record.retire(accounting)?;
+                    result?;
+                    self.store
+                        .load_accounted(child_id, accounting)
+                        .await?
+                        .ok_or(WorkspaceLineageError::IncompatibleState)?
                 }
             }
         };
@@ -624,6 +622,11 @@ fn same_lineage(left: &WorkspaceLineageRecord, right: &WorkspaceLineageRecord) -
         && left.fork_generation == right.fork_generation
         && (!left.ready || !right.ready || left.initial_generation == right.initial_generation)
 }
+
+#[cfg(any(test, all(feature = "browser", target_arch = "wasm32")))]
+pub(crate) mod codec;
+mod handle;
+pub use handle::{WorkspaceLineageStorage, WorkspaceLineageStorageError};
 
 mod memory;
 pub(crate) mod work;

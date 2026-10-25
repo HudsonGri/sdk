@@ -112,6 +112,9 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 .map_err(|e| Error::Storage(e.to_string()))?,
             &provider,
             None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
         )?;
         host.create_volume(&project).await?;
         host.create_volume(&private).await?;
@@ -285,6 +288,9 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 .map_err(|e| Error::Storage(e.to_string()))?,
             &provider,
             None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
         )?;
         let journal = FilesystemWorkflowJournal::new(
             Arc::new(

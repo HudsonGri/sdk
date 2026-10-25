@@ -93,43 +93,51 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .with_stable_policy(io, io.cancellation(), || async {
                     super::volume_access::authorize_fork(&workspace, grant, pinned.id(), io)
                         .await?;
-                    let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
-                    let options = match paths {
-                        Some(paths) => options.inherit_paths(paths),
-                        None => options,
+                    let mut accounting = io.accounting(io.cancellation());
+                    let creator = acyclic_fs::lineage::GenerationFork {
+                        parent: &workspace,
+                        permit: acyclic_fs::PublicationPermit::Unrestricted,
                     };
-                    let forked = match preparation {
-                        Some(task) => io.sdk(
-                            workspace
-                                .fork::<_, _, Error>(
+                    let forked: Result<Workspace<A, O>> = match preparation {
+                        Some(task) => {
+                            host.lineage
+                                .fork(
+                                    &workspace,
                                     &name,
-                                    options,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io,
-                                    io.cancellation(),
-                                    task.as_ref(),
+                                    operation,
+                                    Some(pinned.id()),
+                                    &mut accounting,
+                                    creator.guarded(task.as_ref(), paths),
                                 )
-                                .await,
-                        )?,
-                        None => io.sdk(
-                            workspace
-                                .fork::<_, _, Error>(
+                                .await
+                        }
+                        None => {
+                            host.lineage
+                                .fork(
+                                    &workspace,
                                     &name,
-                                    options,
-                                    acyclic_fs::PublicationPermit::Unrestricted,
-                                    io,
-                                    io.cancellation(),
-                                    &mut |_| {
-                                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                                            value: (),
-                                            work: WorkCounters::default(),
-                                        }))
-                                    },
+                                    operation,
+                                    Some(pinned.id()),
+                                    &mut accounting,
+                                    creator.guarded(
+                                        &mut |_| {
+                                            std::future::ready(Ok::<
+                                                _,
+                                                acyclic_fs::OperationFailure<acyclic_fs::FsError>,
+                                            >(
+                                                acyclic_fs::OperationReceipt {
+                                                    value: (),
+                                                    work: WorkCounters::default(),
+                                                },
+                                            ))
+                                        },
+                                        paths,
+                                    ),
                                 )
-                                .await,
-                        )?,
+                                .await
+                        }
                     };
-                    Ok::<_, Error>(forked)
+                    io.sdk(acyclic_fs::facade::FsWork::finish(&io, forked, &accounting))
                 })
                 .await,
         )??;
@@ -283,8 +291,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await
             .map_err(|failure| map_error(failure.error))?;
-        self.resolve(&workspace_ref(self.provider.clone(), &name)?, None)
-            .await
+        let reference = workspace_ref(self.provider.clone(), &name)?;
+        let workspace = self.open(&reference, None).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::for_unmeasured(&cancellation)?;
+        let mut accounting = io.accounting(&cancellation);
+        let registered = async {
+            self.lineage
+                .register_root(&workspace, &mut accounting)
+                .await?
+                .retire(&mut accounting)?;
+            Ok::<_, Error>(())
+        }
+        .await;
+        io.sdk(acyclic_fs::facade::FsWork::finish(
+            &&io,
+            registered,
+            &accounting,
+        ))?;
+        self.resolve(&reference, None).await
     }
 }
 

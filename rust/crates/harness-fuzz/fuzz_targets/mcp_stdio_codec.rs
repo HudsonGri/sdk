@@ -1,5 +1,7 @@
 #![no_main]
 
+use acyclic_harness::executor;
+
 use bytes::BytesMut;
 use libfuzzer_sys::fuzz_target;
 use rmcp::model::ServerJsonRpcMessage;

@@ -69,6 +69,9 @@ async fn open(
             .map_err(|error| Error::Storage(error.to_string()))?,
         &(provider),
         None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
     )?;
     if initialize {
         host.create_volume(&volume).await?;

@@ -56,7 +56,14 @@ async fn filesystem(
     AuthorityIssuer,
 )> {
     let provider = ProviderRef::new(name.into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let private = VolumeRef::new(
         provider,
         "scratch".into(),

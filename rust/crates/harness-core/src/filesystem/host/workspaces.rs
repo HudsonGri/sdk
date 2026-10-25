@@ -529,11 +529,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &PreparationIo,
     ) -> Result<Generation<A, O>> {
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-        if let Some((root, store)) = &self.project_family
+        if let Some(root) = &self.project_family
             && workspace.id() == *root
         {
             return crate::conversation::BoundedContentFuture::new(Some(io), || {
-                self.project_generation(workspace, generation, *root, store, io)
+                self.project_generation(workspace, generation, *root, io)
             })?
             .await;
         }
@@ -884,7 +884,14 @@ mod workload_tests {
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
-        let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let mut host = FilesystemHost::new(
+            Fs::memory(),
+            &provider,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?;
         host.create_volume(&volume).await?;
         let issuer = crate::core::AuthorityIssuer::new(
             "owner",

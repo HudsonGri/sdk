@@ -91,7 +91,7 @@ fn external_sink_uses_the_owned_encoder_item_and_cancellation_boundary() {
         &mut |_| Ok(()),
     )
     .unwrap();
-    assert_eq!(bytes as usize, old.len());
+    assert_eq!(bytes, u64::try_from(old.len()).unwrap());
     assert_eq!(output, old);
 }
 

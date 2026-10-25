@@ -29,7 +29,14 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem.clone(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -191,7 +198,12 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         )
         .await?;
     let head = host.resolve(&workspace, None).await?.generation;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        host.workspace_graph().store().clone(),
+    )?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,

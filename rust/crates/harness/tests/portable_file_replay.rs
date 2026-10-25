@@ -205,7 +205,14 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         "2".into(),
         &mut None,
     )?;
-    let filesystem = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let filesystem = FilesystemHost::new(
+        Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,

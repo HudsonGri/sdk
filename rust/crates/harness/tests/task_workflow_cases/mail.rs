@@ -88,6 +88,9 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                     .map_err(|error| Error::Storage(error.to_string()))?,
                 &provider,
                 None,
+                acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                    acyclic_fs::MemoryWorkspaceLineageStore::new(),
+                )),
             )?;
             if phase == 0 {
                 filesystem.create_volume(&volume).await?;

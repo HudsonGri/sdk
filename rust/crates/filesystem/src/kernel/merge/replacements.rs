@@ -202,9 +202,9 @@ async fn replacement_index<S: AsyncObjectStore>(
             diff.retire(accounting)?;
             found?;
         }
-        index
-            .value
-            .sort_unstable_by_key(|replacement| replacement.replaced);
+        super::sort_by_accounted(&mut index.value, accounting, |a, b| {
+            a.replaced.cmp(&b.replaced)
+        })?;
         Ok(())
     }
     .await;
@@ -379,14 +379,20 @@ async fn rebind_replacement<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), FsError> {
-    let (before, after) = state.record(directory, accounting)?;
+    let (before, after) = match state.record(directory, accounting) {
+        Ok(records) => records,
+        Err(error) => {
+            name.retire(accounting)?;
+            return Err(error);
+        }
+    };
     let (Some(record), Some(entries)) = (after, directory_entries(after)) else {
         name.retire(accounting)?;
         return Err(FsError::InvalidDiff);
     };
     let Owned {
         value: name,
-        mut allocation,
+        allocation,
         bytes,
     } = name;
     let mutation = match target {
@@ -403,32 +409,21 @@ async fn rebind_replacement<S: AsyncObjectStore>(
             expected_file_id: Some(replacement),
         },
     };
-    let mut mutations = Owned::allocate(0, accounting)?;
-    let result = async {
-        mutations.ensure_for_push(1, accounting)?;
-        mutations.value.push(mutation);
-        mutations.allocation.absorb(&mut allocation)?;
-        mutations.bytes = mutations
-            .bytes
-            .checked_add(bytes)
-            .ok_or(WorkError::Overflow)?;
-        Ok::<_, FsError>(
-            apply_tree_mutations_with_accounting(
-                store,
-                entries,
-                &mutations.value,
-                state.remaining_changes.max(1),
-                limits,
-                accounting,
-                cancellation,
-            )
-            .await?
-            .value,
-        )
-    }
+    // One mutation lives inline; only its exact name buffer is owned on the
+    // original ledger throughout the shared tree update.
+    let mutations = Owned::new([mutation], allocation, bytes);
+    let result = apply_tree_mutations_with_accounting(
+        store,
+        entries,
+        &mutations.value,
+        state.remaining_changes.max(1),
+        limits,
+        accounting,
+        cancellation,
+    )
     .await;
     mutations.retire(accounting)?;
-    let entries = result?;
+    let entries = result?.value;
     state.replace(
         directory,
         (
@@ -515,92 +510,125 @@ async fn settle_indexed<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), FsError> {
+    let context = ReplacementContext {
+        resolutions,
+        maximum_conflicts,
+        limits,
+        cancellation,
+    };
     let mut index = 0;
     while let Some(&(file, values)) = state.replacements.value.get(index) {
         index += 1;
-        let [base, ours, theirs] = values;
-        let [ours_index, theirs_index] = indexes;
-        let theirs_deleted = deleting_side(&values) == 1;
-        let side_index = if theirs_deleted {
-            theirs_index
-        } else {
-            ours_index
-        };
-        let mut replacement = find_replacement(&side_index.value, file, limits, accounting)?;
-        let unbound = if let Some((directory, name, record)) = &replacement {
-            !merged_binding(
+        let side = indexes
+            .get(deleting_side(&values))
+            .ok_or(FsError::InvalidDiff)?;
+        let replacement = find_replacement(&side.value, file, limits, accounting)?;
+        settle_replacement(
+            store,
+            (file, values),
+            replacement,
+            &context,
+            state,
+            accounting,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+struct ReplacementContext<'a> {
+    resolutions: ResolutionView<'a>,
+    maximum_conflicts: u32,
+    limits: DecodeLimits,
+    cancellation: &'a CancellationToken,
+}
+
+async fn settle_replacement<S: AsyncObjectStore>(
+    store: &S,
+    (file, values): (FileId, [Option<FileRecord>; 3]),
+    mut replacement: Option<(FileId, Owned<LogicalName>, FileRecord)>,
+    context: &ReplacementContext<'_>,
+    state: &mut MergeState,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let result = async {
+        if let Some((directory, name, record)) = &replacement
+            && !merged_binding(
                 store,
                 *directory,
                 &name.value,
                 record.file_id,
-                limits,
+                context.limits,
                 state,
                 accounting,
-                cancellation,
+                context.cancellation,
             )
             .await?
-        } else {
-            false
-        };
-        if unbound && let Some((_, name, _)) = replacement.take() {
+            && let Some((_, name, _)) = replacement.take()
+        {
             name.retire(accounting)?;
         }
-        // The replacement stands in as the deleting side's value of the base
-        // identity.
+        let [base, ours, theirs] = values;
+        // The replacement stands in as the deleting side's value of the base identity.
         let standin = replacement.as_ref().map(|(_, _, record)| FileRecord {
             file_id: file,
             ..*record
         });
         let paired = match standin {
-            Some(record) if theirs_deleted => [base, ours, Some(record)],
+            Some(record) if deleting_side(&values) == 1 => [base, ours, Some(record)],
             Some(record) => [base, Some(record), theirs],
             None => values,
         };
-        let [paired_base, paired_ours, paired_theirs] = paired;
-        let resolved = resolve_optional(paired_base, paired_ours, paired_theirs);
+        let [base, paired_ours, paired_theirs] = paired;
         let settled = settle_record(
             store,
             file,
             paired,
-            resolved,
-            resolutions,
-            limits,
+            resolve_optional(base, paired_ours, paired_theirs),
+            context.resolutions,
+            context.limits,
             state,
             accounting,
-            cancellation,
+            context.cancellation,
         )
         .await?;
-        match (settled, replacement) {
-            (Some(after), Some((directory, name, record))) => {
-                state.replace(file, (ours, after), accounting)?;
-                let (replacement_before, _) = state.record(record.file_id, accounting)?;
-                state.replace(record.file_id, (replacement_before, None), accounting)?;
+        if let Some(after) = settled {
+            state.replace(file, (ours, after), accounting)?;
+            if let Some((_, _, record)) = &replacement {
+                let (before, _) = state.record(record.file_id, accounting)?;
+                state.replace(record.file_id, (before, None), accounting)?;
+            }
+            if let Some((directory, name, record)) = replacement.take() {
                 rebind_replacement(
                     store,
                     directory,
                     name,
                     record.file_id,
                     after.map(|_| file),
-                    limits,
+                    context.limits,
                     state,
                     accounting,
-                    cancellation,
+                    context.cancellation,
                 )
                 .await?;
             }
-            (settled, replacement) => {
-                if let Some((_, name, _)) = replacement {
-                    name.retire(accounting)?;
-                }
-                let after = if let Some(after) = settled {
-                    after
-                } else {
-                    state.conflict(MergeConflict::File(file), maximum_conflicts, accounting)?;
-                    ours
-                };
-                state.replace(file, (ours, after), accounting)?;
+        } else {
+            let count = state.conflicts.value.len();
+            state.defer_file(file, paired, false, context.maximum_conflicts, accounting)?;
+            if state.conflicts.value.len() != count
+                && let Some((directory, name, record)) = replacement.take()
+            {
+                state.defer_rebinding(file, (directory, name, record.file_id), accounting)?;
             }
+            state.replace(file, (ours, ours), accounting)?;
         }
+        Ok(())
     }
-    Ok(())
+    .await;
+    // The name remains here through every fallible read and scalar update.
+    // The shared rebind or deferred owner takes it only at the final transfer.
+    if let Some((_, name, _)) = replacement {
+        name.retire(accounting)?;
+    }
+    result
 }

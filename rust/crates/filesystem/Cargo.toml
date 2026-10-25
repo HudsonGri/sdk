@@ -26,6 +26,11 @@ name = "lineage_platform"
 path = "tests/lineage_platform.rs"
 required-features = ["memory"]
 
+[[test]]
+name = "browser_lineage"
+path = "tests/browser_lineage.rs"
+required-features = ["browser"]
+
 [[bench]]
 name = "lease_paths"
 harness = false

@@ -363,6 +363,9 @@ struct MergeState {
     /// Delete/modify conflicts whose deleting side may have replaced the
     /// file under its name; settled after both table diffs are known.
     replacements: Owned<Vec<(FileId, [Option<FileRecord>; 3])>>,
+    pending_files: Owned<Vec<PendingFile>>,
+    pending_bindings: Owned<Vec<PendingBinding>>,
+    pending_rebindings: Owned<Vec<FileFold>>,
     truncated: bool,
     remaining_changes: u32,
     content: ContentMerge,
@@ -376,10 +379,23 @@ impl MergeState {
             folds: Owned::allocate(0, accounting)?,
             file_folds: Owned::allocate(0, accounting)?,
             replacements: Owned::allocate(0, accounting)?,
+            pending_files: Owned::allocate(0, accounting)?,
+            pending_bindings: Owned::allocate(0, accounting)?,
+            pending_rebindings: Owned::allocate(0, accounting)?,
             truncated: false,
             remaining_changes: maximum_changes,
             content: ContentMerge::Extents,
         })
+    }
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        self.records.retire(accounting)?;
+        self.conflicts.retire(accounting)?;
+        self.folds.retire(accounting)?;
+        self.file_folds.retire(accounting)?;
+        self.replacements.retire(accounting)?;
+        self.pending_files.retire(accounting)?;
+        self.pending_bindings.retire(accounting)?;
+        self.pending_rebindings.retire(accounting)
     }
     fn record(
         &self,
@@ -468,9 +484,7 @@ pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
     .await
 }
 
-pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounting<
-    S: AsyncObjectStore,
->(
+async fn merge_generation_with_borrowed_map_resolutions_with_accounting<S: AsyncObjectStore>(
     store: &S,
     request: &MergeGenerationBorrowedRequest<'_>,
     resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>,
@@ -480,24 +494,6 @@ pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounti
 ) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
     let indexed = index_resolutions(resolutions.iter(), accounting)?;
     merge_generation_indexed(store, *request, indexed, limits, accounting, cancellation).await
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<
-    S: AsyncObjectStore,
->(
-    store: &S,
-    request: MergeGenerationBorrowedRequest<'_>,
-    resolutions: &[(MergeConflict, MergeConflictResolution)],
-    limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
-    let indexed = index_resolutions(
-        resolutions.iter().map(|(key, value)| (key, value)),
-        accounting,
-    )?;
-    merge_generation_indexed(store, request, indexed, limits, accounting, cancellation).await
 }
 
 async fn merge_generation_indexed<S: AsyncObjectStore>(
@@ -523,6 +519,8 @@ async fn merge_generation_indexed<S: AsyncObjectStore>(
 
 include!("merge/tables.rs");
 include!("merge/checkpoint.rs");
+include!("merge/frontier.rs");
+mod program;
 include!("merge/regular.rs");
 include!("merge/directory.rs");
 include!("merge/links.rs");

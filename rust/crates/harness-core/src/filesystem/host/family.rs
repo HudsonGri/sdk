@@ -35,7 +35,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &Workspace<A, O>,
         generation: GenerationId,
         root: WorkspaceId,
-        store: &acyclic_fs::LocalCoreStateStore,
         io: &PreparationIo,
     ) -> Result<Generation<A, O>> {
         let owner = io.sdk(
@@ -59,7 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "related project reads require ordinary workspace execution",
                 ));
             }
-            let graph = WorkspaceGraph::new(store.clone());
+            let graph = WorkspaceGraph::new(self.lineage.store().clone());
             authorize(&graph, root, owner).await?;
             related =
                 acyclic_fs::WorkspaceResolver::resolve(&(self.filesystem.clone(), graph), owner)

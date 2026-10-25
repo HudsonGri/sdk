@@ -306,6 +306,7 @@ pub(crate) async fn register(
         resources.fs.clone(),
         provider,
         Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        acyclic_fs::WorkspaceLineageStorage::Local(resources.store.clone()),
     )?;
     let journal_name = {
         let mut io = acyclic_harness::store::HistoryWork::new(

@@ -324,8 +324,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         &self,
         outcome: crate::facade::WorkspaceJoinOutcome,
     ) -> Result<JoinOutcome<A, O>, WorkspaceError> {
+        self.target_head.workspace.map_join_outcome(outcome)
+    }
+}
+
+impl<A, O> Workspace<A, O> {
+    pub(super) fn map_join_outcome(
+        &self,
+        outcome: crate::facade::WorkspaceJoinOutcome,
+    ) -> Result<JoinOutcome<A, O>, WorkspaceError> {
         let generation = |id| Generation {
-            workspace: self.target_head.workspace.clone(),
+            workspace: self.clone(),
             id,
             publication_closure: None,
         };

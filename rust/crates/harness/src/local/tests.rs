@@ -219,9 +219,16 @@ pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
     let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    FilesystemHost::new(fs, &provider, None)?
-        .create_volume(&volume)
-        .await?;
+    FilesystemHost::new(
+        fs,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?
+    .create_volume(&volume)
+    .await?;
     Ok(volume)
 }
 

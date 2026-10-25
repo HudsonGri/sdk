@@ -82,7 +82,14 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         )
         .await?,
     );
-    let files = FilesystemHost::new(filesystem, &provider, None)?;
+    let files = FilesystemHost::new(
+        filesystem,
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let issuer = AuthorityIssuer::new(
         "publisher",
         [17; 32],

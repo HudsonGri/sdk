@@ -180,7 +180,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let prepared = self.prepare_child_transition(
             &index,
             publication,
-            [status, delivered],
+            &[status, delivered],
             &claim,
             b"claim",
         )?;
@@ -267,7 +267,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let prepared = self.prepare_child_transition(
             &index,
             publication,
-            [result, status],
+            &[result, status],
             claim,
             b"complete",
         )?;
@@ -312,7 +312,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self,
         index: &Index,
         publication: ChildTurnPublication<'_>,
-        writes: [FileValue; 2],
+        writes: &[FileValue; 2],
         claim: &ChildTurnClaim,
         phase: &[u8],
     ) -> Result<PreparedAppend> {
@@ -322,10 +322,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             work,
             ..
         } = publication;
-        for write in &writes {
+        for write in writes {
             validate_file(index, write)?;
         }
-        let (record, files) = segment::encode_pair(&writes, work)?;
+        let (record, files) = segment::encode_pair(writes, work)?;
         let next = expected
             .position
             .checked_add(1)

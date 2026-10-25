@@ -4,7 +4,7 @@ use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder};
 
 use super::volume::{CONFIG_ENCODED_BYTES, decode_config, encode_config};
 use crate::WorkCounters;
-use crate::foundation::{AuthorityId, Digest, VolumeId, usize_to_u64};
+use crate::foundation::{AuthorityId, Digest, GenerationId, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
@@ -12,6 +12,7 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-retention-created-v1\0";
 const ID_DOMAIN: &[u8] = b"acyclic-fs-retention-authority-v1\0";
 const DELETED_DOMAIN: &[u8] = b"acyclic-fs-workspace-deleted-v1\0";
+const RELEASED_DOMAIN: &[u8] = b"acyclic-fs-retention-released-v1\0";
 const VERSION: u16 = 1;
 const MAXIMUM_LABEL_BYTES: u32 = 255;
 
@@ -24,6 +25,8 @@ pub enum RetentionKind {
     Pin,
     /// Internal exact ancestry root retained by an independently live fork.
     ForkBase,
+    /// SDK-issued immutable candidate, retained until its preparation is retired.
+    PreparedJoin,
 }
 
 impl RetentionKind {
@@ -32,6 +35,7 @@ impl RetentionKind {
             Self::Checkpoint => 1,
             Self::Pin => 2,
             Self::ForkBase => 3,
+            Self::PreparedJoin => 4,
         }
     }
 
@@ -40,8 +44,13 @@ impl RetentionKind {
             1 => Ok(Self::Checkpoint),
             2 => Ok(Self::Pin),
             3 => Ok(Self::ForkBase),
+            4 => Ok(Self::PreparedJoin),
             _ => Err(invariant("unknown retention kind")),
         }
+    }
+
+    pub(crate) const fn releasable(self) -> bool {
+        matches!(self, Self::Pin | Self::PreparedJoin)
     }
 }
 
@@ -58,6 +67,64 @@ pub struct RetentionCreated {
     pub generation_root: ObjectId,
     /// Filesystem semantics needed to authenticate and reclaim the closure.
     pub config: VolumeConfig,
+}
+
+/// Terminal release of one exact immutable retention authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetentionReleased {
+    /// The original retention identity, including its owning volume and label.
+    pub authority_id: AuthorityId,
+    /// The exact retained generation; another generation cannot release it.
+    pub generation: GenerationId,
+}
+
+/// Encodes a terminal retention fact with admission before allocation or copying.
+pub fn encode_retention_released<E: From<CanonicalDecodeError>>(
+    value: RetentionReleased,
+    mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E> {
+    observe(EncodeWorkStep::Check)?;
+    let mut encoder = Encoder::with_exact_capacity(
+        RELEASED_DOMAIN,
+        VERSION,
+        RELEASED_DOMAIN.len() + 2 + 16 + 32,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
+    let work = WorkCounters {
+        bytes_encoded: 48,
+        bytes_copied: 48,
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
+    observe(EncodeWorkStep::Admit(work))?;
+    encoder.fixed(&value.authority_id.into_bytes());
+    encoder.fixed(value.generation.digest().as_bytes());
+    observe(EncodeWorkStep::Completed(work))?;
+    Ok(encoder.finish())
+}
+
+/// Decodes the complete fixed-size terminal fact; no payload allocation occurs.
+pub fn decode_retention_released(
+    bytes: &[u8],
+    maximum_payload_bytes: u64,
+) -> Result<RetentionReleased, CanonicalDecodeError> {
+    let mut observe = |_| Ok::<_, CanonicalDecodeError>(());
+    let mut decoder = Decoder::new(
+        bytes,
+        RELEASED_DOMAIN,
+        VERSION,
+        maximum_payload_bytes,
+        &mut observe,
+    )?;
+    let authority_id = AuthorityId::from_bytes(decoder.fixed(&mut observe)?);
+    let generation = GenerationId::new(Digest::from_bytes(decoder.fixed(&mut observe)?));
+    decoder.finish()?;
+    Ok(RetentionReleased {
+        authority_id,
+        generation,
+    })
 }
 
 /// Canonical retention codec failure.

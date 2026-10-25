@@ -286,9 +286,16 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
         let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
             .await
             .map_err(storage)?;
-        FilesystemHost::new(fs, &reference, None)?
-            .create_volume(&volume)
-            .await?;
+        FilesystemHost::new(
+            fs,
+            &reference,
+            None,
+            acyclic_fs::WorkspaceLineageStorage::Memory(std::sync::Arc::new(
+                acyclic_fs::MemoryWorkspaceLineageStore::new(),
+            )),
+        )?
+        .create_volume(&volume)
+        .await?;
         let model = Model::new(
             "scripted".into(),
             "dst".into(),

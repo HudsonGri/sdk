@@ -1,4 +1,6 @@
 #![no_main]
+
+use acyclic_harness::executor;
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 

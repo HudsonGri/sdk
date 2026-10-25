@@ -253,7 +253,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
             }
         }
         let roots = journal.candidate.plan.roots.clone();
-        let mut applied = journal;
+        let mut applied = self.project_conflicted(journal).await?;
         for (root_id, root) in &roots {
             if applied.fences.contains_key(root_id) {
                 continue;
@@ -273,7 +273,9 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
             applied
                 .published_generations
                 .insert(*root_id, finished.generation);
-            applied.fences.insert(*root_id, finished.fence);
+            applied
+                .fences
+                .insert(*root_id, MultiRootRetainedFence::Finished(finished.fence));
             applied = self.persist(applied).await?;
         }
         applied.phase = MultiRootPublicationPhase::Applied;
@@ -326,9 +328,9 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                 for (root_id, fence) in &journal.fences {
                     self.publisher
                         .release(
-                            conflict_finish_operation_id(operation_id, *root_id),
+                            fence.release_operation(operation_id, *root_id),
                             *root_id,
-                            fence,
+                            fence.fence(),
                         )
                         .await
                         .map_err(MultiRootPublicationError::Publisher)?;
@@ -337,6 +339,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                 journal.declared_conflicts.clear();
                 journal.phase = MultiRootPublicationPhase::Aborting;
                 journal.published_roots.clear();
+                journal.published_generations.clear();
                 journal = self.persist(journal).await?;
             }
             if journal.phase != MultiRootPublicationPhase::Aborting {
@@ -353,21 +356,33 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         let operation_id = journal.candidate.plan.operation_id;
         let roots = journal.candidate.plan.roots.clone();
         for (root_id, root) in roots {
-            if journal.projected_roots.contains_key(&root_id) {
-                continue;
+            if !journal.projected_roots.contains_key(&root_id) {
+                let retained = journal
+                    .fences
+                    .get(&root_id)
+                    .ok_or(MultiRootPublicationError::InvalidCandidate)?;
+                let MultiRootRetainedFence::Prepared(fence) = retained else {
+                    return Err(MultiRootPublicationError::InvalidCandidate);
+                };
+                let generation = self
+                    .publisher
+                    .project_conflict(operation_id, root_id, &root, fence)
+                    .await
+                    .map_err(MultiRootPublicationError::Publisher)?;
+                journal.projected_roots.insert(root_id, generation);
+                journal = self.persist(journal).await?;
             }
-            let generation = self
-                .publisher
-                .project_conflict(
-                    operation_id,
-                    root_id,
-                    &root,
-                    journal.conflicts.get(&root_id),
-                )
-                .await
-                .map_err(MultiRootPublicationError::Publisher)?;
-            journal.projected_roots.insert(root_id, generation);
-            journal = self.persist(journal).await?;
+            // Keep the descriptor until the outcome is durable. A cancelled
+            // publisher can resume an unchanged result without inventing an
+            // authority append; a cancelled cleanup repeats only exact release.
+            if let Some(MultiRootRetainedFence::Prepared(fence)) = journal.fences.get(&root_id) {
+                self.publisher
+                    .release(operation_id, root_id, fence)
+                    .await
+                    .map_err(MultiRootPublicationError::Publisher)?;
+                journal.fences.remove(&root_id);
+                journal = self.persist(journal).await?;
+            }
         }
         Ok(journal)
     }
@@ -558,7 +573,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                 Ok(MultiRootPrepare::Stale) => {
                     for (prepared_root, prepared_fence) in &journal.fences {
                         self.publisher
-                            .release(operation_id, *prepared_root, prepared_fence)
+                            .release(operation_id, *prepared_root, prepared_fence.fence())
                             .await
                             .map_err(MultiRootPublicationError::Publisher)?;
                     }
@@ -567,14 +582,14 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                     journal = self.persist(journal).await?;
                     return Ok(MultiRootValidation::Stale(root_id, journal));
                 }
-                Ok(MultiRootPrepare::Conflicted(plan)) => {
+                Ok(MultiRootPrepare::Conflicted { plan, fence }) => {
                     journal.conflicts.insert(root_id, *plan);
-                    continue;
+                    fence
                 }
                 Err(error) => {
                     for (prepared_root, prepared_fence) in &journal.fences {
                         self.publisher
-                            .release(operation_id, *prepared_root, prepared_fence)
+                            .release(operation_id, *prepared_root, prepared_fence.fence())
                             .await
                             .map_err(MultiRootPublicationError::Publisher)?;
                     }
@@ -584,17 +599,12 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                     return Err(MultiRootPublicationError::Publisher(error));
                 }
             };
-            journal.fences.insert(root_id, fence);
+            journal
+                .fences
+                .insert(root_id, MultiRootRetainedFence::Prepared(fence));
             journal = self.persist(journal).await?;
         }
         if !journal.conflicts.is_empty() {
-            for (prepared_root, prepared_fence) in &journal.fences {
-                self.publisher
-                    .release(operation_id, *prepared_root, prepared_fence)
-                    .await
-                    .map_err(MultiRootPublicationError::Publisher)?;
-            }
-            journal.fences.clear();
             journal.phase = MultiRootPublicationPhase::Conflicted;
             return self
                 .persist(journal)
@@ -633,7 +643,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
                 .ok_or(MultiRootPublicationError::InvalidCandidate)?;
             match self
                 .publisher
-                .publish(operation_id, root_id, &root, resolutions, fence)
+                .publish(operation_id, root_id, &root, resolutions, fence.fence())
                 .await
                 .map_err(MultiRootPublicationError::Publisher)?
             {
@@ -665,17 +675,15 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         journal: &MultiRootPublication,
     ) -> MultiRootResult<(), S::Error, P::Error, A::Error> {
         let operation_id = journal.candidate.plan.operation_id;
-        if !journal.declared_conflicts.is_empty() {
-            for (root_id, fence) in &journal.fences {
-                self.publisher
-                    .release(
-                        conflict_finish_operation_id(operation_id, *root_id),
-                        *root_id,
-                        fence,
-                    )
-                    .await
-                    .map_err(MultiRootPublicationError::Publisher)?;
-            }
+        for (root_id, retained) in &journal.fences {
+            self.publisher
+                .release(
+                    retained.release_operation(operation_id, *root_id),
+                    *root_id,
+                    retained.fence(),
+                )
+                .await
+                .map_err(MultiRootPublicationError::Publisher)?;
         }
         for (root_id, root) in &journal.candidate.plan.roots {
             self.publisher
