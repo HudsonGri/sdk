@@ -286,7 +286,7 @@ fn native_policy_approval_rejects_foreign_prompt_before_encoding() -> Result<()>
             &definition,
             &invocation,
             (prompt, Some(custody)),
-            Some(&original)
+            Some(&original),
             crate::interaction::ApprovalRoute::Policy,
         ),
         Err(Error::NativeBoundary {

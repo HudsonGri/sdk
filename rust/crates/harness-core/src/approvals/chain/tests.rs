@@ -167,7 +167,7 @@ proptest! {
         } = &mut interaction {
             *route = crate::interaction::ApprovalRoute::Human;
         }
-        request.bytes = serde_json::to_vec(&interaction).unwrap();
+        request.bytes = serde_json::to_vec(&interaction)?.into();
         let mut files = BTreeMap::new();
         if forged {
             // An ordinary policy review cannot settle an explicitly human request.
@@ -180,7 +180,7 @@ proptest! {
         let NextStage::Review { approver, expected, .. } = next_stage(&policy, digest, None, &request, &files, 0)? else {
             panic!("ordinary policy settled an explicitly human guard");
         };
-        prop_assert!(matches!(approver, Approver::Human { .. }));
+        prop_assert!(matches!(approver, Approver::Human { .. }), "explicit guard must select a human");
         prop_assert_eq!(expected.principal, "human");
         prop_assert_eq!(expected.policy_digest, digest);
         // Actual prior routing selected this same policy's rule stage instead.
@@ -190,8 +190,8 @@ proptest! {
         } = &mut ordinary {
             *route = crate::interaction::ApprovalRoute::Policy;
         }
-        request.bytes = serde_json::to_vec(&ordinary).unwrap();
+        request.bytes = serde_json::to_vec(&ordinary)?.into();
         prop_assert!(matches!(next_stage(&policy, digest, None, &request, &BTreeMap::new(), 0)?,
-            NextStage::Review { approver: Approver::Rules { .. }, .. }));
+            NextStage::Review { approver: Approver::Rules { .. }, .. }), "ordinary request must select its configured policy");
     }
 }

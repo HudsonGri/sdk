@@ -245,7 +245,7 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
             &definition,
             &invocation,
             ("Approve echo".into(), None),
-            None
+            None,
             crate::interaction::ApprovalRoute::Policy,
         )
         .map(|(value, _)| value)?
@@ -282,7 +282,7 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
                 &definition,
                 &changed_invocation,
                 ("Approve echo".into(), None),
-                None
+                None,
                 crate::interaction::ApprovalRoute::Policy,
             )
             .map(|(value, _)| value)?
