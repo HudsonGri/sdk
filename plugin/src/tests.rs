@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn release_certification_uses_the_shared_policy_for_foreign_artifacts() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let executable = directory.path().join("release artifact");
+    let receipt = directory.path().join("receipt.json");
+    std::fs::write(&executable, b"internal artifact input")?;
+    // Internal verifier inputs, not evidence of a native mount qualification.
+    let mut document = json!({
+        "schema":"acyclic-native-mount-qualification-v2", "os":"macos", "arch":"aarch64",
+        "coverage":acyclic_fs::mount_qualification::COVERAGE,
+        "required_kind":"macos-nfs", "release_version":"internal-test",
+        "executable_blake3":blake3::hash(b"internal artifact input").to_hex().to_string(),
+        "passed":true, "capability":{"kind":"macos-nfs", "available":true, "writable":true,
+            "provider_process_io_observable":true,"session_isolation":"SharedProcess","unavailable_reason":null},
+        "cases":(["real-mount-mutation-matrix","crash-detach-recovery","checkout-and-git-untouched"]
+            .map(|name|json!({"name":name,"status":"passed","reason":null})))
+    });
+    let args = [
+        "__verify-release-certification".to_owned(),
+        receipt.to_str().ok_or("receipt path")?.to_owned(),
+        executable.to_str().ok_or("artifact path")?.to_owned(),
+        "macos".into(),
+        "aarch64".into(),
+        "internal-test".into(),
+    ];
+    std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+    assert!(internal(&args)?);
+    document["coverage"] = json!([]);
+    std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+    let error = match internal(&args) {
+        Ok(_) => return Err("incomplete foreign release receipt accepted".into()),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("step=verify native mount release certification"));
+    let (_, recovery) = error.split_once("recovery argv: ").ok_or("recovery argv")?;
+    let recovery: Vec<String> = serde_json::from_str(recovery)?;
+    assert_eq!(recovery.get(1..).ok_or("recovery arguments")?, args);
+    Ok(())
+}
+
+#[test]
 fn native_hook_context_encodes_only_valid_task_ids() -> Result<()> {
     let identity = "18aa58bb-16c0-440c-9367-fc0230a95dd5";
     let task = parse_task(identity)?;
