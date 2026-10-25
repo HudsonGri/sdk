@@ -16,6 +16,7 @@ path = "src/main.rs"
 required-features = ["native-harness"]
 
 [dependencies]
+acyclic-native-runtime = { path = "../native-runtime" }
 acyclic-actors = { path = "../actors" }
 acyclic-harness = { path = "../harness", features = ["filesystem"] }
 acyclic-harness-providers = { path = "../harness-providers", optional = true }
@@ -37,7 +38,6 @@ workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-acyclic-native-runtime = { path = "../native-runtime" }
 acyclic-test-support = { path = "../test-support" }
 
 [[test]]

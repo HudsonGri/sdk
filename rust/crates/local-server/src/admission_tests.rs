@@ -136,6 +136,15 @@ impl crate::Worker for ParkedWorker {
 #[tokio::test]
 async fn worker_invocation_holds_the_shared_retirement_lease()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for disconnect in [false, true] {
+        check_worker_retirement(disconnect).await?;
+    }
+    Ok(())
+}
+
+async fn check_worker_retirement(
+    disconnect: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (entered, observed) = tokio::sync::oneshot::channel();
     let (release, released) = tokio::sync::oneshot::channel();
     let mut registry = Registry::default();
@@ -168,26 +177,30 @@ async fn worker_invocation_holds_the_shared_retirement_lease()
             .await
     });
     observed.await?;
+    let observer = if disconnect {
+        task.abort();
+        assert!(
+            task.await
+                .err()
+                .ok_or("worker observer completed early")?
+                .is_cancelled()
+        );
+        None
+    } else {
+        Some(task)
+    };
     actors.catalog.lock().await.closing = true;
+    let retiring = actors.request_admissions.clone().write_owned();
+    tokio::pin!(retiring);
     assert!(
-        actors
-            .request_admissions
-            .clone()
-            .write_owned()
-            .now_or_never()
-            .is_none(),
+        futures::poll!(&mut retiring).is_pending(),
         "negative control: removing the invocation lease retires its transports early"
     );
     release.send(()).map_err(|()| "worker owner disappeared")?;
-    task.await??;
-    assert!(
-        actors
-            .request_admissions
-            .clone()
-            .write_owned()
-            .now_or_never()
-            .is_some()
-    );
+    let _retired = retiring.await;
+    if let Some(observer) = observer {
+        observer.await??;
+    }
     Ok(())
 }
 

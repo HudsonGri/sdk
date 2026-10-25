@@ -9,6 +9,7 @@ use acyclic_harness::{
     package::{ActorRuntime, Event, Placement, Snapshot},
     workflow::MachineIdentity,
 };
+use acyclic_native_runtime::TaskHandle;
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,7 +21,6 @@ use std::{
 use tokio::{
     net::TcpListener,
     sync::{Mutex, oneshot},
-    task::JoinHandle,
 };
 use tonic::{Request, Response, Status};
 
@@ -162,7 +162,7 @@ struct Deployment {
 }
 struct DeploymentLease {
     deployment: Arc<Deployment>,
-    _active: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    _active: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 impl std::ops::Deref for DeploymentLease {
     type Target = Deployment;
@@ -303,7 +303,7 @@ impl Server {
             request_admissions: Arc::new(tokio::sync::RwLock::new(())),
         };
         let filesystem = acyclic_fs::FilesystemWireService::new(filesystem, Default::default())?;
-        let task = tokio::spawn(tonic::transport::Server::builder()
+        let task = acyclic_native_runtime::spawn(tonic::transport::Server::builder()
             .add_service(acyclic_stream::wire::stream_service_server::StreamServiceServer::new(acyclic_stream::grpc::Service::new(stream.clone())))
             .add_service(acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer::new(acyclic_stream::session::Service::new(
                 stream, acyclic_stream::session::testing::authority(), "local".into(), Default::default())))
@@ -315,7 +315,7 @@ impl Server {
         // Install the retirement owner before publishing the server. The
         // request sender's destruction is itself the shutdown request, so no
         // destructor needs to allocate, spawn or abort in-flight package work.
-        tokio::spawn(async move {
+        acyclic_native_runtime::spawn(async move {
             let _ = stopped.await;
             let result = Self::drain(actors, transport_stop, task).await;
             let _ = complete.send(result);
@@ -338,22 +338,31 @@ impl Server {
     async fn drain(
         actors: Actors,
         stop: oneshot::Sender<()>,
-        task: JoinHandle<Result<(), tonic::transport::Error>>,
+        task: TaskHandle<Result<(), tonic::transport::Error>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let guests: Vec<_> = {
             let mut catalog = actors.catalog.lock().await;
             catalog.closing = true;
             catalog.namespaces.values().cloned().collect()
         };
-        // A workflow RPC retains a lease until its snapshot is registered.
-        // Closing the catalog before taking the writer makes the drain's actor
-        // set complete, including an initial placement that was still in flight.
+        // Wake guest-owned waiters before waiting for their request leases.
+        // In particular a settlement request can wait for application shutdown
+        // to establish that no further task admission will arrive. Both guest
+        // shutdown and those requests retain the shared effect transports.
+        let stopped = futures::future::join_all(guests.iter().filter_map(|deployment| {
+            match &deployment.runtime {
+                Instance::Fetch(fetch) => Some(fetch.shutdown()),
+                Instance::Workflow(_) => None,
+            }
+        }))
+        .await;
+        // Every admitted RPC retains a lease through its response/snapshot.
+        // The closed catalog makes the actor set complete, even when a first
+        // placement was still in flight when shutdown was requested.
         let _settled = actors.request_admissions.write().await;
-        // Close Actors admission while keeping shared Streams/fs available to
-        // already admitted effects. Transport retirement follows their drain.
         let results = futures::future::join_all(guests.iter().map(|deployment| async move {
             match &deployment.runtime {
-                Instance::Fetch(fetch) => fetch.shutdown().await,
+                Instance::Fetch(_) => Ok(()),
                 Instance::Workflow(runtime) => {
                     let placements: Vec<_> = deployment
                         .actors
@@ -378,7 +387,7 @@ impl Server {
         .await;
         drop(stop);
         task.await??;
-        for result in results {
+        for result in stopped.into_iter().chain(results) {
             result?;
         }
         Ok(())

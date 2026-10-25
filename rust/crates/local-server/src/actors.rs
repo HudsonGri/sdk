@@ -4,6 +4,8 @@ use wire::actors_service_server::ActorsService;
 #[cfg(test)]
 #[path = "admission_tests.rs"]
 mod admission_tests;
+#[cfg(test)]
+mod request_ownership_tests;
 
 fn observation_order(snapshot: &Snapshot) -> (u64, u64, u64, bool, std::cmp::Reverse<usize>) {
     (
@@ -16,6 +18,15 @@ fn observation_order(snapshot: &Snapshot) -> (u64, u64, u64, bool, std::cmp::Rev
 }
 
 impl Actors {
+    // Transport cancellation ends observation, not an already admitted guest
+    // operation. The task owns the existing admission lease until publication.
+    async fn own_request<T: Send + 'static>(
+        operation: impl std::future::Future<Output = Result<T, Status>> + Send + 'static,
+    ) -> Result<T, Status> {
+        acyclic_native_runtime::spawn(operation)
+            .await
+            .map_err(failure)?
+    }
     async fn remember_actor(deployment: &Deployment, id: String, snapshot: Snapshot) {
         let mut actors = deployment.actors.lock().await;
         // RPC completion order is not journal order. Inspection must preserve
@@ -45,11 +56,7 @@ impl Actors {
             .get(&scope)
             .cloned()
             .ok_or_else(|| Status::not_found("namespace"))?;
-        let active = if matches!(deployment.runtime, Instance::Workflow(_)) {
-            Some(self.request_admissions.clone().read_owned().await)
-        } else {
-            None
-        };
+        let active = self.request_admissions.clone().read_owned().await;
         Ok(DeploymentLease {
             deployment,
             _active: active,
@@ -74,65 +81,71 @@ impl Actors {
         }
         let scope = Scope::new(request.account_id.clone(), request.name.clone())?;
         let digest: [u8; 32] = request.code_sha256.as_slice().try_into().map_err(invalid)?;
-        let mut catalog = self.catalog.lock().await;
-        if catalog.closing {
-            return Err(Status::unavailable("server admission closed"));
-        }
-        let method = if worker {
-            "deploy_worker"
-        } else {
-            "deploy_namespace"
-        };
-        let bytes = request.encode_to_vec();
-        if let Some(response) = catalog.replay(&scope, method, &request.idempotency_key, &bytes)? {
-            return Ok(response);
-        }
-        let revision = if worker {
-            if !self.registry.workers.contains_key(&digest) {
-                return Err(Status::not_found("compiled Worker artifact"));
+        let owner = self.clone();
+        Self::own_request(async move {
+            let mut catalog = owner.catalog.lock().await;
+            if catalog.closing {
+                return Err(Status::unavailable("server admission closed"));
             }
-            if let Some(current) = catalog.workers.get(&scope) {
-                if current != &request {
-                    return Err(Status::already_exists("Worker deployment differs"));
+            let method = if worker {
+                "deploy_worker"
+            } else {
+                "deploy_namespace"
+            };
+            let bytes = request.encode_to_vec();
+            if let Some(response) =
+                catalog.replay(&scope, method, &request.idempotency_key, &bytes)?
+            {
+                return Ok(response);
+            }
+            let revision = if worker {
+                if !owner.registry.workers.contains_key(&digest) {
+                    return Err(Status::not_found("compiled Worker artifact"));
                 }
+                if let Some(current) = catalog.workers.get(&scope) {
+                    if current != &request {
+                        return Err(Status::already_exists("Worker deployment differs"));
+                    }
+                } else {
+                    if request.expected_revision != 0 {
+                        return Err(failure("missing deployment revision"));
+                    }
+                    catalog.workers.insert(scope.clone(), request.clone());
+                }
+                1
+            } else if let Some(current) = catalog.namespaces.get(&scope) {
+                if current.request != request {
+                    return Err(Status::already_exists("namespace deployment differs"));
+                }
+                current.revision
             } else {
                 if request.expected_revision != 0 {
                     return Err(failure("missing deployment revision"));
                 }
-                catalog.workers.insert(scope.clone(), request.clone());
-            }
-            1
-        } else if let Some(current) = catalog.namespaces.get(&scope) {
-            if current.request != request {
-                return Err(Status::already_exists("namespace deployment differs"));
-            }
-            current.revision
-        } else {
-            if request.expected_revision != 0 {
-                return Err(failure("missing deployment revision"));
-            }
-            let code = self
-                .registry
-                .packages
-                .get(&digest)
-                .ok_or_else(|| Status::not_found("compiled Actors artifact"))?;
-            let runtime = code.deploy(scope.clone()).await?;
-            catalog.namespaces.insert(
-                scope.clone(),
-                Arc::new(Deployment {
-                    request: request.clone(),
-                    revision: 1,
-                    runtime,
-                    actors: Arc::new(Mutex::new(BTreeMap::new())),
-                }),
-            );
-            1
-        };
-        let response = wire::DeploymentResponse {
-            deployment: Some(deployment_observation(&request, revision)),
-        };
-        catalog.remember(scope, method, request.idempotency_key, bytes, &response);
-        Ok(response)
+                let code = owner
+                    .registry
+                    .packages
+                    .get(&digest)
+                    .ok_or_else(|| Status::not_found("compiled Actors artifact"))?;
+                let runtime = code.deploy(scope.clone()).await?;
+                catalog.namespaces.insert(
+                    scope.clone(),
+                    Arc::new(Deployment {
+                        request: request.clone(),
+                        revision: 1,
+                        runtime,
+                        actors: Arc::new(Mutex::new(BTreeMap::new())),
+                    }),
+                );
+                1
+            };
+            let response = wire::DeploymentResponse {
+                deployment: Some(deployment_observation(&request, revision)),
+            };
+            catalog.remember(scope, method, request.idempotency_key, bytes, &response);
+            Ok(response)
+        })
+        .await
     }
     async fn observe(
         &self,
@@ -142,6 +155,12 @@ impl Actors {
     ) -> Result<wire::ActorObservation, Status> {
         acyclic_actors::addressing::validate_actor_id(id.as_bytes()).map_err(invalid)?;
         let deployment = self.deployment(account, namespace).await?;
+        Self::observe_deployment(&deployment, id).await
+    }
+    async fn observe_deployment(
+        deployment: &Deployment,
+        id: String,
+    ) -> Result<wire::ActorObservation, Status> {
         let snapshots = deployment.actors.lock().await;
         let snapshot = snapshots
             .get(&id)
@@ -202,23 +221,31 @@ impl ActorsService for Actors {
         let deployment = self
             .deployment(request.account_id.clone(), request.namespace.clone())
             .await?;
-        let Instance::Workflow(runtime) = &deployment.runtime else {
-            let Instance::Fetch(fetch) = &deployment.runtime else {
-                return Err(failure("missing fetch hook"));
-            };
-            return fetch.fetch(request).await.map(Response::new);
+        let call = if matches!(deployment.runtime, Instance::Workflow(_)) {
+            let call: Call = serde_json::from_slice(&request.body).map_err(invalid)?;
+            if call.placement().actor.to_string() != request.actor_id {
+                return Err(invalid("invocation and placement actor disagree"));
+            }
+            Some(call)
+        } else {
+            None
         };
-        let call: Call = serde_json::from_slice(&request.body).map_err(invalid)?;
-        if call.placement().actor.to_string() != request.actor_id {
-            return Err(invalid("invocation and placement actor disagree"));
-        }
-        let snapshot = call.apply(runtime.as_ref()).await.map_err(runtime_error)?;
-        Self::remember_actor(&deployment, request.actor_id, snapshot.clone()).await;
-        Ok(Response::new(wire::InvokeActorResponse {
-            status: 200,
-            body: serde_json::to_vec(&snapshot).map_err(failure)?,
-            headers: vec![],
-        }))
+        Self::own_request(async move {
+            match (&deployment.runtime, call) {
+                (Instance::Fetch(fetch), None) => fetch.fetch(request).await.map(Response::new),
+                (Instance::Workflow(runtime), Some(call)) => {
+                    let snapshot = call.apply(runtime.as_ref()).await.map_err(runtime_error)?;
+                    Self::remember_actor(&deployment, request.actor_id, snapshot.clone()).await;
+                    Ok(Response::new(wire::InvokeActorResponse {
+                        status: 200,
+                        body: serde_json::to_vec(&snapshot).map_err(failure)?,
+                        headers: vec![],
+                    }))
+                }
+                _ => Err(failure("missing execution hook")),
+            }
+        })
+        .await
     }
     async fn inspect_actor(
         &self,
@@ -251,11 +278,15 @@ impl ActorsService for Actors {
         let Instance::Workflow(runtime) = &d.runtime else {
             return Err(Status::unimplemented("fetch guest owns its checkpoints"));
         };
-        let snapshot = runtime.recover(placement).await.map_err(runtime_error)?;
-        Self::remember_actor(&d, r.actor_id.clone(), snapshot).await;
-        Ok(Response::new(wire::CheckpointActorResponse {
-            actor: Some(self.observe(r.account_id, r.namespace, r.actor_id).await?),
-        }))
+        let runtime = Arc::clone(runtime);
+        Self::own_request(async move {
+            let snapshot = runtime.recover(placement).await.map_err(runtime_error)?;
+            Self::remember_actor(&d, r.actor_id.clone(), snapshot).await;
+            Ok(Response::new(wire::CheckpointActorResponse {
+                actor: Some(Self::observe_deployment(&d, r.actor_id).await?),
+            }))
+        })
+        .await
     }
     async fn update_namespace(
         &self,
@@ -338,15 +369,19 @@ impl ActorsService for Actors {
         // Workers have no separate application shutdown hook. Keep their
         // admitted request alive in the same drain as workflow RPCs, before
         // releasing the catalog fence or retiring their effect transports.
-        let _active = self.request_admissions.clone().read_owned().await;
+        let active = self.request_admissions.clone().read_owned().await;
         drop(catalog);
-        self.registry
+        let worker = self
+            .registry
             .workers
             .get(&digest)
-            .ok_or_else(|| Status::not_found("Worker artifact"))?
-            .fetch(scope, request)
-            .await
-            .map(Response::new)
+            .cloned()
+            .ok_or_else(|| Status::not_found("Worker artifact"))?;
+        Self::own_request(async move {
+            let _active = active;
+            worker.fetch(scope, request).await.map(Response::new)
+        })
+        .await
     }
     async fn delete_worker(
         &self,
