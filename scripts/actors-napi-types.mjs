@@ -1,2 +1,3 @@
 import { renderTypes } from "./filesystem-napi-types.mjs";
+export { preflight } from "./filesystem-napi-types.mjs";
 export const render = (_, root) => renderTypes(root, "actors", ["acyclic-actors-napi"]);

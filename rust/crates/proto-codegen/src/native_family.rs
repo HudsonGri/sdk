@@ -228,6 +228,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "rust/crates/proto-codegen",
         "scripts/generate-proto.mjs",
         "scripts/native-family.mjs",
+        "scripts/napi-cli.mjs",
         "scripts/build-native-family.mjs",
         "scripts/assemble-native-family.mjs",
         "scripts/archive-utils.mjs",

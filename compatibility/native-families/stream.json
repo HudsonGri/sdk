@@ -51,6 +51,7 @@
     "scripts/generate-stream-token-operations.mjs",
     "scripts/generate.mjs",
     "scripts/generated-bindings.mjs",
+    "scripts/napi-cli.mjs",
     "scripts/native-family.mjs",
     "scripts/package-closure.mjs",
     "scripts/stream-napi-types.mjs",

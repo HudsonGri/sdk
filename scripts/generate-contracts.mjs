@@ -66,6 +66,8 @@ try {
   report.phase = "imports";
   saveReport();
   const generators = await Promise.all(modules.map(name => import(`./${name}`)));
+  // Admit generator dependencies before any Rust compilation starts.
+  for (const generator of generators) await generator.preflight?.();
   const targets = generators.flatMap(generator => generator.rust ?? []);
   const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport);
   let targetIndex = 0;

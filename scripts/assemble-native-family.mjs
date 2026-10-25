@@ -9,6 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { isDeepStrictEqual } from "node:util";
 import { tarEntries } from "./archive-utils.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
+import { napiCli } from "./napi-cli.mjs";
 
 /** Shared exact assembly specialized only by immutable Rust-generated family facts. */
 export function createNativeAssembler(family) {
@@ -105,7 +106,7 @@ async function sourceNativeInventory(sourceSha, { refresh = false } = {}) {
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-actors-inventory-"));
   try {
     await writeFile(join(temporary, "package.json"), JSON.stringify({ ...manifest, napi: { ...manifest.napi, targets } }));
-    const { NapiCli, parseTriple } = await import("@napi-rs/cli");
+    const { NapiCli, parseTriple } = napiCli();
     const npmDir = join(temporary, "npm");
     await new NapiCli().createNpmDirs({ cwd: temporary, npmDir });
     const companions = await Promise.all(targets.map(async selected_target => {
@@ -351,7 +352,7 @@ async function main() {
     // the Rust-qualified target set without a second checked-in target list.
     const napiConfig = { ...manifest, napi: { ...manifest.napi, targets } };
     await writeFile(napiConfigPath, `${JSON.stringify(napiConfig, null, 2)}\n`);
-    const { NapiCli } = await import("@napi-rs/cli");
+    const { NapiCli } = napiCli();
     const napi = new NapiCli();
     const npmDir = join(temporary, "npm");
     await napi.createNpmDirs({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir });
