@@ -18,6 +18,7 @@ test('affected PR checks every target and docs, including test=false fuzz binari
     chmodSync(join(cwd,'bin/bun'),0o755);
     writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),readFileSync(join(scripts,'gate-test-runner.sh')));
     writeFileSync(join(cwd,'scripts/gate-windows-features.sh'),'#!/bin/bash\necho "windows-features $*" >> calls\nexit "${WINDOWS_FEATURE_RC:-0}"\n');
+    writeFileSync(join(cwd,'scripts/buildbox/coordinator/gate-clippy.py'),readFileSync(join(scripts,'buildbox/coordinator/gate-clippy.py')));
     const cargo=join(cwd,'bin/cargo');
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls

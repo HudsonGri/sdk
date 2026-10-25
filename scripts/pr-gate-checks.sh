@@ -148,13 +148,7 @@ echo "GATE_CLIPPY rc=$(cat "$gate_output/.gate-clippy.rc")"
 # Preserve every clippy diagnostic and its cause without confusing the test
 # compile verdict with the separate clippy ratchet.
 sed 's/^/GATE_CLIPPY_RAW /' "$gate_output/.gate-clippy.out"
-grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' "$gate_output/.gate-clippy.out" | sed -E 's/:[0-9]+:[0-9]+: (warning|error): /: /' \
-  | sort | uniq -c | sed -E 's/^ *([0-9]+) /GATE_CLIPPY_FINDING \1 /'
-grep -aE '^error(\[E[0-9]+\])?: ' "$gate_output/.gate-clippy.out" | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
-if [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ] && ! grep -aqE '^error(\[E[0-9]+\])?: |\.rs:[0-9]+:[0-9]+: error' "$gate_output/.gate-clippy.out"; then
-  echo 'GATE_CLIPPY_ERROR clippy exited without parsed diagnostics'
-  cat "$gate_output/.gate-clippy.out"
-fi
+python3 scripts/buildbox/coordinator/gate-clippy.py emit "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")" || exit 224
 if [ -n "$features" ]; then
   wait "$features"
   printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"

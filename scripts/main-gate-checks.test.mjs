@@ -16,6 +16,8 @@ test("main covers targets and docs, retains errors and never retries failures", 
     writeFileSync(join(cwd, "bin/bun"), '#!/bin/bash\necho "format $*" >> calls\nexit "${FORMAT_RC:-0}"\n');
     chmodSync(join(cwd, "bin/bun"), 0o755);
     writeFileSync(join(cwd, "scripts/gate-test-runner.sh"), readFileSync(join(dirname(runner), "gate-test-runner.sh")));
+    mkdirSync(join(cwd, "scripts/buildbox/coordinator"), { recursive: true });
+    writeFileSync(join(cwd, "scripts/buildbox/coordinator/gate-clippy.py"), readFileSync(join(dirname(runner), "buildbox/coordinator/gate-clippy.py")));
     const cargo = join(cwd, "bin", "cargo");
     writeFileSync(cargo, `#!/bin/bash
 echo "$*" >> calls

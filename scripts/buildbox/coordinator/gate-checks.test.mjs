@@ -20,6 +20,7 @@ function fixture(run) {
   };
   try {
     put('scripts/buildbox/coordinator/gate-checks.sh', checker);
+    put('scripts/buildbox/coordinator/gate-clippy.py', readFileSync(join(coordinator, 'gate-clippy.py')));
     put('scripts/pr-gate-checks.sh', pr);
     put('scripts/gate-rust-format.sh', readFileSync(join(scripts, 'gate-rust-format.sh')));
     put('bin/bun', '#!/bin/bash\nexit 0\n');
