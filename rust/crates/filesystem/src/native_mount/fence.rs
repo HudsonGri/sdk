@@ -76,6 +76,13 @@ pub(super) struct MountDestinationGuard {
     )>,
 }
 
+enum FenceAcquisition {
+    Mount,
+    Recovery,
+    #[cfg(any(target_os = "macos", test))]
+    ExistingRecovery,
+}
+
 /// The accepted fence path can spend only its supplied, original-ledger credit.
 pub(super) struct NativeFenceReleaseWork<'a> {
     pub(super) credit: &'a crate::NativeWorkReservation,
@@ -177,36 +184,15 @@ impl MountDestinationGuard {
             return Err(NativeMountError::InvalidDestination);
         }
         let name = Self::fence_name(destination, None, false, native, true)?;
-        let work = &mut &*native;
-        let registry = registry::shared(work)?;
-        let held = registry.lock(work)?;
-        let file = crate::native_host::open_leaf(
-            &registry.directory,
-            Path::new(
-                std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
-            ),
-            &crate::native_host::NativeOpenOptions::ReadWrite,
-            work,
-        )?;
-        *guard = Some(Self {
-            file: Some(file.into()),
-            lock_path: PathBuf::new(),
-            parent_directory: None,
-            fence_name: Some(name),
-            registry_file: Some(crate::sync::native::Arc::clone(&registry)),
-            cleanup_name: None,
-            birth_cleanup: None,
-            destination_cleanup: None,
-        });
-        lock_mount_file_with_work(
-            guard
-                .as_ref()
-                .and_then(|guard| guard.file.as_ref())
-                .ok_or(NativeMountError::ControlPending)?,
-            false,
-            work,
-        )?;
-        held.unlock(work)
+        Self::acquire_files(
+            None,
+            None,
+            None,
+            name,
+            FenceAcquisition::ExistingRecovery,
+            guard,
+            native,
+        )
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -311,9 +297,13 @@ impl MountDestinationGuard {
         Self::acquire_files(
             cleanup_name,
             birth_cleanup,
-            parent_directory,
+            Some(parent_directory),
             name,
-            recovery,
+            if recovery {
+                FenceAcquisition::Recovery
+            } else {
+                FenceAcquisition::Mount
+            },
             guard,
             native,
         )
@@ -471,34 +461,41 @@ impl MountDestinationGuard {
     fn acquire_files(
         cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
         birth_cleanup: Option<crate::NativeWorkReservation>,
-        parent_directory: cap_std::fs::Dir,
+        parent_directory: Option<cap_std::fs::Dir>,
         name: [u8; NATIVE_FENCE_NAME_BYTES],
-        recovery: bool,
+        acquisition: FenceAcquisition,
         guard: &mut Option<Self>,
         native: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let work = &mut &*native;
         let registry = registry::shared(work)?;
         let held = registry.lock(work)?;
+        let options = match acquisition {
+            #[cfg(any(target_os = "macos", test))]
+            FenceAcquisition::ExistingRecovery => crate::native_host::NativeOpenOptions::ReadWrite,
+            FenceAcquisition::Mount | FenceAcquisition::Recovery => {
+                crate::native_host::NativeOpenOptions::ReadWriteCreate
+            }
+        };
         let file = crate::native_host::open_leaf(
             &registry.directory,
             Path::new(
                 std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
             ),
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            &options,
             work,
         )?;
         let admitted = Self {
             file: Some(file.into()),
             lock_path: PathBuf::new(),
-            parent_directory: Some(parent_directory),
+            parent_directory,
             fence_name: Some(name),
             registry_file: Some(crate::sync::native::Arc::clone(&registry)),
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,
         };
-        if recovery {
+        if !matches!(acquisition, FenceAcquisition::Mount) {
             // Even a post-open lock failure belongs to the preborn admin
             // worker. It closes the actual file using its original credit.
             *guard = Some(admitted);
