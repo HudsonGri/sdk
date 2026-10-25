@@ -370,42 +370,7 @@ impl ProjectionCore {
     ) -> Result<T, i32> {
         result.map_err(|failure| {
             let errno = callback_errno(&failure.0);
-            let reply_only = match &failure.0 {
-                NativeMountError::Io(_) => true,
-                NativeMountError::Source(_)
-                | NativeMountError::Demand(crate::DemandError::Mount(_)) => {
-                    let error = match &failure.0 {
-                        NativeMountError::Source(error) => error,
-                        NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-                            error.as_ref()
-                        }
-                        _ => unreachable!(),
-                    };
-                    match error.semantic_error() {
-                        MountSourceError::Io(_, _)
-                        | MountSourceError::Stale
-                        | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => true,
-                        MountSourceError::NamespacePath(
-                            crate::kernel::NamespacePathError::Work(_)
-                            | crate::kernel::NamespacePathError::Cancelled
-                            | crate::kernel::NamespacePathError::AllocationFailed,
-                        ) => false,
-                        _ => !matches!(
-                            errno,
-                            libc::EIO
-                                | libc::ENOMEM
-                                | libc::ECANCELED
-                                | libc::ESTALE
-                                | libc::EACCES
-                        ),
-                    }
-                }
-                NativeMountError::Materialization(error) => {
-                    !crate::native_mount::native_materialization_failure_is_fatal(error)
-                }
-                _ => false,
-            };
-            if !reply_only {
+            if crate::native_mount::outcome::callback_is_terminal(&failure.0) {
                 self.retain_handler_failure(failure);
             }
             errno

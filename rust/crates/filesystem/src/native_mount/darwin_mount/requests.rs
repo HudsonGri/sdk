@@ -2,42 +2,7 @@ use super::*;
 
 pub(in crate::native_mount) use crate::native_mount::callback_errno;
 
-pub(super) fn fatal(error: &NativeMountError) -> bool {
-    match error {
-        NativeMountError::Work(_)
-        | NativeMountError::Demand(crate::DemandError::Cancelled)
-        | NativeMountError::ControlPending
-        | NativeMountError::CallbackDenied { .. }
-        | NativeMountError::DriverPanicked { .. } => true,
-        NativeMountError::Materialization(error) => {
-            crate::native_mount::native_materialization_failure_is_fatal(error)
-        }
-        NativeMountError::Source(_) | NativeMountError::Demand(crate::DemandError::Mount(_)) => {
-            let error = match error {
-                NativeMountError::Source(error) => error,
-                NativeMountError::Demand(crate::DemandError::Mount(error)) => error.as_ref(),
-                _ => unreachable!(),
-            };
-            match error.semantic_error() {
-                MountSourceError::NativeWork(error) => {
-                    crate::native_mount::native_materialization_failure_is_fatal(error)
-                }
-                MountSourceError::WorkspaceCause(error) => {
-                    crate::native_mount::native_workspace_failure_is_fatal(error)
-                }
-                MountSourceError::Cancelled
-                | MountSourceError::Work(_)
-                | MountSourceError::OriginalSnapshotUnavailable
-                | MountSourceError::Indeterminate
-                | MountSourceError::Filesystem(
-                    crate::FsError::Cancelled(_) | crate::FsError::Work(_),
-                ) => true,
-                _ => false,
-            }
-        }
-        _ => false,
-    }
-}
+pub(in crate::native_mount) use crate::native_mount::outcome::callback_is_terminal as fatal;
 
 pub(super) fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
     if address == 0 {

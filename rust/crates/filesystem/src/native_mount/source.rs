@@ -611,35 +611,6 @@ impl From<std::io::Error> for MountSourceError {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -> bool {
-    if let crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) = error {
-        return native_materialization_failure_is_fatal(error);
-    }
-    matches!(
-        crate::workspace::workspace_bounded_error(error),
-        Some(crate::WorkspaceError::Work(_) | crate::WorkspaceError::Cancelled(_))
-    ) || matches!(
-        error,
-        crate::WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
-            | crate::WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed)
-    )
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn native_materialization_failure_is_fatal(
-    error: &crate::NativeTreeMaterializationError,
-) -> bool {
-    matches!(
-        error,
-        crate::NativeTreeMaterializationError::Work(_)
-            | crate::NativeTreeMaterializationError::Cancelled
-            | crate::NativeTreeMaterializationError::AllocationFailed(_)
-            | crate::NativeTreeMaterializationError::ExternalMutation
-            | crate::NativeTreeMaterializationError::AllocationChanged { .. }
-    )
-}
-
 impl From<NativeMountStartupAdmissionError> for MountSourceError {
     fn from(error: NativeMountStartupAdmissionError) -> Self {
         match error {

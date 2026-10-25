@@ -1,6 +1,9 @@
 //! One semantic classification for every native namespace adapter.
 use super::{MountSourceError, NativeMountError};
 
+mod retention;
+pub(super) use retention::callback_is_terminal;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NativeFailure {
     AccessDenied,
@@ -59,7 +62,8 @@ pub(super) fn source_failure(error: &MountSourceError) -> NativeFailure {
         MountSourceError::NotDirectory => F::NotDirectory,
         MountSourceError::IsDirectory => F::IsDirectory,
         MountSourceError::DirectoryNotEmpty => F::DirectoryNotEmpty,
-        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => F::Invalid,
+        MountSourceError::Invalid(_) => F::Invalid,
+        MountSourceError::NamespacePath(error) => namespace_failure(error),
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => F::Unsupported,
         MountSourceError::Stale => F::Stale,
         MountSourceError::Cancelled => F::Cancelled,
@@ -69,6 +73,16 @@ pub(super) fn source_failure(error: &MountSourceError) -> NativeFailure {
         MountSourceError::WorkspaceCause(error) => workspace_failure(error),
         MountSourceError::Filesystem(error) => filesystem_failure(error),
         _ => F::Io,
+    }
+}
+
+fn namespace_failure(error: &crate::kernel::NamespacePathError) -> NativeFailure {
+    use crate::kernel::NamespacePathError;
+    match error {
+        NamespacePathError::Cancelled => NativeFailure::Cancelled,
+        NamespacePathError::AllocationFailed => NativeFailure::Allocation,
+        NamespacePathError::Work(_) => NativeFailure::Io,
+        _ => NativeFailure::Invalid,
     }
 }
 
@@ -103,23 +117,16 @@ pub(super) fn workspace_failure(error: &crate::WorkspaceError) -> NativeFailure 
     use NativeFailure as F;
     match error {
         WorkspaceError::AccessDenied => F::AccessDenied,
-        WorkspaceError::Cancelled(_)
-        | WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => {
-            F::Cancelled
-        }
+        WorkspaceError::Cancelled(_) => F::Cancelled,
         WorkspaceError::Filesystem(error) => filesystem_failure(error),
         WorkspaceError::NotFound => F::NotFound,
         WorkspaceError::NotDirectory => F::NotDirectory,
         WorkspaceError::IsDirectory => F::IsDirectory,
         WorkspaceError::DirectoryNotEmpty => F::DirectoryNotEmpty,
-        WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => F::Io,
-        WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed) => {
-            F::Allocation
+        WorkspaceError::NamespacePath(error) => namespace_failure(error),
+        WorkspaceError::Name(_) | WorkspaceError::Path(_) | WorkspaceError::NotRegularFile => {
+            F::Invalid
         }
-        WorkspaceError::Name(_)
-        | WorkspaceError::Path(_)
-        | WorkspaceError::NotRegularFile
-        | WorkspaceError::NamespacePath(_) => F::Invalid,
         WorkspaceError::ReadLimitExceeded => F::TooLarge,
         WorkspaceError::StaleGeneration
         | WorkspaceError::StaleSource

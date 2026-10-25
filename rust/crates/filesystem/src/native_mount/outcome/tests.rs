@@ -37,6 +37,88 @@ fn cancelled() -> crate::CancellationError {
 }
 
 #[test]
+fn namespace_causes_keep_their_semantics_through_source_and_workspace() {
+    use crate::kernel::NamespacePathError as E;
+    for (error, expected) in [
+        (E::Cancelled, NativeFailure::Cancelled),
+        (E::AllocationFailed, NativeFailure::Allocation),
+        (E::Work(crate::WorkError::Overflow), NativeFailure::Io),
+        (E::TooDeep, NativeFailure::Invalid),
+    ] {
+        assert_eq!(
+            source_failure(&MountSourceError::NamespacePath(error.clone())),
+            expected
+        );
+        assert_eq!(
+            workspace_failure(&crate::WorkspaceError::NamespacePath(error.clone())),
+            expected
+        );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        check_callback(
+            &NativeMountError::Source(MountSourceError::NamespacePath(error)),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn request_refusals_do_not_invalidate_the_original_invocation() {
+    for source in [
+        MountSourceError::AccessDenied,
+        MountSourceError::ReadOnly,
+        MountSourceError::NotFound,
+        MountSourceError::Stale,
+        MountSourceError::WorkspaceCause(crate::WorkspaceError::AccessDenied),
+        MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale),
+    ] {
+        assert!(!callback_is_terminal(&NativeMountError::Source(source)));
+    }
+}
+
+#[test]
+fn typed_invocation_failures_are_terminal_in_every_transport() {
+    use crate::kernel::NamespacePathError as E;
+    for namespace in [
+        E::Cancelled,
+        E::AllocationFailed,
+        E::Work(crate::WorkError::Overflow),
+    ] {
+        for source in [
+            MountSourceError::NamespacePath(namespace.clone()),
+            MountSourceError::WorkspaceCause(crate::WorkspaceError::NamespacePath(
+                namespace.clone(),
+            )),
+        ] {
+            assert!(callback_is_terminal(&NativeMountError::Demand(
+                crate::DemandError::Mount(Box::new(source))
+            )));
+        }
+    }
+    for cause in [
+        crate::NativeTreeMaterializationError::Cancelled,
+        crate::NativeTreeMaterializationError::OriginalWorkPoisoned,
+        crate::NativeTreeMaterializationError::MissingCustody,
+    ] {
+        assert!(callback_is_terminal(&NativeMountError::Materialization(
+            cause
+        )));
+    }
+}
+
+#[test]
+fn failed_completion_is_not_erased_by_a_reply_only_primary() {
+    let failure = NativeMountError::Source(MountSourceError::MutationFinalization {
+        primary: Box::new(Some(MountSourceError::NotFound)),
+        cleanup: Box::new(Some(crate::DemandError::Cancelled)),
+        custody: None,
+    });
+    assert_eq!(callback_failure(&failure), NativeFailure::NotFound);
+    assert!(callback_is_terminal(&failure));
+    #[cfg(target_os = "macos")]
+    assert!(crate::native_mount::darwin_mount::fatal(&failure));
+}
+
+#[test]
 fn cancellation_is_not_staleness_in_any_error_transport() {
     let sources = [
         MountSourceError::Cancelled,
