@@ -1,5 +1,169 @@
 use super::*;
 
+#[tokio::test]
+async fn immutable_content_readers_recheck_live_trust_without_reauthenticating() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+    let file = storage
+        .stage(
+            OperationId::new(),
+            "content.txt",
+            b"original",
+            "text/plain",
+            "content.txt",
+        )
+        .await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
+    let exact = storage.content_verifier.reference_reader(&file, &io)?;
+    let range = acyclic_fs::ByteRange {
+        offset: 1,
+        length: 3,
+    };
+    let (result, signatures) = acyclic_test_support::differential::observe_async(async {
+        assert_eq!(storage.read(&file).await?.as_ref(), b"original");
+        assert_eq!(
+            storage
+                .content_reader()
+                .read_range(&file, range, None, None)?
+                .await?
+                .as_ref(),
+            b"rig"
+        );
+        assert_eq!(
+            exact.read(&file, 1024, None, None)?.await?.as_ref(),
+            b"original"
+        );
+        Ok::<_, Error>(())
+    })
+    .await;
+    result?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert!(
+        signatures.is_empty(),
+        "content reader reauthenticated its immutable owner"
+    );
+    storage.issuer.revoke_workload(storage.owner_scope())?;
+    assert!(matches!(
+        storage.read(&file).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        storage
+            .content_reader()
+            .read_range(&file, range, None, None)?
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        exact.read(&file, 1024, None, None)?.await,
+        Err(Error::Unauthorized(_))
+    ));
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn exact_content_handles_retain_their_own_original_custody() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+    let file = storage
+        .stage(
+            OperationId::new(),
+            "owned.txt",
+            b"body",
+            "text/plain",
+            "owned.txt",
+        )
+        .await?;
+    let token = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let root = FilesystemContentVerifier::new(
+        storage.host.clone(),
+        &storage.verifier(),
+        &storage.scope,
+        1024,
+        Some(&io),
+    )?;
+    drop(io);
+    let root_bytes = work.live_allocation_bytes() - baseline;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let before_operations = work.receipt().allocation_operations;
+    let exact = root.reference_reader(&file, &io)?;
+    let exact_operations = work.receipt().allocation_operations - before_operations;
+    let with_exact = work.live_allocation_bytes();
+    assert!(
+        with_exact
+            >= baseline
+                + root_bytes
+                + file.logical_owned_bytes()?
+                + acyclic_native_runtime::arc_allocation_bytes::<
+                    FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>,
+                >() as u64
+    );
+    drop(io);
+    assert_eq!(
+        work.live_allocation_bytes(),
+        with_exact,
+        "exact handle lost its allocation custody with the caller"
+    );
+    drop(root);
+    assert_eq!(
+        work.live_allocation_bytes(),
+        with_exact,
+        "exact handle lost its authenticated owner"
+    );
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let nested = exact.reference_reader(&file, &io)?;
+    drop(io);
+    drop(exact);
+    assert!(work.live_allocation_bytes() > baseline + root_bytes);
+    nested.require_native_work(&work)?;
+    let foreign = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign_io = crate::filesystem::PreparationIo::from_native_work(&foreign)?;
+    assert!(matches!(
+        nested.reference_reader(&file, &foreign_io),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    drop(nested);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    for cut in 0..exact_operations {
+        let mut budget = FINITE_CONTENT_BUDGET;
+        budget.allocation_operations = before_operations + cut;
+        let limited = acyclic_fs::NativeMaterializationWork::new(budget, &token)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&limited)?;
+        let root = FilesystemContentVerifier::new(
+            storage.host.clone(),
+            &storage.verifier(),
+            &storage.scope,
+            1024,
+            Some(&io),
+        )?;
+        drop(io);
+        let before = limited.live_allocation_bytes();
+        let io = crate::filesystem::PreparationIo::from_native_work(&limited)?;
+        let result = root.reference_reader(&file, &io);
+        assert!(
+            result.is_err(),
+            "allocation cut {cut} unexpectedly admitted an exact handle"
+        );
+        drop(result);
+        drop(io);
+        assert_eq!(
+            limited.live_allocation_bytes(),
+            before,
+            "allocation cut {cut} leaked custody"
+        );
+    }
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // Recovery authenticates the publication operation, not the later head or
