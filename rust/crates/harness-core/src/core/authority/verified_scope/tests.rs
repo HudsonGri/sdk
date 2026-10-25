@@ -302,10 +302,7 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
         u64::MAX,
         &mut Some(&mut probe.history_io()),
     )?;
-    assert_eq!(
-        probe.owned_bytes()?,
-        grant.logical_owned_bytes()?
-    );
+    assert_eq!(probe.owned_bytes()?, grant.logical_owned_bytes()?);
     let required = budget.allocation_operations - probe.remaining()?.allocation_operations;
     assert!(required > 3, "grant did not reach the metadata copies");
     let custody = probe.guard_owned(grant.logical_owned_bytes()?)?;

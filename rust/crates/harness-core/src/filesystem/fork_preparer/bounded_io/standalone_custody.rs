@@ -22,10 +22,7 @@ impl StandaloneCustody {
         }
     }
 
-    pub(super) fn split_off(
-        &self,
-        bytes: u64,
-    ) -> std::result::Result<Self, acyclic_fs::WorkError> {
+    pub(super) fn split_off(&self, bytes: u64) -> std::result::Result<Self, acyclic_fs::WorkError> {
         // Moving custody changes owners, never the common live-byte count.
         // Use the same lock as record/drop so a concurrent charge cannot be lost.
         let state = self

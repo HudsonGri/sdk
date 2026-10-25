@@ -10,11 +10,11 @@ use std::sync::Mutex;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod charge_tests;
 mod codec;
-#[cfg(all(test, not(acyclic_harness_loom)))]
-mod custody_tests;
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
 mod codec_properties;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod custody_tests;
 mod history;
 mod quota;
 mod records;
@@ -87,7 +87,9 @@ impl PreparationIo {
                 .map(PreparationCustody::Standalone)
                 .map_err(|error| acyclic_fs::FsError::from(error).into()),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { .. } => self.take_native_custody(bytes).map(PreparationCustody::Native),
+            Self::Native { .. } => self
+                .take_native_custody(bytes)
+                .map(PreparationCustody::Native),
         }
     }
 

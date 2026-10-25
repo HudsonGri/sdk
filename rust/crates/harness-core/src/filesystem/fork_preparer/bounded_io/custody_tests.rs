@@ -19,13 +19,20 @@ fn output_custody_outlives_both_observers_and_releases_the_shared_ledger() -> Re
             let output = HistoryIo::take_owned_custody(&mut attempt.history_io(), 8)?;
             assert_eq!(attempt.owned_bytes()?, 0);
             output
-        }.expect("preparation observers supply owned custody");
+        }
+        .expect("preparation observers supply owned custody");
         assert_eq!(io.owned_bytes()?, 0);
-        assert_eq!(io.remaining()?.peak_allocation_bytes, budget.peak_allocation_bytes - 8);
+        assert_eq!(
+            io.remaining()?.peak_allocation_bytes,
+            budget.peak_allocation_bytes - 8
+        );
         cancellation.cancel();
         drop(output);
         // Retirement must still work after cancellation and observer destruction.
-        assert_eq!(io.remaining()?.peak_allocation_bytes, budget.peak_allocation_bytes);
+        assert_eq!(
+            io.remaining()?.peak_allocation_bytes,
+            budget.peak_allocation_bytes
+        );
     }
     Ok(())
 }

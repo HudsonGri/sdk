@@ -30,7 +30,8 @@ mod tests {
             b"authenticated",
             Arc::new(7),
             &mut Some(&mut io.history_io()),
-        )?.expect("native observer transfers custody");
+        )?
+        .expect("native observer transfers custody");
         assert!(work.receipt().allocation_operations > before.allocation_operations);
         assert!(work.live_allocation_bytes() > live);
         assert!(
