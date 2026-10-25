@@ -76,5 +76,10 @@ function ensureInstalled() {
   return installed;
 }
 
-if (require.main === module) ensureInstalled();
+if (require.main === module) {
+  try { ensureInstalled(); } catch (error) {
+    console.error(`step=bootstrap native package: ${error.message}; recovery: npm install -g --allow-scripts=@acyclic-labs/plugin @acyclic-labs/plugin`);
+    process.exitCode = 1;
+  }
+}
 module.exports = { durableRename };

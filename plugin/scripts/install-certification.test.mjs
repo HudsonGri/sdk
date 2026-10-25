@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { plugin, target, packageVersion, scratch, fixture, install } from "./install-fixture.mjs";
+import { plugin, target, packageVersion, fixture } from "./install-fixture.mjs";
 const { blake3 } = createRequire(join(plugin, "tests/hosts/package.json"))("@noble/hashes/blake3");
-test("installer publishes the exact release certification receipt", () => {
+test("installer publishes the exact release certification receipt", async () => {
   const value = fixture();
-  const state = mkdtempSync(join(scratch, "state-"));
+  const state = join(value.root, "state");
   try {
     const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
     const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
@@ -46,8 +46,8 @@ test("installer publishes the exact release certification receipt", () => {
         ? { LOCALAPPDATA: state }
         : { XDG_STATE_HOME: state }),
     };
-    const installed = install(value.bin, null, null, environment);
-    assert.equal(installed.status, 0, installed.stderr);
+    const installed = await value.install(null, null, environment);
+    assert.equal(installed.code, 0, installed.stderr);
     const destination = process.platform === "win32"
       ? join(state, "Acyclic", "state-v5", "certification", name)
       : join(state, "acyclic", "state-v5", "certification", name);
@@ -60,17 +60,16 @@ test("installer publishes the exact release certification receipt", () => {
       { ...receipt, executable_blake3: "0".repeat(64) },
     ]) {
       writeFileSync(join(certification, name), JSON.stringify(invalid));
-      const rejected = install(value.bin, null, null, {
+      const rejected = await value.install(null, null, {
         ...environment, ACYCLIC_INSTALL_TEST_CERTIFICATION: "1",
       });
-      assert.notEqual(rejected.status, 0, "incomplete or unbound certification accepted");
+      assert.notEqual(rejected.code, 0, "incomplete or unbound certification accepted");
       assert.match(rejected.stderr, /step=verify installed release certification/);
       assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
     }
   } catch (cause) {
     throw new Error("step=verify installer certification publication; recovery: with the admitted ACYCLIC_TEST_BINARY, run node --test --test-reporter=tap --test-concurrency=1 plugin/scripts/install-certification.test.mjs", { cause });
   } finally {
-    rmSync(value.root, { recursive: true, force: true });
-    rmSync(state, { recursive: true, force: true });
+    await value.close();
   }
 });
