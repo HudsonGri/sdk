@@ -1,9 +1,11 @@
 """Caller rlimit parity across the real scope, daemon and namespace boundaries."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import resource
 import signal
+import select
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,46 @@ class LimitTests(unittest.TestCase):
         self.fixture=KernelFixture()
 
     def tearDown(self):self.fixture.close()
+    def test_generated_watcher_joins_exact_owner_exit_and_actual_old_sleep_retains_the_lease(self):
+        source=(HERE/'buildbox.mjs').read_text()
+        current=source[source.index('p_birth=$(python3'):source.index('# Last use for bb-target-prune')]
+        former=HERE/'fixtures/cpu-leases/former-watcher.txt'
+        info=json.loads(former.with_name('former-watcher.origin.json').read_text())
+        self.assertEqual(hashlib.sha256(former.read_bytes()).hexdigest(),info['sha256'])
+        for negative in [False,True]:
+            with self.subTest(negative=negative), tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+                root=Path(temporary);fifo=root/'release';os.mkfifo(fifo)
+                release=os.open(fifo,os.O_RDWR)
+                block=former.read_text() if negative else current
+                block=block.replace("${idleOk ? 'false' : 'true'}",'false').replace('${maxSec}','10800').replace('${Math.round(maxSec / 60)}','180').replace('\\${','${')
+                block=block.replace('/home/var/bin/admission_policy.py',str(HERE/'admission_policy.py'))
+                if negative:block=block.replace('do sleep 30','do echo WATCH_READY; sleep 30')
+                # Instrument only the sampling boundary. The production
+                # helper still receives its actual 30-second sample interval.
+                driver='''python3(){
+ if [ "${2:-}" = watch-wait ] && [ "${5:-}" = 30 ]; then echo WATCH_READY; fi
+ command python3 "$@"
+}
+'''+f'J={root}/job;touch "$J.hb"\n'+f'{sys.executable} -c '+__import__('shlex').quote('import sys;print("OWNER_READY",flush=True);sys.stdin.buffer.read(1)')+f' < {fifo} &\np=$!\n'+block+'\necho WATCHER_JOINED\nexit "$rc"\n'
+                process=subprocess.Popen(['bash','-c',driver],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+                try:
+                    while True:
+                        self.assertTrue(select.select([process.stdout],[],[],3)[0],'watcher did not reach real sampling boundary')
+                        line=process.stdout.readline()
+                        self.assertTrue(line,'watcher exited before sampling')
+                        if line==b'WATCH_READY\n':break
+                    os.write(release,b'x')
+                    if negative:
+                        with self.assertRaises(subprocess.TimeoutExpired):process.communicate(timeout=.1)
+                        os.killpg(process.pid,signal.SIGKILL)
+                        process.communicate(timeout=3)
+                    else:
+                        output,error=process.communicate(timeout=3)
+                        self.assertEqual(process.returncode,0,error.decode())
+                        self.assertIn(b'WATCHER_JOINED',output)
+                finally:
+                    os.close(release)
+                    if process.poll() is None:os.killpg(process.pid,signal.SIGKILL);process.communicate(timeout=3)
     def test_public_entries_capture_before_nodes_libuv_and_nested_entry_recaptures(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root=Path(temporary);(root/'jobs').mkdir()

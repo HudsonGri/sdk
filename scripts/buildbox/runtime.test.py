@@ -1,5 +1,6 @@
 import contextlib
 import fcntl
+from functools import cached_property
 import importlib.util
 import io
 import json
@@ -24,19 +25,31 @@ def load(name):
 admit=load('bb-admit');job=load('bb-job');pruner=load('prune-wt-sdk');exports=load('job_exports')
 
 class RuntimeTests(unittest.TestCase):
+    @cached_property
+    def cpu_fixture(self):
+        from cpu_test_fixture import KernelFixture
+        return KernelFixture()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
-        from cpu_test_fixture import KernelFixture
-        self.cpu_fixture=KernelFixture()
         shutil.copyfile(Path(job.cpu_leases.__file__),self.d/'cpu_leases.py')
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         shutil.copyfile(HERE/'bb-cache.py',self.d/'bb-cache.py')
         self.real_home=self.d/'home'
         self.real_home.mkdir()
     def tearDown(self):
-        self.cpu_fixture.close()
+        if 'cpu_fixture' in self.__dict__:self.cpu_fixture.close()
         self.temp.cleanup()
+
+    def test_kernel_fixture_is_allocated_only_for_real_admission_controls(self):
+        # Former eager setup provisioned and retired a root/kernel fixture for
+        # every pure policy and HOME control. It fails this assertion.
+        self.assertNotIn('cpu_fixture',self.__dict__)
+        with patch('cpu_test_fixture.KernelFixture') as factory:
+            self.assertIs(self.cpu_fixture,factory.return_value)
+            self.assertIs(self.cpu_fixture,factory.return_value)
+            factory.assert_called_once_with()
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
         shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
