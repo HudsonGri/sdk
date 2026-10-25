@@ -76,6 +76,7 @@ pub(super) struct MountDestinationGuard {
     )>,
 }
 
+#[derive(Clone, Copy)]
 enum FenceAcquisition {
     Mount,
     Recovery,
@@ -495,7 +496,17 @@ impl MountDestinationGuard {
             birth_cleanup,
             destination_cleanup: None,
         };
-        if !matches!(acquisition, FenceAcquisition::Mount) {
+        if matches!(acquisition, FenceAcquisition::Mount) {
+            lock_mount_file_with_work(
+                admitted
+                    .file
+                    .as_ref()
+                    .ok_or(NativeMountError::ControlPending)?,
+                false,
+                work,
+            )?;
+            *guard = Some(admitted);
+        } else {
             // Even a post-open lock failure belongs to the preborn admin
             // worker. It closes the actual file using its original credit.
             *guard = Some(admitted);
@@ -507,16 +518,6 @@ impl MountDestinationGuard {
                 false,
                 work,
             )?;
-        } else {
-            lock_mount_file_with_work(
-                admitted
-                    .file
-                    .as_ref()
-                    .ok_or(NativeMountError::ControlPending)?,
-                false,
-                work,
-            )?;
-            *guard = Some(admitted);
         }
         #[cfg(test)]
         super::tests::fence::before_registry_unlock(native);
