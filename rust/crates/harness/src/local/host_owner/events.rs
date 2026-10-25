@@ -16,10 +16,9 @@ impl HostWorkspaceOwner {
         ) {
             return Ok(json!({}));
         }
-        let task = if let Some(task) = input.get("task") {
+        let (task, managed) = if let Some(task) = input.get("task") {
             let task = serde_json::from_value(task.clone()).map_err(storage)?;
-            self.require_native(task).await?;
-            task
+            (task, self.require_native(task).await?.is_some())
         } else {
             let session = input
                 .get("session_id")
@@ -29,8 +28,16 @@ impl HostWorkspaceOwner {
                 b"acyclic.native-root/v1\0",
                 &serde_json::to_vec(&(host, session)).map_err(storage)?,
             );
-            self.local.admit_host_task(operation, host, session).await?
+            (
+                self.local.admit_host_task(operation, host, session).await?,
+                false,
+            )
         };
+        // A managed boundary is an acknowledgement, not view admission or
+        // capture. Only its physical process owner can retire and capture it.
+        if managed && matches!(event, "Stop" | "SessionEnd") {
+            return Ok(json!({}));
+        }
         self.attach(task).await?;
         if event == "NativeSession" {
             if let Some(session) = input.get("native_session") {
@@ -78,12 +85,6 @@ impl HostWorkspaceOwner {
             );
         }
         if matches!(event, "Stop" | "SessionEnd") {
-            // A managed child is captured only by the physical process owner,
-            // after its host and every descendant exit. Its Stop hook itself
-            // still runs inside that tree and cannot prove process retirement.
-            if self.require_native(task).await?.is_some() {
-                return Ok(json!({}));
-            }
             let attached = self.attached(task)?;
             attached
                 .workspace
