@@ -170,6 +170,24 @@ class ClippyDiagnostics(unittest.TestCase):
         source = (HERE/'pr-gate.sh').read_text()
         self.assertIn('exec python3 .gate-clippy.py run bash .gate-pr-payload.sh', source)
 
+    def test_real_base_journal_and_recovery_findings_are_not_pr_regressions(self):
+        captured = (FIXTURES/'main-32b799-complete-clippy.txt').read_text()
+        self.base.write_text(captured)
+        self.log.write_text(captured)
+        self.assertEqual(self.verdict().returncode, 0)
+        for path in ['tests/execution_journal.rs:', 'context_continuation/recovery.rs:']:
+            self.assertIn(path, captured)
+        # The captured damaged stream is exactly what the old public reader
+        # accepted as a baseline. It blames unchanged main for its lost bytes.
+        self.base.write_text((FIXTURES/'main-32b799-truncated-clippy.txt').read_text())
+        self.assertEqual(self.verdict().returncode, 4, 'partial baseline defers, never blames the PR')
+        old = self.root/'old.sh'
+        shutil.copyfile(FIXTURES/'authority104-old-results.sh.txt', old)
+        result = subprocess.run(['bash', str(old), str(self.log), str(self.base)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('tests/execution_journal.rs:', result.stdout)
+        self.assertIn('context_continuation/recovery.rs:', result.stdout)
+
     def test_payload_adapter_preserves_bytes_and_refuses_missing_tools(self):
         driver = self.root/'bytes.py'
         driver.write_text("import os\nos.write(1, bytes([255])+b' captured child output\\nGATE_DONE rc=0\\n')\n")

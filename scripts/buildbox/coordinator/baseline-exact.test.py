@@ -233,6 +233,30 @@ class ExactBaselineTests(unittest.TestCase):
                     self.assertIn('exact-base test comparison step unavailable', result.stdout)
                     self.assertIn('recovery command:', result.stdout)
 
+    def test_same_failures_on_exact_base_are_excluded_by_name(self):
+        source = (HERE/'pr-gate.sh').read_text()
+        block = source[source.index('pr_fails=$('):]
+        captured = (FIXTURES/'baseline-delta-pr.txt').read_text()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); (root/'.codex-fleet').mkdir()
+            (root/'flakes').write_text('')
+            (root/'checks.sh').write_text('exit 0\n')
+            (root/'failed-tests.sh').write_text((HERE/'failed-tests.sh').read_text())
+            block = block.replace('Q:/lanes/failed-tests.sh', str(root/'failed-tests.sh')).replace(
+                'Q:/lanes/flakes.txt', str(root/'flakes')).replace('Q:/lanes/gate-checks-verdict.sh', str(root/'checks.sh'))
+            pr = root/'pr.log'; pr.write_text(captured)
+            base = root/(CAPTURED_HEAD+'.log')
+            for negative in [False, True]:
+                # Mutate only which captured result the base supplies. Actual
+                # named failures present on both sides must yield no new test.
+                base.write_text((FIXTURES/'baseline-delta-main.txt').read_text() if negative else captured)
+                header = f'rc=101;n=1;base={CAPTURED_HEAD};W=fixture;log={pr};base_log={base};test_base_log="";clippy_base={base};features_base={base}\n'
+                result = subprocess.run(['bash','-c',header+block],env={**os.environ,'HOME':str(root)},capture_output=True,text=True)
+                self.assertEqual(result.returncode,1 if negative else 0,result.stdout+result.stderr)
+                self.assertIn('GATE_COMPARISON_BASE base='+CAPTURED_HEAD,(pr).read_text())
+                if not negative:
+                    self.assertIn('2 pre-existing on main',result.stdout)
+
     def test_both_phase_emitters_separate_an_unterminated_diagnostic(self):
         lint = next(line for line in PHASES.splitlines() if line.startswith('GATE_CLIPPY_FINDING ')).split('GATE_FEATURES rc=')[0]
         for name in ['main-gate-checks.sh','pr-gate-checks.sh']:
