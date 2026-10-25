@@ -2,7 +2,7 @@
 use super::*;
 use crate::package::harness::worker::DriveState;
 use crate::{
-    approvals::{ApprovalReviewFile, Approver, RuleVerdict},
+    approvals::{ApprovalReviewFile, Approver, RuleVerdict, NextStage, next_stage, request_id, review_key, fingerprint},
     interaction::{ApprovalDecisionFile, Interaction},
     runtime::{TaskStateProvider, ToolPolicy},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile},
@@ -33,35 +33,6 @@ enum Stage {
     Parent(TaskId),
 }
 
-fn request_id(file: &FileValue) -> Result<&Component> {
-    match &file.key {
-        FileKey::Task {
-            file: TaskFile::ApprovalRequest(request),
-            ..
-        } => Ok(request),
-        _ => Err(Error::Invalid("not an approval request".into())),
-    }
-}
-fn review_key(request: &FileValue, principal: &str) -> Result<FileKey> {
-    let FileKey::Task { task, .. } = &request.key else {
-        return Err(Error::Invalid("not a task file".into()));
-    };
-    Ok(FileKey::Task {
-        task: task.clone(),
-        file: TaskFile::ApprovalReview {
-            request: request_id(request)?.clone(),
-            principal: Component::new(ApprovalDecisionFile::principal_file(principal))?,
-        },
-    })
-}
-fn fingerprint(request: &FileValue) -> Result<String> {
-    let descriptor = crate::conversation::FileDescriptor::from_bytes(
-        &request.bytes,
-        "application/json",
-        &mut None,
-    )?;
-    Ok(ApprovalDecisionFile::new("binding", descriptor.sha256(), 1, false, None)?.request_sha256)
-}
 fn pending(files: &BTreeMap<FileKey, FileValue>) -> Vec<&FileValue> {
     files
         .values()
@@ -80,24 +51,6 @@ fn pending(files: &BTreeMap<FileKey, FileValue>) -> Vec<&FileValue> {
             })
         })
         .collect()
-}
-
-fn retained_review(
-    file: Option<&FileValue>,
-    expected: &ApprovalReviewFile,
-) -> Result<Option<ApprovalReviewFile>> {
-    file.map(|file| {
-        let review: ApprovalReviewFile = serde_json::from_slice(&file.bytes).map_err(storage)?;
-        if review.principal != expected.principal
-            || review.request_sha256 != expected.request_sha256
-            || review.policy_digest != expected.policy_digest
-            || review.stage != expected.stage
-        {
-            return Err(Error::Conflict("approval review binding changed".into()));
-        }
-        Ok(review)
-    })
-    .transpose()
 }
 
 async fn publish_review(
@@ -236,7 +189,7 @@ impl LocalHarness {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         let mut start = 0;
         loop {
-            let next = connection::next_stage(
+            let next = next_stage(
                 &self.approval_policy,
                 digest,
                 admission.parent,
@@ -244,13 +197,13 @@ impl LocalHarness {
                 files,
                 start,
             )?;
-            let connection::NextStage::Review {
+            let NextStage::Review {
                 approver,
                 expected,
                 retained,
             } = next
             else {
-                let connection::NextStage::Decided(review) = next else {
+                let NextStage::Decided(review) = next else {
                     unreachable!()
                 };
                 return Ok(Some(Stage::Automatic(review)));

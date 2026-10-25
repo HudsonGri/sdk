@@ -8,6 +8,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod chain;
+pub use chain::{NextStage, fingerprint, next_stage, request_id, review_key};
+
 mod selectors;
 pub use selectors::ApprovalSelector;
 
