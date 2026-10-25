@@ -20,8 +20,7 @@ fn ordinary_watch_retains_preparation_custody_through_shutdown()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
-    let mut options = measured_watch_options();
-    options.recursive = cfg!(target_os = "macos");
+    let options = measured_watch_options();
     let opened = NativeWatch::open_with_profile_measured(
         directory.path(),
         FilesystemProfile::Portable,
@@ -55,8 +54,7 @@ fn ordinary_poll_returns_storage_custody_after_producer_shutdown()
     let birth_cancel = CancellationToken::new();
     let birth = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &birth_cancel)
         .map_err(|(error, _)| error)?;
-    let mut options = measured_watch_options();
-    options.recursive = cfg!(target_os = "macos");
+    let options = measured_watch_options();
     // An explicit native constructor keeps this oracle independent of ordinary
     // startup custody, so each public entry point has its own causal control.
     let mut watch = NativeWatch::open_with_profile_with_native_work(

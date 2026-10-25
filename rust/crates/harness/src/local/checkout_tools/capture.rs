@@ -35,9 +35,9 @@ impl Cursor {
         // the checkout. Register directories once; subsequent commands consume
         // only push hints on this persistent watcher.
         let mut options = NativeWatchOptions::new(config.limits);
-        // FSEvents observes the whole root recursively. Inotify and Windows
-        // register individual directories as capture discovers them.
-        options.recursive = cfg!(target_os = "macos");
+        // The shared watcher admits each discovered directory. A producer
+        // which already covers the subtree reuses its existing registration.
+        options.recursive = false;
         let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
         watcher
