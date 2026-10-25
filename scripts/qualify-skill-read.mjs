@@ -2,22 +2,22 @@
 // Exercise lazy discovery and its authenticated read through the shipping binary.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Processes } from "./graphcoder-e2e/process.mjs";
+import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 
 const [binary, mode = "prompt", selection = "valid"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
 assert.ok(["prompt", "jsonl"].includes(mode));
 assert.ok(["valid", "ungranted", "unretained"].includes(selection));
 const begin = performance.now(), processes = new Processes();
-const root = mkdtempSync(join(process.env.E2E_SCRATCH_ROOT ?? tmpdir(), "skill-read-"));
+const root = scratchDirectory("skill-read-");
 const workspace = join(root, "workspace"), settings = join(root, "settings");
 const skillDirectory = join(settings, ".agents/skills/private-skill");
-for (const path of [workspace, skillDirectory, ...[".codex", "local", "roaming"].map(p => join(settings, p))]) mkdirSync(path, { recursive: true });
+for (const path of [workspace, skillDirectory]) mkdirSync(path, { recursive: true });
 const body = "---\nname: private-skill\ndescription: LAZY_READ_DISCOVERY\n---\nPRIVATE_SKILL_BODY_λ\n";
 writeFileSync(join(skillDirectory, "SKILL.md"), body);
 const captures = [], requests = [];
@@ -81,9 +81,7 @@ writeFileSync(catalog, JSON.stringify({ fixture: { adapter: "responses", authent
   base_url: `http://127.0.0.1:${server.address().port}`,
   models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
-const env = { ...process.env, HOME: settings, USERPROFILE: settings, CODEX_HOME: join(settings, ".codex"),
-  APPDATA: join(settings, "roaming"), LOCALAPPDATA: join(settings, "local"),
-  XDG_CONFIG_HOME: settings, XDG_DATA_HOME: settings, XDG_CACHE_HOME: settings, XDG_STATE_HOME: settings };
+const env = environment(settings);
 for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
 let passed = false;
 const timer = setTimeout(() => rejectFailure(new Error("skill read exceeded the existing nine-second work budget")), 9000);

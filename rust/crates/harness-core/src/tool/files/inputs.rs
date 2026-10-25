@@ -39,7 +39,7 @@ pub enum ReadOutput {
     /// Exact text of an already resolved file.
     File(String),
     /// Exact text and reference of a newly resolved source.
-    Source(ReadSourceResult),
+    Source(Box<ReadSourceResult>),
 }
 
 /// Exact immutable UTF-8 file read arguments.

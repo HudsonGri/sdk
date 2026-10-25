@@ -90,30 +90,7 @@ impl FileTool {
                 let file = match input.0 {
                     ReadInput::File(file) => file,
                     ReadInput::Source(source) => {
-                        crate::executor::with_history_io(io, |history| {
-                            source.source.validate(history)?;
-                            if source.source.path.len() > scope.limits().path_bytes
-                                || maximum == 0
-                                || maximum == u64::MAX
-                            {
-                                return Err(error(
-                                    crate::wire::ErrorCode::Invalid,
-                                    "private source exceeds original task bounds",
-                                ));
-                            }
-                            if !crate::core::directory_read_granted_with_work(
-                                scope.grants(),
-                                &source.source.root.volume,
-                                &source.source.root.directory,
-                                history,
-                            )? {
-                                return Err(error(
-                                    crate::wire::ErrorCode::Unauthorized,
-                                    "file tool requires original private source grant",
-                                ));
-                            }
-                            Ok(())
-                        })?;
+                        validate_lazy_source(scope, &source.source, maximum, io, error)?;
                         return Ok((None, input.1));
                     }
                 };
@@ -179,4 +156,34 @@ impl FileTool {
         };
         Ok((Some(file), custody))
     }
+}
+
+fn validate_lazy_source(
+    scope: &RuntimeScope,
+    source: &crate::context::PinnedContextPath,
+    maximum: u64,
+    io: Option<&crate::executor::PreparationIo>,
+    reject: impl Fn(crate::wire::ErrorCode, &'static str) -> Error,
+) -> Result<()> {
+    crate::executor::with_history_io(io, |history| {
+        source.validate(history)?;
+        if source.path.len() > scope.limits().path_bytes || maximum == 0 || maximum == u64::MAX {
+            return Err(reject(
+                crate::wire::ErrorCode::Invalid,
+                "private source exceeds original task bounds",
+            ));
+        }
+        if !crate::core::directory_read_granted_with_work(
+            scope.grants(),
+            &source.root.volume,
+            &source.root.directory,
+            history,
+        )? {
+            return Err(reject(
+                crate::wire::ErrorCode::Unauthorized,
+                "file tool requires original private source grant",
+            ));
+        }
+        Ok(())
+    })
 }
