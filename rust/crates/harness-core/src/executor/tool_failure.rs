@@ -85,6 +85,7 @@ impl ToolFailureCause {
         name: &str,
         reason: ToolFailureKind,
         error: &Error,
+        context: Option<&str>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         let class = ToolErrorClass::of(error);
@@ -96,6 +97,7 @@ impl ToolFailureCause {
                     reason,
                     class,
                     error,
+                    context,
                 })
             ),
             work,
@@ -138,6 +140,7 @@ struct RefusalText<'a> {
     reason: ToolFailureKind,
     class: ToolErrorClass,
     error: &'a Error,
+    context: Option<&'a str>,
 }
 
 impl fmt::Display for RefusalText<'_> {
@@ -147,7 +150,11 @@ impl fmt::Display for RefusalText<'_> {
             reason,
             class,
             error,
+            context,
         } = self;
+        if let Some(context) = context {
+            return write!(formatter, "tool `{name}` refused the call ({}): {context}: {}", class.label(), CauseText(*error));
+        }
         match reason {
             ToolFailureKind::Unavailable => write!(
                 formatter,
@@ -258,7 +265,7 @@ mod tests {
             // Unknown tool, schema-invalid arguments, policy denial: refused before dispatch.
             ToolFailureKind::Unavailable
             | ToolFailureKind::InvalidInput
-            | ToolFailureKind::Refused => ToolFailureCause::refusal(name, kind, error, &mut None),
+            | ToolFailureKind::Refused => ToolFailureCause::refusal(name, kind, error, None, &mut None),
             // Executor error, output contract, projection and publication after a start.
             ToolFailureKind::ExecutorRejected
             | ToolFailureKind::InvalidOutput
