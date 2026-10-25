@@ -282,17 +282,14 @@ fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() ->
 }
 
 #[test]
-fn malformed_and_oversized_inputs_fail_before_any_workspace_request() {
+fn malformed_and_oversized_inputs_fail_before_any_workspace_request() -> Result<()> {
     assert!(read_json(&b"not-json"[..]).is_err());
     assert!(read_json(vec![b' '; 65_537].as_slice()).is_err());
     assert_eq!(
-        read_json(&b"{\"cwd\":\"fixture\"}"[..])
-            .unwrap()
-            .get("cwd")
-            .unwrap()
-            .clone(),
-        "fixture"
+        read_json(&b"{\"cwd\":\"fixture\"}"[..])?.get("cwd"),
+        Some(&json!("fixture"))
     );
+    Ok(())
 }
 
 #[test]
@@ -300,18 +297,12 @@ fn failed_lifecycle_coordination_stops_without_changing_native_permissions() {
     let denied = hook_failure("SessionStart", "owner unavailable");
     assert!(denied.get("hookSpecificOutput").is_none());
     assert_eq!(
-        hook_failure("Stop", "owner unavailable")
-            .get("continue")
-            .unwrap()
-            .clone(),
-        false
+        hook_failure("Stop", "owner unavailable").get("continue"),
+        Some(&json!(false))
     );
     assert_eq!(
-        hook("codex", "SessionStart", json!({}))
-            .get("continue")
-            .unwrap()
-            .clone(),
-        false
+        hook("codex", "SessionStart", json!({})).get("continue"),
+        Some(&json!(false))
     );
 }
 
@@ -342,5 +333,43 @@ fn claude_installation_preserves_foreign_hooks_permissions_and_unrelated_setting
     assert_eq!(document, original);
     let mut invalid = json!({"hooks":{"Stop":"foreign"}});
     assert!(install::update_claude(&mut invalid, &executable.to_string_lossy(), true).is_err());
+    Ok(())
+}
+
+#[test]
+fn claude_installer_uses_shared_private_publication() -> Result<()> {
+    installer_publication("claude-code", "settings.json")
+}
+
+#[test]
+fn pi_installer_uses_shared_private_publication() -> Result<()> {
+    installer_publication("pi", "acyclic.ts")
+}
+
+fn installer_publication(host: &str, name: &str) -> Result<()> {
+    let fixture = tempfile::tempdir()?;
+    let path = fixture.path().join(name);
+    install::write_config(host, &path, b"original", None)?;
+    // End inspection custody before the next publisher takes the destination.
+    assert!(acyclic_native_runtime::private_file::is_private(
+        &acyclic_native_runtime::private_file::open(&path, false)?
+    )?);
+    install::write_config(host, &path, b"replacement", Some(b"original"))?;
+    assert_eq!(std::fs::read(&path)?, b"replacement");
+    assert!(acyclic_native_runtime::private_file::open(&path, false).is_ok());
+    let error = install::write_config(host, &path, b"stale", Some(b"original"))
+        .err()
+        .ok_or("changed host settings must not be overwritten")?;
+    assert!(error.to_string().contains("source changed"));
+    let error = error.to_string();
+    let (_, recovery) = error
+        .split_once("recovery argv: ")
+        .ok_or("installer refusal omitted its exact recovery arguments")?;
+    assert_eq!(
+        serde_json::from_str::<Value>(recovery)?,
+        json!(["acyclic", "install", host, "--settings", path])
+    );
+    assert_eq!(std::fs::read(&path)?, b"replacement");
+    assert_eq!(std::fs::read_dir(fixture.path())?.count(), 1);
     Ok(())
 }

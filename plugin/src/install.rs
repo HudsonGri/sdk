@@ -90,6 +90,7 @@ fn install_claude(args: &[String], executable: &Path, install: bool) -> Result<(
         .unwrap_or(json!({}));
     update_claude(&mut document, &executable.to_string_lossy(), install)?;
     write_config(
+        "claude-code",
         &path,
         &serde_json::to_vec_pretty(&document)?,
         original.as_deref(),
@@ -119,7 +120,7 @@ fn install_pi(args: &[String], package: &Path, executable: &Path, install: bool)
             "\"__ACYCLIC_EXECUTABLE__\"",
             &serde_json::to_string(&executable)?,
         );
-        write_config(&path, source.as_bytes(), original.as_deref())?;
+        write_config("pi", &path, source.as_bytes(), original.as_deref())?;
     } else if original.is_some() {
         fs::remove_file(&path)?;
     }
@@ -165,40 +166,37 @@ fn optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn write_config(path: &Path, bytes: &[u8], original: Option<&[u8]>) -> Result<()> {
+pub(super) fn write_config(
+    host: &str,
+    path: &Path,
+    bytes: &[u8],
+    original: Option<&[u8]>,
+) -> Result<()> {
     if original == Some(bytes) {
         return Ok(());
     }
+    let recovery = serde_json::to_string(&("acyclic", "install", host, "--settings", path))?;
     if optional(path)?.as_deref() != original {
-        return Err("native host configuration changed during installation; retry".into());
+        return Err(
+            format!("install configuration: source changed; recovery argv: {recovery}").into(),
+        );
     }
     let parent = path.parent().ok_or("configuration path needs a parent")?;
-    fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".acyclic-install-{}.next",
-        acyclic_harness::OperationId::new()
-    ));
-    let result = (|| -> Result<()> {
-        use std::io::Write as _;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        acyclic_native_runtime::durable_rename(
-            &temporary,
-            path,
-            acyclic_native_runtime::RenameMode::Replace,
-            None,
-        )?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
+    let failure = |step: &str, error: io::Error| {
+        format!("install configuration: {step}: {error}; recovery argv: {recovery}")
+    };
+    fs::create_dir_all(parent).map_err(|error| failure("create settings directory", error))?;
+    use std::io::Write as _;
+    let mut staged =
+        acyclic_native_runtime::private_file::StagedFile::create(parent, ".acyclic-install-")
+            .map_err(|error| failure("create private staging file", error))?;
+    staged
+        .as_file_mut()
+        .write_all(bytes)
+        .map_err(|error| failure("write staged settings", error))?;
+    Ok(staged
+        .publish(path, acyclic_native_runtime::RenameMode::Replace)
+        .map_err(|error| failure("publish staged settings", error))?)
 }
 
 pub(super) fn update_claude(document: &mut Value, executable: &str, install: bool) -> Result<()> {
