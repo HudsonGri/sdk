@@ -28,7 +28,7 @@ fn output_custody_outlives_observer(measured: bool) -> Result<()> {
         assert_eq!(attempt.owned_bytes()?, 0);
         output
     }
-    .expect("preparation observers supply owned custody");
+    .ok_or_else(|| io.invalid("preparation observer must transfer custody"))?;
     assert_eq!(io.owned_bytes()?, 0);
     assert_eq!(
         io.remaining()?.peak_allocation_bytes,
@@ -38,7 +38,13 @@ fn output_custody_outlives_observer(measured: bool) -> Result<()> {
     drop(output);
     // Retirement must still work after cancellation and observer destruction.
     let live = match &io {
-        PreparationIo::Owned { work, .. } => work.lock().unwrap().1.as_ref().unwrap().live_bytes(),
+        PreparationIo::Owned { work, .. } => work
+            .lock()
+            .map_err(|_| io.invalid("fixture ledger is poisoned"))?
+            .1
+            .as_ref()
+            .map_err(|error| acyclic_fs::FsError::from(*error))?
+            .live_bytes(),
         #[cfg(not(target_arch = "wasm32"))]
         PreparationIo::Native { .. } => unreachable!("standalone fixture"),
     };
