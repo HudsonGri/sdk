@@ -12,17 +12,17 @@ import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 const [binary, mode = "prompt", selection = "valid"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
 assert.ok(["prompt", "jsonl"].includes(mode));
-assert.ok(["valid", "boundary", "ungranted", "unretained"].includes(selection));
-const validRead = selection === "valid" || selection === "boundary";
+assert.ok(["valid", "escaped", "ungranted", "unretained"].includes(selection));
+const validRead = selection === "valid" || selection === "escaped";
 const begin = performance.now(), processes = new Processes();
 const root = scratchDirectory("skill-read-");
 const workspace = join(root, "workspace"), settings = join(root, "settings");
 const skillDirectory = join(settings, ".agents/skills/private-skill");
 for (const path of [workspace, skillDirectory]) mkdirSync(path, { recursive: true });
 const header = "---\nname: private-skill\ndescription: LAZY_READ_DISCOVERY\n---\nPRIVATE_SKILL_BODY_λ\n";
-// Match the shipping file bound without changing it. Escapes make the result
-// envelope larger than the source; the independent render bound must own it.
-const body = selection === "boundary" ? header + '"'.repeat(65536 - Buffer.byteLength(header)) : header;
+// Exercise a larger body whose escaped JSON exceeds its source length. Exact
+// caller file/render bounds are covered by the shared executor's boundary test.
+const body = selection === "escaped" ? header + '"'.repeat(65536 - Buffer.byteLength(header)) : header;
 writeFileSync(join(skillDirectory, "SKILL.md"), body);
 const captures = [], requests = [];
 let step = 0, source, rejectFailure;
