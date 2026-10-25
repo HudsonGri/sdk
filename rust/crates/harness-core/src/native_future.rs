@@ -24,6 +24,7 @@ impl<'a, T> NativeFutureBundle<'a, T> {
     }
 
     /// Admits the concrete allocation before invoking its builder.
+    #[inline(never)]
     pub fn new<F>(work: &NativeMaterializationWork, build: impl FnOnce() -> F) -> Result<Self>
     where
         F: Future<Output = Result<T>> + Send + 'a,

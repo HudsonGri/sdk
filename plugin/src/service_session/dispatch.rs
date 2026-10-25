@@ -9,8 +9,12 @@ impl PiSession {
         original_native_work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
     ) -> impl std::future::Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send + 'a
     {
-        async move {
-            let work = Self::query_work(original_native_work)?;
+        let frame = Self::query_work(original_native_work).and_then(|work| {
+            let original = work.clone();
+            // This is the one native dispatch body, including recovery and tool
+            // follow-ups. Retain its actual heap frame on the original query's
+            // ledger before construction; callers only hold the shared bundle.
+            acyclic_harness::NativeFutureBundle::new(&original, || async move {
             let mut issued_caller = None;
             let mut caller_task = None;
             let mut operation_result = None;
@@ -280,6 +284,8 @@ impl PiSession {
                 encoded.1.absorb(&mut custody)?;
             }
             Ok((encoded.0, Some(encoded.1)))
-        }
+            })
+        });
+        async move { frame?.await }
     }
 }
