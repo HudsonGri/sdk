@@ -151,11 +151,6 @@ async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()
             .await
             .map_err(|failure| map_error(failure.error))?
             .value;
-        let mut transaction = workspace
-            .begin_transaction(acyclic_fs::IdempotencyKey::new(), budget, &cancellation)
-            .await
-            .map_err(|failure| map_error(failure.error))?
-            .value;
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = if native_adapter {
@@ -163,6 +158,11 @@ async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()
         } else {
             PreparationIo::from_budget(budget, &cancellation)?
         };
+        let mut transaction = io.sdk(
+            workspace
+                .begin_transaction(acyclic_fs::IdempotencyKey::new(), &io, &cancellation)
+                .await,
+        )?;
         let error = MemoryHost::stage_publication_batch(
             &mut transaction,
             &[WorkspaceMutation::PutFile {
@@ -175,8 +175,11 @@ async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()
         )
         .await
         .expect_err("a directory cannot become a regular file");
-        assert!(matches!(error, Error::NativeWorkspace { source, .. }
-            if matches!(*source, WorkspaceError::NotRegularFile)));
+        assert!(
+            matches!(error, Error::NativeWorkspace { source, .. }
+                if matches!(*source, WorkspaceError::NotRegularFile)),
+            "measured publication formatted away its workspace cause"
+        );
     }
     Ok(())
 }
