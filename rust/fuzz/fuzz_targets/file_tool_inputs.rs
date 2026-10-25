@@ -1,7 +1,7 @@
 //! Exercises the production file-tool and protected file-metadata codecs.
 #![no_main]
 
-use acyclic_harness::{conversation::FileRef, tool::files::ReadFileInput, tools::ShellInput};
+use acyclic_harness::{conversation::FileRef, tool::files::ReadInput, tools::ShellInput};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
@@ -12,10 +12,10 @@ fuzz_target!(|bytes: &[u8]| {
         assert_eq!(restored.as_ref(), Some(&input));
         let _ = input.validate();
     }
-    if let Ok(input) = serde_json::from_slice::<ReadFileInput>(bytes) {
+    if let Ok(input) = serde_json::from_slice::<ReadInput>(bytes) {
         let restored = serde_json::to_vec(&input)
             .ok()
-            .and_then(|encoded| serde_json::from_slice::<ReadFileInput>(&encoded).ok());
+            .and_then(|encoded| serde_json::from_slice::<ReadInput>(&encoded).ok());
         assert_eq!(restored.as_ref(), Some(&input));
     }
     if let Ok(metadata) = serde_json::from_slice::<FileRef>(bytes) {

@@ -1,6 +1,6 @@
 use super::*;
 /// Semantic kind of a provider-owned reference.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     /// Mutable workspace head.
@@ -22,7 +22,8 @@ pub enum ResourceKind {
 }
 
 /// Bounded opaque identity whose interpretation belongs only to its provider.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ResourceRef {
     pub(super) kind: ResourceKind,
     pub(super) provider: ProviderRef,

@@ -19,6 +19,21 @@ macro_rules! typed_reference {
         pub struct $name(pub(super) ResourceRef);
         crate::core::ownership::owned_tuple!($name, (resource));
 
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({
+                    "allOf": [
+                        generator.subschema_for::<ResourceRef>(),
+                        {"type":"object", "properties":{"kind":{"const":ResourceKind::$kind}}}
+                    ]
+                })
+            }
+        }
+
         impl $name {
             $($constructor)*
 

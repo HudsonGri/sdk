@@ -1,5 +1,47 @@
 use super::*;
 
+/// The read tool accepts either an immutable file or a lazy discovery source.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ReadInput {
+    /// An already resolved immutable file, with optional byte range.
+    File(ReadFileInput),
+    /// Resolve and read a discovered private source through its owner.
+    Source(ReadSourceInput),
+}
+
+/// Lazy source arguments. A source is a volume path, never a host filesystem path.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSourceInput {
+    /// Copy the complete source from discovered skill metadata.
+    pub source: crate::context::PinnedContextPath,
+}
+
+/// Canonical source resolution retains the actual immutable reference and text.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSourceResult {
+    /// Owner-resolved immutable source.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+    pub file: FileRef,
+    /// Exact verified UTF-8 body.
+    pub text: String,
+}
+
+/// The resolved-file read keeps its string result; lazy reads retain provenance.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ReadOutput {
+    /// Exact text of an already resolved file.
+    File(String),
+    /// Exact text and reference of a newly resolved source.
+    Source(ReadSourceResult),
+}
+
 /// Exact immutable UTF-8 file read arguments.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

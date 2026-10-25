@@ -29,6 +29,9 @@ impl ToolProjection for FileProjection {
     ) -> Result<(Value, crate::NativeCustody)> {
         match *self {
             Self::Read(mode) => {
+                if invocation.arguments.get("source").is_some() {
+                    return project_source(invocation, result, mode, work);
+                }
                 let text = decode::<String>(&result.value, work)?;
                 if mode == schema::ProjectionMode::Full {
                     return schema::project_json(&text.0, work);
@@ -114,4 +117,50 @@ impl ToolProjection for FileProjection {
             }
         }
     }
+}
+
+fn project_source(
+    invocation: &ToolInvocation,
+    result: &ToolResult,
+    mode: ProjectionMode,
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    let input = decode::<ReadSourceInput>(&invocation.arguments, work)?;
+    let result = decode::<ReadSourceResult>(&result.value, work)?;
+    if result.0.file.volume() != &input.0.source.root.volume
+        || result.0.file.path() != input.0.source.path
+    {
+        return Err(super::executor::rejection(
+            work,
+            "source read result has another identity",
+        ));
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let owned_io = work
+        .map(crate::executor::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let io = owned_io.as_ref();
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let io: Option<&crate::executor::PreparationIo> = None;
+    crate::executor::with_history_io(io, |history| {
+        input.0.source.validate(history)?;
+        result
+            .0
+            .file
+            .descriptor()
+            .verify(result.0.text.as_bytes(), history)
+    })?;
+    if mode == ProjectionMode::Full {
+        return schema::project_json(&result.0, work);
+    }
+    schema::summary_reference(
+        &result.0.file,
+        160,
+        format_args!(
+            "Read {} UTF-8 bytes from the pinned private source. Exact text remains in the canonical tool result.",
+            result.0.text.len()
+        ),
+        work,
+    )
 }

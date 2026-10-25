@@ -62,6 +62,17 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   expect(body.bytes).toEqual(bytes);
   expect(typeof body.file.descriptor.byte_length).toBe("number");
   expect(reads).toBe(3);
+  for (const mutation of ["volume", "path"]) {
+    await expect(contracts.readPinnedContextPath(snapshot.skills[0]!.source, { ...reader,
+      async read(query) {
+        const result = await reader.read(query);
+        const file = structuredClone(result.file);
+        if (mutation === "path") file.path += "-substituted";
+        else file.volume.id += "-substituted";
+        return { ...result, file };
+      },
+    }, 512)).rejects.toThrow();
+  }
   const part = { kind: "file" as const, file: body.file, policy: "reference" as const };
   const base = { messages: [{ role: "user" as const, content: part },
     { role: "user" as const, content: [part] }],

@@ -1,5 +1,21 @@
 use super::*;
 
+/// Model-facing lazy catalog and its single portable access contract.
+#[derive(Serialize)]
+pub(super) struct SkillCatalogMessage<'a> {
+    instructions: &'static str,
+    skills: &'a [SkillMetadata],
+}
+
+impl<'a> SkillCatalogMessage<'a> {
+    pub(super) fn new(skills: &'a [SkillMetadata]) -> Self {
+        Self {
+            instructions: "These are available skills. When a skill applies or is requested, load its body with the read tool using {\"source\": <the complete source object from that skill>}, then follow its instructions. The source path belongs to a private volume: resolve it with read, not a shell command or a workspace-relative path. Bodies are loaded only when selected.",
+            skills,
+        }
+    }
+}
+
 /// Frontmatter only; the body is not fetched or injected by discovery.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,30 +62,21 @@ impl SkillMetadata {
         #[cfg(not(feature = "filesystem"))]
         let content_io = None;
         let source = &self.source;
-        let (file, bytes, hold) = reader
-            .read_private_path(
+        let (_file, bytes, hold) = crate::conversation::verified_private_path(
+            reader,
+            (
                 &source.root.volume,
                 &source.root.directory,
                 &source.path,
                 Some(&source.generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess {
-                    ceiling: None,
-                    io: content_io,
-                },
-            )?
-            .await?;
-        if file.volume() != &source.root.volume
-            || file.path() != source.path
-            || bytes.len() as u64 > maximum_bytes
-        {
-            return Err(stock_boundary(
-                io,
-                ErrorCode::Storage,
-                "pinned skill reader returned another file",
-            ));
-        }
-        crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
+            ),
+            maximum_bytes,
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: content_io,
+            },
+        )
+        .await?;
         crate::model::charge_items(io, bytes.len() as u64)?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?;
@@ -229,7 +236,7 @@ pub(super) fn skill_text_native(
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let bytes = match crate::executor::json::json_bytes_bounded(
-        &skills,
+        &SkillCatalogMessage::new(skills),
         bounds,
         Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| observer.codec_charge(charge),

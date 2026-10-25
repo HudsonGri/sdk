@@ -123,6 +123,10 @@ impl NativeSkills {
         Ok(())
     }
 
+    pub(crate) fn owns_path(&self, volume: &VolumeRef, path: &str) -> bool {
+        volume == &self.journal && path.starts_with("inputs/skills/")
+    }
+
     pub(crate) fn matches(
         &self,
         volume: &VolumeRef,
@@ -220,9 +224,6 @@ impl NativeSkills {
             return Ok(None);
         }
         let digest = hex::encode(generation.as_resource().key());
-        if path != format!("inputs/skills/{digest}/SKILL.md") {
-            return Ok(None);
-        }
         let Some(retained) = self.records.read(self.directory.clone(), digest).await? else {
             return Ok(None);
         };

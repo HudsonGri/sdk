@@ -4,7 +4,8 @@ use crate::{
     tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
-            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, WriteFileInput,
+            EditFileInput, FileProjection, FileResult, FileTool, ReadInput, ReadOutput,
+            WriteFileInput,
         },
         schema::{self, ProjectionMode},
     },
@@ -122,13 +123,13 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-6",
-    description: "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+    revision: "portable-7",
+    description: "Read exact UTF-8: pass file for an immutable reference with optional [start, end) byte range, or source copied from discovered skill metadata to resolve its private body. Private sources are not shell paths",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
-    input: schema::input::<ReadFileInput>,
-    output: schema::output::<String>,
-    projection_schema: ProjectionMode::schema::<String>,
+    input: schema::input::<ReadInput>,
+    output: schema::output::<ReadOutput>,
+    projection_schema: ProjectionMode::schema::<ReadOutput>,
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
 };

@@ -144,6 +144,21 @@ export async function exerciseDiscovery(engine, label, reopen) {
     await rejects(() => reopenedWorkspace.generation(foreignGeneration.id), "foreign generation accepted");
     const body = await contracts.readPinnedContextPath(restored.skills[0].source, reader, 200_000);
     assert(new TextDecoder().decode(body.bytes).includes("SECRET BODY"), "old body did not survive retained restart value");
+    for (const mutation of ["volume", "path", "body"]) {
+      await rejects(() => contracts.readPinnedContextPath(restored.skills[0].source, {
+        ...reader,
+        async read(query) {
+          const result = await reader.read(query);
+          if (mutation === "body") result.bytes[0] ^= 1;
+          else {
+            result.file = structuredClone(result.file);
+            if (mutation === "path") result.file.path += "-substituted";
+            else result.file.volume.id += "-substituted";
+          }
+          return result;
+        },
+      }, 200_000), `shared read accepted substituted ${mutation} through ${label}`);
+    }
     await rejects(() => contracts.readPinnedContextPath(restored.skills[0].source, reader, 512), "oversize body accepted");
     await rejects(() => contracts.captureDiscoveredContext(declaration, {
       ...reader, async list(query) {

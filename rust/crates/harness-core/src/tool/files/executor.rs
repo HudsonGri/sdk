@@ -168,7 +168,28 @@ impl FileTool {
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
 
-        let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        let input = decode::<ReadInput>(&invocation.arguments, work)?;
+        let input = match input.0 {
+            ReadInput::File(file) => (file, input.1),
+            ReadInput::Source(source) => {
+                let maximum = context
+                    .effective_scope()
+                    .limits()
+                    .file_bytes
+                    .min(context.effective_scope().limits().render_bytes);
+                let (file, bytes) = context
+                    .task()
+                    .read_pinned_source(&source.source, context.effective_scope(), maximum, io)
+                    .await?;
+                let text = read_text(bytes.as_ref(), false, work)?;
+                let (value, custody) = value(
+                    &ReadSourceResultRef { file: &file, text },
+                    context.effective_scope().limits().file_bytes,
+                    work,
+                )?;
+                return Ok((ToolResult { value }, custody));
+            }
+        };
         let length = input.0.file.descriptor().byte_length();
         let empty = input.0.range.is_some_and(|range| range.start == range.end);
         let bytes = if let Some(range) = input.0.range {
@@ -287,10 +308,14 @@ impl ToolExecutor for FileTool {
             .as_ref()
             .map(FileRef::path)
             .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+            .or_else(|| invocation.arguments.get("source")?.get("path")?.as_str())
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
+            if matches!(self, Self::Read) && file.is_none() {
+                return context.task().require_original_native_work(work);
+            }
             return if self.is_read() {
                 context.authorize_file_read_with_native_work(
                     file.as_ref().ok_or_else(|| Error::NativeBoundary {
@@ -427,8 +452,14 @@ impl ToolExecutor for FileTool {
     }
 }
 
+#[derive(Serialize)]
+struct ReadSourceResultRef<'a> {
+    file: &'a FileRef,
+    text: &'a str,
+}
+
 /// Only content/selection rejections use this path. Accounting and provider errors propagate.
-fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+pub(super) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
     if work.is_some() {
         Error::tool_rejected(reason)
     } else {

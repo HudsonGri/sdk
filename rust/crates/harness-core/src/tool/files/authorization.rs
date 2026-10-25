@@ -85,14 +85,44 @@ impl FileTool {
         };
         let (file, custody) = match *self {
             Self::Read => {
-                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                let input = decode::<ReadInput>(&invocation.arguments, work)?;
                 let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
-                let length = match input.0.range {
-                    Some(range) if range.end <= input.0.file.descriptor().byte_length() => {
+                let file = match input.0 {
+                    ReadInput::File(file) => file,
+                    ReadInput::Source(source) => {
+                        crate::executor::with_history_io(io, |history| {
+                            source.source.validate(history)?;
+                            if source.source.path.len() > scope.limits().path_bytes
+                                || maximum == 0
+                                || maximum == u64::MAX
+                            {
+                                return Err(error(
+                                    crate::wire::ErrorCode::Invalid,
+                                    "private source exceeds original task bounds",
+                                ));
+                            }
+                            if !crate::core::directory_read_granted_with_work(
+                                scope.grants(),
+                                &source.source.root.volume,
+                                &source.source.root.directory,
+                                history,
+                            )? {
+                                return Err(error(
+                                    crate::wire::ErrorCode::Unauthorized,
+                                    "file tool requires original private source grant",
+                                ));
+                            }
+                            Ok(())
+                        })?;
+                        return Ok((None, input.1));
+                    }
+                };
+                let length = match file.range {
+                    Some(range) if range.end <= file.file.descriptor().byte_length() => {
                         range.end.checked_sub(range.start)
                     }
                     Some(_) => None,
-                    None => Some(input.0.file.descriptor().byte_length()),
+                    None => Some(file.file.descriptor().byte_length()),
                 };
                 if maximum == 0
                     || maximum == u64::MAX
@@ -103,7 +133,7 @@ impl FileTool {
                         "file selection exceeds text rendering bound",
                     ));
                 }
-                (input.0.file, input.1)
+                (file.file, input.1)
             }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;

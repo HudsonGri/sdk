@@ -43,8 +43,10 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
     )
 }
 mod json_value;
+mod private_read;
 pub(crate) use json_value::validate_json_value;
 pub use json_value::validate_portable_json;
+pub(crate) use private_read::verified_private_path;
 
 /// Largest count representable by both this platform and the numeric wire format.
 pub const MAX_PORTABLE_COUNT: usize =

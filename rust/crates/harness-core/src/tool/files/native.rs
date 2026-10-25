@@ -22,6 +22,31 @@ macro_rules! record {
     }
 record!(ReadFileInput, self, self.file.logical_owned_bytes()?);
 record!(
+    ReadSourceInput,
+    self,
+    self.source.root.volume.logical_owned_bytes()?,
+    self.source.root.directory.capacity(),
+    self.source.generation.logical_owned_bytes()?,
+    self.source.path.capacity()
+);
+impl crate::filesystem::UploadRecord for ReadInput {
+    fn diagnostic_label_bytes() -> u64 {
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
+    }
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        match self {
+            Self::File(file) => file.logical_owned_bytes(),
+            Self::Source(source) => source.logical_owned_bytes(),
+        }
+    }
+}
+record!(
+    ReadSourceResult,
+    self,
+    self.file.logical_owned_bytes()?,
+    self.text.capacity()
+);
+record!(
     WriteFileInput,
     self,
     self.path.capacity(),
