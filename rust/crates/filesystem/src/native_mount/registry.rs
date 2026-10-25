@@ -59,6 +59,7 @@ pub(super) fn with_directory<T>(
     operation(directory()?)
 }
 
+#[cfg(test)]
 pub(super) fn open<W: crate::native_host::NativeHostWork>(
     work: &mut W,
 ) -> Result<fence_io::MountLockFile, NativeMountError>
