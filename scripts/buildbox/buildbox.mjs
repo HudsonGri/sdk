@@ -460,6 +460,20 @@ function identityShared(co) {
   } catch {}
   return id;
 }
+// Variable-size source and launch bytes travel on stdin, never in exec argv.
+// This is the sole constructor for both repository adapters.
+export function gitPrepInvocation(repo, wt, head, J, launch, payload) {
+  const repoArg = repo === 'cloud' ? '' : ` ${repo}`;
+  const prepLease = repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock; flock -s 6; ` : '';
+  const input = `${prepLease}if [ -e ${J}.wpid ]; then echo launched; else
+ o=$(printf '%s' '${payload.toString('base64')}' | base64 -d | /usr/local/bin/bb-git-prep ${q(wt)} ${head}${repoArg}); r=$?
+ printf '%s\n' "$o"; [ $r = 0 ] || exit $r
+ case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac
+ printf '%s' '${Buffer.from(launch).toString('base64')}' | base64 -d | bash
+fi`;
+  return { command: 'bash -s', input: Buffer.from(input) };
+}
+
 // One ssh: prepare the worktree and launch. Returns 'launched', 'unreachable' (ssh could not connect) or 'fallback'.
 async function gitPrepLaunch(co, wt, launch, notes, J, id) {
   let sshFails = 0;
@@ -472,9 +486,8 @@ async function gitPrepLaunch(co, wt, launch, notes, J, id) {
     const t0 = Date.now();
     // Retry-safe: once this job's wrapper exists (an earlier attempt launched it and only its reply was lost), nothing
     // touches the worktree again. cloud's command line is unchanged; other repos name theirs.
-    const repoArg = co.repo === 'cloud' ? '' : ` ${co.repo}`;
-    const prepLease = co.repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock; flock -s 6; ` : '';
-    const r = await sshRun(`${prepLease}if [ -e ${J}.wpid ]; then echo launched; else o=$(/usr/local/bin/bb-git-prep ${q(wt)} ${p.head}${repoArg}); r=$?; printf '%s\n' "$o"; [ $r = 0 ] || exit $r; case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac; echo ${Buffer.from(launch).toString('base64')} | base64 -d | bash; fi`, { input: p.buf, timeout: 300000 });
+    const invocation = gitPrepInvocation(co.repo, wt, p.head, J, launch, p.buf);
+    const r = await sshRun(invocation.command, { input: invocation.input, timeout: 300000 });
     const out = r.stdout.toString();
     if (r.status === 0 && /launched/.test(out)) { writeHave(co, [p.head]); notes.push(`${p.desc}, ${((Date.now() - t0) / 1000).toFixed(1)}s${sshFails ? ` after ${sshFails} ssh retries` : ''}`); return 'launched'; }
     if (r.status === 97) { writeHave(co, out.split('\n').filter((s) => /^[0-9a-f]{40}$/.test(s)), true); notes.push('VM lacked the bundle base; rebundled'); continue; }
