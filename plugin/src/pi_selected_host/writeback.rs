@@ -122,7 +122,6 @@ impl PiControlHost<'_> {
                 .approval_digest
                 .as_deref()
                 .ok_or_else(|| denied("applied writeback has no exact user approval"))?;
-            validate_applied_writeback(&root, &generations, &journal, digest, work)?;
             let approved = crate::pi_operator_host::read_prepared_approval(
                 &self.runtime,
                 &self.filesystem,
@@ -141,14 +140,13 @@ impl PiControlHost<'_> {
             {
                 return Err(denied("applied writeback changed its original approval"));
             }
-            crate::pi_operator_host::require_resolved_approval(
-                &self.filesystem,
-                &self.stream,
-                &self.protected,
-                &(&approved.0).into(),
-                work,
-            )
-            .await?;
+            let authorization = crate::pi_operator_host::conversation_journal(
+                &self.filesystem, &self.stream, &self.protected, &(&approved.0).into(), work,
+            )?;
+            validate_applied_writeback(
+                &root, &generations, &journal,
+                (digest, &authorization.0, authorization.1), work,
+            ).await?;
             let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
             owner.verify(false, &mut Some(&mut io)).await?;
             return ready(
@@ -236,21 +234,16 @@ impl PiControlHost<'_> {
         if approval != descriptor.approval_digest {
             return Err(denied("approval differs from the exact original-root plan"));
         }
-        crate::pi_operator_host::require_resolved_approval(
-            &self.filesystem,
-            &self.stream,
-            &self.protected,
-            &descriptor,
-            work,
-        )
-        .await?;
+        let authorization = crate::pi_operator_host::conversation_journal(
+            &self.filesystem, &self.stream, &self.protected, &descriptor, work,
+        )?;
         let published = publish_writeback(
             &root,
             &generations,
             &journal,
             &options,
             &self.resources.store,
-            approval,
+            (approval, &authorization.0, authorization.1),
             work,
         )
         .await?;

@@ -37,7 +37,7 @@ pub(crate) fn publish_writeback<'a>(
     journal: &'a acyclic_fs::MaterializationJournal,
     options: &'a acyclic_fs::MaterializeOptions,
     state: &'a acyclic_fs::LocalCoreStateStore,
-    confirmed_digest: &'a str,
+    approval: (&'a str, &'a dyn acyclic_harness::tool::ToolApprovalVerifier, acyclic_harness::InteractionId),
     native_work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> impl std::future::Future<Output = Result<acyclic_fs::MaterializationJournal>> + Send + 'a {
     async move {
@@ -47,9 +47,11 @@ pub(crate) fn publish_writeback<'a>(
                 "writeback lacks exact original-root user approval",
             ));
         }
-        let confirmation = crate::pi_operator::parse_digest(confirmed_digest)?;
+        let confirmation = crate::pi_operator::parse_digest(approval.0)?;
         writeback_digest_value(root, generations, journal)?
-            .publish(state, options, native_work, &confirmation, || {
+            .authorize(approval.1, approval.2, &confirmation, native_work)
+            .await?
+            .publish(state, options, native_work, || {
                 root.verify(native_work)
             })
             .await
@@ -57,11 +59,11 @@ pub(crate) fn publish_writeback<'a>(
 }
 
 /// A replay can acknowledge only the SDK's authenticated completed original journal, with the same exact user digest.
-pub(crate) fn validate_applied_writeback(
+pub(crate) async fn validate_applied_writeback(
     root: &PiWritebackRoot,
     generations: &PiWritebackGenerations<'_>,
     journal: &acyclic_fs::MaterializationJournal,
-    confirmed_digest: &str,
+    approval: (&str, &dyn acyclic_harness::tool::ToolApprovalVerifier, acyclic_harness::InteractionId),
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     if journal.phase != acyclic_fs::MaterializationPhase::Applied
@@ -71,10 +73,13 @@ pub(crate) fn validate_applied_writeback(
             "completed writeback differs from its original root and generations",
         ));
     }
-    writeback_digest_value(root, generations, journal)?.require_confirmation(
-        &crate::pi_operator::parse_digest(confirmed_digest)?,
-        native_work,
-    )
+    writeback_digest_value(root, generations, journal)?
+        .authorize(
+            approval.1, approval.2,
+            &crate::pi_operator::parse_digest(approval.0)?, native_work,
+        )
+        .await?;
+    Ok(())
 }
 
 pub(crate) fn writeback_digest_value<'a>(

@@ -102,9 +102,9 @@ mod approval;
 mod dispatch;
 mod inspection;
 mod status;
-use approval::conversation_journal;
+pub(crate) use approval::conversation_journal;
 pub(crate) use approval::{
-    open_prepared_approval, read_prepared_approval, require_resolved_approval,
+    open_prepared_approval, read_prepared_approval,
 };
 pub(crate) use inspection::{inspect_operator, stage_operator_command, validate_approval_request};
 pub(crate) use status::passive_status;

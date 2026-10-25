@@ -37,7 +37,7 @@ impl<C: Serialize> Serialize for CheckoutApproval<'_, C> {
     }
 }
 
-impl<C: Serialize> CheckoutApproval<'_, C> {
+impl<'a, C: Serialize> CheckoutApproval<'a, C> {
     /// Canonical identity on the original ledger, shared by every host.
     pub fn digest(&self, work: &NativeMaterializationWork) -> Result<[u8; 32]> {
         let mut io =
@@ -51,7 +51,7 @@ impl<C: Serialize> CheckoutApproval<'_, C> {
 
     /// A confirmation must name the validated preparation, never only its
     /// operation or a host-supplied raw tuple.
-    pub fn require_confirmation(
+    fn require_confirmation(
         &self,
         confirmed: &[u8; 32],
         work: &NativeMaterializationWork,
@@ -64,23 +64,49 @@ impl<C: Serialize> CheckoutApproval<'_, C> {
         Ok(())
     }
 
-    /// Publishes the approved selection through the common root and owner
-    /// guard. A denial cannot reach native materialization.
+    /// Authenticates the exact prepared plan through the shared journal verifier.
+    /// Possession of its public digest alone never permits publication.
+    pub async fn authorize(
+        self,
+        verifier: &dyn crate::tool::ToolApprovalVerifier,
+        interaction: crate::InteractionId,
+        confirmed: &[u8; 32],
+        work: &NativeMaterializationWork,
+    ) -> Result<AuthorizedCheckout<'a, C>> {
+        self.require_confirmation(confirmed, work)?;
+        verifier
+            .verify(
+                interaction,
+                crate::OperationId::from_bytes(self.publication.operation.into_bytes()),
+                *confirmed,
+            )
+            .await?;
+        Ok(AuthorizedCheckout { approval: self })
+    }
+}
+
+/// A selected plan whose exact operation and digest have authenticated approval.
+/// Only `CheckoutApproval::authorize` can construct this publication authority.
+pub struct AuthorizedCheckout<'a, C> {
+    approval: CheckoutApproval<'a, C>,
+}
+
+impl<C> AuthorizedCheckout<'_, C> {
+    /// Publishes the authenticated selection through the common root and owner
+    /// guard, retaining the caller's original native work ledger.
     pub async fn publish<F, Fut>(
         self,
         state: &LocalCoreStateStore,
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
-        confirmed: &[u8; 32],
         guard: F,
     ) -> Result<MaterializationJournal>
     where
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<()>> + Send,
     {
-        self.require_confirmation(confirmed, work)?;
-        self.publication
-            .publish(self.from, self.to, state, options, work, guard)
+        self.approval.publication
+            .publish(self.approval.from, self.approval.to, state, options, work, guard)
             .await
     }
 }

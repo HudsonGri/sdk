@@ -232,6 +232,32 @@ async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits(
         .await
 }
 
+// Internal authority model for the publication boundary. Real authenticated
+// file/journal settlement is exercised by execution_journal::approvals_tests.
+#[derive(Clone, Copy)]
+struct PublicationDecision {
+    id: crate::InteractionId,
+    operation: crate::OperationId,
+    digest: [u8; 32],
+    approved: bool,
+}
+impl crate::tool::ToolApprovalVerifier for PublicationDecision {
+    fn verify<'a>(
+        &'a self,
+        id: crate::InteractionId,
+        operation: crate::OperationId,
+        digest: [u8; 32],
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>> {
+        Box::pin(async move {
+            if self.approved && id == self.id && operation == self.operation && digest == self.digest {
+                Ok(())
+            } else {
+                Err(crate::Error::Unauthorized("publication decision is absent, denied or foreign".into()))
+            }
+        })
+    }
+}
+
 #[tokio::test]
 async fn selected_approval_binds_original_root_transition_paths_and_creator() -> TestResult {
     let fixture = Fixture::new().await?;
@@ -299,21 +325,28 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
         confirmation,
         *blake3::hash(&serde_json::to_vec(&canonical)?).as_bytes()
     );
-    let guarded = std::sync::atomic::AtomicUsize::new(0);
-    assert!(
-        approval
-            .publish(&fixture.state, &options, &fixture.work, &[0; 32], || {
-                guarded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                std::future::ready(Ok(()))
-            },)
-            .await
-            .is_err()
-    );
-    assert_eq!(guarded.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert!(
-        !fixture.root.join("note").exists(),
-        "denied confirmation reached host effect"
-    );
+    let interaction = crate::InteractionId::from_bytes([97; 16]);
+    let verifier = PublicationDecision {
+        id: interaction,
+        operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
+        digest: confirmation,
+        approved: true,
+    };
+    assert!(approval.authorize(&verifier, interaction, &[0; 32], &fixture.work).await.is_err());
+    // The exact public digest is insufficient: declined and foreign journal
+    // decisions cannot construct native publication authority.
+    for refused in [
+        PublicationDecision { approved: false, ..verifier },
+        PublicationDecision { id: crate::InteractionId::from_bytes([98; 16]), ..verifier },
+        PublicationDecision { operation: crate::OperationId::new(), ..verifier },
+        PublicationDecision { digest: [0; 32], ..verifier },
+    ] {
+        let candidate = publication.approval_value(
+            &fixture.from, &fixture.to, &paths, &journal, "original creator",
+        )?;
+        assert!(candidate.authorize(&refused, interaction, &confirmation, &fixture.work).await.is_err());
+        assert!(!fixture.root.join("note").exists(), "unapproved exact digest reached host effect");
+    }
     let applied = publication
         .approval_value(
             &fixture.from,
@@ -322,11 +355,12 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
             &journal,
             "original creator",
         )?
+        .authorize(&verifier, interaction, &confirmation, &fixture.work)
+        .await?
         .publish(
             &fixture.state,
             &options,
             &fixture.work,
-            &confirmation,
             || std::future::ready(Ok(())),
         )
         .await?;
