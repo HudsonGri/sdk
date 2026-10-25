@@ -29,7 +29,7 @@ export function environment(settings, inherited = process.env) {
     CODEX_HOME: join(settings, ".codex"),
     XDG_CONFIG_HOME: settings, XDG_DATA_HOME: settings, XDG_CACHE_HOME: settings, XDG_STATE_HOME: settings,
     TEMP: temporary, TMP: temporary, TMPDIR: temporary };
-  for (const key of Object.keys(env)) if (/API_KEY$|^GRAPHCODER_MODEL$|^ANTHROPIC_AUTH_TOKEN$/.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
   for (const path of [settings, env.LOCALAPPDATA, env.APPDATA, env.CODEX_HOME, temporary])
     mkdirSync(path, { recursive: true });
   return env;
