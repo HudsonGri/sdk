@@ -120,30 +120,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         runtime
             .owner_observed(merge.caller, owner.task_binding().1, false, io)
             .await?;
-        let mut sides = BTreeMap::new();
-        for selection in &merge.arguments.selections {
-            let conflict =
-                crate::filesystem::project_workspaces::decode_conflict(&selection.conflict, io)?;
-            reject_if(
-                sides.contains_key(&conflict),
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "merge conflict selected twice",
-            )?;
-            if let Some(io) = io {
-                let bytes = std::mem::size_of::<(acyclic_fs::MergeConflict, ConflictSide)>() as u64;
-                io.retain_owned(bytes)?;
-                io.allocation_attempt(bytes)?;
-            }
-            sides.insert(
-                conflict,
-                match selection.side {
-                    MergeToolSide::Base => ConflictSide::Base,
-                    MergeToolSide::Target => ConflictSide::Ours,
-                    MergeToolSide::Source => ConflictSide::Theirs,
-                },
-            );
-        }
+        let sides = merge_selections(&merge.arguments.selections, io)?;
         let (outcome, custody) = controller
             .apply_project_merge(&inspected, context.operation_id(), sides)
             .await?;
@@ -292,5 +269,92 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             )
             .await?;
         Ok(Value::Null)
+    }
+}
+
+fn merge_selections(
+    selections: &[MergeToolSelection],
+    io: Option<&PreparationIo>,
+) -> Result<BTreeMap<acyclic_fs::MergeConflict, ConflictSide>> {
+    let mut sides = BTreeMap::new();
+    for selection in selections {
+        let conflict =
+            crate::filesystem::project_workspaces::decode_conflict(&selection.conflict, io)?;
+        reject_if(
+            sides.contains_key(&conflict),
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "merge conflict selected twice",
+        )?;
+        if let Some(io) = io {
+            let bytes = crate::core::ownership::tree_insertion_bytes::<(
+                acyclic_fs::MergeConflict,
+                ConflictSide,
+            )>(sides.len())?;
+            if bytes != 0 {
+                io.retain_owned(bytes)?;
+                io.allocation_attempt(bytes)?;
+            }
+        }
+        sides.insert(
+            conflict,
+            match selection.side {
+                MergeToolSide::Base => ConflictSide::Base,
+                MergeToolSide::Target => ConflictSide::Ours,
+                MergeToolSide::Source => ConflictSide::Theirs,
+            },
+        );
+    }
+    Ok(sides)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn merge_selection_custody_covers_physical_tree_storage() -> Result<()> {
+        for native in [false, true] {
+            for count in [1_u8, 11, 12, 32] {
+                let selections: Vec<_> = (0..count)
+                    .map(|index| MergeToolSelection {
+                        conflict: crate::filesystem::project_workspaces::encode_conflict(
+                            &acyclic_fs::MergeConflict::File(acyclic_fs::FileId::from_bytes(
+                                [index; 16],
+                            )),
+                        ),
+                        side: MergeToolSide::Source,
+                    })
+                    .collect();
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let baseline = work.live_allocation_bytes();
+                let io = if native {
+                    PreparationIo::from_native_work(&work)?
+                } else {
+                    PreparationIo::from_budget(
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
+                        &cancellation,
+                    )?
+                };
+                let sides = merge_selections(&selections, Some(&io))?;
+                assert_eq!(sides.len(), usize::from(count));
+                let retained = io.owned_bytes()?;
+                let physical = acyclic_test_support::measure(|| drop(sides))
+                    .bytes_current
+                    .unsigned_abs();
+                assert!(
+                    retained >= physical,
+                    "merge selections underfunded: native={native} count={count} retained={retained} physical={physical}"
+                );
+                drop(io);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+        }
+        Ok(())
     }
 }
