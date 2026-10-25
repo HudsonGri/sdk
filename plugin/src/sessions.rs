@@ -329,8 +329,7 @@ impl Sessions {
         }
         let outcome = match (running.finish_input(), outcome) {
             (_, acyclic_harness::Outcome::Cancelled) => acyclic_harness::Outcome::Cancelled,
-            (_, outcome @ acyclic_harness::Outcome::Failed { .. }) => outcome,
-            (Ok(()), outcome) => outcome,
+            (_, outcome @ acyclic_harness::Outcome::Failed { .. }) | (Ok(()), outcome) => outcome,
             (Err(error), _) => acyclic_harness::Outcome::Failed {
                 message: error.to_string(),
             },

@@ -1,7 +1,7 @@
 //! The views served by one shared native mount instance.
 //!
 //! A process runs one native instance per backend (one FUSE session, one
-//! ProjFS virtualization root, one loopback NFS mount). Every task view and
+//! `ProjFS` virtualization root, one loopback NFS mount). Every task view and
 //! volume projection is a namespace inside it, identified by a serial that is
 //! never reused. Kernel-held identities (inodes, handles, file ids) or the
 //! view's name carry the serial, and every callback resolves it through
@@ -36,12 +36,14 @@ impl ViewSerial {
 }
 
 /// A serial issued once by [`ViewTable::reserve`] and not yet listed.
-#[derive(Debug)]
-pub(crate) struct ReservedSerial(u64);
+pub(crate) struct ReservedSerial<C> {
+    serial: u64,
+    table: Arc<ViewTable<C>>,
+}
 
-impl ReservedSerial {
+impl<C> ReservedSerial<C> {
     pub(crate) const fn get(&self) -> u64 {
-        self.0
+        self.serial
     }
 }
 
@@ -108,23 +110,34 @@ impl<C> ViewTable<C> {
 
     /// Issues the next serial without listing a view, so a core can be built
     /// for it first. A reservation that is never inserted is never reissued.
-    pub(crate) fn reserve(&self) -> Result<ReservedSerial, ViewSerialsExhausted> {
+    pub(crate) fn reserve(self: &Arc<Self>) -> Result<ReservedSerial<C>, ViewSerialsExhausted> {
         let mut views = self.views.write().unwrap_or_else(PoisonError::into_inner);
         let serial = views.next;
         if serial > self.max_serial {
             return Err(ViewSerialsExhausted);
         }
         views.next = serial + 1;
-        Ok(ReservedSerial(serial))
+        Ok(ReservedSerial {
+            serial,
+            table: Arc::clone(self),
+        })
     }
 
     /// Lists a view under its reserved serial and returns its only owner.
     pub(crate) fn insert_reserved(
         table: &Arc<Self>,
-        serial: ReservedSerial,
+        serial: ReservedSerial<C>,
         core: C,
     ) -> ViewOwner<C> {
-        let ReservedSerial(serial) = serial;
+        let ReservedSerial {
+            serial,
+            table: reserved_table,
+        } = serial;
+        assert!(
+            Arc::ptr_eq(table, &reserved_table),
+            "a reservation belongs to its issuing table"
+        );
+        drop(reserved_table);
         let mut views = table.views.write().unwrap_or_else(PoisonError::into_inner);
         assert!(serial < views.next, "a reservation comes from this table");
         let previous = views.live.insert(
@@ -158,8 +171,10 @@ impl<C> ViewTable<C> {
         state.leases += 1;
         drop(state);
         Some(ViewLease {
-            core: Some(Arc::clone(&live.core)),
-            drain: Arc::clone(&live.drain),
+            core: Arc::clone(&live.core),
+            _count: LeaseCount {
+                drain: Arc::clone(&live.drain),
+            },
         })
     }
 
@@ -182,13 +197,15 @@ impl<C> ViewTable<C> {
     }
 
     fn retire(&self, serial: ViewSerial) -> Option<C> {
-        let Live { core, drain } = self
+        let Some(Live { core, drain }) = self
             .views
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .live
             .remove(&serial.0)
-            .expect("a view owner retires its own listed view once");
+        else {
+            unreachable!("a view owner retires its own listed view once");
+        };
         let mut state = drain.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.retiring = true;
         #[cfg(acyclic_fs_loom)]
@@ -227,10 +244,13 @@ impl<C> ViewOwner<C> {
 
     /// Retires the view, waiting for in-flight callbacks, and returns its core.
     pub(crate) fn retire(mut self) -> C {
-        let table = self.table.take().expect("an owner retires once");
-        table
-            .retire(self.serial)
-            .expect("retirement drains every lease")
+        let Some(table) = self.table.take() else {
+            unreachable!("an owner retires once");
+        };
+        match table.retire(self.serial) {
+            Some(core) => core,
+            None => unreachable!("retirement drains every lease"),
+        }
     }
 }
 
@@ -244,7 +264,13 @@ impl<C> Drop for ViewOwner<C> {
 
 /// A callback's admission to one live view. Retirement waits for it.
 pub(crate) struct ViewLease<C> {
-    core: Option<Arc<C>>,
+    // Drop the core before counting this lease out; a retiring owner observing
+    // zero leases then owns the last core reference, without an empty state.
+    core: Arc<C>,
+    _count: LeaseCount,
+}
+
+struct LeaseCount {
     drain: Arc<Drain>,
 }
 
@@ -252,17 +278,12 @@ impl<C> std::ops::Deref for ViewLease<C> {
     type Target = C;
 
     fn deref(&self) -> &C {
-        self.core
-            .as_deref()
-            .expect("a lease holds its core until drop")
+        &self.core
     }
 }
 
-impl<C> Drop for ViewLease<C> {
+impl Drop for LeaseCount {
     fn drop(&mut self) {
-        // Release the core before counting out, so the retirer that observes
-        // zero leases holds the last reference and drops the core itself.
-        drop(self.core.take());
         let mut state = self
             .drain
             .state
@@ -308,6 +329,45 @@ mod tests {
             drops: Arc::clone(drops),
             id,
         }
+    }
+
+    #[test]
+    fn lease_releases_its_core_before_counting_out() {
+        struct Checked(Arc<Drain>);
+        impl Drop for Checked {
+            fn drop(&mut self) {
+                assert_eq!(
+                    self.0
+                        .state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .leases,
+                    1,
+                    "core must drop before lease counts out"
+                );
+            }
+        }
+        let drain = Arc::new(Drain::new());
+        drain
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .leases = 1;
+        let lease = ViewLease {
+            core: Arc::new(Checked(Arc::clone(&drain))),
+            _count: LeaseCount {
+                drain: Arc::clone(&drain),
+            },
+        };
+        drop(lease);
+        assert_eq!(
+            drain
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .leases,
+            0
+        );
     }
 
     #[test]
@@ -361,6 +421,21 @@ mod tests {
             Some(ViewSerialsExhausted)
         );
         assert_eq!(table.serials(), vec![a.serial()]);
+    }
+
+    #[test]
+    fn reservation_cannot_enter_another_table_with_the_same_counter() {
+        let first = Arc::new(ViewTable::<u32>::new(2));
+        let second = Arc::new(ViewTable::<u32>::new(2));
+        let reservation = first.reserve().unwrap();
+        drop(second.reserve().unwrap());
+        assert!(
+            std::panic::catch_unwind(|| { ViewTable::insert_reserved(&second, reservation, 7) })
+                .is_err(),
+            "a reservation must not cross instance identity"
+        );
+        assert_eq!(first.len(), 0);
+        assert_eq!(second.len(), 0);
     }
 
     #[test]

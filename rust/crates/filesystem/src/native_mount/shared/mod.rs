@@ -1,7 +1,7 @@
 //! The one OS-neutral core behind every shared native instance.
 //!
 //! A process serves every task view and volume projection from one native
-//! instance per root: one FUSE session on Linux, one ProjFS virtualization
+//! instance per root: one FUSE session on Linux, one `ProjFS` virtualization
 //! root on Windows, one loopback NFS mount on macOS. Everything those
 //! instances have in common lives here, written once:
 //!

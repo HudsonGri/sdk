@@ -49,7 +49,13 @@ impl Retired {
 /// One registered instance. Dropping the last reference runs the adapter's
 /// teardown (its `Drop`) and only then frees the root for a new start.
 pub(crate) struct Instance<I: 'static> {
-    inner: Option<I>,
+    // Rust drops fields in declaration order: adapter teardown finishes before
+    // the registration releases the root to another instance.
+    inner: I,
+    _registration: Registration<I>,
+}
+
+struct Registration<I: 'static> {
     root: PathBuf,
     retired: Arc<Retired>,
     registry: &'static Instances<I>,
@@ -59,15 +65,12 @@ impl<I> std::ops::Deref for Instance<I> {
     type Target = I;
 
     fn deref(&self) -> &I {
-        self.inner
-            .as_ref()
-            .expect("an instance is live until its drop")
+        &self.inner
     }
 }
 
-impl<I> Drop for Instance<I> {
+impl<I> Drop for Registration<I> {
     fn drop(&mut self) {
-        drop(self.inner.take());
         {
             let mut slots = self
                 .registry
@@ -122,17 +125,20 @@ impl<I> Instances<I> {
                 continue;
             }
             // Starting under the registry lock serializes starts per root.
+            let retired = Arc::new(Retired::default());
             let instance = Arc::new(Instance {
-                inner: Some(start(&root)?),
-                root: root.clone(),
-                retired: Arc::new(Retired::default()),
-                registry: self,
+                inner: start(&root)?,
+                _registration: Registration {
+                    root: root.clone(),
+                    retired: Arc::clone(&retired),
+                    registry: self,
+                },
             });
             slots.insert(
                 root,
                 Slot {
                     instance: Arc::downgrade(&instance),
-                    retired: Arc::clone(&instance.retired),
+                    retired,
                 },
             );
             return Ok(instance);
@@ -154,6 +160,43 @@ mod tests {
         fn drop(&mut self) {
             STARTS.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn adapter_teardown_precedes_releasing_the_registration() -> Result<(), NativeMountError> {
+        struct Checked {
+            retired: Arc<std::sync::OnceLock<Arc<Retired>>>,
+        }
+        impl Drop for Checked {
+            fn drop(&mut self) {
+                let Some(retired) = self.retired.get() else {
+                    panic!("fixture registration is absent");
+                };
+                assert!(
+                    !*retired.done.lock().unwrap_or_else(PoisonError::into_inner),
+                    "adapter must drop before registration releases the root"
+                );
+            }
+        }
+        static CHECKED: Instances<Checked> = Instances::new();
+        let directory = tempfile::tempdir()?;
+        let retired = Arc::new(std::sync::OnceLock::new());
+        let instance = CHECKED.acquire(&directory.path().join("root"), |_| {
+            Ok(Checked {
+                retired: Arc::clone(&retired),
+            })
+        })?;
+        assert!(
+            retired
+                .set(Arc::clone(&instance._registration.retired))
+                .is_ok()
+        );
+        drop(instance);
+        let Some(retired) = retired.get() else {
+            panic!("fixture registration is absent");
+        };
+        assert!(*retired.done.lock().unwrap_or_else(PoisonError::into_inner));
+        Ok(())
     }
 
     /// Holders of one root share one instance; the last drop tears it down

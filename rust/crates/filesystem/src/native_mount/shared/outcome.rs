@@ -1,7 +1,7 @@
 //! What a failed native callback reports, classified once for every OS.
 //!
 //! Each backend answers its kernel in its own codes (an errno for FUSE and
-//! NFS, an `HRESULT` for ProjFS), but what a failure means is decided here,
+//! NFS, an `HRESULT` for `ProjFS`), but what a failure means is decided here,
 //! once: a cancellation is always [`CallbackFailure::Cancelled`] however it
 //! arrives, and only a stale node, view or source is
 //! [`CallbackFailure::Stale`]. An adapter only spells the classification.
@@ -171,7 +171,7 @@ impl CallbackFailure {
 /// machinery (exhausted or cancelled work, a changed control or meter, a
 /// denied callback, failed allocation, a panic, or anything unclassified)
 /// is retained, and the mount reports it at its next sync or unmount.
-/// ProjFS notifications fail only with source errors and ask
+/// `ProjFS` notifications fail only with source errors and ask
 /// [`source_stops_mount`] directly.
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn stops_mount(error: &NativeMountError) -> bool {
@@ -297,8 +297,8 @@ mod tests {
     /// One outcome sequence through every backend's adapter: each answers
     /// its kernel with the spelling of the same classification, and stops
     /// its mount on exactly the same outcomes. FUSE and NFS answer through
-    /// `callback_errno`, ProjFS through `native_hresult` and
-    /// `source_hresult`; FUSE's `finish`, the NFS `fatal` rule and ProjFS's
+    /// `callback_errno`, `ProjFS` through `native_hresult` and
+    /// `source_hresult`; FUSE's `finish`, the NFS `fatal` rule and `ProjFS`'s
     /// notification rule are `stops_mount` and `source_stops_mount`.
     #[test]
     fn every_backend_adapter_answers_one_outcome_sequence_alike() {

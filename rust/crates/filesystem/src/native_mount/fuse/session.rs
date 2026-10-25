@@ -173,8 +173,7 @@ impl FuseSession {
             root,
             stamp,
             request.writable,
-            metadata.st_uid,
-            metadata.st_gid,
+            (metadata.st_uid, metadata.st_gid),
             0,
             work,
         )?;
@@ -338,8 +337,7 @@ impl FuseSession {
                 root,
                 stamp,
                 request.writable,
-                metadata.st_uid,
-                metadata.st_gid,
+                (metadata.st_uid, metadata.st_gid),
                 base,
                 work,
             )?;

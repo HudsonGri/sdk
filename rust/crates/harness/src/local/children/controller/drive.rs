@@ -57,24 +57,20 @@ impl LocalHarness {
                     if parent_done && children.jobs.is_empty() && completions.is_empty() && pending.is_empty() {
                         return Ok(());
                     }
-                    let event = match pending.pop_front() {
-                        Some(event) => event,
-                        None => tokio::select! {
+                    let event = if let Some(event) = pending.pop_front() {
+                        event
+                    } else { tokio::select! {
                             biased;
                             change = coordination(|| follow::next(files.as_ref(), Query::Children, &mut children.cursor)) => Wake::File(change),
                             result = children.jobs.next(), if !children.jobs.is_empty() => Wake::child(result),
-                            _ = async { inherited.as_ref().unwrap().cancelled().await },
+                            _ = inherited_cancelled(inherited.as_ref()),
                                 if inherited.is_some() && !inherited_stopped => Wake::Inherited,
                             result = &mut parent, if !parent_done => Wake::Parent(result),
-                        },
+                        }
                     };
                     match event {
                         Wake::File(change) => {
-                            let change = change.ok_or_else(|| Error::Conflict("child folder follow ended".into()))?.map_err(storage)?;
-                            let mut changed = changed_references(&change);
-                            advance_fold(&mut children.values, &mut children.generation, change);
-                            changed.extend(release_completed(children.generation.position, &mut children.active, &mut completions));
-                            for reference in changed {
+                            for reference in children.accept_change(change, &mut completions)? {
                                 if children.active.contains(&reference) || !needs_work_count(&reference, &children.values, inherited_stopped,
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? { continue; }
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
@@ -212,6 +208,14 @@ impl LocalHarness {
     }
 }
 
+async fn inherited_cancelled(inherited: Option<&acyclic_fs::CancellationToken>) {
+    if let Some(inherited) = inherited {
+        inherited.cancelled().await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
 // Keep the coordination loop's storage/follow construction separate from the
 // frame which owns parent cancellation and drains every child on failure.
 #[inline(never)]
@@ -275,6 +279,26 @@ struct ChildDrivers<'a> {
     values: BTreeMap<FileKey, FileValue>,
     active: BTreeSet<Component>,
     jobs: FuturesUnordered<BoxProviderFuture<'a, Result<(Component, u64)>>>,
+}
+
+impl ChildDrivers<'_> {
+    fn accept_change(
+        &mut self,
+        change: Option<crate::task_volume::Result<Change>>,
+        completions: &mut BTreeSet<(u64, Component)>,
+    ) -> Result<BTreeSet<Component>> {
+        let change = change
+            .ok_or_else(|| Error::Conflict("child folder follow ended".into()))?
+            .map_err(storage)?;
+        let mut changed = changed_references(&change);
+        advance_fold(&mut self.values, &mut self.generation, change);
+        changed.extend(release_completed(
+            self.generation.position,
+            &mut self.active,
+            completions,
+        ));
+        Ok(changed)
+    }
 }
 
 fn changed_references(change: &Change) -> BTreeSet<Component> {

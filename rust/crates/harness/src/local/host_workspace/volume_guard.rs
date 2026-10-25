@@ -12,6 +12,7 @@ struct Guard {
 }
 
 pub(super) fn options(
+    options: acyclic_fs::MountOptions,
     owner: Arc<dyn OwnedTaskMailbox>,
     root: Arc<HeldRoot>,
     read_only: bool,
@@ -32,10 +33,13 @@ pub(super) fn options(
         writable: !read_only,
         custody,
     });
+    // Add lifetime custody to the authenticated options supplied by the
+    // workspace authority. Reconstructing options would discard its access
+    // view and policy refresh owner before shared-view admission.
     let options = if read_only {
-        acyclic_fs::MountOptions::read_only()
+        options.restrict_to_read_only()
     } else {
-        acyclic_fs::MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual)
+        options
     };
     Ok(options.native_context(&work, Some(guard), Some(&work)))
 }
