@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn unknown_internal_commands_fail_before_workspace_lookup() -> Result<()> {
+    let error = internal(&["__unknown".into()])
+        .err()
+        .ok_or("unknown internal command admitted")?;
+    assert!(
+        error
+            .to_string()
+            .contains("step=admit internal command: unknown __unknown")
+    );
+    assert!(error.to_string().contains("recovery: run acyclic --help"));
+    Ok(())
+}
+
+#[test]
 fn release_certification_uses_the_shared_policy_for_foreign_artifacts() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let executable = directory.path().join("release artifact");

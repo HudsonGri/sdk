@@ -124,23 +124,14 @@ fn internal(args: &[String]) -> Result<bool> {
             }
         }
         "__install-package" => install_package()?,
-        "__publish-certification" => publish_certification(args)?,
         "__verify-release-certification" => {
             let [_, receipt, executable, os, arch, version] = args else {
                 return Err("release certification verification requires RECEIPT EXECUTABLE OS ARCH VERSION; recovery: run acyclic __verify-release-certification with all five arguments".into());
             };
             verify_certification(receipt, Path::new(executable), os, arch, version)?;
         }
-        "__installer-rename" => {
-            let [_, from, to, mode] = args else {
-                return Err("installer rename requires FROM TO MODE".into());
-            };
-            let mode = match mode.as_str() {
-                "replace" => acyclic_native_runtime::RenameMode::Replace,
-                "no-replace" => acyclic_native_runtime::RenameMode::NoReplace,
-                _ => return Err("invalid rename mode".into()),
-            };
-            acyclic_native_runtime::durable_rename(Path::new(from), Path::new(to), mode, None)?;
+        command if command.starts_with("__") => {
+            return Err(format!("step=admit internal command: unknown {command}; recovery: run acyclic --help and use the installed package entry points").into());
         }
         _ => return Ok(false),
     }
@@ -175,37 +166,6 @@ fn install_package() -> Result<()> {
         Ok(())
     })
     .map_err(|error| format!("step=publish native package: {error}; recovery argv: {recovery}"))?;
-    Ok(())
-}
-
-fn publish_certification(args: &[String]) -> Result<()> {
-    let [_, source, version, destination] = args else {
-        return Err("step=publish certification arguments; recovery: run acyclic __publish-certification RECEIPT VERSION DESTINATION".into());
-    };
-    let recovery = serde_json::to_string(&json!([
-        env::current_exe()?,
-        "__publish-certification",
-        source,
-        version,
-        destination
-    ]))?;
-    if version != env!("CARGO_PKG_VERSION") {
-        return Err(format!("step=admit installed certification version; recovery argv: {recovery}; install a package matching its executable version").into());
-    }
-    let receipt = verify_certification(
-        source,
-        &env::current_exe()?,
-        env::consts::OS,
-        env::consts::ARCH,
-        version,
-    )?;
-    acyclic_fs::package_install::publish_report(Path::new(destination), &receipt).map_err(
-        |error| {
-            format!(
-                "step=publish verified release certification: {error}; recovery argv: {recovery}"
-            )
-        },
-    )?;
     Ok(())
 }
 
