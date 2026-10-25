@@ -9,7 +9,10 @@ prs="$*"; n=$(echo $prs | tr ' ' '+'); W=Q:/wt/pr-gate; L=Q:/lanes/pr-gate; mkdi
 # Local preparation failures have a separate held state, never a bb2 retry.
 python Q:/lanes/gate-prepare.py prepare $prs; preparation_rc=$?
 [ "$preparation_rc" = 0 ] || exit "$preparation_rc"
-pin_reason=$(python Q:/lanes/gate-merge.py record $prs 2>&1); pin_rc=$?
+# Reserve a unique pathname, then let the sole recorder create it exclusively.
+pin=$(mktemp "$L/pin.XXXXXXXX.json") || exit 6
+rm -f "$pin"
+pin_reason=$(python Q:/lanes/gate-merge.py record $prs --pin "$pin" 2>&1); pin_rc=$?
 if [ "$pin_rc" != 0 ]; then
   printf '%s\n' "$pin_reason"
   python Q:/lanes/gate-prepare.py hold $prs --reason "$pin_reason"
@@ -178,4 +181,4 @@ else v="PASS #$n: no new failures ($(printf '%s\n' "$pr_fails" | grep -c .) pre-
 printf '%s\n' "$checks" > "$log.checks"
 echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
 # Exit 4 = the build box failed (spot stop, ssh loss): the drain re-queues the batch instead of bisecting it.
-case $v in PASS*) exit 0;; INFRA*) exit 4;; *) exit 1;; esac
+case $v in PASS*) printf 'GATE_PASS_PIN %s\n' "$pin"; exit 0;; INFRA*) exit 4;; *) exit 1;; esac

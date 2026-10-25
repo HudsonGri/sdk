@@ -9,7 +9,7 @@ HERE = Path(__file__).resolve().parent
 
 
 class DispatchTests(unittest.TestCase):
-    def run_drain(self, body, *, draft=False, negative=False, unchecked=False, onepass=False, first='', pending='1\n2\n3\n'):
+    def run_drain(self, body, *, draft=False, negative=False, unchecked=False, onepass=False, first='', pending='1\n2\n3\n', fence_error=False, negative_fence=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state = root/'state'; state.mkdir()
@@ -22,15 +22,22 @@ class DispatchTests(unittest.TestCase):
             for name in ['gate-queue.py']:
                 (tools/name).symlink_to(HERE/name)
             (tools/'gate-prepare.py').write_text('raise SystemExit(0)\n')
-            (tools/'gate-merge.py').write_text('import os,sys\nfrom pathlib import Path\nwith (Path(os.environ["GATE_STATE"])/"merged").open("a") as f:f.write(" ".join(sys.argv[2:sys.argv.index("--repo")])+"\\n")\n')
+            (tools/'gate-merge.py').write_text('import os,sys\nfrom pathlib import Path\nwith (Path(os.environ["GATE_STATE"])/"merged").open("a") as f:f.write(" ".join(sys.argv[2:sys.argv.index("--pin")])+"\\n")\n')
+            if fence_error:
+                (tools/'gate-prepare.py').write_text('import os,sys\nfrom pathlib import Path\ns=Path(os.environ["GATE_STATE"])\nwith (s/"preparation-operations").open("a") as f:f.write(sys.argv[1]+"\\n")\nif sys.argv[1]=="hold":(s/"bad-hold").touch()\nraise SystemExit(6 if sys.argv[1]=="refresh" and (s/"bad-hold").exists() else 0)\n')
+                helper = tools/'gate-merge.py'
+                helper.write_text('import os,sys\nfrom pathlib import Path\np=Path(os.environ["GATE_STATE"])/"first-fence-error"\nif not p.exists():\n p.touch();print("wrong batch pin",file=sys.stderr);raise SystemExit(6)\n'+helper.read_text())
             (tools/'merge-hold.txt').write_text('')
-            (tools/'pr-gate.sh').write_text('echo "$*" >> "$GATE_STATE/runs"\n'+body)
+            (tools/'pin.json').write_text('{}')
+            (tools/'pr-gate.sh').write_text('echo "$*" >> "$GATE_STATE/runs"\necho "GATE_PASS_PIN $GATE_LANES/pin.json"\n'+body)
             (tools/'route.sh').write_text('echo "$*" >> "$GATE_STATE/routes"\n')
             (state/'pending.txt').write_text(pending)
             (state/'first.txt').write_text(first)
             if draft:
                 (state/'draft-1').touch()
             source = (HERE/'gate-drain.sh').read_text()
+            if negative_fence:
+                source = source.replace('prep repair \"$@\"', 'prep hold \"$@\"')
             if negative:
                 source = source.replace('deferred+=("$c")', 'enqueue "$c"')
             if unchecked:
@@ -99,6 +106,19 @@ exit 0
         self.assertEqual(good['runs'].splitlines(), ['1'])
         self.assertEqual(good['pending.txt'].split(), ['1'])
         self.assertIn('batch-only collision reported for a solo', text)
+
+    def test_fence_mismatch_recovers_and_requeues_group_without_freezing_peers(self):
+        good, _ = self.run_drain('exit 0\n', fence_error=True)
+        self.assertEqual(good['runs'].splitlines(), ['1 2 3', '1 2 3'])
+        self.assertEqual(good['merged'].splitlines(), ['1 2 3'])
+        self.assertIn('repair', good['preparation-operations'].splitlines())
+        self.assertNotIn('hold', good['preparation-operations'].splitlines())
+        self.assertEqual(good['active.txt'], '')
+        self.assertEqual(good['pending.txt'], '')
+        old, _ = self.run_drain('exit 0\n', fence_error=True, negative_fence=True)
+        self.assertEqual(old['runs'].splitlines(), ['1 2 3'])
+        self.assertEqual(old['pending.txt'].split(), ['1', '2', '3'])
+        self.assertNotIn('merged', old)
 
     def test_priority_members_each_gate_solo_before_general_queue(self):
         good, _ = self.run_drain('exit 0\n', first='1\n2\n')
