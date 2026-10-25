@@ -584,8 +584,8 @@ mod tests {
             assert!(events.0.buffered_bytes() <= 65_536);
         }
         assert_eq!(
-            events.push(b"\n{\"type\":\"thread.started\",\"thread_id\":\"native\"}\n"),
-            vec![json!({"type":"thread.started","thread_id":"native"})]
+            events.push(b"\n{\"probe\":true}\n"),
+            vec![json!({"probe":true})]
         );
     }
     #[test]
