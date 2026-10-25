@@ -464,8 +464,8 @@ function identityShared(co) {
 // This is the sole constructor for both repository adapters.
 export function gitPrepInvocation(repo, wt, head, J, launch, payload) {
   const repoArg = repo === 'cloud' ? '' : ` ${repo}`;
-  const prepLease = repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock; flock -s 6; ` : '';
-  const input = `${prepLease}if [ -e ${J}.wpid ]; then echo launched; else
+  const prepLease = repo === 'sdk' ? `mkdir -p /mnt/bb/locks/wt-sdk; exec 6>${q(`/mnt/bb/locks/wt-sdk/${path.basename(wt).replace(/\.prep$/, '')}.lock`)}; flock -s 6; ` : '';
+  const input = `${prepLease}if [ -e ${q(J + '.wpid')} ]; then echo launched; else
  o=$(printf '%s' '${payload.toString('base64')}' | base64 -d | /usr/local/bin/bb-git-prep ${q(wt)} ${head}${repoArg}); r=$?
  printf '%s\n' "$o"; [ $r = 0 ] || exit $r
  case "$o" in *prepared) ;; *) echo >&2 'bb-git-prep: exit 0 without a prepared reply'; exit 98;; esac
