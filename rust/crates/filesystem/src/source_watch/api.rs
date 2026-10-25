@@ -15,7 +15,7 @@ impl NativeSourceWatch {
         }
         #[cfg(windows)]
         {
-            self.shared.recursive
+            self.registration_is_recursive()
         }
     }
 
