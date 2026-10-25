@@ -111,7 +111,13 @@ fn retained_creation_request(native: bool) -> Result<()> {
     let bound = compare_binding(&runtime, &fixture, request, proof, &io, owner)?;
     negative_boundaries(&runtime, &fixture, &bound, request, proof, &io, owner)?;
     changed_allocation(
-        &runtime, &fixture, &bound, request, &io, owner, created.seed.operation_id,
+        &runtime,
+        &fixture,
+        &bound,
+        request,
+        &io,
+        owner,
+        created.seed.operation_id,
     )?;
     let restored = runtime.block_on(CreationRequest::new(
         &fixture.filesystem,
@@ -275,7 +281,10 @@ fn changed_allocation(
     // A fresh cut must reject the changed allocation owner too, independently
     // of the retained binding's generation fence.
     let changed = runtime.block_on(CreationRequest::new(
-        &fixture.filesystem, request, proof, io,
+        &fixture.filesystem,
+        request,
+        proof,
+        io,
     ))?;
     assert!(matches!(
         runtime.block_on(changed.authenticate(&fixture.filesystem, owner, Some(io))),
@@ -295,7 +304,10 @@ fn changed_allocation(
         Err(Error::Unauthorized(_))
     ));
     let restored = runtime.block_on(CreationRequest::new(
-        &fixture.filesystem, request, proof, io,
+        &fixture.filesystem,
+        request,
+        proof,
+        io,
     ))?;
     runtime.block_on(restored.authenticate(&fixture.filesystem, owner, Some(io)))?;
     Ok(())
