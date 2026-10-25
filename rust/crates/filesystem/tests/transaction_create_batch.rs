@@ -1,13 +1,15 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::{
     CancellationToken, FsError, IdempotencyKey, Transaction, TransactionCommit, WorkBudget,
     Workspace, WorkspaceError,
 };
-use acyclic_fs::kernel::FileMetadata;
 
-type MemoryWorkspace = Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
-type MemoryTransaction = Transaction<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+type MemoryWorkspace =
+    Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+type MemoryTransaction =
+    Transaction<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 macro_rules! value {
     ($operation:expr) => {
@@ -25,21 +27,33 @@ async fn begin(workspace: &MemoryWorkspace) -> MemoryTransaction {
 
 async fn commit(
     transaction: &mut MemoryTransaction,
-) -> Result<TransactionCommit<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>, WorkspaceError> {
-    transaction.commit::<WorkspaceError, _, _>(
-        None,
-        acyclic_fs::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
-            value: (),
-            work: Default::default(),
-        }))
-    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+) -> Result<
+    TransactionCommit<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
+    WorkspaceError,
+> {
+    transaction
+        .commit::<WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: Default::default(),
+                }))
+            },
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
 }
 
 async fn publish(transaction: &mut MemoryTransaction) {
-    assert!(matches!(commit(transaction).await.unwrap(), TransactionCommit::Committed(_)));
+    assert!(matches!(
+        commit(transaction).await.unwrap(),
+        TransactionCommit::Committed(_)
+    ));
 }
 
 async fn workspace(folded: bool) -> MemoryWorkspace {
@@ -81,10 +95,7 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
             for target in ["/out/sealed", "/out/directory", "/out/link", "/out/new"] {
                 let mut transaction = begin(&workspace).await;
                 if pending {
-                    transaction
-                        .write_text("/pending", target)
-                        .await
-                        .unwrap();
+                    transaction.write_text("/pending", target).await.unwrap();
                 }
                 let mut files = vec![("/out/new", content()), (target, content())];
                 if folded && target == "/out/new" {
