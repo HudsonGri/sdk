@@ -284,6 +284,8 @@ mod error;
 pub use error::*;
 mod fence_io;
 mod recovery;
+#[cfg(any(target_os = "macos", test))]
+mod recovery_order;
 mod registry;
 pub use recovery::*;
 mod startup;

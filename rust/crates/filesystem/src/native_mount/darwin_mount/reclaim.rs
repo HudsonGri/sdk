@@ -45,49 +45,78 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| NativeMountError::from(error))?;
-    for mount in mount_table()? {
-        if !is_loopback_mount(&mount, uid)? {
-            continue;
+    let mounts = mount_table()?;
+    let observed = mounts
+        .iter()
+        .map(|mount| {
+            let destination = field(&mount.f_mntonname)?;
+            Ok(super::super::recovery_order::ObservedMount {
+                destination: Path::new(std::ffi::OsStr::from_bytes(destination.to_bytes())),
+                native: mount,
+            })
+        })
+        .collect::<Result<Vec<_>, NativeMountError>>()?;
+    super::super::recovery_order::recover_mounts(&observed, |mount| {
+        reclaim_mount(mount, uid, &work)
+    })
+    .map_err(NativeMountError::RecoveryBatchFailed)
+}
+
+fn reclaim_mount(mount: &libc::statfs, uid: u32, work: &Work) -> Result<bool, NativeMountError> {
+    if !is_loopback_mount(mount, uid)? {
+        return Ok(false);
+    }
+    let destination = field(&mount.f_mntonname)?;
+    let path = Path::new(std::ffi::OsStr::from_bytes(destination.to_bytes()));
+    let mut owner = match NativeMountRecoveryOwner::acquire_existing_canonical(path, work) {
+        Ok(owner) => owner,
+        Err(NativeMountError::DestinationBusy) => return Ok(false),
+        Err(NativeMountError::Demand(crate::DemandError::Io(error)))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Ok(false);
         }
-        let destination = field(&mount.f_mntonname)?;
-        let path = Path::new(std::ffi::OsStr::from_bytes(destination.to_bytes()));
-        let mut owner = match NativeMountRecoveryOwner::acquire_existing_canonical(path, &work) {
-            Ok(owner) => owner,
-            Err(NativeMountError::DestinationBusy) => continue,
-            Err(NativeMountError::Demand(crate::DemandError::Io(error)))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                continue;
-            }
-            Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Io(
-                error,
-            ))) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        let authenticated = owner.configure_control(|control, fence| {
-            work.charge(READ_WORK)?;
-            let metadata = fence.metadata()?;
-            if !metadata.is_file() || metadata.uid() != uid || metadata.nlink() != 1 {
-                return Ok(false);
-            }
-            control.bind_mount(&mount, &work)?;
-            Ok(true)
-        })?;
-        if !authenticated {
-            continue;
+        Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Io(
+            error,
+        ))) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(false);
         }
-        // The original fence and kernel identity now belong to the same core
-        // owner used by explicit recovery. Its driver adapter performs every
-        // direct attempt, Disk Arbitration fallback, and physical retirement.
-        if let Err(error) = owner.detach(&work) {
+        Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let authentication = owner.configure_control(|control, fence| {
+        work.charge(READ_WORK)?;
+        let metadata = fence.metadata()?;
+        if !metadata.is_file() || metadata.uid() != uid || metadata.nlink() != 1 {
+            return Ok(false);
+        }
+        control.bind_mount(mount, work)?;
+        Ok(true)
+    });
+    let authenticated = match authentication {
+        Ok(authenticated) => authenticated,
+        Err(error) => {
+            owner.mark_failed();
             return Err(NativeMountError::RecoveryFailed {
                 error: Box::new(error),
                 owner,
             });
         }
+    };
+    if !authenticated {
+        return Ok(false);
     }
-    Ok(())
+    // The original fence and kernel identity now belong to the same core
+    // owner used by explicit recovery. Its driver adapter performs every
+    // direct attempt, Disk Arbitration fallback, and physical retirement.
+    if let Err(error) = owner.detach(work) {
+        owner.mark_failed();
+        return Err(NativeMountError::RecoveryFailed {
+            error: Box::new(error),
+            owner,
+        });
+    }
+    Ok(true)
 }
