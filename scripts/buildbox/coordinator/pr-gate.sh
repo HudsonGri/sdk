@@ -124,9 +124,11 @@ if [ "$phase_status" != 0 ]; then
   echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
   exit "$code"
 fi
-# One selector owns the test and lint baseline. A failed wide discovery run
-# cannot displace the last green narrow run or claim unexecuted packages.
-if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2> "$log.baseline-error"); then
+# Prefer completed tests on the exact prepared base, even when another main
+# phase is red. Historical green coverage only anchors focused qualification
+# when the current workspace tests themselves did not complete successfully.
+if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase tests --exact 2> "$log.baseline-error") &&
+   ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2>> "$log.baseline-error"); then
   cat "$log.baseline-error" >> "$log"
   echo "GATE BASELINE #$n: no complete main baseline; verdict deferred log=$log"
   echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: no complete main baseline; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log

@@ -1,5 +1,8 @@
 """Real Git repositories and captured Cargo/main output qualify the base."""
 import importlib.util
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,11 +15,90 @@ FIXTURES = HERE/'fixtures'
 spec = importlib.util.spec_from_file_location('baseline', HERE/'gate-baseline.py')
 baseline = importlib.util.module_from_spec(spec); spec.loader.exec_module(baseline)
 PHASES = (FIXTURES/'main-32b799-phases.txt').read_text()
+TEST_PHASES = (FIXTURES/'main-32b799-test-phases.txt').read_text()
+GREEN_PHASES = (FIXTURES/'main-7989-green-test-phases.txt').read_text()
 RED_FEATURES = (FIXTURES/'main-da7eee-red-features.txt').read_text()
 CAPTURED_HEAD = '32b79969bc504e875bb6e9f65611bf0d02ea45e9'
 
 
 class ExactBaselineTests(unittest.TestCase):
+    def test_historical_green_fallback_requires_its_executor_receipt(self):
+        self.assertTrue(baseline.eligible(GREEN_PHASES))
+        for replacement in ['', 'GATE_EXECUTOR rc=-9', 'GATE_EXECUTOR rc=101']:
+            broken = GREEN_PHASES.replace('GATE_EXECUTOR rc=0', replacement)
+            self.assertFalse(baseline.eligible(broken))
+            with self.assertRaisesRegex(ValueError, 'incomplete main baseline'):
+                baseline.coverage(broken, [])
+        # Removing just the shared receipt guard restores the former false
+        # qualification of a main log left before coordinator completion.
+        source = (HERE/'gate-baseline.py').read_text()
+        old = source.replace('not completed_payload(text) or ', '')
+        self.assertNotEqual(source, old)
+        namespace = {}; exec(compile(old, 'old-green-receipt-control', 'exec'), namespace)
+        self.assertTrue(namespace['eligible'](GREEN_PHASES.replace('GATE_EXECUTOR rc=0', '')))
+
+    def test_exact_red_main_reuses_completed_tests_without_a_focused_build(self):
+        self.assertFalse(baseline.eligible(TEST_PHASES), 'overall main remains RED')
+        self.assertTrue(baseline.check_complete(TEST_PHASES, 'tests'))
+        covered = baseline.coverage(TEST_PHASES, [])
+        self.assertIn('acyclic-harness-core', covered)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); repo = root/'repo'; repo.mkdir()
+            env = {k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repo), *args], env=env, stderr=subprocess.DEVNULL).decode().strip()
+            git('init', '-q')
+            git('-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'commit', '-q', '--allow-empty', '-m', 'real main phase output identity fixture')
+            head = git('rev-parse', 'HEAD')
+            logs = root/'logs'; (logs/'wide').mkdir(parents=True)
+            exact = logs/'wide'/(head+'.log')
+            actual = TEST_PHASES.replace(CAPTURED_HEAD, head)
+            exact.write_text(actual)
+            alerts = f'MAIN_WIDE RED {head}: captured real test phases\n'
+            self.assertEqual(baseline.select(repo, head, logs, alerts, 'tests', True), exact)
+            alert_file = root/'alerts'; alert_file.write_text(alerts)
+            (root/'.codex-fleet').mkdir()
+            source = (HERE/'pr-gate.sh').read_text()
+            dispatch = source[source.index('if ! base_log=$('):source.index('clippy_base=$(')]
+            dispatch = dispatch.replace('python Q:/lanes/gate-baseline.py',
+                f'"{sys.executable}" "{HERE / "gate-baseline.py"}" --directory "{logs}" --alerts "{alert_file}"')
+            for negative in [False, True]:
+                selected = dispatch.replace(' --phase tests --exact', '') if negative else dispatch
+                run = subprocess.run(['bash', '-c', f'W="{repo}";base={head};log="{root / "job.log"}";n=1\n'+selected],
+                                     env={**os.environ, 'HOME':str(root)}, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 5 if negative else 0, run.stdout+run.stderr)
+                if not negative:
+                    self.assertIn('GATE_BASELINE log='+str(exact), (root/'job.log').read_text())
+            # The old GREEN-only path rejects the same completed phase and
+            # makes the coordinator rebuild roots already tested on main.
+            with self.assertRaisesRegex(RuntimeError, 'recovery command:'):
+                baseline.select(repo, head, logs, alerts, 'tests', False)
+            spec = importlib.util.spec_from_file_location('focused_baseline', HERE/'gate-test-baseline.py')
+            focused = importlib.util.module_from_spec(spec); spec.loader.exec_module(focused)
+            pr = root/'pr.log'; pr.write_text((FIXTURES/'baseline-delta-pr.txt').read_text())
+            scope = root/'scope.json'; scope.write_text(json.dumps({'tests': sorted(covered)}))
+            result_dir = root/'focused-results'
+            argv = [str(HERE/'gate-test-baseline.py'), str(repo), head, str(pr), '--scope', str(scope),
+                    '--baseline-log', str(exact), '--results', str(result_dir)]
+            from unittest.mock import patch
+            with patch.object(sys, 'argv', argv), patch.object(focused, 'run_logged', side_effect=AssertionError('duplicate main build')), contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(focused.main(), 0)
+            self.assertEqual(output.getvalue(), '')
+            self.assertFalse(result_dir.exists(), 'completed exact main phases need no focused job')
+            # Executor loss, contradictory phase footers and missing coverage
+            # must never borrow completion from unrelated successful phases.
+            target = next(line for line in actual.splitlines(keepends=True) if line.startswith('GATE_TEST_WALL phase=targets '))
+            for broken in [actual.replace('GATE_EXECUTOR rc=1', ''),
+                           actual.replace('GATE_EXECUTOR rc=1', 'GATE_EXECUTOR rc=-9'),
+                           actual.replace(target, target.replace('rc=0', 'rc=101')),
+                           actual + target,
+                           '\n'.join(line for line in actual.splitlines() if not line.startswith('GATE_TEST_COVERAGE all-targets+doc '))]:
+                self.assertFalse(baseline.check_complete(broken, 'tests'))
+                exact.write_text(broken)
+                with self.assertRaisesRegex(RuntimeError, 'recovery command:'):
+                    baseline.select(repo, head, logs, alerts, 'tests', True)
+
     def test_completed_red_matrix_counts_sets_not_failed_commands(self):
         self.assertTrue(baseline.check_complete(RED_FEATURES, 'features'))
         # This is actual main109/110: one all-targets command failed and is
