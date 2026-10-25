@@ -1965,6 +1965,15 @@ impl NativeWatch {
         self.complete
     }
 
+    fn has_subtree_registration(&self) -> bool {
+        match &self.watcher {
+            NativeWatchDriver::Source(source) => source.has_subtree_registration(),
+            NativeWatchDriver::StartupFailure(_) => false,
+            #[cfg(not(windows))]
+            NativeWatchDriver::Adapter(_) => self.recursive,
+        }
+    }
+
     /// Adds one exact directory to a non-recursive native watcher.
     pub fn watch_directory(&mut self, directory: &NamespacePath) -> Result<(), NativeWatchError> {
         #[cfg(not(any(target_os = "linux", windows)))]
@@ -1984,7 +1993,7 @@ impl NativeWatch {
         &mut self,
         directory: &NamespacePath,
     ) -> Result<(), NativeWatchError> {
-        if self.recursive || directory.is_root() {
+        if self.has_subtree_registration() || directory.is_root() {
             return Ok(());
         }
         let relative = crate::native_capture::namespace_to_host_path(directory)
@@ -2042,7 +2051,7 @@ impl NativeWatch {
                 owner,
             )));
         }
-        if self.recursive || directory.is_root() {
+        if self.has_subtree_registration() || directory.is_root() {
             return Ok(());
         }
         #[cfg(windows)]
@@ -2406,7 +2415,7 @@ impl NativeWatch {
 
     /// Adds every directory beneath the root, except the root names in `excluded`, to a non-recursive native watcher: what a baseline that captures the whole tree needs before it starts, so a change to anything it captured is reported.
     pub fn watch_tree(&mut self, excluded: &[&str]) -> Result<(), NativeWatchError> {
-        if self.recursive {
+        if self.has_subtree_registration() {
             return Ok(());
         }
         let mut pending = vec![self.root.clone()];
@@ -2617,7 +2626,7 @@ impl NativeWatch {
             }
             return Ok(());
         }
-        if self.recursive {
+        if self.has_subtree_registration() {
             return Ok(());
         }
         if original.is_some() {
@@ -2785,12 +2794,12 @@ impl NativeWatch {
         self.clear_windows_directories_with_work(work)
             .map_err(demand_watch_error)?;
         #[cfg(target_os = "linux")]
-        if !self.recursive {
+        if !self.has_subtree_registration() {
             self.clear_linux_directories_with_work(work)
                 .map_err(demand_watch_error)?;
         }
         #[cfg(not(any(target_os = "linux", windows)))]
-        if !self.recursive {
+        if !self.has_subtree_registration() {
             if self
                 .watched_directories
                 .iter()
@@ -4394,21 +4403,54 @@ mod demand_admission_tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn nonrecursive_macos_observation_reports_unavailable_without_opaque_registration()
+    fn subtree_registration_admits_demand_without_another_native_watch()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        std::fs::create_dir(root.path().join("a"))?;
+        std::fs::create_dir_all(root.path().join("a/b"))?;
         let watch = watcher(root.path())?;
-        let failure = observed(
-            &watch,
-            &namespace("/a")?,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect_err("opaque nonrecursive admission is not bounded");
-        assert!(matches!(failure.error,
-            DemandError::Observation(error) if matches!(error.as_ref(), NativeWatchError::BoundedObservationUnavailable)));
-        assert_eq!(*failure.work, WorkCounters::default());
+        {
+            let held = watch.lock().map_err(|_| "watch poisoned")?;
+            assert!(
+                !held.recursive,
+                "requested observation mode remains unchanged"
+            );
+            assert!(matches!(&held.watcher, NativeWatchDriver::Source(_)));
+        }
+        for path in ["/a", "/a/b"] {
+            let receipt = observed(
+                &watch,
+                &namespace(path)?,
+                WorkBudget::default(),
+                &CancellationToken::new(),
+            )?;
+            assert_eq!(receipt.work, WorkCounters::UNCHARGED);
+        }
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(matches!(
+            observed(&watch, &namespace("/a")?, WorkBudget::UNBOUNDED, &cancelled)
+                .expect_err("coverage cannot bypass cancellation")
+                .error,
+            DemandError::Cancelled
+        ));
+        let mut held = watch.lock().map_err(|_| "watch poisoned")?;
+        assert!(held.watched_directories.is_empty());
+        // Whole-tree registration and rescan reuse the same physical producer.
+        held.watch_tree(&[])?;
+        held.begin_rescan()?;
+        held.finish_rescan()?;
+        let NativeWatchDriver::Source(source) = &held.watcher else {
+            return Err("native producer identity changed".into());
+        };
+        source.inject(
+            &held.root.join("a/b/changed"),
+            crate::fsevents::ITEM_CREATED,
+        );
+        assert!(matches!(
+            held.poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value,
+            WatchBatch::RescanRequired { .. }
+        ));
         Ok(())
     }
 
