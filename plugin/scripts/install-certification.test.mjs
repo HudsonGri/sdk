@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { plugin, target, packageVersion, fixture } from "./install-fixture.mjs";
 const { blake3 } = createRequire(join(plugin, "tests/hosts/package.json"))("@noble/hashes/blake3");
-test("installer publishes the exact release certification receipt", async () => {
+test("installer verifies bundled certification without external mutable state", async () => {
   const value = fixture();
   const state = join(value.root, "state");
   try {
+    mkdirSync(state);
     const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
     const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
     const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
@@ -48,10 +49,8 @@ test("installer publishes the exact release certification receipt", async () => 
     };
     const installed = await value.install(null, null, environment);
     assert.equal(installed.code, 0, installed.stderr);
-    const destination = process.platform === "win32"
-      ? join(state, "Acyclic", "state-v5", "certification", name)
-      : join(state, "acyclic", "state-v5", "certification", name);
-    assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
+    assert.deepEqual(readdirSync(state), [], "install must not create an external mutable certification cache");
+    assert.deepEqual(JSON.parse(readFileSync(join(certification, name), "utf8")), receipt);
     // The former NODE_ENV=test bypass accepted these incomplete reports. Keep
     // that environment in the regression to prove it grants no exception.
     for (const invalid of [
@@ -65,10 +64,10 @@ test("installer publishes the exact release certification receipt", async () => 
       });
       assert.notEqual(rejected.code, 0, "incomplete or unbound certification accepted");
       assert.match(rejected.stderr, /step=verify installed release certification/);
-      assert.deepEqual(JSON.parse(readFileSync(destination, "utf8")), receipt);
+      assert.deepEqual(readdirSync(state), [], "rejection must not create external state");
     }
   } catch (cause) {
-    throw new Error("step=verify installer certification publication; recovery: with the admitted ACYCLIC_TEST_BINARY, run node --test --test-reporter=tap --test-concurrency=1 plugin/scripts/install-certification.test.mjs", { cause });
+    throw new Error(`step=verify bundled installer certification: ${cause.message}; recovery: with the admitted ACYCLIC_TEST_BINARY, run node --test --test-reporter=tap --test-concurrency=1 plugin/scripts/install-certification.test.mjs`, { cause });
   } finally {
     await value.close();
   }

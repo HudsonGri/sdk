@@ -151,25 +151,25 @@ fn concurrent_installers_share_one_stable_kernel_lock() -> io::Result<()> {
 }
 
 #[test]
-fn report_publication_rejects_aliased_sidecars_and_preserves_the_receipt() -> io::Result<()> {
-    let root = tempfile::tempdir()?;
-    let path = root.path().join("report.json");
-    let original = serde_json::json!({"internal":"original policy input"});
-    package_install::publish_report(&path, &original)?;
-    let stage = path.with_extension("json.next");
-    let mut held = private_file::create(&stage)?;
-    held.write_all(b"other owner")?;
-    drop(held);
-    fs::hard_link(&stage, root.path().join("alias"))?;
-    assert!(
-        package_install::publish_report(&path, &serde_json::json!({"internal":"replacement"}))
-            .is_err()
-    );
-    assert_eq!(fs::read(stage)?, b"other owner");
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&fs::read(path)?).map_err(io::Error::other)?,
-        original
-    );
+fn package_transaction_refuses_every_aliased_sidecar_without_mutation() -> io::Result<()> {
+    for name in [
+        ".install-binary.next",
+        ".installed-binary.next",
+        ".install-transaction.next",
+    ] {
+        let root = tempfile::tempdir()?;
+        let request = request(root.path())?;
+        let stage = request.directory.join(name);
+        let alias = root.path().join("alias");
+        let mut held = private_file::create(&stage)?;
+        held.write_all(b"other owner")?;
+        drop(held);
+        fs::hard_link(&stage, &alias)?;
+        assert!(package_install::install(&request, |_| Ok(())).is_err());
+        assert_eq!(fs::read(&stage)?, b"other owner");
+        assert_eq!(fs::read(&alias)?, b"other owner");
+        assert!(!request.directory.join("installed-binary.json").exists());
+    }
     Ok(())
 }
 
