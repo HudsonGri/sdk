@@ -90,7 +90,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .stage_file_batch::<true, ReplaceFiles>(directories, files, &mut accounting, cancellation)
+            .stage_file_batch::<true, ReplaceFiles>(
+                directories,
+                files,
+                &mut accounting,
+                cancellation,
+            )
             .await;
         work.finish(result, &accounting)
     }
@@ -106,19 +111,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result =
-            self.stage_file_batch::<true, CreateFiles>(directories, files, &mut accounting, cancellation)
-                .await
-                .map_err(|error| match error {
-                    // Authored IDs are derived from the path. Repeating a creation
-                    // in a private candidate can therefore encounter its identity
-                    // before its binding; both refuse the same occupied name.
-                    WorkspaceError::Filesystem(FsError::Mutation(
-                        crate::kernel::GenerationMutationError::FileIdentityAlreadyExists,
-                    )) => FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists)
-                        .into(),
-                    other => other,
-                });
+        let result = self
+            .stage_file_batch::<true, CreateFiles>(
+                directories,
+                files,
+                &mut accounting,
+                cancellation,
+            )
+            .await
+            .map_err(|error| match error {
+                // Authored IDs are derived from the path. Repeating a creation
+                // in a private candidate can therefore encounter its identity
+                // before its binding; both refuse the same occupied name.
+                WorkspaceError::Filesystem(FsError::Mutation(
+                    crate::kernel::GenerationMutationError::FileIdentityAlreadyExists,
+                )) => {
+                    FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into()
+                }
+                other => other,
+            });
         work.finish(result, &accounting)
     }
 
