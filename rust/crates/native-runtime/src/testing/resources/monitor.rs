@@ -60,7 +60,8 @@ impl ResourceSampler {
 
     /// Stops and joins the observer, propagating its sampling or panic error.
     pub fn finish(mut self) -> io::Result<ProcessResources> {
-        self.stop().expect("resource sampler owns its observer")
+        self.stop()
+            .ok_or_else(|| io::Error::other("resource sampler observer already retired"))?
     }
 }
 
