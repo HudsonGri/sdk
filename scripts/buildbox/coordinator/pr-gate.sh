@@ -151,6 +151,18 @@ if { [ "$rc" != 0 ] || grep -aqE '^GATE_CLIPPY rc=[1-9]' "$log"; } && [ "$rc" !=
   fi
   [ -z "$test_base_log" ] || echo "GATE_TEST_BASELINE log=$test_base_log" >> "$log"
 fi
+# Cargo can finish with101 after killing one binary and running later targets.
+# Qualify main first: an incomplete focused baseline must defer the PR verdict.
+cutoff_reason=$(python Q:/lanes/gate-hang.py "$log" --executor-rc "$rc" --binary-cutoffs); cutoff_rc=$?
+if [ "$cutoff_rc" = 0 ]; then
+  v="FAIL #$n: $cutoff_reason log=$log"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_FAIL ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 1
+elif [ "$cutoff_rc" != 1 ]; then
+  v="INFRA #$n: binary-cutoff evidence step failed rc=$cutoff_rc; recovery command: python Q:/lanes/gate-hang.py '$log' --executor-rc '$rc' --binary-cutoffs"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 4
+fi
 # Keep the prepared tree until gate-drain verifies its head pins and merges.
 # The next preparation owns resetting this checkout.
 pr_fails=$(bash Q:/lanes/failed-tests.sh $log)
