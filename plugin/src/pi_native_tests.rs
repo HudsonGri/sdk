@@ -95,8 +95,7 @@ fn native_invocation_decodes_the_current_process_contract() -> Result<()> {
 #[test]
 fn native_capture_policy_rejects_the_removed_polling_override() -> Result<()> {
     let limits = capture_limits(Default::default(), 65_536)?;
-    let mut obsolete =
-        serde_json::to_value(limits).map_err(|error| invalid(&error.to_string()))?;
+    let mut obsolete = serde_json::to_value(limits).map_err(|error| invalid(&error.to_string()))?;
     assert!(obsolete.get("cancellation_poll_ms").is_none());
     obsolete["cancellation_poll_ms"] = json!(250);
     assert!(serde_json::from_value::<PiNativeCaptureLimits>(obsolete).is_err());
