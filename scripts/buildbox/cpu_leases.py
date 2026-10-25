@@ -171,7 +171,7 @@ def current(required=True):
     return record
 
 
-def retire(token):
+def retire(token, outcome=None):
     record, directory = verified_record(token, directory_required=False)
     # Only this root-custodied immutable token can name the retired subtree.
     if directory.exists():
@@ -181,6 +181,11 @@ def retire(token):
         result = record.get('retirement') or {
             **record, **read_stats(directory), 'empty': True, 'end': now(),
             'accounting': 'lease subtree total; nested receipts overlap and must not be added'}
+        if outcome is not None:
+            result = {**result, **outcome}
+        elif 'exit_status' not in result:
+            result = {**result, 'exit_status': None, 'termination': 'interrupted',
+                      'payload_outcome': 'unavailable after lease-manager termination'}
         # Persist the empty subtree's final counters before removing anything.
         # A killed constructor can resume retirement even after its last rmdir.
         atomic_json(record_path(token), {**record, 'retirement': result}, 0o444)
@@ -191,6 +196,10 @@ def retire(token):
         result = record.get('retirement')
         if not result or result.get('id') != token or result.get('empty') is not True:
             raise LeaseError('retirement-evidence', 'missing final counters for '+token)
+    # This receipt owns its final counters before the record/slot can retire.
+    # A later occupant may overwrite the bounded slot, never this sidecar.
+    meta=result.get('receipt_meta')
+    if meta: atomic_json(meta+'.cpu-lease.terminal',result,0o444)
     atomic_json(CONTROL_ROOT/('slot-'+str(record['index'])+'.terminal'),result,0o444)
     record_path(token).unlink()
     return result
@@ -210,16 +219,7 @@ def observe(token, cancel=False):
                         if cancel: signal.pidfd_send_signal(descriptor, signal.SIGTERM)
                         select.select([descriptor], [], [])
                 finally: os.close(descriptor)
-    result=retire(token) if record_path(token).exists() else completed(token)
-    meta=result.get('receipt_meta')
-    if meta and not Path(meta+'.cpu-lease.terminal').exists():
-        # Root custody survives a daemon restart without its client env. Keep
-        # final counters joined to the original receipt even if the manager
-        # died before recording the payload's outcome; never invent that rc.
-        result={**result,'exit_status':None,'termination':'interrupted',
-                'payload_outcome':'unavailable after lease-manager termination'}
-        atomic_json(meta+'.cpu-lease.terminal',result,0o444)
-    return result
+    return retire(token) if record_path(token).exists() else completed(token)
 
 
 def execute(index, token, tenant, argv):
@@ -294,9 +294,7 @@ def execute(index, token, tenant, argv):
             result = error.code; category = 'interrupted'
             raise
         finally:
-            terminal = retire(token)
-            terminal.update(exit_status=result,termination=category)
-            if meta: atomic_json(meta+'.cpu-lease.terminal', terminal, 0o444)
+            retire(token, {'exit_status': result, 'termination': category})
 
 
 def launch(index, token, tenant, argv):

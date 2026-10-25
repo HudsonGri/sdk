@@ -247,7 +247,10 @@ fd=os.pidfd_open(pid);assert process_identity(pid)==sys.argv[3];signal.pidfd_sen
 from pathlib import Path
 sys.path.insert(0,sys.argv[1]);import cpu_leases as c
 token,boundary,former=sys.argv[2:]
-if former!='new':exec(Path(former).read_text(),c.__dict__)
+if former!='new':
+ exec(Path(former).read_text(),c.__dict__)
+ old_retire=c.retire
+ c.retire=lambda token,outcome=None:old_retire(token)
 rmdir=Path.rmdir;atomic=c.atomic_json
 def interrupted_rmdir(path,*args,**kwargs):
  result=rmdir(path,*args,**kwargs)
@@ -308,12 +311,53 @@ c.execute(5,token,'cloud',[sys.executable,'-c','pass'])
                         self.assertFalse((self.control/(token+'.json')).exists())
                         receipt=json.loads(Path(meta+'.cpu-lease.terminal').read_text())
                         self.assertEqual(receipt['id'],token);self.assertTrue(receipt['empty'])
-                        self.assertEqual(receipt['termination'],'interrupted')
-                        self.assertIsNone(receipt['exit_status'],'a killed manager lost the payload outcome')
+                        self.assertEqual(receipt['termination'],'command')
+                        self.assertEqual(receipt['exit_status'],0,'completed payload outcome survives manager termination')
                     successor,_=self.invoke(5,'print("retirement-reclaimed")')
                     output,error=successor.communicate(timeout=3)
                     self.assertEqual(successor.returncode,0,error.decode())
                     self.assertIn(b'retirement-reclaimed',output)
+
+    def test_kill_after_record_unlink_preserves_receipt_across_slot_reuse(self):
+        former=HERE/'fixtures/cpu-leases/former-retire-sidecar.py'
+        provenance=json.loads(former.with_name('former-retire-sidecar.origin.json').read_text())
+        self.assertEqual(hashlib.sha256(former.read_bytes()).hexdigest(),provenance['sha256'])
+        driver='''import os,sys,signal
+from pathlib import Path
+sys.path.insert(0,sys.argv[1]);import cpu_leases as c
+token,former=sys.argv[2:]
+if former!='new':
+ exec(Path(former).read_text(),c.__dict__)
+ old_retire=c.retire
+ c.retire=lambda token,outcome=None:old_retire(token)
+unlink=Path.unlink
+def killed_unlink(path,*args,**kwargs):
+ result=unlink(path,*args,**kwargs)
+ if path==c.record_path(token):os.kill(os.getpid(),signal.SIGKILL)
+ return result
+Path.unlink=killed_unlink
+c.execute(5,token,'cloud',[sys.executable,'-c','pass'])
+'''
+        for negative in [True,False]:
+            with self.subTest(negative=negative), tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+                token=uuid.uuid4().hex;meta=str(Path(temporary)/'owned-fixture-meta')
+                killed=subprocess.run(['sudo','-n','--preserve-env','/usr/bin/python3','-B','-c',driver,
+                    str(self.control),token,str(former) if negative else 'new'],
+                    env={**self.env,'BUILD_SLOT_RECEIPT_META':meta},capture_output=True)
+                self.assertIn(killed.returncode,[-9,137],killed.stderr.decode())
+                self.assertFalse((self.control/(token+'.json')).exists())
+                successor,successor_token=self.invoke(5,'print("same-slot-reused")')
+                output,error=successor.communicate(timeout=3)
+                self.assertEqual(successor.returncode,0,error.decode())
+                self.assertIn(b'same-slot-reused',output)
+                self.assertEqual(json.loads((self.control/'slot-5.terminal').read_text())['id'],successor_token)
+                sidecar=Path(meta+'.cpu-lease.terminal')
+                if negative:self.assertFalse(sidecar.exists(),'captured former retirement loses the receipt')
+                else:
+                    receipt=json.loads(sidecar.read_text())
+                    self.assertEqual(receipt['id'],token);self.assertTrue(receipt['empty'])
+                    self.assertIn('usage_usec',receipt['cpu_stat'])
+                    self.assertEqual(receipt['exit_status'],0);self.assertEqual(receipt['termination'],'command')
 
     def test_real_shared_admission_bounds_all_classes_queues_ninth_and_reclaims_killed_job(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:

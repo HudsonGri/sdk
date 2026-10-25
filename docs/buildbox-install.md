@@ -3,11 +3,17 @@
 All lanes and the efficiency loop must install bb2 tools through:
 
 ```
-sudo /home/var/bin/bb-install.py --source /mnt/bb/<candidate>/scripts/buildbox
+sudo /usr/bin/python3 -B /mnt/bb/<candidate>/scripts/buildbox/bb-install.py --source /mnt/bb/<candidate>/scripts/buildbox
 # prints /mnt/bb/tmp/bb-install-<qualified-generation>
 # after acquiring the idle PR mkdir lock:
-sudo python3 /mnt/bb/tmp/bb-install-<qualified-generation>/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
+sudo /usr/bin/python3 -B /mnt/bb/tmp/bb-install-<qualified-generation>/bb-install.py --publish /mnt/bb/tmp/bb-install-<qualified-generation>
 ```
+
+Use the reviewed candidate's installer for preparation, then its frozen copy
+for publication. The candidate owns both its tool list and mandatory suites.
+An older installed installer cannot qualify newly added tools. Preparation
+checks that its own bytes match the source installer, and never copies an
+earlier generation's qualification token into the new stage.
 
 For a change confined to selected tools, add `--only bb_target_store.py
 bb-install.py` to publication. The complete frozen candidate still qualifies;
@@ -149,8 +155,10 @@ start the payload before admission durably journals the ticket. A crash before
 handoff starts no work; a crash afterward retains the lease through root
 custody and pidfd recovery. A slot becomes reusable only after its exact
 subtree is empty. Bounded terminal records resolve exit/retirement races.
-Final counters are durably checkpointed before removing the empty subtree,
-so recovery can finish retirement if the manager dies after its last `rmdir`
+Final counters and the known payload outcome are durably checkpointed before
+removing the empty subtree. The receipt's terminal sidecar is durable before
+deleting the lease record, so slot reuse cannot overwrite its only counters.
+Recovery can finish retirement if the manager dies after its last `rmdir`
 or after terminal publication. Admission startup adopts that custody even
 when the retired directory is already absent.
 Receipt sidecars retain lease identity, queue time, execution/end timestamps,

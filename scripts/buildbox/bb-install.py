@@ -2,7 +2,9 @@
 """The privileged, test-gated publication boundary for bb2 tools.
 
 Normal users cannot modify the root-owned bin directory or published files.
-Install with sudo bb-install --source <reviewed scripts/buildbox directory>.
+Run the reviewed candidate's bb-install.py --source <its scripts/buildbox>.
+The candidate owns its complete tool set and qualification policy; an installed
+predecessor cannot qualify additions it does not know about.
 The fixed test policy runs as var against a frozen candidate before any rename.
 """
 import argparse
@@ -111,6 +113,8 @@ def qualify(source, user):
 
 def prepare(source):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo; direct tool edits are refused')
+    if file_hash(Path(source)/'bb-install.py')!=file_hash(Path(__file__)):
+        raise ValueError('run the reviewed source installer; its tool set and qualification policy must match the candidate')
     account = pwd.getpwnam('var')
     stage = Path(tempfile.mkdtemp(prefix='bb-install-', dir='/mnt/bb/tmp')); stage.chmod(0o755)
     try:
@@ -118,18 +122,13 @@ def prepare(source):
         # dependencies enter the qualification generation.
         for item in Path(source).rglob('*'):
             if '__pycache__' in item.parts: continue
+            if item.parent==Path(source) and item.name in ('.qualified.json','.predecessors.json'):continue
             if item.is_symlink(): raise ValueError('tool source symlink refused: ' + str(item))
             if item.is_file() and not item.name.endswith('.bak-gatespeed'):
                 destination=stage/item.relative_to(source)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 publish(destination, item.read_bytes(), 0o444)
-        hashes = {name: hashlib.sha256((stage/name).read_bytes()).hexdigest() for name in TOOLS}
-        # Fence only the selected publication destinations. Unrelated runtime
-        # modules may advance while this candidate qualifies and stay intact.
-        previous = {name: file_hash(BIN/name) for name in TOOLS}
-        publish(stage/'.predecessors.json', json.dumps(previous).encode(), 0o400)
-        qualify(stage, account.pw_name)
-        publish(stage/'.qualified.json', json.dumps(hashes).encode(), 0o400)
+        qualify_generation(stage, account.pw_name)
         return stage
     except BaseException:
         # A failed candidate remains evidence but has no qualification token.
@@ -147,11 +146,28 @@ def select_tools(only):
     return selected
 
 
-def publish_candidate(candidate, only=None):
-    if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
+def candidate_directory(candidate):
     stage=Path(candidate)
     if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():
         raise ValueError('not an installer candidate')
+    return stage
+
+
+def qualify_generation(stage, user):
+    # Qualification tokens are never inherited from the preceding generation.
+    (stage/'.qualified.json').unlink(missing_ok=True)
+    hashes={name:file_hash(stage/name) for name in TOOLS}
+    if any(value is None for value in hashes.values()):
+        raise ValueError('qualification requires every candidate tool')
+    previous={name:file_hash(BIN/name) for name in TOOLS}
+    publish(stage/'.predecessors.json',json.dumps(previous).encode(),0o400)
+    qualify(stage,user)
+    publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
+
+
+def publish_candidate(candidate, only=None):
+    if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
+    stage=candidate_directory(candidate)
     token=stage/'.qualified.json'; fence=stage/'.predecessors.json'
     selected=select_tools(only)
     for file in [stage, token, fence, *[stage/name for name in TOOLS]]:
@@ -208,5 +224,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.source:
         if args.only:parser.error('--only requires --publish')
-        print(prepare(args.source))
+        try:print(prepare(args.source))
+        except (OSError,ValueError,subprocess.CalledProcessError) as error:
+            recovery=shlex.join(['sudo','-n','/usr/bin/python3','-B',str(Path(args.source).resolve()/'bb-install.py'),
+                                 '--source',args.source])
+            print('kind=INSTALL_INFRA step=qualify-source detail='+shlex.quote(str(error))+
+                  ' recovery='+shlex.quote(recovery),file=sys.stderr)
+            raise SystemExit(224)
     else:print(json.dumps(publish_candidate(args.publish,args.only)),file=__import__('sys').stderr)

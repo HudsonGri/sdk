@@ -163,6 +163,75 @@ finally:shutil.rmtree(stage)
             unprotected=Path(temporary)/'unprotected';unprotected.write_bytes(b'old');unprotected.write_bytes(b'partial')
             self.assertEqual(unprotected.read_bytes(),b'partial')
 
+    def test_actual_predecessor_bootstraps_new_policy_before_publication(self):
+        driver='''import importlib.util,sys,json,hashlib,tempfile,shutil
+from pathlib import Path
+from unittest.mock import patch
+source=Path(sys.argv[1]);fixture=source.parent/'fixtures/installer-upgrade'
+info=json.loads((fixture/'origin.json').read_text())
+assert hashlib.sha256((fixture/'predecessor.py').read_bytes()).hexdigest()==info['sha256']
+def load(name,path):
+ s=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
+old=load('predecessor',fixture/'predecessor.py')
+root=Path(tempfile.mkdtemp(dir='/mnt/bb/tmp'));live=root/'live';live.mkdir();stages=[]
+try:
+ # The upgrade boundary needs the actual tool bytes, not three copies of all
+ # unrelated regression fixtures. Suites are observed below, not run recursively.
+ candidate=root/'source';candidate.mkdir()
+ current=load('reviewed_source',source)
+ for name in current.TOOLS:old.publish(candidate/name,(source.parent/name).read_bytes(),0o444)
+ for name in old.TOOLS:old.publish(live/name,('installed-'+name).encode())
+ old.BIN=live;old_qualify=old.qualify;old_calls=[]
+ # Execute the predecessor's real freeze/token path. Recursive test execution
+ # is observed at its subprocess boundary; each required suite is qualified
+ # separately by the enclosing installer suite and before actual deployment.
+ def qualify_old(directory,user):
+  with patch.object(old.subprocess,'run',side_effect=lambda command,**kw:old_calls.append(command)):
+   old_qualify(directory,user)
+ old.qualify=qualify_old;stage=old.prepare(candidate);stages.append(stage)
+ assert set(json.loads((stage/'.qualified.json').read_text()))==set(old.TOOLS)
+ new=load('candidate',stage/'bb-install.py');new.BIN=live;new.secure_bin=lambda:live
+ assert len(old.TOOLS)==12 and len(new.TOOLS)==15
+ own_file=new.__file__;new.__file__=str(fixture/'predecessor.py')
+ try:new.prepare(stage)
+ except ValueError as error:assert 'run the reviewed source installer' in str(error)
+ else:raise AssertionError('different installer policy accepted')
+ finally:new.__file__=own_file
+ try:new.publish_candidate(stage,['bb-install.py'])
+ except ValueError as error:assert 'qualified candidate changed' in str(error)
+ else:raise AssertionError('actual predecessor token qualified new tool set')
+ assert (live/'bb-install.py').read_bytes()==b'installed-bb-install.py'
+ real_qualify=new.qualify;new_calls=[]
+ def qualify_new(directory,user):
+  assert not (directory/'.qualified.json').exists()
+  with patch.object(new.subprocess,'run',side_effect=lambda command,**kw:new_calls.append(command)):
+   real_qualify(directory,user)
+ new.qualify=qualify_new
+ # The canonical source entry freezes and qualifies its own complete generation;
+ # no predecessor whitelist/token is promoted into a new qualification.
+ qualified=new.prepare(stage);stages.append(qualified)
+ assert {command[-1] for command in new_calls}>={
+  'cache_policy.test.py','cpu_leases.test.py','runtime.test.py','install.test.py'}
+ assert not {'cache_policy.test.py','cpu_leases.test.py'}&{command[-1] for command in old_calls}
+ assert set(json.loads((qualified/'.qualified.json').read_text()))==set(new.TOOLS)
+ assert json.loads((qualified/'.predecessors.json').read_text())['cpu_leases.py'] is None
+ publisher=load('publisher',qualified/'bb-install.py');publisher.BIN=live;publisher.secure_bin=lambda:live
+ publisher.publish_candidate(qualified,['bb-install.py'])
+ assert (live/'bb-install.py').read_bytes()==source.read_bytes()
+ def failed(directory,*args):
+  stages.append(directory)
+  raise RuntimeError('qualification failed control')
+ new.qualify=failed
+ try:new.prepare(stage)
+ except RuntimeError:pass
+ else:raise AssertionError('failed qualification accepted')
+ assert not (stages[-1]/'.qualified.json').exists()
+finally:
+ for stage in stages:shutil.rmtree(stage)
+ shutil.rmtree(root)
+'''
+        subprocess.run(['sudo','-n',*python('-c',driver,HERE/'bb-install.py')],check=True)
+
     def test_writable_home_cannot_replace_pinned_tool_directory(self):
         import uuid
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
