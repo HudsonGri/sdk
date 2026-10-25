@@ -16,12 +16,22 @@ pub(in crate::native_mount) fn callback_is_terminal(error: &NativeMountError) ->
     }
 }
 
-fn source_is_terminal(error: &MountSourceError) -> bool {
+fn source_is_terminal(mut error: &MountSourceError) -> bool {
+    // Walk the primary chain without recursion or a replacement allocation.
+    // Its reply status does not erase any failed completion accounting.
+    while let MountSourceError::MutationFinalization {
+        primary, cleanup, ..
+    } = error
+    {
+        if cleanup.is_some() {
+            return true;
+        }
+        let Some(primary) = primary.as_ref() else {
+            return true;
+        };
+        error = primary;
+    }
     match error {
-        // The primary's reply status does not erase failed completion accounting.
-        MountSourceError::MutationFinalization {
-            primary, cleanup, ..
-        } => cleanup.is_some() || primary.as_ref().as_ref().is_none_or(source_is_terminal),
         MountSourceError::NativeWork(error) => materialization_is_terminal(error),
         MountSourceError::WorkspaceCause(error) => workspace_is_terminal(error),
         MountSourceError::Filesystem(error) => filesystem_is_terminal(error),
