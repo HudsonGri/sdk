@@ -322,6 +322,84 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
 }
 
 #[test]
+fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
+-> Result<(), Box<dyn std::error::Error>> {
+    let borrowed = source(FilesystemProfile::Portable)?;
+    for driver_owned in [false, true] {
+        let root_stop = CancellationToken::new();
+        let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
+        let original = root.native_volume_work(WorkBudget {
+            items_examined: 3,
+            ..crate::performance::BOUNDARY_BUDGET
+        })?;
+        let source = native_source_io_control(&borrowed, &original)?;
+        let weak = Arc::downgrade(&source);
+        let lease = source.native_source_io_lease(source.clone())?;
+        let last_lease = lease.clone();
+        let mut packet = crate::native_mount::NativeMountRetirement {
+            retained_source: None,
+            startup_source_watch: None,
+            destination_guard: None,
+            #[cfg(windows)]
+            warm_namespace: None,
+        };
+        let mut session = crate::NativeMountSession::new(
+            crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: crate::VolumeId::new(),
+                destination: Path::new("not-mounted").to_path_buf(),
+                writable: false,
+            },
+            None,
+            None,
+        );
+        if driver_owned {
+            packet.retained_source = Some(source);
+        } else {
+            session.retained_source = Some(source);
+        }
+        root_stop.cancel();
+        let result = if driver_owned {
+            packet.retire(None)
+        } else {
+            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)
+        };
+        assert!(matches!(
+            result,
+            Err(NativeMountError::Materialization(
+                crate::NativeTreeMaterializationError::Work(_)
+            ))
+        ));
+        assert!(if driver_owned {
+            packet.retained_source.is_some()
+        } else {
+            session.retained_source.is_some()
+        });
+        drop(lease);
+        drop(last_lease);
+        let changed = if driver_owned {
+            packet.retire(None)?
+        } else {
+            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?
+        };
+        assert!(changed);
+        assert!(
+            weak.upgrade().is_none(),
+            "physical source owner was retained after quiescence"
+        );
+        let completed = root.receipt();
+        let changed = if driver_owned {
+            packet.retire(None)?
+        } else {
+            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?
+        };
+        assert!(!changed);
+        assert_eq!(root.receipt(), completed);
+    }
+    Ok(())
+}
+
+#[test]
 fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     let root = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;

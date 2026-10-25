@@ -383,44 +383,11 @@ impl NativeMountSession {
                 drop(self.driver.take());
                 changed = true;
             }
-            if let Some(source) = self.retained_source.as_ref() {
-                match work {
-                    NativeSessionStopWork::Meter(meter) => source.shutdown_with_meter(meter),
-                    NativeSessionStopWork::AcceptedWait(wait) => {
-                        source.shutdown_with_cleanup_wait(wait)
-                    }
-                    NativeSessionStopWork::AcceptedDrop => source.shutdown_accepted_cleanup(),
-                }
-                .map_err(NativeMountError::from)?;
-                // The source confirmed actual watcher quiescence before this
-                // owner releases its Arc; failed/cancelled joins keep it intact.
-                drop(self.retained_source.take());
-                changed = true;
-            }
-            if let Some(owner) = self.startup_source_watch.as_mut() {
-                let stopped = if owner.is_stopped() {
-                    Ok(false)
-                } else {
-                    match work {
-                        NativeSessionStopWork::Meter(meter) => owner
-                            .stop(&mut adapter::NativeDemandCarrier::Native(meter))
-                            .map_err(NativeMountError::from),
-                        NativeSessionStopWork::AcceptedWait(wait) => owner
-                            .stop_with_cleanup_wait(wait)
-                            .map_err(NativeMountError::from),
-                        NativeSessionStopWork::AcceptedDrop => owner
-                            .stop_accepted_cleanup()
-                            .map_err(NativeMountError::from),
-                    }
-                };
-                if owner.is_stopped() {
-                    // Terminal transfer of already owned data is not a new
-                    // native permission, and survives a late admission error.
-                    drop(self.startup_source_watch.take());
-                    changed = true;
-                }
-                stopped?;
-            }
+            changed |= retirement::retire_sources(
+                &mut self.retained_source,
+                &mut self.startup_source_watch,
+                work,
+            )?;
             Ok(changed)
         })();
         self.measured_cleanup_failed = result.is_err();
@@ -456,26 +423,12 @@ impl NativeMountSession {
         &mut self,
         work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
-        let Some(guard) = self.destination_guard.as_mut() else {
+        if self.destination_guard.is_none() {
             return Ok(false);
-        };
-        let result = guard.remove_destination().and_then(|()| {
-            if guard.birth_cleanup.is_some() {
-                // Namespace producers have retired. Complete the accepted fence
-                // release on its original credit, even after caller cancellation.
-                guard.release_cleanup(None)
-            } else {
-                match work {
-                    NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter),
-                    NativeSessionStopWork::AcceptedWait(wait) => guard.release_cleanup(Some(wait)),
-                    NativeSessionStopWork::AcceptedDrop => guard.release_cleanup(None),
-                }
-            }
-        });
+        }
+        let result = retirement::retire_destination(&mut self.destination_guard, work);
         self.measured_cleanup_failed = result.is_err();
-        result?;
-        drop(self.destination_guard.take());
-        Ok(true)
+        result
     }
 }
 

@@ -144,12 +144,11 @@ impl NativeMountRetirement {
         wait: Option<&crate::CancellationToken>,
     ) -> Result<bool, NativeMountError> {
         let mut changed = self.retire_source_and_watch_with_cleanup(wait)?;
-        if let Some(guard) = self.destination_guard.as_mut() {
-            guard.remove_destination()?;
-            guard.release_cleanup(wait)?;
-            drop(self.destination_guard.take());
-            changed = true;
-        }
+        let work = match wait {
+            Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
+            None => NativeSessionStopWork::AcceptedDrop,
+        };
+        changed |= retirement::retire_destination(&mut self.destination_guard, &work)?;
         Ok(changed)
     }
 
@@ -158,31 +157,15 @@ impl NativeMountRetirement {
         &mut self,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<bool, NativeMountError> {
-        let mut changed = false;
-        if let Some(source) = self.retained_source.as_ref() {
-            match wait {
-                Some(wait) => source.shutdown_with_cleanup_wait(wait),
-                None => source.shutdown_accepted_cleanup(),
-            }?;
-            drop(self.retained_source.take());
-            changed = true;
-        }
-        if let Some(watch) = self.startup_source_watch.as_mut() {
-            let result = if watch.is_stopped() {
-                Ok(false)
-            } else {
-                match wait {
-                    Some(wait) => watch.stop_with_cleanup_wait(wait),
-                    None => watch.stop_accepted_cleanup(),
-                }
-            };
-            if watch.is_stopped() {
-                drop(self.startup_source_watch.take());
-                changed = true;
-            }
-            result?;
-        }
-        Ok(changed)
+        let work = match wait {
+            Some(wait) => NativeSessionStopWork::AcceptedWait(wait),
+            None => NativeSessionStopWork::AcceptedDrop,
+        };
+        retirement::retire_sources(
+            &mut self.retained_source,
+            &mut self.startup_source_watch,
+            &work,
+        )
     }
 
     pub(super) fn is_retired(&self) -> bool {
