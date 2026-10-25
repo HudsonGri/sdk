@@ -13,7 +13,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&reported[0], &actual.0);
         proptest::prop_assert_eq!(&reported[1], &actual.1);
         proptest::prop_assert_ne!(&reported[0], &reported[1]);
-        proptest::prop_assert_eq!(reported[0].parent(), Some(parent.as_path()));
+        proptest::prop_assert_eq!(reported[0].parent(), reported[1].parent());
         proptest::prop_assert_eq!(&reported[1], &super::super::registry::path().unwrap());
         proptest::prop_assert_ne!(reported[0].clone(), destination.clone());
         proptest::prop_assert_ne!(reported[1].clone(), destination.clone());
@@ -23,6 +23,47 @@ proptest::proptest! {
             proptest::prop_assert_eq!(reported[2].parent(), Some(parent.as_path()));
         }
     }
+}
+
+#[test]
+fn destination_fences_survive_ancestor_relocation_and_retire_through_original_parents()
+-> Result<(), Box<dyn std::error::Error>> {
+    registry::initialize()?;
+    let root = tempfile::tempdir()?;
+    let ancestor = root.path().join("ancestor");
+    let moved = root.path().join("moved");
+    std::fs::create_dir(&ancestor)?;
+    let destination = ancestor.join("mount");
+    std::fs::create_dir(&destination)?;
+    std::fs::write(ancestor.join("authored"), b"preserve")?;
+    let canonical = destination.canonicalize()?;
+    let (fence, _) = MountDestinationGuard::paths_for_canonical(&canonical)?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut guard = None;
+    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+    let mut guard = guard.unwrap();
+    guard.prepare_destination_cleanup(&destination, &work)?;
+    std::fs::rename(&ancestor, &moved)?;
+    assert!(!ancestor.exists());
+    assert!(
+        fence.is_file(),
+        "ownership recovery must not traverse the destination's ancestors"
+    );
+    assert!(matches!(
+        acquire_existing_mount_lock(&fence),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    assert_eq!(MountDestinationGuard::paths_for_canonical(&canonical)?.0, fence);
+    cancellation.cancel();
+    guard.remove_destination()?;
+    guard.release_cleanup(None)?;
+    assert!(guard.file.is_none());
+    assert!(!fence.exists());
+    assert!(!moved.join("mount").exists());
+    assert_eq!(std::fs::read(moved.join("authored"))?, b"preserve");
+    Ok(())
 }
 
 #[cfg(windows)]
