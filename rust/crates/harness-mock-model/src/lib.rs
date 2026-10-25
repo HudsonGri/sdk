@@ -63,6 +63,10 @@
 //! arguments, freeform input and JSON replies; strings insert raw text, other
 //! values compact JSON. Pointers follow RFC 6901. Missing/malformed templates
 //! fail with HTTP 500; copied data is never evaluated as another template.
+//! `{"$json":{"text":{"$request":"/input/2/content/0/text"},
+//! "pointer":"/skills/0/source","set":{"/path":"unretained"}}}` selects
+//! from JSON-encoded request text and optionally mutates existing leaves. This
+//! keeps request-derived selectors and adversarial mutations in the one binder.
 mod bindings;
 mod wire;
 pub use bindings::bind_result;
