@@ -281,6 +281,11 @@ pub(super) async fn live_lazy_mount_of(
     use crate::native_mount::{MountOptions, MountPublication};
     use crate::{Fs, MemoryLazyWorkspaceStore};
 
+    crate::initialize_native_mount_services()?;
+    let cancellation = CancellationToken::new();
+    let work =
+        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
+            .map_err(|(cause, _)| cause)?;
     let lazy = LazyWorkspace::attach(
         &Fs::memory(),
         name,
@@ -298,12 +303,14 @@ pub(super) async fn live_lazy_mount_of(
     )
     .await?
     .0;
+    let options = crate::native_mount::tests::fixture_access::options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
     std::fs::create_dir_all(destination)?;
     Ok(lazy
-        .mount(
-            destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
+        .mount(destination, options.native_context(&work, None, None))
         .await?)
 }
 
