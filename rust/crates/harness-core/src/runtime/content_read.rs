@@ -267,6 +267,7 @@ impl TaskContext {
 
     /// A reference exposes identity only. Reading its body remains a separate
     /// authenticated operation, so admission never loads an omitted output.
+    #[cfg(all(feature = "filesystem", any(test, not(target_arch = "wasm32"))))]
     pub(crate) fn authorize_file_reference(
         &self,
         file: &FileRef,

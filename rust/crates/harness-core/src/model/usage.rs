@@ -4,6 +4,7 @@ use crate::Result;
 use serde_json::Value;
 
 #[doc(hidden)]
+#[cfg(any(test, feature = "filesystem", feature = "tui"))]
 pub fn accumulate_usage(total: &mut Value, step: Value) -> Result<()> {
     accumulate_usage_before_insert(total, step, &mut |_| Ok(()))
 }

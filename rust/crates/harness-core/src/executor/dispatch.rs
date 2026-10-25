@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode::Unsupported;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use futures::StreamExt as _;
 use futures::future::Either;
 
 impl StockExecution<'_> {

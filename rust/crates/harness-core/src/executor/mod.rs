@@ -20,7 +20,6 @@ use crate::{
     tool::{ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
