@@ -35,8 +35,11 @@ fn cancelled_registration_fixture()
 fn tree_registration_refuses_the_cancelled_original_before_enumeration()
 -> Result<(), Box<dyn std::error::Error>> {
     let (_directory, mut watch) = cancelled_registration_fixture()?;
+    // No directory below the root is eligible for registration. The old
+    // walker enumerated this tree and returned success without ever reaching
+    // a watch-directory call, whose later admission could mask that defect.
     assert!(matches!(
-        watch.watch_tree(&[]),
+        watch.watch_tree(&["arrived"]),
         Err(NativeWatchError::Cancelled(_))
     ));
     Ok(())
