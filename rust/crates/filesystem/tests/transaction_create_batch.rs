@@ -1,7 +1,13 @@
-use super::*;
+#![cfg(not(target_arch = "wasm32"))]
 
-type MemoryWorkspace = Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
-type MemoryTransaction = Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+use acyclic_fs::{
+    CancellationToken, FsError, IdempotencyKey, Transaction, TransactionCommit, WorkBudget,
+    Workspace, WorkspaceError,
+};
+use acyclic_fs::kernel::FileMetadata;
+
+type MemoryWorkspace = Workspace<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+type MemoryTransaction = Transaction<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 macro_rules! value {
     ($operation:expr) => {
@@ -17,28 +23,31 @@ async fn begin(workspace: &MemoryWorkspace) -> MemoryTransaction {
     ))
 }
 
+async fn commit(
+    transaction: &mut MemoryTransaction,
+) -> Result<TransactionCommit<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>, WorkspaceError> {
+    transaction.commit::<WorkspaceError, _, _>(
+        None,
+        acyclic_fs::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
+            value: (),
+            work: Default::default(),
+        }))
+    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+}
+
 async fn publish(transaction: &mut MemoryTransaction) {
-    assert!(matches!(
-        value!(transaction.commit::<WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| std::future::ready(Ok(crate::OperationReceipt {
-                value: (),
-                work: Default::default(),
-            }))
-        )),
-        TransactionCommit::Committed(_)
-    ));
+    assert!(matches!(commit(transaction).await.unwrap(), TransactionCommit::Committed(_)));
 }
 
 async fn workspace(folded: bool) -> MemoryWorkspace {
-    let mut config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
+    let mut config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral);
     if folded {
-        config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
+        config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded;
     }
-    value!(crate::Fs::memory().create_workspace_with_config(
+    value!(acyclic_fs::Fs::memory().create_workspace_with_config(
         "immutable-batch",
         config,
         WorkBudget::UNBOUNDED,
@@ -73,7 +82,7 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
                 let mut transaction = begin(&workspace).await;
                 if pending {
                     transaction
-                        .write_text("/pending", "retained")
+                        .write_text("/pending", target)
                         .await
                         .unwrap();
                 }
@@ -94,15 +103,19 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
                     matches!(
                         failure.error,
                         WorkspaceError::Filesystem(FsError::Mutation(
-                            crate::kernel::GenerationMutationError::AlreadyExists
+                            acyclic_fs::kernel::GenerationMutationError::AlreadyExists
                         ))
                     ),
                     "folded={folded}, pending={pending}, target={target}: {:?}",
                     failure.error
                 );
-                assert_eq!(transaction.checkout.has_pending_mutations(), pending);
                 if pending {
                     publish(&mut transaction).await;
+                } else {
+                    assert!(matches!(
+                        commit(&mut transaction).await,
+                        Err(WorkspaceError::Filesystem(FsError::NoPendingMutations))
+                    ));
                 }
                 for absent in ["/out/new", "/uncommitted"] {
                     assert!(
@@ -131,7 +144,7 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
                             &CancellationToken::new()
                         ))
                         .as_ref(),
-                        b"retained"
+                        target.as_bytes()
                     );
                 }
             }
@@ -151,21 +164,12 @@ async fn immutable_batch_conflicts_with_a_concurrently_created_binding() {
     ));
     workspace.write_text("/sealed", "upstream").await.unwrap();
     assert!(matches!(
-        value!(transaction.commit::<WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| std::future::ready(Ok(crate::OperationReceipt {
-                value: (),
-                work: Default::default(),
-            }))
-        )),
+        commit(&mut transaction).await.unwrap(),
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
         value!(transaction.rebase(1, WorkBudget::UNBOUNDED, &CancellationToken::new())),
-        crate::TransactionRebase::Conflicted { .. }
+        acyclic_fs::TransactionRebase::Conflicted { .. }
     ));
     assert_eq!(
         value!(workspace.read(

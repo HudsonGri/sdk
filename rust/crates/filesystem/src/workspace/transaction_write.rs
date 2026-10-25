@@ -703,7 +703,3 @@ mod batch_index_properties;
 #[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_rebase.rs"]
 mod batch_rebase;
-
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
-#[path = "transaction_create_batch_tests.rs"]
-mod create_batch_tests;
