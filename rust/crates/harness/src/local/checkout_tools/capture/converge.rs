@@ -202,7 +202,10 @@ pub(super) async fn replay(
         require_rescan(reason)?;
         return Ok(false);
     }
-    arrivals::register(&mut cursor.watcher, &batch, physical, policy)?;
+    cursor
+        .watcher
+        .watch_arrivals(&batch, policy, MAXIMUM_PATHS)
+        .map_err(storage)?;
     #[cfg(all(test, not(acyclic_harness_loom)))]
     cursor.inject("register")?;
     let result = capture_watch_batch(

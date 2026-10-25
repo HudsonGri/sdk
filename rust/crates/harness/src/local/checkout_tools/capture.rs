@@ -9,7 +9,6 @@ use acyclic_fs::{
 };
 use std::time::Duration;
 
-mod arrivals;
 mod converge;
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]

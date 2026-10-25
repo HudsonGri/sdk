@@ -14,6 +14,89 @@ pub(super) fn measured_watch_startup_work() -> WorkCounters {
     }
 }
 
+fn cancelled_registration_fixture()
+-> Result<(tempfile::TempDir, NativeWatch), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    std::fs::create_dir_all(directory.path().join("arrived/child"))?;
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let watch = NativeWatch::open_with_profile_with_native_work(
+        directory.path(),
+        FilesystemProfile::Portable,
+        measured_watch_options(),
+        &original,
+    )?;
+    cancellation.cancel();
+    Ok((directory, watch))
+}
+
+#[test]
+fn tree_registration_refuses_the_cancelled_original_before_enumeration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_directory, mut watch) = cancelled_registration_fixture()?;
+    assert!(matches!(
+        watch.watch_tree(&[]),
+        Err(NativeWatchError::Cancelled(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn arrival_registration_refuses_the_cancelled_original_before_enumeration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (directory, mut watch) = cancelled_registration_fixture()?;
+    let arrived = relative_namespace_path(
+        directory.path(),
+        &directory.path().join("arrived"),
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+    )?;
+    let batch = WatchBatch::Changes {
+        epoch: 0,
+        first_sequence: 0,
+        next_sequence: 1,
+        changes: vec![WatchChange::Arrived(arrived)],
+        original: Default::default(),
+    };
+    assert!(matches!(
+        watch.watch_arrivals(&batch, &crate::CapturePolicy::default(), 16),
+        Err(NativeWatchError::Cancelled(_))
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn arriving_subtrees_share_one_registration_path_bound() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut changes = Vec::new();
+    for name in ["first", "second"] {
+        let path = directory.path().join(name);
+        std::fs::create_dir(&path)?;
+        std::fs::write(path.join("leaf"), b"authored")?;
+        changes.push(WatchChange::Arrived(relative_namespace_path(
+            directory.path(),
+            &path,
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )?));
+    }
+    let mut watch = NativeWatch::open(directory.path(), measured_watch_options())?;
+    let batch = WatchBatch::Changes {
+        epoch: 0,
+        first_sequence: 0,
+        next_sequence: 2,
+        changes,
+        original: Default::default(),
+    };
+    assert!(matches!(
+        watch.watch_arrivals(&batch, &crate::CapturePolicy::default(), 3),
+        Err(NativeWatchError::InvalidOptions)
+    ));
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn ordinary_watch_retains_preparation_custody_through_shutdown()
