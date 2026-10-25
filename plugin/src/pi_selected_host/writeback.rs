@@ -170,12 +170,8 @@ impl PiControlHost<'_> {
         }
         let journal =
             prepare_writeback(&root, &generations, &self.resources.store, &options, work).await?;
-        let digest_value = writeback_digest_value(&root, &generations, &journal);
-        let digest = crate::pi_root_provider::digest_pi_value(
-            &digest_value,
-            work.budget().bytes_encoded,
-            work,
-        )?;
+        let digest_value = writeback_digest_value(&root, &generations, &journal)?;
+        let digest = blake3::Hash::from_bytes(digest_value.digest(work)?);
         let mut digest = work.display(&digest)?;
         let mut encoded = crate::pi_root_provider::canonical_pi_value(
             &digest_value,

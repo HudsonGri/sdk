@@ -6,8 +6,14 @@ pub(crate) struct PiWritebackGenerations<'a> {
     pub(super) candidate: crate::LocalGeneration,
     pub(crate) original_snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) imported: acyclic_fs::GenerationId,
-    pub(super) operation: acyclic_harness::OperationId,
     pub(super) paths: &'a [String],
+}
+
+impl PiWritebackGenerations<'_> {
+    /// Inspect the selected candidate without allowing its owner-bound facts to change.
+    pub(crate) fn candidate(&self) -> &crate::LocalGeneration {
+        &self.candidate
+    }
 }
 
 pub(crate) async fn build_writeback_generations<'a>(
@@ -55,9 +61,6 @@ pub(crate) async fn build_writeback_generations<'a>(
         return Err(selected_invalid("writeback repeats a selected path"));
     }
     let destination = native_work.display(&format_args!("pi-writeback-{operation}-baseline"))?;
-    let baseline_key = acyclic_fs::IdempotencyKey::from_bytes(
-        phase_operation(operation, b"pi-writeback-baseline").into_bytes(),
-    );
     let candidate_key = acyclic_fs::IdempotencyKey::from_bytes(
         phase_operation(operation, b"pi-writeback-candidate").into_bytes(),
     );
@@ -78,7 +81,6 @@ pub(crate) async fn build_writeback_generations<'a>(
         )
         .await
         .map_err(crate::pi_fork_host::native_lazy_error)?;
-    let workspace = baseline.workspace();
     let mut guard = {
         let root = std::sync::Arc::clone(root);
         move |work: &acyclic_fs::NativeMaterializationWork| {
@@ -87,77 +89,75 @@ pub(crate) async fn build_writeback_generations<'a>(
             async move { root.verify(&work).await }
         }
     };
-    let from = if let Some(generation) = workspace
-        .operation_generation(baseline_key, native_work, native_work.cancellation())
-        .await?
-    {
-        generation
-    } else {
-        for absolute in &absolute_paths.0 {
-            root.verify(native_work).await?;
-            let found = baseline.lookup(absolute, &mut accounting).await;
-            match found {
-                Ok(lookup) => {
-                    let directory =
-                        lookup.0.stat().kind == acyclic_fs::demand::SourceNodeKind::Directory;
+    // Promotion already commits each selected baseline. Keep this workspace
+    // immutable afterwards; an empty transaction cannot create a checkpoint.
+    for absolute in &absolute_paths.0 {
+        root.verify(native_work).await?;
+        let found = baseline.lookup(absolute, &mut accounting).await;
+        match found {
+            Ok(lookup) => {
+                let directory =
+                    lookup.0.stat().kind == acyclic_fs::demand::SourceNodeKind::Directory;
+                baseline
+                    .retire_lookup(lookup, &mut accounting)
+                    .map_err(crate::pi_fork_host::native_lazy_error)?;
+                if directory {
                     baseline
-                        .retire_lookup(lookup, &mut accounting)
+                        .exactify(
+                            absolute,
+                            acyclic_fs::PublicationPermit::Unrestricted,
+                            &mut accounting,
+                        )
+                        .await
                         .map_err(crate::pi_fork_host::native_lazy_error)?;
-                    if directory {
-                        baseline
-                            .exactify(
-                                absolute,
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                &mut accounting,
-                            )
-                            .await
-                            .map_err(crate::pi_fork_host::native_lazy_error)?;
-                    } else {
-                        let committed = baseline
-                            .promote(
-                                absolute,
-                                native_work.remaining()?.source_bytes_read,
-                                acyclic_fs::IdempotencyKey::from_bytes(
-                                    phase_operation(operation, absolute.as_bytes()).into_bytes(),
-                                ),
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                &mut accounting,
-                            )
-                            .await
-                            .map_err(crate::pi_fork_host::native_lazy_error)?;
-                        if !matches!(
-                            committed,
-                            acyclic_fs::TransactionCommit::Committed(_)
-                                | acyclic_fs::TransactionCommit::AlreadyCommitted(_)
-                        ) {
-                            return Err(selected_invalid(
-                                "selected baseline publication conflicted",
-                            ));
-                        }
+                } else {
+                    let committed = baseline
+                        .promote(
+                            absolute,
+                            native_work.remaining()?.source_bytes_read,
+                            acyclic_fs::IdempotencyKey::from_bytes(
+                                phase_operation(operation, absolute.as_bytes()).into_bytes(),
+                            ),
+                            acyclic_fs::PublicationPermit::Unrestricted,
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(crate::pi_fork_host::native_lazy_error)?;
+                    if !matches!(
+                        committed,
+                        acyclic_fs::TransactionCommit::Committed(_)
+                            | acyclic_fs::TransactionCommit::AlreadyCommitted(_)
+                    ) {
+                        return Err(selected_invalid("selected baseline publication conflicted"));
                     }
                 }
-                Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
-                Err(error) => return Err(crate::pi_fork_host::native_lazy_error(error)),
             }
+            Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
+            Err(error) => return Err(crate::pi_fork_host::native_lazy_error(error)),
         }
-        let mut transaction = workspace
-            .begin_transaction(baseline_key, native_work, native_work.cancellation())
-            .await?;
-        match transaction
-            .commit_with_native_work::<Error, _, _>(
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                native_work,
-                native_work.cancellation(),
-                &mut guard,
-            )
-            .await?
-        {
-            acyclic_fs::TransactionCommit::Committed(generation)
-            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => generation,
-            _ => return Err(selected_invalid("selected baseline publication conflicted")),
-        }
-    };
+    }
+    let destination = native_work.display(&format_args!("pi-writeback-{operation}-candidate"))?;
+    // The shared fork owner returns its original creation generation on every
+    // recovery, even after the candidate workspace has published its changes.
+    let (selected, origin) = baseline
+        .fork(
+            &destination.0,
+            acyclic_fs::IdempotencyKey::from_bytes(
+                phase_operation(operation, b"pi-writeback-candidate-fork").into_bytes(),
+            ),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            &mut accounting,
+        )
+        .await
+        .map_err(crate::pi_fork_host::native_lazy_error)?;
+    let workspace = selected.workspace();
+    let from = workspace
+        .generation(
+            origin.authored_generation,
+            native_work,
+            native_work.cancellation(),
+        )
+        .await?;
     let candidate = if let Some(generation) = workspace
         .operation_generation(candidate_key, native_work, native_work.cancellation())
         .await?
@@ -192,7 +192,6 @@ pub(crate) async fn build_writeback_generations<'a>(
         candidate,
         original_snapshot: original,
         imported: imported.id(),
-        operation,
         paths,
     })
 }

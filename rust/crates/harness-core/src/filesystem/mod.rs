@@ -46,7 +46,6 @@ mod fork_preparer;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
-pub use fork_preparer::bounded_io::PreparationIo;
 #[doc(hidden)]
 pub use fork_preparer::bounded_io::PreparationRecord;
 #[doc(hidden)]
@@ -57,6 +56,7 @@ pub(crate) use fork_preparer::bounded_io::{
     DecodeReservation, preparation_file_record_slot_bytes, preparation_slot_bytes, retain_decoded,
 };
 pub(crate) use fork_preparer_io::PreparationScope;
+pub use fork_preparer::bounded_io::{PreparationCustody, PreparationIo};
 use fork_preparer_io::decode_record;
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
@@ -828,6 +828,6 @@ mod checkout_publication;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use checkout_publication::CheckoutPublication;
+pub use checkout_publication::{CheckoutApproval, CheckoutPublication};
 
 pub use host::DirectoryOptions;

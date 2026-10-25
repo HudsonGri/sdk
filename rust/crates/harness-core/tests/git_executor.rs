@@ -802,6 +802,13 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
     let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
         .map_err(|(cause, _)| cause)?;
     let generation = main.workspace().head(&work, &stop).await?;
+    write_text(
+        &main,
+        "/guard-probe",
+        b"must not reach the replaced checkout",
+    )
+    .await?;
+    let candidate = main.workspace().head(&work, &stop).await?;
     let identity = work.root_identity(&root)?;
     let publication = acyclic_harness_core::filesystem::CheckoutPublication::new(
         &root,
@@ -816,17 +823,33 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         maximum_extent_spans: 32,
         transfer_bytes: 4096,
     };
+    let paths = ["guard-probe".to_owned()];
+    let prepared = publication
+        .prepare_selected(
+            &generation,
+            &candidate,
+            &store,
+            &options,
+            &work,
+            (&paths, ()),
+        )
+        .await?;
+    let approved = publication.approval_value(&generation, &candidate, &paths, &prepared, ())?;
+    let confirmation = approved.digest(&work)?;
     let mut guards = 0;
-    let error = publication
-        .publish(&generation, &generation, &store, &options, &work, || {
+    let error = approved
+        .publish(&store, &options, &work, &confirmation, || {
             guards += 1;
             let changed = std::fs::rename(&root, root.with_extension("original"))
                 .and_then(|()| std::fs::create_dir(&root));
-            std::future::ready(changed.map_err(acyclic_fs::NativeWorkspacePublicationError::from))
+            std::future::ready(changed.map_err(|cause| {
+                acyclic_harness_core::Error::from(NativeTreeMaterializationError::Io(cause))
+            }))
         })
         .await
         .expect_err("the checkout identity changed after authorization");
     assert_eq!(guards, 1);
+    assert!(!root.join("guard-probe").exists());
     assert_eq!(
         error.code(),
         acyclic_harness_core::wire::ErrorCode::Conflict

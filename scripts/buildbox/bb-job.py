@@ -22,6 +22,7 @@ import time
 import uuid
 import bb_target_store
 from admission_policy import resolve_wrapper, capture_limits, restore_limits, LIMIT_ENV
+import job_custody
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -42,6 +43,32 @@ def atomic(file,value):
     tmp=Path(str(file)+'.'+str(os.getpid())+'.tmp')
     with tmp.open('w') as f: json.dump(value,f); f.flush(); os.fsync(f.fileno())
     os.replace(tmp,file)
+
+
+@contextlib.contextmanager
+def runtime_setup(file):
+    """Fence preparation against a terminal receipt, including before launch."""
+    fd=os.open(str(file)+'.setup-lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    if os.geteuid()==0:
+        owner=Path(file).parent.stat()
+        os.fchown(fd,owner.st_uid,owner.st_gid)
+    with os.fdopen(fd,'a') as lease:
+        fcntl.flock(lease,fcntl.LOCK_EX)
+        yield
+
+
+def start_outer(file,prefix,argv):
+    """Own all mount-adapter scratch before the first directory is created."""
+    outer_prefix(prefix)
+    if not argv:raise ValueError('outer setup requires a command')
+    with runtime_setup(file):
+        if Path(file).exists():
+            raise RuntimeError('outer setup is already admitted or closed')
+        custody=job_custody.prepare()
+        job_custody.enter(custody)
+        atomic(file,{'custody':custody,'outer_setup':str(prefix)})
+    os.execvp(argv[0],argv)
+
 
 def disk():
     readings=[]
@@ -180,16 +207,26 @@ def server_identity(endpoint):
 def stop_server(server):
     if server and server.get('pid_namespace')!=pid_namespace():return
     if not server or identity(server['pid'])!=server['identity']: return
-    try: env=Path(f'/proc/{server["pid"]}/environ').read_bytes().split(b'\0')
-    except FileNotFoundError: return
-    if ('SCCACHE_SERVER_UDS='+server['endpoint']).encode() not in env: return
     try:fd=os.pidfd_open(server['pid'])
     except ProcessLookupError:return
     try:
+        # Authenticate the live endpoint through SO_PEERCRED while a pidfd
+        # owns the process identity. /proc/environ becomes unreadable during
+        # exit and is neither endpoint custody nor an exit observation.
+        try:peer=server_identity(server['endpoint'])
+        except (FileNotFoundError,ConnectionRefusedError,ProcessLookupError):return
+        if peer!=server:return
         if identity(server['pid'])==server['identity']:
             try:signal.pidfd_send_signal(fd,signal.SIGTERM)
             except ProcessLookupError:pass
     finally: os.close(fd)
+
+def export_job_outputs(meta,spec,env,*,cache_reused=False):
+    from job_exports import prepare
+    spec=json.loads(spec)
+    if Path(meta).resolve()!=Path(str(spec['prefix'])+'.receipt-meta.v2.json').resolve():
+        raise RuntimeError('export destination belongs to another receipt')
+    prepare(spec,env['CARGO_TARGET_DIR'],cache_reused=cache_reused)
 
 def start_cache(job,env):
     endpoint=job/'sccache.sock'
@@ -438,8 +475,7 @@ def run(argv,namespace_ready=False):
         if Path(argv[0]).name=='cargo': argv=['/home/var/bin/bb-cargo/cargo']+argv[1:]
         os.execvpe(argv[0],argv,os.environ)
     JOBS.mkdir(parents=True,exist_ok=True)
-    job=Path(tempfile.mkdtemp(prefix='job-',dir=JOBS)); job.chmod(0o700)
-    custody=home_lease(job)
+    job=JOBS/('job-'+uuid.uuid4().hex)
     env=dict(os.environ); real_home=Path('/home/var')
     # Export scope belongs to this receipt owner, never to nested commands.
     export_spec=env.pop('BB_JOB_EXPORT_SPEC',None)
@@ -449,9 +485,24 @@ def run(argv,namespace_ready=False):
     admission_file=Path(meta+'.admission')
     admission=json.loads(admission_file.read_text()) if admission_file.exists() else {'tier':env.get('BB_ADMIT_TIER'),'tenant':env.get('BB_ADMIT_TENANT'),'wait_seconds':env.get('BB_ADMIT_WAIT_SECONDS'),'build_jobs':env.get('CARGO_BUILD_JOBS')}
     if admission.get('build_jobs'):env['CARGO_BUILD_JOBS']=str(admission['build_jobs'])
-    runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
-             'admission':admission, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
-    runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
+    runtimefile=Path(meta+'.runtime')
+    with runtime_setup(runtimefile):
+        previous=json.loads(runtimefile.read_text()) if runtimefile.exists() else {}
+        if previous.get('setup_closed'):raise RuntimeError('job setup is already closed')
+        if previous.get('outer_setup'):
+            custody=previous['custody']
+            if not job_custody.current_group().is_relative_to(Path(custody['path'])):
+                raise RuntimeError('job is outside its outer setup custody')
+        else:
+            custody=job_custody.prepare()
+            job_custody.enter(custody)
+        runtime={**previous,'custody':custody,'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
+                 'admission':admission, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
+        # Publish the future path before creating it. A killed initializer can
+        # leave no unrecorded home, and the writer is already inside custody.
+        atomic(runtimefile,runtime)
+    job.mkdir(mode=0o700)
+    lease=home_lease(job)
     server=None; child=None; rc=224; units=[]
     def interrupted(n,f):
         for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
@@ -538,9 +589,8 @@ def run(argv,namespace_ready=False):
         atomic(runtimefile,runtime)
         if rc==0 and export_spec:
             try:
-                from job_exports import prepare
-                prepare(json.loads(export_spec), env['CARGO_TARGET_DIR'],
-                        cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
+                export_job_outputs(meta,export_spec,env,
+                    cache_reused=any(row.get('status')=='hit' for row in runtime.get('target_store',[])))
             except Exception as error:
                 print('[buildbox] export INFRA: '+str(error),file=sys.stderr,flush=True)
                 runtime['export_error']=str(error);rc=224
@@ -551,38 +601,78 @@ def run(argv,namespace_ready=False):
         for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
         if child: child.close()
         stop_server(server)
-        try:remove_home(job)
-        except OSError as error:
-            runtime['cleanup_error']=str(error);atomic(runtimefile,runtime)
-            print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
-            return 224
-        runtime['home_removed']=True; runtime['targets_removed']=True; atomic(runtimefile,runtime)
-        custody.close()
+        atomic(runtimefile,runtime)
+        lease.close()
         for unit in units:unit.close()
 
 
-def cleanup_runtime(file):
-    runtime=json.loads(Path(file).read_text())
-    if not runtime.get('hermetic_home'):
-        stop_server(runtime.get('sccache_server'));return
-    job=Path(runtime['hermetic_home'])
+def cleanup_runtime(file, prefix=None):
+    with runtime_setup(file):
+        runtime=json.loads(Path(file).read_text()) if Path(file).exists() else {}
+        try:
+            if not runtime:
+                if prefix is None:raise RuntimeError('missing runtime has no outer setup contract')
+                prefix=outer_prefix(prefix)
+                if any(Path(str(prefix)+suffix).exists() or Path(str(prefix)+suffix).is_symlink() for suffix in ['.targets','.tmp']):
+                    raise RuntimeError('unrecorded outer scratch has no custody proof')
+                # Absence proves no effects only under the same setup lease.
+                # Closing the constructor also excludes a late launcher.
+                runtime={'setup_closed':True,'outer_setup':str(prefix),
+                         'outer_targets_removed':True,'outer_tmp_removed':True}
+                atomic(file,runtime)
+                return
+            if runtime.get('outer_setup'):
+                bound=outer_prefix(runtime['outer_setup'])
+                if prefix is not None and bound!=outer_prefix(prefix):
+                    raise RuntimeError('outer scratch belongs to another setup generation')
+                prefix=bound
+            if runtime.get('setup_closed'):return
+            original_home=runtime_home(runtime)
+            with home_lease(original_home,exclusive=True) if original_home else contextlib.nullcontext():
+                stop_command(runtime.get('command'))
+                proof=job_custody.join(runtime['custody'])
+                # Joining stops every writer. Read again to include a home
+                # published while this cleaner was waiting for the kernel.
+                runtime=json.loads(Path(file).read_text())
+                home=runtime_home(runtime)
+                with home_lease(home,exclusive=True) if home and home!=original_home else contextlib.nullcontext():
+                    if home:
+                        stop_server(runtime.get('sccache_server'))
+                        if home.exists():remove_home(home)
+                        runtime['home_removed']=True
+            if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
+            if prefix is not None:runtime.update(cleanup_outer(prefix,proof,runtime['custody']))
+            runtime['quiescence']=proof.reason
+            runtime['setup_closed']=True
+            atomic(file,runtime)
+        except Exception as error:
+            runtime['cleanup_error']=str(error)
+            atomic(file,runtime)
+            raise
+
+
+def runtime_home(runtime):
+    home=runtime.get('hermetic_home')
+    if home is None:return None
+    job=Path(home)
     if job.parent.resolve()!=JOBS.resolve() or not job.name.startswith('job-'):
         raise RuntimeError('refusing cleanup outside /mnt/bb/jobs/job-*')
-    with home_lease(job,exclusive=True):
-        stop_command(runtime.get('command'))
-        stop_server(runtime.get('sccache_server'))
-        if job.exists(): remove_home(job)
-    runtime['home_removed']=True
-    if runtime.get('targets_policy')=='job-owned':runtime['targets_removed']=True
-    atomic(file,runtime)
+    return job
 
-def cleanup_outer(prefix):
+
+def outer_prefix(prefix):
     prefix=Path(prefix)
     if prefix.parent.resolve()!=JOBS.resolve() or prefix.name in ['', '.', '..']:
         raise ValueError('refusing outer cleanup outside /mnt/bb/jobs')
-    import contextlib
+    return prefix
+
+def cleanup_outer(prefix, proof, custody):
+    proof.require(custody)
+    prefix=outer_prefix(prefix)
     runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
     metadata=json.loads(runtime.read_text()) if runtime.exists() else {}
+    if metadata.get('outer_setup') and metadata['outer_setup']!=str(prefix):
+        raise RuntimeError('outer scratch belongs to another setup generation')
     home=metadata.get('hermetic_home')
     with home_lease(Path(home),exclusive=True) if home else contextlib.nullcontext():
         for suffix in ['.targets','.tmp']:
@@ -624,12 +714,20 @@ def stop_job(file):
 
 
 if __name__=='__main__':
-    if sys.argv[1:2]==['home-namespace']:
+    if sys.argv[1:2]==['outer-setup']:
+        try:start_outer(sys.argv[2],sys.argv[3],sys.argv[4:])
+        except (OSError,RuntimeError,ValueError) as error:
+            print('[buildbox] outer setup INFRA: '+str(error),file=sys.stderr,flush=True)
+            raise SystemExit(224)
+    elif sys.argv[1:2]==['home-namespace']:
         try:mount_home_namespace();result=run(sys.argv[2:],namespace_ready=True)
         except (OSError,RuntimeError,subprocess.SubprocessError) as error:
             print('[buildbox] HOME guard INFRA: '+str(error),file=sys.stderr,flush=True);result=224
         raise SystemExit(result)
-    elif sys.argv[1:2]==['cleanup']: cleanup_runtime(sys.argv[2])
-    elif sys.argv[1:2]==['cleanup-outer']:print(json.dumps(cleanup_outer(sys.argv[2])))
+    elif sys.argv[1:2]==['cleanup']:
+        try:cleanup_runtime(sys.argv[2],sys.argv[3] if len(sys.argv)>3 else None)
+        except Exception as error:
+            print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
+            raise SystemExit(224)
     elif sys.argv[1:2]==['stop-job']:stop_job(sys.argv[2])
     else: raise SystemExit(run(sys.argv[1:]))
