@@ -100,7 +100,10 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
                     "folded={folded}, pending={pending}, target={target}: {:?}",
                     failure.error
                 );
-                publish(&mut transaction).await;
+                assert_eq!(transaction.checkout.has_pending_mutations(), pending);
+                if pending {
+                    publish(&mut transaction).await;
+                }
                 for absent in ["/out/new", "/uncommitted"] {
                     assert!(
                         workspace
