@@ -5,7 +5,7 @@ From the SDK root:
 ```sh
 cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate in-process --report out.json
 cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate localhost --report out.json
-cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate http://127.0.0.1:8080/contract --filter core/ --report out.json
+cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --substrate http://127.0.0.1:8080 --filter core/ --report out.json
 ```
 
 Build on bb2. The runtime budget is measured separately from Cargo compilation.
@@ -22,6 +22,20 @@ pinned Actors package over the canonical Actors API. Its Streams journal uses
 The server's directory stays owned by every provider clone through shutdown.
 It needs no Cloud code or credentials. The stock harness deployment and shipping
 GraphCoder client are described in [local-server](../local-server/README.md).
+
+The deployed-parity integration target uses the same discovered corpus and
+oracles for both hosts, including complete report equality and a deliberately
+changed deployed answer that must fail:
+
+```sh
+cargo test --locked -p acyclic-harness-conformance --all-features --test localhost
+```
+
+It also compares cancellation, stale-placement and interrupted-recovery event
+histories at full account/namespace/actor addresses. The shipping GraphCoder
+endpoint test exercises the stock `HarnessCode` package independently of the
+scenario fixture package.
+
 
 The report has a sorted `records` array with one `case`, `status`, `reason` and
 `requires` entry per discovered JSON case, plus pass/fail/skip counts. Defaults
@@ -64,15 +78,11 @@ This package qualifies operation-level executor hosting; it does not migrate
 GraphCoder's native per-step scheduler to Actors or qualify process-loss fs
 durability, live model HTTPS, production compute or workload authentication.
 
-For HTTP, route POSTs at the supplied URL to the public serde
-`substrate::remote::Request` enum. Respond with JSON-serialized
-`Result<serde_json::Value, String>` (`{"Ok": ...}` or `{"Err": "reason"}`).
-`Request::apply` is a reference bridge over an existing runtime and volume.
-The `install` request carries the manifest, whose code identity must match the
-host's pinned `HarnessPackage`; it never accepts arbitrary uploaded code.
-The bridge exposes `install`, `place`, `deliver`, `recover`, `cancel`, `put`,
-`get` and `lookup`. Production hosts supply admission policy and binding
-resolution; the unauthenticated fixture policy is for isolated tests only.
+An endpoint URL attaches through the same public Actors and filesystem clients
+as `--substrate localhost`. It must be a numeric loopback endpoint serving the
+SDK services with the pinned conformance package registered. There is no
+conformance-specific HTTP protocol or gateway. Deployment selects that compiled
+package by digest and binds each case to a separate namespace.
 
 ## Capabilities
 
@@ -99,5 +109,5 @@ imply them. The report is the authoritative case and skip count for a corpus
 revision. Unknown drivers fail instead of acquiring an automatic capability.
 
 `tests/scenarios.rs` compares every portable case with the original direct
-driver, compares direct/Actors reports, exercises the HTTP bridge and proves
+driver, compares direct/Actors reports, exercises SDK endpoint attachment and proves
 that dropping a contract completion observation fails qualification.

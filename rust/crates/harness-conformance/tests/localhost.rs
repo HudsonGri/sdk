@@ -30,12 +30,12 @@ impl Substrate for Corrupted {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn complete_corpus_has_identical_results_on_both_hosts() -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
     let host = Arc::new(substrate::localhost::Localhost::start().await?);
     let (reference, deployed) = futures::join!(
-        runner::run(&root, Arc::new(substrate::InProcess), None, 4),
+        runner::run(&root, Arc::new(substrate::InProcess::default()), None, 4),
         runner::run(&root, host.clone(), None, 4),
     );
     let reference = reference?;
@@ -64,7 +64,7 @@ async fn differing_localhost_observation_fails_the_shared_oracle() -> TestResult
     let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
     let original = runner::run(
         &root,
-        Arc::new(substrate::InProcess),
+        Arc::new(substrate::InProcess::default()),
         Some("core/text.json"),
         1,
     )
@@ -128,31 +128,59 @@ async fn identical_epoch_cancellation_histories_and_complete_actor_addresses() -
     };
     let actions = cancellation_history(identity.clone(), &command)?;
     prove_idle_recovery(volume.clone(), package.clone(), &actions).await?;
-    let directory = tempfile::tempdir()?;
-    let reference = fixture_runtime(
-        volume,
-        Arc::new(acyclic_stream::LocalStream::open(directory.path(), Default::default()).await?),
-    );
-    reference.install(package.clone()).await?;
-    let expected = history(&reference, &actions).await;
+    let client = acyclic_local_server::client::Client::connect(
+        &host.endpoint(),
+        acyclic_local_server::Scope {
+            account: vec![1],
+            namespace: "first".into(),
+        },
+        identity.digest,
+        package.manifest().clone(),
+    )
+    .await?;
     assert!(
-        matches!(
-            expected.get(3),
-            Some(Err(acyclic_harness::Error::Conflict(_)))
-        ),
-        "negative control: stale epoch must be rejected"
+        client
+            .for_scope(acyclic_local_server::Scope {
+                account: vec![],
+                namespace: "first".into()
+            })
+            .is_err()
+    );
+    assert!(
+        client
+            .for_scope(acyclic_local_server::Scope {
+                account: vec![1],
+                namespace: String::new()
+            })
+            .is_err()
     );
     for (account, namespace) in [(vec![1], "first"), (vec![2], "first"), (vec![1], "second")] {
-        let client = acyclic_local_server::client::Client::connect(
-            &host.endpoint(),
-            acyclic_local_server::Scope {
-                account,
-                namespace: namespace.into(),
-            },
-            identity.digest,
-            package.manifest().clone(),
-        )
-        .await?;
+        let scope = acyclic_local_server::Scope {
+            account,
+            namespace: namespace.into(),
+        };
+        let mut bindings = substrate::fixture_bindings();
+        bindings.streams = scope.resource_prefix();
+        let directory = tempfile::tempdir()?;
+        let reference = fixture_runtime(
+            volume.clone(),
+            Arc::new(
+                acyclic_stream::LocalStream::open(directory.path(), Default::default()).await?,
+            ),
+            bindings.clone(),
+        );
+        reference
+            .install(Arc::new(substrate::HarnessPackage::new(bindings)))
+            .await?;
+        let expected = history(&reference, &actions).await;
+        assert!(
+            matches!(
+                expected.get(3),
+                Some(Err(acyclic_harness::Error::Conflict(_)))
+            ),
+            "negative control: stale epoch must be rejected"
+        );
+        let client = client.for_scope(scope)?;
         client.install(package.clone()).await?;
         let actual = history(&client, &actions).await;
         for (index, (actual, expected)) in actual.into_iter().zip(&expected).enumerate() {
@@ -233,6 +261,7 @@ async fn prove_idle_recovery(
     let idle = substrate::Supervised::new(fixture_runtime(
         volume,
         Arc::new(acyclic_stream::MemoryStream::default()),
+        substrate::fixture_bindings(),
     ));
     idle.install(package.clone()).await?;
     let Some(Action::Place {
@@ -261,17 +290,20 @@ async fn prove_idle_recovery(
 fn fixture_runtime<P: acyclic_stream::StreamProvider>(
     volume: Arc<substrate::localhost::HostedVolume>,
     stream: Arc<P>,
+    bindings: acyclic_harness::package::Bindings,
 ) -> acyclic_harness::package::in_process::InProcessRuntime<P> {
+    let effects = Arc::new(substrate::FixtureEffects::new(
+        volume,
+        Arc::new(substrate::Providers {
+            stream: stream.clone(),
+            filesystem: acyclic_fs::Fs::memory(),
+        }),
+        &bindings,
+    ));
     acyclic_harness::package::in_process::InProcessRuntime::new(
-        stream.clone(),
-        substrate::fixture_bindings(),
+        stream,
+        bindings,
         Arc::new(substrate::FixturePolicy),
-        Arc::new(substrate::FixtureEffects::new(
-            volume,
-            Arc::new(substrate::Providers {
-                stream,
-                filesystem: acyclic_fs::Fs::memory(),
-            }),
-        )),
+        effects,
     )
 }

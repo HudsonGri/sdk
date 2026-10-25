@@ -114,8 +114,16 @@ execution future at the same boundary and loses that effect. The native
 filesystem journal and the reference Streams journal remain separate provider
 implementations of the workflow engine; this is not deployed-runtime evidence.
 
-SDK inventory (2026-10-22): `rust/crates/actors` contains the client and guest ABI,
-but no server binary; no local-cloud server binary exists under `rust/crates`.
-The counter tests in `harness/tests/local_cloud_actors` require an external full
-local cloud. Deployed harness qualification therefore remains a gap; this SDK
-lane does not build cloud code.
+The SDK's [`acyclic-local-server`](../../local-server/README.md) now hosts the
+same package on a single-node, no-quorum loopback server. `sdk-local` registers
+`HarnessCode` and exposes the canonical Actors, Streams and filesystem APIs;
+GraphCoder's headless endpoint client uses those APIs. Package deployment selects
+compiled Rust artifacts by digest and scopes actor IDs by account and namespace.
+No Cloud implementation, downloaded code or ambient credentials are involved.
+
+`cargo test --locked -p acyclic-harness-conformance --test localhost` compares the complete portable
+scenario report with the in-process substrate and runs the same cancellation,
+placement and recovery histories through both. Its negative control changes a
+deployed observation and requires the existing scenario oracle to reject it.
+The native counter fixtures in `harness/tests/local_cloud_actors` still target an
+external full cloud; the SDK server does not claim to implement that cloud.

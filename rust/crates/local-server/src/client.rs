@@ -51,6 +51,14 @@ impl Client {
             manifest,
         })
     }
+    /// Selects another namespace on the same transport and compiled package.
+    pub fn for_scope(&self, scope: Scope) -> Result<Self> {
+        let scope = Scope::new(scope.account, scope.namespace).map_err(storage)?;
+        Ok(Self {
+            scope,
+            ..self.clone()
+        })
+    }
     async fn invoke(&self, call: Call) -> Result<Snapshot> {
         let mut client = self.client.clone();
         let response = client

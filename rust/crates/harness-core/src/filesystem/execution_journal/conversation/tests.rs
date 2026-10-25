@@ -20,6 +20,75 @@ type LocalJournal = FilesystemExecutionJournal<
     acyclic_fs::LocalObjectBackend,
 >;
 
+#[tokio::test]
+async fn conversation_upload_reuses_the_admitted_grant_and_live_checks() -> Result<()> {
+    use acyclic_auth::crypto::SignatureVerification;
+    use acyclic_test_support::differential::observe_async;
+    let (journal, issuer) = super::super::test_support::journal().await?;
+    let key = IdempotencyKey::new("conversation-grant-control")?;
+    let (direct, direct_signatures): (_, Vec<SignatureVerification>) =
+        observe_async(journal.host.put_internal_content(
+            &journal.volume,
+            &journal.write_grant,
+            "turns/.canonical/payload",
+            b"hello",
+            "text/plain",
+            "hello.txt",
+            journal.maximum_payload_bytes,
+            &key,
+            InternalContentClass::Conversation,
+            None,
+        ))
+        .await;
+    direct?;
+    let (staged, staged_signatures): (_, Vec<SignatureVerification>) =
+        observe_async(journal.stage_conversation(
+            OperationId::new(),
+            "hello.txt",
+            b"hello",
+            "text/plain",
+            "hello.txt",
+        ))
+        .await;
+    let staged = staged?;
+    assert_eq!(
+        staged_signatures.len(),
+        direct_signatures.len(),
+        "conversation upload authenticated its admitted authority again"
+    );
+    journal
+        .host
+        .read_content(
+            &staged,
+            &ContentGrant::verify(
+                journal.write_grant.authority.verifier(),
+                journal.write_grant.authority.scope(),
+                &journal.volume,
+                VolumeOperation::Read,
+                journal.maximum_payload_bytes,
+                &mut None,
+            )?,
+            journal.maximum_payload_bytes,
+            None,
+        )
+        .await?;
+    issuer.revoke_workload(journal.write_grant.authority.scope())?;
+    assert!(
+        journal
+            .stage_conversation(
+                OperationId::new(),
+                "revoked.txt",
+                b"denied",
+                "text/plain",
+                "revoked.txt"
+            )
+            .await
+            .is_err(),
+        "retained upload grant bypassed live revocation"
+    );
+    Ok(())
+}
+
 fn counted_model(turns: usize) -> ScriptedModelProvider {
     ScriptedModelProvider::new(std::iter::repeat_n(
         ScriptedTurn::Text("durable summary or answer".into()),

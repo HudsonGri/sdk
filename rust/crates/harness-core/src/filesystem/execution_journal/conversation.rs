@@ -36,14 +36,7 @@ where
         self.host
             .put_internal_content(
                 &self.volume,
-                &ContentGrant::verify(
-                    self.write_grant.authority.verifier(),
-                    self.write_grant.authority.scope(),
-                    &self.volume,
-                    VolumeOperation::Write,
-                    u64::MAX,
-                    &mut None,
-                )?,
+                &self.write_grant,
                 "turns/.canonical/payload",
                 bytes,
                 media_type,
@@ -87,14 +80,7 @@ where
                 .host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(
-                        self.write_grant.authority.verifier(),
-                        self.write_grant.authority.scope(),
-                        &self.volume,
-                        VolumeOperation::Write,
-                        u64::MAX,
-                        &mut None,
-                    )?,
+                    &self.write_grant,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",
@@ -380,14 +366,7 @@ where
                 .host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(
-                        self.write_grant.authority.verifier(),
-                        self.write_grant.authority.scope(),
-                        &self.volume,
-                        VolumeOperation::Write,
-                        u64::MAX,
-                        &mut None,
-                    )?,
+                    &self.write_grant,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",

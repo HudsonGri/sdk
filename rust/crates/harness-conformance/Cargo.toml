@@ -39,7 +39,6 @@ futures.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile = "3.27.0"
-reqwest.workspace = true
 acyclic-conformance = { version = "=0.2.0", path = "../conformance" }
 blake3.workspace = true
 serde_json.workspace = true
@@ -48,7 +47,6 @@ serde_json.workspace = true
 acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 async-trait.workspace = true
-axum.workspace = true
 serde.workspace = true
 tempfile = "3.27.0"
 

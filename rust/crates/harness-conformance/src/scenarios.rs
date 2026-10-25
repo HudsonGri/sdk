@@ -42,17 +42,10 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None
         };
         let substrate: Arc<dyn Substrate> = match selected.as_str() {
-            "in-process" => Arc::new(substrate::InProcess),
+            "in-process" => Arc::new(substrate::InProcess::default()),
             "local" => Arc::new(substrate::Local),
             "localhost" => localhost.as_ref().ok_or("localhost not started")?.clone(),
-            _ => {
-                let http = substrate::remote::Http::new(selected)?;
-                Arc::new(substrate::Actors {
-                    runtime: http.clone(),
-                    volume: http,
-                    bindings: substrate::fixture_bindings(),
-                })
-            }
+            endpoint => Arc::new(substrate::localhost::Localhost::connect(endpoint).await?),
         };
         let result = runner::run(
             &root,

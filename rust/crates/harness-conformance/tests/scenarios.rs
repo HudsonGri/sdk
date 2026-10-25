@@ -10,7 +10,7 @@ use acyclic_harness_conformance::{
     check_local, check_local_composer,
     runner::{self, Status},
     scenario_data,
-    substrate::{self, Actors, remote::Request},
+    substrate::{self, Actors},
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
 use serde_json::Value;
@@ -73,7 +73,7 @@ async fn corpus_matches_original_driver_and_reports_every_case()
     traversals.spawn(async {
         runner::run(
             &corpus(),
-            Arc::new(substrate::InProcess),
+            Arc::new(substrate::InProcess::default()),
             None,
             std::thread::available_parallelism()?.get(),
         )
@@ -237,7 +237,11 @@ async fn lost_contract_observation_fails_and_filter_never_drops_cases()
         stream,
         bindings.clone(),
         Arc::new(substrate::FixturePolicy),
-        Arc::new(substrate::FixtureEffects::new(volume.clone(), executor)),
+        Arc::new(substrate::FixtureEffects::new(
+            volume.clone(),
+            executor,
+            &bindings,
+        )),
     );
     let broken = Actors {
         runtime: DropCompletion(substrate::Supervised::new(runtime)),
@@ -261,53 +265,10 @@ async fn lost_contract_observation_fails_and_filter_never_drops_cases()
 }
 
 #[tokio::test]
-async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
+async fn endpoint_uses_canonical_sdk_services_and_the_same_pinned_package_and_oracles()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let directory = tempfile::tempdir()?;
-    let stream = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
-    let filesystem = acyclic_fs::Fs::memory();
-    let volume = Arc::new(
-        acyclic_harness::filesystem::MemoryHarnessStorage::from_providers(
-            AgentId::new(),
-            1_048_576,
-            filesystem.clone(),
-            stream.clone(),
-        )
-        .await?,
-    );
-    let bindings = substrate::fixture_bindings();
-    let executor = Arc::new(substrate::Providers {
-        stream: stream.clone(),
-        filesystem,
-    });
-    let runtime = Arc::new(substrate::Supervised::new(InProcessRuntime::new(
-        stream,
-        bindings.clone(),
-        Arc::new(substrate::FixturePolicy),
-        Arc::new(substrate::FixtureEffects::new(volume.clone(), executor)),
-    )));
-    let handler = move |axum::Json(request): axum::Json<Request>| {
-        let runtime = runtime.clone();
-        let volume = volume.clone();
-        async move {
-            axum::Json(
-                request
-                    .apply(runtime.as_ref(), volume.as_ref())
-                    .await
-                    .map_err(|e| e.to_string()),
-            )
-        }
-    };
-    let router = axum::Router::new().route("/contract", axum::routing::post(handler));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("http://{}/contract", listener.local_addr()?);
-    let server = tokio::spawn(async move { axum::serve(listener, router).await });
-    let http = substrate::remote::Http::new(endpoint)?;
-    let host = Actors {
-        runtime: http.clone(),
-        volume: http,
-        bindings,
-    };
+    let server = substrate::localhost::Localhost::start().await?;
+    let host = substrate::localhost::Localhost::connect(&server.endpoint()).await?;
     let cases = tempfile::tempdir()?;
     for path in ["core/text.json", "composer/mentions/pinned.json"] {
         let value = scenario_data::load_value(&corpus(), &corpus().join(path))?;
@@ -317,7 +278,6 @@ async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
         )?;
     }
     let result = runner::run(cases.path(), Arc::new(host), None, 2).await;
-    server.abort();
     let report = result?;
     assert_eq!(
         report.failed,
@@ -331,6 +291,35 @@ async fn endpoint_bridge_uses_the_same_pinned_package_and_oracles()
     );
     assert_eq!(report.passed, 2);
     assert!(report.success());
+    let records = tempfile::tempdir()?;
+    let endpoint = server.endpoint();
+    let corpus = cases.path().to_path_buf();
+    let report_path = records.path().join("report.json");
+    let output_path = report_path.clone();
+    let fixture_home = records.path().to_path_buf();
+    let cli = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_scenarios"))
+            .args(["--substrate", &endpoint, "--corpus"])
+            .arg(corpus)
+            .arg("--report")
+            .arg(output_path)
+            .env("HOME", &fixture_home)
+            .env("USERPROFILE", &fixture_home)
+            .env("CODEX_HOME", fixture_home.join("codex"))
+            .output()
+    })
+    .await??;
+    assert!(
+        cli.status.success(),
+        "SDK endpoint CLI failed: {}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_report: runner::Report = serde_json::from_slice(&std::fs::read(report_path)?)?;
+    assert_eq!(
+        serde_json::to_value(cli_report)?,
+        serde_json::to_value(report)?
+    );
+    server.shutdown().await?;
     Ok(())
 }
 
@@ -384,7 +373,13 @@ async fn bad_fixture_and_wrong_expected_answer_each_fail_with_a_record()
         r#"{"driver":"typo"}"#,
     )?;
     std::fs::write(directory.path().join("malformed.json"), "{")?;
-    let report = runner::run(directory.path(), Arc::new(substrate::InProcess), None, 1).await?;
+    let report = runner::run(
+        directory.path(),
+        Arc::new(substrate::InProcess::default()),
+        None,
+        1,
+    )
+    .await?;
     assert_eq!(report.records.len(), 3);
     assert_eq!(report.failed, 3);
     assert!(!report.success());
@@ -421,7 +416,7 @@ async fn malformed_known_drivers_fail_before_capability_and_filter_skips()
     )?;
     for substrate in [
         Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
-        Arc::new(substrate::InProcess),
+        Arc::new(substrate::InProcess::default()),
     ] {
         for filter in [None, Some("good")] {
             let report = runner::run(directory.path(), substrate.clone(), filter, 4).await?;
@@ -486,7 +481,7 @@ async fn client_oracles_reject_mutations_on_both_substrates()
     }
     for substrate in [
         Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
-        Arc::new(substrate::InProcess),
+        Arc::new(substrate::InProcess::default()),
     ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);
@@ -542,7 +537,7 @@ async fn composer_oracle_mutations_fail_on_both_substrates()
     }
     for substrate in [
         Arc::new(substrate::Local) as Arc<dyn substrate::Substrate>,
-        Arc::new(substrate::InProcess),
+        Arc::new(substrate::InProcess::default()),
     ] {
         let report = runner::run(directory.path(), substrate, None, 4).await?;
         assert_eq!(report.records.len(), count);

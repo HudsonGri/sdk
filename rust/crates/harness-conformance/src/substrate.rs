@@ -21,10 +21,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(test)]
+mod effect_tests;
 /// SDK single-node deployment using canonical Streams, fs and Actors services.
 pub mod localhost;
-/// HTTP bridge for remote Actors and fs contract implementations.
-pub mod remote;
 mod supervised;
 pub use supervised::Supervised;
 
@@ -50,6 +50,10 @@ pub trait Volume: ProviderPlatform {
     fn lookup(&self, operation: OperationId) -> BoxProviderFuture<'_, Result<Option<FileRef>>>;
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+struct FixturePublication(String);
+
 impl<P, A, O> Volume for MemoryHarnessStorage<P, A, O>
 where
     P: StreamProvider,
@@ -59,14 +63,20 @@ where
     fn put(&self, operation: OperationId, value: Value) -> BoxProviderFuture<'_, Result<FileRef>> {
         Box::pin(async move {
             let bytes = serde_json::to_vec(&value).map_err(codec)?;
-            self.stage(
-                operation,
-                &format!("fixtures/{operation}.json"),
-                &bytes,
-                "application/json",
-                "fixture.json",
-            )
-            .await
+            let file = self
+                .stage(
+                    operation,
+                    &format!("fixtures/{operation}.json"),
+                    &bytes,
+                    "application/json",
+                    "fixture.json",
+                )
+                .await?;
+            #[cfg(test)]
+            acyclic_test_support::differential::record(FixturePublication(
+                file.volume().id().into(),
+            ));
+            Ok(file)
         })
     }
     fn get(&self, file: FileRef) -> BoxProviderFuture<'_, Result<Value>> {
@@ -185,6 +195,75 @@ impl HarnessPackage {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cases_reuse_the_host_provider_with_isolated_actor_storage() -> TestResult {
+        let host = Arc::new(InProcess::default());
+        let recipe = json!({"prompt":"Say hello", "turns":["Hello from mock LLM!"]});
+        assert!(host.providers.get().is_none());
+        let (first, first_publications): (_, Vec<FixturePublication>) =
+            acyclic_test_support::differential::observe_async(host.execute(recipe.clone(), vec![]))
+                .await;
+        let first = first?;
+        assert!(!first_publications.is_empty());
+        let original = host
+            .providers
+            .get()
+            .ok_or("case did not use the host-owned provider")?;
+        let stream = original.stream.clone();
+        let (second, second_publications): (_, Vec<FixturePublication>) =
+            acyclic_test_support::differential::observe_async(host.execute(recipe.clone(), vec![]))
+                .await;
+        let second = second?;
+        assert!(!second_publications.is_empty());
+        let mut expected = recipe;
+        expected
+            .as_object_mut()
+            .ok_or("recipe is not an object")?
+            .insert("expect".into(), json!({"text":"Hello from mock LLM!"}));
+        let case = crate::scenario::Scenario::from_value(expected)?;
+        let (CaseObservation::Executor(first), CaseObservation::Executor(second)) =
+            (&first, &second)
+        else {
+            return Err("executor fixture returned a different driver".into());
+        };
+        crate::observation::check(&case, first)?;
+        crate::observation::check(&case, second)?;
+        let request_volume = |observed: &crate::observation::Observation| {
+            observed
+                .events
+                .iter()
+                .find(|event| event.get("kind").and_then(Value::as_str) == Some("model_started"))
+                .and_then(|event| event.get("request")?.get("volume")?.get("id")?.as_str())
+                .map(str::to_owned)
+        };
+        let first_volume = request_volume(first).ok_or("missing first execution volume")?;
+        let second_volume = request_volume(second).ok_or("missing second execution volume")?;
+        assert_ne!(
+            first_volume, second_volume,
+            "cases shared an execution volume"
+        );
+        assert!(Arc::ptr_eq(
+            &stream,
+            &host.providers.get().ok_or("provider lost")?.stream
+        ));
+        assert!(InProcess::default().providers.get().is_none());
+        let first_publications: std::collections::BTreeSet<_> = first_publications
+            .into_iter()
+            .map(|record| record.0)
+            .collect();
+        let second_publications: std::collections::BTreeSet<_> = second_publications
+            .into_iter()
+            .map(|record| record.0)
+            .collect();
+        assert_eq!(first_publications.len(), 1);
+        assert_eq!(second_publications.len(), 1);
+        assert!(
+            first_publications.is_disjoint(&second_publications),
+            "unrelated actors share a mutable fixture workspace"
+        );
+        Ok(())
+    }
 
     #[test]
     fn pinned_parsing_and_discovery_changes_change_package_identity() -> TestResult {
@@ -392,6 +471,30 @@ pub struct Providers<P, A, O> {
     /// Runtime-resolved filesystem providers.
     pub filesystem: Fs<A, O>,
 }
+
+type LocalProviders = Providers<
+    acyclic_stream::LocalStream,
+    acyclic_fs::MemoryAuthorityBackend,
+    acyclic_fs::MemoryObjectBackend,
+>;
+
+impl LocalProviders {
+    async fn local() -> TestResult<Self> {
+        let directory = Arc::new(tempfile::tempdir()?);
+        let stream = Arc::new(
+            acyclic_stream::LocalStream::open_with_ownership_anchor(
+                directory.path(),
+                Default::default(),
+                acyclic_native_runtime::OwnershipAnchor::new(directory.clone()),
+            )
+            .await?,
+        );
+        Ok(Self {
+            stream,
+            filesystem: Fs::memory(),
+        })
+    }
+}
 impl<P, A, O> ExecutorFixture for Providers<P, A, O>
 where
     P: StreamProvider,
@@ -419,22 +522,47 @@ pub struct FixtureEffects<V> {
     pub volume: Arc<V>,
     /// Harness executor bound to the same host's resolved public providers.
     pub executor: Arc<dyn ExecutorFixture>,
-    state: tokio::sync::Mutex<EffectState>,
-    fenced: Mutex<BTreeSet<(AgentId, u64)>>,
+    resource_scope: String,
+    placements: Mutex<std::collections::BTreeMap<(AgentId, u64), PlacementEffects>>,
 }
 #[derive(Default)]
 struct EffectState {
     results: std::collections::BTreeMap<OperationId, Event>,
+    fenced: bool,
 }
+type PlacementEffects = Arc<tokio::sync::Mutex<EffectState>>;
 impl<V> FixtureEffects<V> {
     /// Creates an isolated fixture compute binding with explicit fs custody.
-    pub fn new(volume: Arc<V>, executor: Arc<dyn ExecutorFixture>) -> Self {
+    pub fn new(volume: Arc<V>, executor: Arc<dyn ExecutorFixture>, bindings: &Bindings) -> Self {
         Self {
             volume,
             executor,
-            state: tokio::sync::Mutex::new(EffectState::default()),
-            fenced: Mutex::new(BTreeSet::new()),
+            resource_scope: bindings.streams.clone(),
+            placements: Mutex::new(Default::default()),
         }
+    }
+
+    fn result_publication(&self, placement: &Placement, operation: OperationId) -> OperationId {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"harness.conformance.effect-publication.v1\0");
+        hash.update(&(self.resource_scope.len() as u64).to_le_bytes());
+        hash.update(self.resource_scope.as_bytes());
+        hash.update(&placement.actor.into_bytes());
+        hash.update(&operation.into_bytes());
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+        OperationId::from_bytes(bytes)
+    }
+
+    fn placement(&self, placement: &Placement) -> Result<PlacementEffects> {
+        let mut placements = self
+            .placements
+            .lock()
+            .map_err(|_| Error::Storage("fixture placements poisoned".into()))?;
+        Ok(placements
+            .entry((placement.actor, placement.epoch))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(EffectState::default())))
+            .clone())
     }
 }
 impl<V: Volume + 'static> EffectHost for FixtureEffects<V> {
@@ -444,13 +572,9 @@ impl<V: Volume + 'static> EffectHost for FixtureEffects<V> {
         command: WorkflowCommand,
     ) -> BoxProviderFuture<'_, Result<Event>> {
         Box::pin(async move {
-            let mut state = self.state.lock().await;
-            if self
-                .fenced
-                .lock()
-                .map_err(|_| Error::Storage("fixture fence poisoned".into()))?
-                .contains(&(placement.actor, placement.epoch))
-            {
+            let owner = self.placement(&placement)?;
+            let mut state = owner.lock().await;
+            if state.fenced {
                 return Err(Error::Conflict("fixture placement fenced".into()));
             }
             if let Some(event) = state.results.get(&command.operation_id) {
@@ -460,7 +584,8 @@ impl<V: Volume + 'static> EffectHost for FixtureEffects<V> {
                 return Err(Error::Unsupported("unknown fixture effect".into()));
             }
             let result_operation = effect_result_operation(command.operation_id);
-            let output = if let Some(output) = self.volume.lookup(result_operation).await? {
+            let publication = self.result_publication(&placement, command.operation_id);
+            let output = if let Some(output) = self.volume.lookup(publication).await? {
                 output
             } else {
                 let value = self.volume.get(command.payload).await?;
@@ -472,10 +597,7 @@ impl<V: Volume + 'static> EffectHost for FixtureEffects<V> {
                     .await
                     .map_err(|e| Error::Invalid(e.to_string()))?;
                 self.volume
-                    .put(
-                        result_operation,
-                        serde_json::to_value(observed).map_err(codec)?,
-                    )
+                    .put(publication, serde_json::to_value(observed).map_err(codec)?)
                     .await?
             };
             let event = Event {
@@ -489,11 +611,8 @@ impl<V: Volume + 'static> EffectHost for FixtureEffects<V> {
     }
     fn fence(&self, placement: Placement) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {
-            let _drain = self.state.lock().await;
-            self.fenced
-                .lock()
-                .map_err(|_| Error::Storage("fixture fence poisoned".into()))?
-                .insert((placement.actor, placement.epoch));
+            let owner = self.placement(&placement)?;
+            owner.lock().await.fenced = true;
             Ok(())
         })
     }
@@ -522,8 +641,11 @@ pub fn fixture_bindings() -> Bindings {
     }
 }
 
-/// Fresh provider lifetime per case, with a real durable Streams outbox.
-pub struct InProcess;
+/// Host-owned providers; each actor retains its own fixture and execution workspaces.
+#[derive(Default)]
+pub struct InProcess {
+    providers: tokio::sync::OnceCell<LocalProviders>,
+}
 impl Substrate for InProcess {
     fn capabilities(&self) -> BTreeSet<String> {
         BTreeSet::from([
@@ -538,11 +660,12 @@ impl Substrate for InProcess {
         paths: Vec<String>,
     ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
         Box::pin(async move {
-            let directory = tempfile::tempdir()?;
-            let stream = Arc::new(
-                acyclic_stream::LocalStream::open(directory.path(), Default::default()).await?,
-            );
-            let filesystem = Fs::memory();
+            let providers = self
+                .providers
+                .get_or_try_init(LocalProviders::local)
+                .await?;
+            let stream = providers.stream.clone();
+            let filesystem = providers.filesystem.clone();
             let volume = Arc::new(
                 MemoryHarnessStorage::from_providers(
                     AgentId::new(),
@@ -561,7 +684,7 @@ impl Substrate for InProcess {
                 stream,
                 bindings.clone(),
                 Arc::new(FixturePolicy),
-                Arc::new(FixtureEffects::new(volume.clone(), executor)),
+                Arc::new(FixtureEffects::new(volume.clone(), executor, &bindings)),
             );
             Actors {
                 runtime: Supervised::new(runtime),

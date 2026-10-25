@@ -192,7 +192,7 @@ impl Volume for HostedVolume {
 }
 
 struct Factory<P, A, O> {
-    endpoint: Arc<OnceLock<String>>,
+    volume: Arc<OnceLock<HostedVolume>>,
     providers: Providers<P, A, O>,
 }
 impl<P, A, O> acyclic_local_server::Package for Factory<P, A, O>
@@ -212,13 +212,10 @@ where
             let mut bindings = fixture_bindings();
             bindings.streams = scope.resource_prefix();
             let volume = Arc::new(
-                HostedVolume::connect(
-                    self.endpoint
-                        .get()
-                        .ok_or_else(|| Status::failed_precondition("server not bound"))?,
-                )
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?,
+                self.volume
+                    .get()
+                    .ok_or_else(|| Status::failed_precondition("server not bound"))?
+                    .clone(),
             );
             let runtime = InProcessRuntime::new(
                 self.providers.stream.clone(),
@@ -230,6 +227,7 @@ where
                         stream: self.providers.stream.clone(),
                         filesystem: self.providers.filesystem.clone(),
                     }),
+                    &bindings,
                 )),
             );
             runtime
@@ -245,48 +243,74 @@ where
 
 /// A running SDK localhost deployment, owned for the entire corpus traversal.
 pub struct Localhost {
-    server: Server,
+    server: Option<Server>,
+    endpoint: String,
+    client: client::Client,
+    volume: HostedVolume,
 }
 impl Localhost {
     /// Starts one no-quorum server from SDK crates; no process or credential discovery.
     pub async fn start() -> TestResult<Self> {
-        let directory = Arc::new(tempfile::tempdir()?);
-        let stream = Arc::new(
-            acyclic_stream::LocalStream::open_with_ownership_anchor(
-                directory.path(),
-                Default::default(),
-                acyclic_native_runtime::OwnershipAnchor::new(directory.clone()),
-            )
-            .await?,
-        );
-        let filesystem = Fs::memory();
-        let endpoint = Arc::new(OnceLock::new());
+        let providers = LocalProviders::local().await?;
+        let stream = providers.stream;
+        let filesystem = providers.filesystem;
+        let volume = Arc::new(OnceLock::new());
         let mut registry = Registry::default();
         registry.package(Arc::new(Factory {
-            endpoint: endpoint.clone(),
+            volume: volume.clone(),
             providers: Providers {
                 stream: stream.clone(),
                 filesystem: filesystem.clone(),
             },
         }))?;
         let server = Server::start(stream, filesystem, registry).await?;
-        endpoint
-            .set(server.endpoint())
-            .map_err(|_| "endpoint already assigned")?;
-        Ok(Self { server })
+        let hosted = HostedVolume::connect(&server.endpoint()).await?;
+        volume
+            .set(hosted.clone())
+            .map_err(|_| "volume already assigned")?;
+        let mut host = Self::connect_with_volume(&server.endpoint(), hosted).await?;
+        host.server = Some(server);
+        Ok(host)
+    }
+    /// Attaches through the same canonical Actors/fs clients to an SDK host
+    /// that has registered the pinned conformance package.
+    pub async fn connect(endpoint: &str) -> TestResult<Self> {
+        Self::connect_with_volume(endpoint, HostedVolume::connect(endpoint).await?).await
+    }
+    async fn connect_with_volume(endpoint: &str, volume: HostedVolume) -> TestResult<Self> {
+        let package = HarnessPackage::new(fixture_bindings());
+        let client = client::Client::connect(
+            endpoint,
+            Scope {
+                account: vec![1; 16],
+                namespace: "conformance".into(),
+            },
+            package.identity.digest,
+            package.manifest().clone(),
+        )
+        .await?;
+        Ok(Self {
+            server: None,
+            endpoint: endpoint.to_owned(),
+            client,
+            volume,
+        })
     }
     /// Canonical shared service endpoint.
     pub fn endpoint(&self) -> String {
-        self.server.endpoint()
+        self.endpoint.clone()
     }
     /// Drain requests and release the listener.
     pub async fn shutdown(self) -> TestResult {
-        self.server.shutdown().await
+        if let Some(server) = self.server {
+            server.shutdown().await?;
+        }
+        Ok(())
     }
 }
 impl Substrate for Localhost {
     fn capabilities(&self) -> BTreeSet<String> {
-        InProcess.capabilities()
+        InProcess::default().capabilities()
     }
     fn execute(
         &self,
@@ -294,20 +318,13 @@ impl Substrate for Localhost {
         paths: Vec<String>,
     ) -> BoxProviderFuture<'_, TestResult<CaseObservation>> {
         Box::pin(async move {
-            let package = HarnessPackage::new(fixture_bindings());
-            let client = client::Client::connect(
-                &self.endpoint(),
-                Scope {
-                    account: vec![1; 16],
-                    namespace: format!("case-{}", AgentId::new()),
-                },
-                package.identity.digest,
-                package.manifest().clone(),
-            )
-            .await?;
+            let client = self.client.for_scope(Scope {
+                account: vec![1; 16],
+                namespace: format!("case-{}", AgentId::new()),
+            })?;
             Actors {
                 runtime: client,
-                volume: HostedVolume::connect(&self.endpoint()).await?,
+                volume: self.volume.clone(),
                 bindings: fixture_bindings(),
             }
             .execute(recipe, paths)
