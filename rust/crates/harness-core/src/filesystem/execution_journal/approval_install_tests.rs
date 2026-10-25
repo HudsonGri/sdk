@@ -204,9 +204,12 @@ proptest! {
         // cache. Its wire belongs to that runtime, not to the rejected call's
         // temporary observer. The live owner is the negative control: its
         // retained metadata must remain charged until the owner itself retires.
-        prop_assert!(work.live_allocation_bytes() > 0);
+        let ledger_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+        prop_assert!(work.live_allocation_bytes() > ledger_bytes);
         drop(native);
-        prop_assert_eq!(work.live_allocation_bytes(), 0);
+        // The original work is itself still alive: its funded Arc is the
+        // sole remaining owner. Journal, proof and cache storage must retire.
+        prop_assert_eq!(work.live_allocation_bytes(), ledger_bytes);
     }
 }
 

@@ -350,12 +350,15 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
                     .await??,
             ),
         }
-        proofs[entry] = synced_bytes(&provider).is_some()
-            && provider.watermarks(path()).await?.durable == 1;
+        proofs[entry] =
+            synced_bytes(&provider).is_some() && provider.watermarks(path()).await?.durable == 1;
         meter.assert_refunded();
     }
     // Collect every adapter before asserting so the actual old implementation
     // is exercised through all three entry points even when the first is bad.
-    assert_eq!(proofs, [true; 3], "phase barrier returned an ordered-only proof");
+    assert_eq!(
+        proofs, [true; 3],
+        "phase barrier returned an ordered-only proof"
+    );
     Ok(())
 }
