@@ -2,7 +2,7 @@ use crate::{
     CaseObservation, TestResult, composer::Composer, observation, scenario::Scenario,
     scenario_data, substrate::Substrate,
 };
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -13,6 +13,9 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+
+#[cfg(test)]
+mod task_tests;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,15 +103,15 @@ where
     F::Output: Send + 'static,
 {
     let mut cases = cases.into_iter();
-    let mut active = tokio::task::JoinSet::new();
+    let mut active = FuturesUnordered::new();
     for case in cases.by_ref().take(concurrency.get()) {
-        active.spawn(case);
+        active.push(acyclic_native_runtime::spawn(case).cancel_on_drop());
     }
     let mut results = Vec::new();
-    while let Some(result) = active.join_next().await {
+    while let Some(result) = active.next().await {
         results.push(result?);
         if let Some(case) = cases.next() {
-            active.spawn(case);
+            active.push(acyclic_native_runtime::spawn(case).cancel_on_drop());
         }
     }
     Ok(results)

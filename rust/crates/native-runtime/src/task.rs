@@ -10,6 +10,37 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
+/// A task that requests cancellation when its awaiting owner is dropped.
+///
+/// Dropping requests cancellation; await the handle to observe task retirement.
+/// This policy is shared by native and simulated execution on every OS.
+#[must_use = "dropping this handle cancels the task"]
+pub struct CancelOnDrop<T>(TaskHandle<T>);
+
+impl<T> TaskHandle<T> {
+    /// Cancels this task when its awaiting owner is dropped instead of detaching it.
+    pub fn cancel_on_drop(self) -> CancelOnDrop<T> {
+        CancelOnDrop(self)
+    }
+}
+
+impl<T> Drop for CancelOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<T> std::future::Future for CancelOnDrop<T> {
+    type Output = std::io::Result<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.get_mut().0).poll(cx)
+    }
+}
+
 /// Maps a Tokio join failure onto the shared task error contract.
 pub(crate) fn join_error(cause: tokio::task::JoinError) -> std::io::Error {
     if cause.is_cancelled() {
@@ -89,6 +120,37 @@ mod native {
 mod tests {
     #[cfg(feature = "test-support")]
     use std::time::Duration;
+
+    #[test]
+    fn dropping_a_scoped_task_cancels_before_releasing_its_work() {
+        struct Completion(bool, Option<tokio::sync::oneshot::Sender<bool>>);
+        impl Drop for Completion {
+            fn drop(&mut self) {
+                self.1.take().unwrap().send(self.0).unwrap();
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (started, starting) = tokio::sync::oneshot::channel();
+            let (release, wait) = tokio::sync::oneshot::channel();
+            let (finished, finishing) = tokio::sync::oneshot::channel();
+            let task = super::spawn(async move {
+                let mut completion = Completion(false, Some(finished));
+                started.send(()).unwrap();
+                wait.await.unwrap();
+                completion.0 = true;
+            })
+            .cancel_on_drop();
+            starting.await.unwrap();
+            drop(task);
+            // A detached task would finish successfully after this release.
+            // Cancellation has to win before its owner can publish the release.
+            let _ = release.send(());
+            assert!(!finishing.await.unwrap());
+        });
+    }
 
     // Outside a simulation, blocking work must stay visible to a paused Tokio
     // clock: virtual time may not auto-advance past an unfinished closure.

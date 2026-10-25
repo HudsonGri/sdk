@@ -53,9 +53,10 @@ cases; they are not executable scenarios.
 
 ## External hosts
 
-Implement #1359's `ActorRuntime` and this crate's `substrate::Volume`, then use
-`substrate::Actors` with the host's explicit bindings. Install the identical
-`HarnessPackage`. Its pinned deterministic handler emits a
+Implement #1359's `ActorRuntime` and this crate's `substrate::Volume`, then call
+`substrate::Actors::install(runtime, volume, bindings).await?`. This factory
+installs the pinned `HarnessPackage` before publishing the host binding. Case
+execution creates fresh actors on that deployment. Its deterministic handler emits a
 `harness.scenario.compute` command; bind that command to `FixtureEffects` with
 an explicit `Providers` bundle (or an equivalent executor using
 `collect_on`). The effect runs the stock executor with a scripted model or the
