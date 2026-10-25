@@ -11,6 +11,78 @@ fn work() -> NativeMaterializationWork {
     .unwrap()
 }
 
+#[test]
+fn native_invocation_decodes_the_current_process_contract() {
+    let work = work();
+    let root = root_path();
+    let scratch = root.join("scratch");
+    let binding = crate::pi_binding::tests::binding("child", 7);
+    let PiScratchAllocation::Created(creation) = &binding.scratch.allocation else {
+        unreachable!()
+    };
+    let manifest = NativeViewManifest {
+        options: NativeViewOptions {
+            root: root.clone(),
+            maximum_volumes: 1,
+            work_per_volume: super::super::native_root_source::budget(),
+        },
+        volumes: vec![NativeVolumeMapping {
+            volume: binding.scratch.volume.clone(),
+            generation: creation.generation.clone(),
+            namespace: NativeVolumeNamespace::MaterializedDirectory,
+            path: scratch.clone(),
+            writable: true,
+            authority_revision: [1; 32],
+        }],
+    };
+    for prefix in [false, true] {
+        let host = PiNativeHostRuntime {
+            version: PI_NATIVE_VERSION.into(),
+            executable: root.join("pi"),
+            executable_prefix: if prefix {
+                vec![root.join("pi-cli.js").to_str().unwrap().into()]
+            } else {
+                Vec::new()
+            },
+            extension: root.join("acyclic.ts"),
+            provider_extension: prefix.then(|| root.join("provider.ts")),
+            environment: BTreeMap::from([("HOME".into(), root.to_str().unwrap().into())]),
+        };
+        let invocation = host
+            .intent_invocation(
+                &scratch.join("child.jsonl"),
+                &scratch,
+                "fixture-provider",
+                "fixture-model",
+                "fixture prompt",
+                capture_limits(Default::default(), 65_536).unwrap(),
+                &work,
+            )
+            .unwrap();
+        let mut invocation = invocation.0;
+        invocation.environment =
+            BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "fixture-caller".into())]);
+        let request = invocation
+            .request_with_work(&host, &binding, &manifest, &work)
+            .expect("Pi projection must decode through the strict native process contract");
+        assert!(request.0.has_valid_capture_allowances());
+        assert_eq!(
+            request.0.standard_input.as_deref(),
+            Some(b"fixture prompt".as_slice())
+        );
+        assert_eq!(request.0.view, manifest);
+        assert_eq!(request.0.environment["ACYCLIC_PI_CALLER"], "fixture-caller");
+        assert_eq!(
+            request.0.argv[0],
+            if prefix {
+                host.executable_prefix[0].as_str()
+            } else {
+                "--print"
+            }
+        );
+    }
+}
+
 fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
     let entry = json!({"type":"message","id":"first","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
         "message":{"role":"user","content":"original instruction","timestamp":1}});
