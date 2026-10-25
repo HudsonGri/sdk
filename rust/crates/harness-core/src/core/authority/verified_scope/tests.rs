@@ -165,7 +165,9 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
         )
         .is_err()
     );
-    assert_eq!(io.owned_bytes()?, 0, "failed grant leaked retained custody");
+    // Authentication belongs to the shared authority, even when this grant
+    // is denied. Its exact wire remains funded until that owner retires.
+    assert_eq!(io.owned_bytes()?, denied.workload.len() as u64);
     let grant = ContentGrant::verify(
         &verifier,
         &scope,
@@ -176,9 +178,14 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
     )?;
     assert_eq!(
         io.owned_bytes()?,
-        grant.logical_owned_bytes()?,
-        "grant omitted retained custody"
+        grant.logical_owned_bytes()? + scope.workload.len() as u64,
+        "grant or authority omitted retained custody"
     );
+    let custody = io.guard_owned(grant.logical_owned_bytes()?)?;
+    drop((grant, custody));
+    assert_eq!(io.owned_bytes()?, scope.workload.len() as u64);
+    drop((verifier, issuer));
+    assert_eq!(io.owned_bytes()?, 0, "retired authority leaked wire custody");
     Ok(())
 }
 
@@ -279,7 +286,7 @@ fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
 #[cfg(feature = "filesystem")]
 #[test]
 fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<()> {
-    let (_issuer, verifier, scope, volume) = fixture()?;
+    let (issuer, verifier, scope, volume) = fixture()?;
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let cancellation = acyclic_fs::CancellationToken::new();
     let probe = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
@@ -291,10 +298,18 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
         u64::MAX,
         &mut Some(&mut probe.history_io()),
     )?;
-    assert_eq!(probe.owned_bytes()?, grant.logical_owned_bytes()?);
+    assert_eq!(
+        probe.owned_bytes()?,
+        grant.logical_owned_bytes()? + scope.workload.len() as u64
+    );
     let required = budget.allocation_operations - probe.remaining()?.allocation_operations;
     assert!(required > 3, "grant did not reach the metadata copies");
+    let custody = probe.guard_owned(grant.logical_owned_bytes()?)?;
+    drop((grant, custody, verifier, issuer));
+    assert_eq!(probe.owned_bytes()?, 0, "retired grant and authority leaked custody");
     for operations in 0..required {
+        // Each attempt starts cold, including the authority's wire allocation.
+        let (issuer, verifier, scope, volume) = fixture()?;
         let mut limited = budget;
         limited.allocation_operations = operations;
         let io = crate::executor::PreparationIo::from_budget(limited, &cancellation)?;
@@ -311,10 +326,11 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
             "allocation failure was not exercised: {operations}"
         );
         drop(result);
+        drop((verifier, issuer));
         assert_eq!(
             io.owned_bytes()?,
             0,
-            "partial grant allocation leaked retained custody: operations={operations}"
+            "partial grant or authority allocation leaked retained custody: operations={operations}"
         );
     }
     Ok(())
