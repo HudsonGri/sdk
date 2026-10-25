@@ -40,6 +40,7 @@ def main():
     idle = ('empty', 'stopped', 'unstarted-stopped')
     background = {'background-' + name: cases[name] for name in idle}
     cases.update(background)
+    cases['awaited'] = {'settled': False, 'pending': 0, 'control': 'resume'}
     results = []
     for host, flags in policies.items():
         with tempfile.TemporaryDirectory(prefix='plugins-settled-session-') as temporary:
@@ -60,6 +61,7 @@ def main():
             def serve():
                 seen = set()
                 listed = False
+                waiting_listed = False
                 while not stop.is_set():
                     for path in (directory / 'requests').glob('*.json'):
                         if path.name in seen:
@@ -69,14 +71,23 @@ def main():
                         assert request['session'] == session
                         action = request['action']
                         if action['kind'] == 'sessions':
-                            result = {'ok': [] if listed else list(background)}
-                            listed = True
+                            if not listed:
+                                result = {'ok': list(background)}
+                                listed = True
+                            elif counts['awaited', 'observe'] == 1 and not waiting_listed:
+                                result = {'ok': ['awaited']}
+                                waiting_listed = True
+                            else:
+                                result = {'ok': []}
                         else:
                             assert action['kind'] == 'session', action
                             reference = action['reference']
                             kind = action['action']['kind']
                             counts[reference, kind] += 1
                             case = cases[reference]
+                            if reference == 'awaited':
+                                assert kind == 'observe', (reference, kind)
+                                case = {**case, 'settled': counts[reference, kind] >= 2}
                             if (reference in idle or reference in background) and kind in ('recover', 'next'):
                                 errors.append((reference, kind))
                                 result = {'error': 'settled session entered recovery or execution'}
@@ -113,7 +124,8 @@ def main():
             bridge = subprocess.Popen([binary, '__mcp', host], cwd=workspace, env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                for identifier, reference in enumerate((name for name in cases if name not in background), 1):
+                for identifier, reference in enumerate((name for name in cases
+                        if name not in background and name != 'awaited'), 1):
                     tool = {'queued': 'send', 'orphaned': 'resume'}.get(reference, 'spawn')
                     bridge.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': identifier,
                         'method': 'tools/call', 'params': {'name': tool,
@@ -125,10 +137,22 @@ def main():
                     value = json.loads(response['result']['content'][0]['text'])
                     assert value['pending'] == cases[reference]['pending'], value
                 background_done.wait()
+                bridge.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 7,
+                    'method': 'tools/call', 'params': {'name': 'wait',
+                    'arguments': {'reference': 'awaited'}}}) + '\n')
+                bridge.stdin.flush()
+                response = json.loads(bridge.stdout.readline())
+                assert response['id'] == 7 and not response['result'].get('isError'), response
+                observed = json.loads(response['result']['content'][0]['text'])
+                assert observed['status']['settled'], observed
                 bridge.stdin.close()
                 assert bridge.wait() == 0, bridge.stderr.read()
                 assert not errors, errors
                 for reference in cases:
+                    if reference == 'awaited':
+                        assert counts[reference, 'observe'] == 2, (
+                            'pending wait repeated the refresh observation', host, counts)
+                        continue
                     assert counts[reference, 'observe'] == 1, (
                         'settled-session observation was repeated', host, reference, counts)
                 for reference in idle:
