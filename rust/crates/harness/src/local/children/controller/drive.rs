@@ -11,7 +11,7 @@ impl LocalHarness {
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            let mut completions = BTreeMap::new();
+            let mut completions = BTreeSet::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
             let mut children = self.initial_child_drivers(&files, &inherited).await?;
@@ -39,12 +39,18 @@ impl LocalHarness {
                     if !inherited_stopped && inherited.as_ref().is_some_and(|token| token.is_cancelled()) {
                         inherited_stopped = true;
                         cancellation.cancel();
-                        for reference in observed!(files.inner.child_references()).map_err(storage)? {
+                        let mut after = None;
+                        loop {
+                            let Some(page) = observed!(files.inner.child_references_page(after.as_ref(), 64)).map_err(storage)? else { continue; };
+                            if page.is_empty() { break; }
+                            after = page.last().cloned();
+                            for reference in page {
                             if !children.active.contains(&reference) && !matches!(desired(&reference, &children.values)?, ChildState::Cancelled | ChildState::Archived) {
                                 children.active.insert(reference.clone());
                                 let request = observed!(files.inner.child_request(&reference)).map_err(storage)?;
                                 children.jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                             }
+                        }
                         }
                     }
                     if cancellation.is_cancelled() && children.jobs.is_empty() { drained.cancel(); }
@@ -78,7 +84,7 @@ impl LocalHarness {
                         }
                         Wake::Child(result) => {
                             let (reference, position) = result?;
-                            completions.insert(reference, position);
+                            completions.insert((position, reference));
                             for reference in release_completed(children.generation.position, &mut children.active, &mut completions) {
                                 if needs_work_count(&reference, &children.values, inherited_stopped,
                                     observed!(files.inner.child_input_count(&reference)).map_err(storage)?)? {
@@ -124,28 +130,38 @@ impl LocalHarness {
             .collect();
         let mut active = BTreeSet::new();
         let jobs = FuturesUnordered::new();
-        for reference in coordination(|| files.inner.child_references())
-            .await
-            .map_err(storage)?
-        {
-            if needs_work_count(
-                &reference,
-                &values,
-                false,
-                coordination(|| files.inner.child_input_count(&reference))
-                    .await
-                    .map_err(storage)?,
-            )? {
-                active.insert(reference.clone());
-                let request = coordination(|| files.inner.child_request(&reference))
-                    .await
-                    .map_err(storage)?;
-                jobs.push(self.service_child(
-                    Arc::clone(files),
-                    reference,
-                    request,
-                    inherited.clone(),
-                ));
+        let mut after = None;
+        loop {
+            let Some(page) = coordination(|| files.inner.child_references_page(after.as_ref(), 64))
+                .await
+                .map_err(storage)?
+            else {
+                continue;
+            };
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().cloned();
+            for reference in page {
+                if needs_work_count(
+                    &reference,
+                    &values,
+                    false,
+                    coordination(|| files.inner.child_input_count(&reference))
+                        .await
+                        .map_err(storage)?,
+                )? {
+                    active.insert(reference.clone());
+                    let request = coordination(|| files.inner.child_request(&reference))
+                        .await
+                        .map_err(storage)?;
+                    jobs.push(self.service_child(
+                        Arc::clone(files),
+                        reference,
+                        request,
+                        inherited.clone(),
+                    ));
+                }
             }
         }
         Ok(ChildDrivers {
