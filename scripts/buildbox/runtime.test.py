@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import socket
 import signal
@@ -22,6 +23,12 @@ def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'))
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 admit=load('bb-admit');job=load('bb-job');pruner=load('prune-wt-sdk');exports=load('job_exports')
+
+def retire_process(process):
+    if process.stdin is not None:
+        process.stdin.close();process.stdin=None
+    if process.poll() is None:process.kill()
+    process.communicate(timeout=2)
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -63,6 +70,20 @@ class RuntimeTests(unittest.TestCase):
             env.pop(key,None)
         env.update(extra or {})
         return env
+    def observed_admission(self,cleanup,env,observer,*args):
+        events,writer=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
+        cleanup.callback(events.close);cleanup.callback(writer.close)
+        # Both admission fixtures load and observe the one production module.
+        loader='''import importlib.util,json,socket,sys
+from pathlib import Path
+source=Path(sys.argv[1]);sys.path.insert(0,str(source.parent))
+spec=importlib.util.spec_from_file_location('observed_admit',source)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+events=socket.socket(fileno=int(sys.argv[2]))
+'''
+        process=subprocess.Popen([sys.executable,'-c',loader+observer,str(HERE/'bb-admit.py'),str(writer.fileno()),*args],env=env,pass_fds=[writer.fileno()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        cleanup.callback(retire_process,process);writer.close()
+        return process,events
     def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
         env=self.worker_env({'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
@@ -504,26 +525,51 @@ finally:a.close();b.close()
         root=self.d/'admit';root.mkdir()
         (root/'lease-stale.json').write_text(json.dumps({'pid':999999999,'identity':None}))
         env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
-        first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        until=time.monotonic()+2
-        while not any(p.name!='lease-stale.json' for p in root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
-        self.assertTrue(any(p.name!='lease-stale.json' for p in root.glob('lease-*')))
-        marker=self.d/'new-ticket'
-        with (root/'upgrade.lock').open('a') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX)
-            second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-            first.communicate(timeout=2);self.assertEqual(first.returncode,0)
-            self.assertFalse(marker.exists())
-            # Without the upgrade flock, a new ticket incorrectly enters.
-            negative=self.d/'no-barrier.py';negative.write_text((HERE/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
-            bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
-            self.assertEqual(bad.returncode,0)
-        second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
-        self.assertFalse((root/'lease-stale.json').exists())
-        daemon=json.loads((root/'daemon.json').read_text())
-        import hashlib
-        self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
-        os.kill(daemon['pid'],15)
+        def stop_daemon():
+            info=root/'daemon.json'
+            if not info.exists():return
+            owner=json.loads(info.read_text())
+            fd=admit.live_pidfd(owner['pid'],owner['identity'])
+            if fd is not None:
+                try:signal.pidfd_send_signal(fd,signal.SIGTERM)
+                except ProcessLookupError:pass
+                finally:os.close(fd)
+        with contextlib.ExitStack() as cleanup:
+            cleanup.callback(stop_daemon)
+            # A finite sleep can expire before the parent observes its lease.
+            # Readiness proves admission; stdin owns the command's lifetime.
+            command='import sys;print("RUNNING",flush=True);sys.stdin.buffer.read(1)'
+            first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            cleanup.callback(retire_process,first)
+            self.assertTrue(select.select([first.stdout],[],[],2)[0],'fixture command did not become ready')
+            self.assertEqual(first.stdout.readline(),b'RUNNING\n')
+            marker=self.d/'new-ticket'
+            with (root/'upgrade.lock').open('a') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX)
+                observer='''flock=module.fcntl.flock
+def observe(file,operation):
+    if operation==module.fcntl.LOCK_SH:
+        try:flock(file,operation|module.fcntl.LOCK_NB)
+        except BlockingIOError:events.send(b'blocked')
+        else:events.send(b'acquired')
+    return flock(file,operation)
+module.fcntl.flock=observe
+raise SystemExit(module.client(sys.argv[3:]))
+'''
+                second,events=self.observed_admission(cleanup,env,observer,'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()')
+                self.assertTrue(select.select([events],[],[],2)[0],'second ticket did not reach the upgrade lock')
+                self.assertEqual(events.recv(4096),b'blocked')
+                first.communicate(input=b'R',timeout=2);self.assertEqual(first.returncode,0)
+                self.assertFalse(marker.exists())
+                # Without the upgrade flock, a new ticket incorrectly enters.
+                negative=self.d/'no-barrier.py';negative.write_text((HERE/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
+                bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
+                self.assertEqual(bad.returncode,0)
+            second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
+            self.assertFalse((root/'lease-stale.json').exists())
+            daemon=json.loads((root/'daemon.json').read_text())
+            import hashlib
+            self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
 
     def test_recovered_leases_need_identity_and_survive_pidfd_exit_race(self):
         with patch.object(admit.os,'pidfd_open') as opened:
@@ -637,23 +683,46 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
     def test_daemon_killed_client_holds_until_command_exits_and_releases(self):
         root=self.d/'admit';root.mkdir();(root/'admit.conf').write_text('compile=1 tenant.graphcoder=1 tenant.cloud=1\n')
         env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
-        args=[sys.executable,str(HERE/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',f'from pathlib import Path; import time,os;Path({str(self.d/"pid")!r}).write_text(str(os.getpid()));time.sleep(60)']
-        first=subprocess.Popen(args,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        try:
-            until=time.monotonic()+5
-            while not (self.d/'pid').exists() and time.monotonic()<until:time.sleep(.01)
-            self.assertTrue((self.d/'pid').exists())
-            pid=int((self.d/'pid').read_text()); self.assertIsNotNone(admit.identity(pid))
+        # Observe the actual scheduler decision, without replacing admission.
+        # A marker's absence cannot distinguish queued work from a slow child.
+        observer='''take=module.Scheduler.take
+reported=False
+def observe(scheduler,cls):
+    global reported
+    waiting=any(tenant=='cloud' and queue for (kind,_),tenants in scheduler.queues.items() if kind==cls for tenant,queue in tenants.items())
+    selected=take(scheduler,cls)
+    if waiting and not reported:
+        reported=True
+        events.send(json.dumps({'selected':selected['tenant'] if selected else None,'running':scheduler.running[cls]}).encode())
+    return selected
+module.Scheduler.take=observe
+module.serve()
+'''
+        with contextlib.ExitStack() as cleanup:
+            daemon,events=self.observed_admission(cleanup,{**env,'BB_ADMIT_READY_FD':'1'},observer)
+            self.assertTrue(select.select([daemon.stdout],[],[],5)[0],'admission daemon did not become ready')
+            self.assertEqual(daemon.stdout.read(5),b'ready')
+            command='import os,sys;print(os.getpid(),flush=True);sys.stdin.buffer.read(1)'
+            first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            cleanup.callback(retire_process,first)
+            self.assertTrue(select.select([first.stdout],[],[],5)[0],'fixture command did not become ready')
+            pid=int(first.stdout.readline());self.assertIsNotNone(admit.identity(pid))
+            command_fd=admit.live_pidfd(pid,admit.identity(pid));self.assertIsNotNone(command_fd)
+            cleanup.callback(os.close,command_fd)
+            def stop_command():
+                try:signal.pidfd_send_signal(command_fd,signal.SIGKILL)
+                except ProcessLookupError:pass
+                self.assertTrue(select.select([command_fd],[],[],2)[0],'fixture command did not exit')
+            cleanup.callback(stop_command)
             marker=self.d/'second'
             second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).write_text("ran")'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-            time.sleep(.1);self.assertFalse(marker.exists()) # queued negative control
+            cleanup.callback(retire_process,second)
+            self.assertTrue(select.select([events],[],[],5)[0],'second ticket did not reach the scheduler')
+            self.assertEqual(json.loads(events.recv(4096)),{'selected':None,'running':1})
+            self.assertFalse(marker.exists())
             first.kill();first.wait(timeout=5)
             out,err=second.communicate(timeout=5);self.assertEqual(second.returncode,0,err)
             self.assertTrue(marker.exists());self.assertIsNone(admit.identity(pid))
-        finally:
-            if first.poll() is None:first.kill();first.wait()
-            first.stdout.close(); first.stderr.close()
-            info=json.loads((root/'daemon.json').read_text());os.kill(info['pid'],signal.SIGTERM)
 
     def test_two_sccache_servers_are_isolated(self):
         a=self.d/'a';b=self.d/'b';a.mkdir();b.mkdir()
