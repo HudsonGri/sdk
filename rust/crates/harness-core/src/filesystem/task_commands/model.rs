@@ -116,6 +116,7 @@ where
         payload: Value,
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
+        BoundedContentFuture::new(io, || async move {
         let context = crate::conversation::BoundedContentFuture::new(io, || async {
             self.model_task_context(invocation).await
         })?
@@ -209,6 +210,7 @@ where
             .await
         })?
         .await
+        })?.await
     }
 
     async fn model_task_context(
@@ -301,6 +303,7 @@ where
         prepared: ModelExecution<P, A, O>,
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
+        BoundedContentFuture::new(invocation.io, || async move {
         #[cfg(not(target_arch = "wasm32"))]
         if invocation.io.is_some() {
             return BoundedContentFuture::new(invocation.io, || {
@@ -388,6 +391,7 @@ where
             )
         })?
         .await
+        })?.await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -778,4 +782,24 @@ fn reserve_model_input(io: Option<&PreparationIo>) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn model_execution_frames_stay_bounded() {
+    type Commands<'a> = FilesystemTaskCommands<'a, acyclic_stream::MemoryStream,
+        acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<(&Commands<'_>, CommandInvocation<'_>, ModelExecution<
+        acyclic_stream::MemoryStream,
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >, &mut crate::executor::DispatchPhase)> = None;
+    let bytes = future_bytes(|| {
+        let (commands, invocation, prepared, phase) = arguments.unwrap();
+        commands.execute_model_command(invocation, prepared, phase)
+    });
+    assert!(bytes <= 4096, "model execution future is {bytes} bytes");
 }

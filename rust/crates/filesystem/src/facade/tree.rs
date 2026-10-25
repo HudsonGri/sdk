@@ -78,19 +78,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let encoded =
-            crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-                crate::kernel::encode_tree_page(
-                    &TreePage::Leaf(Vec::new()),
-                    self.volume.config.limits.maximum_directory_page_entries,
-                    observe,
-                    allocation_error,
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            let encoded =
+                crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                    crate::kernel::encode_tree_page(
+                        &TreePage::Leaf(Vec::new()),
+                        self.volume.config.limits.maximum_directory_page_entries,
+                        observe,
+                        allocation_error,
+                    )
+                })?;
+            self.volume
+                .fs
+                .put_encoded_with_accounting(
+                    ObjectKind::TreePage,
+                    encoded,
+                    accounting,
+                    cancellation,
                 )
-            })?;
-        self.volume
-            .fs
-            .put_encoded_with_accounting(ObjectKind::TreePage, encoded, accounting, cancellation)
-            .await
+                .await
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     /// Returns one bounded authenticated page from a directory.

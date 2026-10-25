@@ -206,7 +206,7 @@ pub(super) async fn materialize_source<A, O, E, F, Fut>(
     paths: &[NamespacePath],
     options: &MaterializeOptions,
     mode: MaterializeMode,
-    mut receipt: GenerationReceipt,
+    receipt: GenerationReceipt,
     mut before_effect: Option<&mut F>,
 ) -> Result<OperationReceipt<MaterializationReceipt>, E>
 where
@@ -216,224 +216,136 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    let mut work = receipt.custody.work().clone();
-    let cancellation = receipt
-        .custody
-        .work()
-        .state
-        .with_original_leaf(|original| original.cancellation().clone());
-    let cancellation = &cancellation;
-    let reader = match &source {
-        GenerationSource::Standalone(checkout) => {
-            let reader = checkout
-                .pinned_reader_for_materialization_with_work(receipt.custody.work(), cancellation);
-            reader.map_err(MaterializeError::from)?
-        }
-        GenerationSource::Original(reader) => {
-            reader
-                .validate_native_work(receipt.custody.work())
-                .map_err(MaterializeError::from)?;
-            (*reader).clone()
-        }
-    };
-    let selected_paths = select_materialization_paths(paths, &mut receipt)?;
-    let selection_bytes = vec_bytes(&selected_paths);
-    let destination = validate_options(options, &mut receipt)?;
-    let host_root = receipt.owned_arc(destination, 0)?;
-    let mut known_files = Vec::<(FileId, HeldHostPath)>::new();
-    #[cfg(any(target_os = "macos", windows))]
-    let mut known_payloads = Vec::<((u64, ObjectId, ObjectId), HeldHostPath)>::new();
-    let mut pending = Vec::new();
-    let mut deferred_directory_metadata = Vec::new();
-    let limits = reader.volume_config().limits;
-    for path in selected_paths {
-        let host_path = materialize_host_path(None, path.components(), &mut receipt)?;
-        if path.is_root() {
-            let namespace = clone_namespace(path, None, limits, &mut receipt)?;
-            let bytes = usize::try_from(namespace.retained_bytes())
-                .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
-            let namespace = receipt.owned_arc(namespace, bytes)?;
-            receipt.push(&mut pending, (namespace.clone(), host_path.clone()))?;
-            receipt.push(&mut deferred_directory_metadata, (namespace, host_path))?;
-            continue;
-        }
-        let record = match &mut source {
-            GenerationSource::Standalone(checkout) => {
-                let remaining = receipt
-                    .custody
-                    .work()
-                    .remaining()
-                    .map_err(MaterializeError::from)?;
-                let lookup = checkout
-                    .lookup_no_follow(path, remaining, cancellation)
-                    .await
-                    .map_err(|failure| receipt.engine_failure(failure))?;
-                work.merge(lookup.work).map_err(MaterializeError::from)?;
-                lookup.value.record
-            }
-            GenerationSource::Original(reader) => {
-                let lookup = reader
-                    .lookup_record_with_native_work(path, receipt.custody.work(), cancellation)
-                    .await;
-                lookup.map_err(MaterializeError::from)?
-            }
-        }
-        .ok_or(MaterializeError::MissingPath)?;
-        generation_action(&mut before_effect, NativeMaterializationActionPhase::Before).await?;
-        #[cfg(unix)]
-        if let Some(parent) = super::work::host_path(&host_path.0)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-        {
-            host_root
-                .0
-                .create_dir_all_held(parent, &mut work)
-                .map_err(MaterializeError::from)?;
-        }
-        #[cfg(windows)]
-        if let Some(separator) = host_path
-            .0
-            .iter()
-            .rposition(|unit| *unit == u16::from(b'\\'))
-        {
-            host_root
-                .0
-                .create_dir_all_held(
-                    host_path
-                        .0
-                        .get(..separator)
-                        .ok_or(MaterializeError::InvalidOptions)?,
-                    &mut work,
-                )
-                .map_err(MaterializeError::from)?;
-        }
-        generation_action(
-            &mut before_effect,
-            NativeMaterializationActionPhase::Completed,
-        )
-        .await?;
-        let directory = if record.kind == FileKind::Directory {
-            let namespace = clone_namespace(path, None, limits, &mut receipt)?;
-            let bytes = usize::try_from(namespace.retained_bytes())
-                .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
-            let namespace = receipt.owned_arc(namespace, bytes)?;
-            receipt.push(
-                &mut deferred_directory_metadata,
-                (namespace.clone(), host_path.clone()),
-            )?;
-            Some(namespace)
-        } else {
-            None
-        };
-        materialize_entry(
-            &reader,
-            &host_root,
-            path,
-            &host_path,
-            directory,
-            &record,
-            options,
-            cancellation,
-            &mut known_files,
-            #[cfg(any(target_os = "macos", windows))]
-            &mut known_payloads,
-            &mut pending,
-            &mut receipt,
-            mode,
-            &mut before_effect,
-        )
-        .await?;
-    }
-    receipt
-        .custody
-        .release(selection_bytes as u64)
-        .map_err(MaterializeError::from)?;
-    while let Some((directory, host_directory)) = pending.pop() {
-        let mut after: Option<LogicalName> = None;
-        loop {
-            let page = match &mut source {
+    materialize_heap_future_on_receipt(
+        move |mut receipt| async move {
+            let mut work = receipt.custody.work().clone();
+            let cancellation = receipt
+                .custody
+                .work()
+                .state
+                .with_original_leaf(|original| original.cancellation().clone());
+            let cancellation = &cancellation;
+            let reader = match &source {
                 GenerationSource::Standalone(checkout) => {
-                    let remaining = receipt
-                        .custody
-                        .work()
-                        .remaining()
-                        .map_err(MaterializeError::from)?;
-                    let page = checkout
-                        .list_directory_records(
-                            &directory.0,
-                            after
-                                .as_ref()
-                                .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
-                            options.maximum_directory_entries,
-                            remaining,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| receipt.engine_failure(failure))?;
-                    work.merge(page.work).map_err(MaterializeError::from)?;
-                    page.value
+                    let reader = checkout.pinned_reader_for_materialization_with_work(
+                        receipt.custody.work(),
+                        cancellation,
+                    );
+                    reader.map_err(MaterializeError::from)?
                 }
                 GenerationSource::Original(reader) => {
-                    let page = reader
-                        .list_directory_records(
-                            &directory.0,
-                            after.as_ref(),
-                            options.maximum_directory_entries,
-                            receipt.custody.work(),
-                            cancellation,
-                        )
-                        .await;
-                    let (page, custody) = page.map_err(MaterializeError::from)?;
-                    receipt.accept_source(page, custody)?
+                    reader
+                        .validate_native_work(receipt.custody.work())
+                        .map_err(MaterializeError::from)?;
+                    (*reader).clone()
                 }
             };
-            if page.has_more && page.entries.is_empty() {
-                return Err(
-                    MaterializeError::Engine("directory pagination made no progress").into(),
-                );
-            }
-            let entry_bytes = vec_bytes(&page.entries);
-            if matches!(&source, GenerationSource::Standalone(_)) {
-                receipt.adopt(entry_bytes)?;
-                for entry in &page.entries {
-                    receipt.adopt(entry.name.retained_bytes())?;
+            let selected_paths = select_materialization_paths(paths, &mut receipt)?;
+            let selection_bytes = vec_bytes(&selected_paths);
+            let destination = validate_options(options, &mut receipt)?;
+            let host_root = receipt.owned_arc(destination, 0)?;
+            let mut known_files = Vec::<(FileId, HeldHostPath)>::new();
+            #[cfg(any(target_os = "macos", windows))]
+            let mut known_payloads = Vec::<((u64, ObjectId, ObjectId), HeldHostPath)>::new();
+            let mut pending = Vec::new();
+            let mut deferred_directory_metadata = Vec::new();
+            let limits = reader.volume_config().limits;
+            for path in selected_paths {
+                let host_path = materialize_host_path(None, path.components(), &mut receipt)?;
+                if path.is_root() {
+                    let namespace = clone_namespace(path, None, limits, &mut receipt)?;
+                    let bytes = usize::try_from(namespace.retained_bytes())
+                        .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
+                    let namespace = receipt.owned_arc(namespace, bytes)?;
+                    receipt.push(&mut pending, (namespace.clone(), host_path.clone()))?;
+                    receipt.push(&mut deferred_directory_metadata, (namespace, host_path))?;
+                    continue;
                 }
-            }
-            for entry in page.entries {
-                let child = clone_namespace(&directory.0, Some(&entry.name), limits, &mut receipt)?;
-                let child_host = materialize_host_path(
-                    Some(&host_directory.0),
-                    std::slice::from_ref(&entry.name),
-                    &mut receipt,
-                )?;
-                let child_bytes = usize::try_from(child.retained_bytes())
-                    .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
-                let mut owned_child = Some(child);
-                let selected_directory = if entry.record.kind == FileKind::Directory {
-                    let child = receipt.owned_arc(
-                        owned_child.take().ok_or(MaterializeError::InvalidOptions)?,
-                        child_bytes,
-                    )?;
+                let record = match &mut source {
+                    GenerationSource::Standalone(checkout) => {
+                        let remaining = receipt
+                            .custody
+                            .work()
+                            .remaining()
+                            .map_err(MaterializeError::from)?;
+                        let lookup = checkout
+                            .lookup_no_follow(path, remaining, cancellation)
+                            .await
+                            .map_err(|failure| receipt.engine_failure(failure))?;
+                        work.merge(lookup.work).map_err(MaterializeError::from)?;
+                        lookup.value.record
+                    }
+                    GenerationSource::Original(reader) => {
+                        let lookup = reader
+                            .lookup_record_with_native_work(
+                                path,
+                                receipt.custody.work(),
+                                cancellation,
+                            )
+                            .await;
+                        lookup.map_err(MaterializeError::from)?
+                    }
+                }
+                .ok_or(MaterializeError::MissingPath)?;
+                generation_action(
+                    &mut before_effect,
+                    NativeMaterializationActionPhase::Before,
+                    receipt.custody.work(),
+                )
+                .await?;
+                #[cfg(unix)]
+                if let Some(parent) = super::work::host_path(&host_path.0)
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                {
+                    host_root
+                        .0
+                        .create_dir_all_held(parent, &mut work)
+                        .map_err(MaterializeError::from)?;
+                }
+                #[cfg(windows)]
+                if let Some(separator) = host_path
+                    .0
+                    .iter()
+                    .rposition(|unit| *unit == u16::from(b'\\'))
+                {
+                    host_root
+                        .0
+                        .create_dir_all_held(
+                            host_path
+                                .0
+                                .get(..separator)
+                                .ok_or(MaterializeError::InvalidOptions)?,
+                            &mut work,
+                        )
+                        .map_err(MaterializeError::from)?;
+                }
+                generation_action(
+                    &mut before_effect,
+                    NativeMaterializationActionPhase::Completed,
+                    receipt.custody.work(),
+                )
+                .await?;
+                let directory = if record.kind == FileKind::Directory {
+                    let namespace = clone_namespace(path, None, limits, &mut receipt)?;
+                    let bytes = usize::try_from(namespace.retained_bytes())
+                        .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
+                    let namespace = receipt.owned_arc(namespace, bytes)?;
                     receipt.push(
                         &mut deferred_directory_metadata,
-                        (child.clone(), child_host.clone()),
+                        (namespace.clone(), host_path.clone()),
                     )?;
-                    Some(child)
+                    Some(namespace)
                 } else {
                     None
                 };
-                let child = selected_directory
-                    .as_deref()
-                    .map(|owned| &owned.0)
-                    .or(owned_child.as_ref())
-                    .ok_or(MaterializeError::InvalidOptions)?;
                 materialize_entry(
                     &reader,
                     &host_root,
-                    child,
-                    &child_host,
-                    selected_directory.clone(),
-                    &entry.record,
+                    path,
+                    &host_path,
+                    directory,
+                    &record,
                     options,
                     cancellation,
                     &mut known_files,
@@ -445,56 +357,165 @@ where
                     &mut before_effect,
                 )
                 .await?;
-                if entry.record.kind != FileKind::Directory {
-                    drop(owned_child);
+            }
+            receipt
+                .custody
+                .release(selection_bytes as u64)
+                .map_err(MaterializeError::from)?;
+            while let Some((directory, host_directory)) = pending.pop() {
+                let mut after: Option<LogicalName> = None;
+                loop {
+                    let page = match &mut source {
+                        GenerationSource::Standalone(checkout) => {
+                            let remaining = receipt
+                                .custody
+                                .work()
+                                .remaining()
+                                .map_err(MaterializeError::from)?;
+                            let page = checkout
+                                .list_directory_records(
+                                    &directory.0,
+                                    after.as_ref().map_or(
+                                        std::ops::Bound::Unbounded,
+                                        std::ops::Bound::Excluded,
+                                    ),
+                                    options.maximum_directory_entries,
+                                    remaining,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(|failure| receipt.engine_failure(failure))?;
+                            work.merge(page.work).map_err(MaterializeError::from)?;
+                            page.value
+                        }
+                        GenerationSource::Original(reader) => {
+                            let page = reader
+                                .list_directory_records(
+                                    &directory.0,
+                                    after.as_ref(),
+                                    options.maximum_directory_entries,
+                                    receipt.custody.work(),
+                                    cancellation,
+                                )
+                                .await;
+                            let (page, custody) = page.map_err(MaterializeError::from)?;
+                            receipt.accept_source(page, custody)?
+                        }
+                    };
+                    if page.has_more && page.entries.is_empty() {
+                        return Err(MaterializeError::Engine(
+                            "directory pagination made no progress",
+                        )
+                        .into());
+                    }
+                    let entry_bytes = vec_bytes(&page.entries);
+                    if matches!(&source, GenerationSource::Standalone(_)) {
+                        receipt.adopt(entry_bytes)?;
+                        for entry in &page.entries {
+                            receipt.adopt(entry.name.retained_bytes())?;
+                        }
+                    }
+                    for entry in page.entries {
+                        let child =
+                            clone_namespace(&directory.0, Some(&entry.name), limits, &mut receipt)?;
+                        let child_host = materialize_host_path(
+                            Some(&host_directory.0),
+                            std::slice::from_ref(&entry.name),
+                            &mut receipt,
+                        )?;
+                        let child_bytes = usize::try_from(child.retained_bytes())
+                            .map_err(|_| MaterializeError::Work(WorkError::Overflow))?;
+                        let mut owned_child = Some(child);
+                        let selected_directory = if entry.record.kind == FileKind::Directory {
+                            let child = receipt.owned_arc(
+                                owned_child.take().ok_or(MaterializeError::InvalidOptions)?,
+                                child_bytes,
+                            )?;
+                            receipt.push(
+                                &mut deferred_directory_metadata,
+                                (child.clone(), child_host.clone()),
+                            )?;
+                            Some(child)
+                        } else {
+                            None
+                        };
+                        let child = selected_directory
+                            .as_deref()
+                            .map(|owned| &owned.0)
+                            .or(owned_child.as_ref())
+                            .ok_or(MaterializeError::InvalidOptions)?;
+                        materialize_entry(
+                            &reader,
+                            &host_root,
+                            child,
+                            &child_host,
+                            selected_directory.clone(),
+                            &entry.record,
+                            options,
+                            cancellation,
+                            &mut known_files,
+                            #[cfg(any(target_os = "macos", windows))]
+                            &mut known_payloads,
+                            &mut pending,
+                            &mut receipt,
+                            mode,
+                            &mut before_effect,
+                        )
+                        .await?;
+                        if entry.record.kind != FileKind::Directory {
+                            drop(owned_child);
+                            receipt
+                                .custody
+                                .release(child_bytes as u64)
+                                .map_err(MaterializeError::from)?;
+                        }
+                        if let Some(previous) = after.replace(entry.name) {
+                            let bytes = previous.retained_bytes();
+                            drop(previous);
+                            receipt
+                                .custody
+                                .release(bytes as u64)
+                                .map_err(MaterializeError::from)?;
+                        }
+                    }
                     receipt
                         .custody
-                        .release(child_bytes as u64)
+                        .release(entry_bytes as u64)
                         .map_err(MaterializeError::from)?;
+                    if !page.has_more {
+                        break;
+                    }
                 }
-                if let Some(previous) = after.replace(entry.name) {
-                    let bytes = previous.retained_bytes();
-                    drop(previous);
+                if let Some(after) = after {
+                    let bytes = after.retained_bytes();
+                    drop(after);
                     receipt
                         .custody
                         .release(bytes as u64)
                         .map_err(MaterializeError::from)?;
                 }
             }
-            receipt
-                .custody
-                .release(entry_bytes as u64)
-                .map_err(MaterializeError::from)?;
-            if !page.has_more {
-                break;
+            for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
+                apply_metadata(
+                    &reader,
+                    &host_root,
+                    &directory.0,
+                    &host_directory,
+                    None,
+                    &mut receipt,
+                    &mut before_effect,
+                )
+                .await?;
             }
-        }
-        if let Some(after) = after {
-            let bytes = after.retained_bytes();
-            drop(after);
-            receipt
-                .custody
-                .release(bytes as u64)
-                .map_err(MaterializeError::from)?;
-        }
-    }
-    for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
-        apply_metadata(
-            &reader,
-            &host_root,
-            &directory.0,
-            &host_directory,
-            None,
-            &mut receipt,
-            &mut before_effect,
-        )
-        .await?;
-    }
-    let work = receipt.custody.work().receipt();
-    Ok(OperationReceipt {
-        value: receipt.value,
-        work,
-    })
+            let work = receipt.custody.work().receipt();
+            Ok(OperationReceipt {
+                value: receipt.value,
+                work,
+            })
+        },
+        receipt,
+    )
+    .await
 }
 
 /// Keeps all host-relative selections in one original traversal and hard-link map.

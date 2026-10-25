@@ -153,36 +153,41 @@ pub(crate) async fn list_directory_records_to_file_root_with_accounting<
     ),
     FsError,
 > {
-    let before = readonly_standalone_live(accounting);
-    let result = async {
-        let (page, allocation) = list_directory_to_file_root_with_accounting(
-            volume,
-            root,
-            path,
-            after,
-            maximum_entries,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        attach_directory_records_to_file_root_with_accounting(
-            volume,
-            root.file_table,
-            page,
-            allocation,
-            maximum_entries,
-            accounting,
-            cancellation,
-            None,
-        )
-        .await
-    }
-    .await;
-    let retained = match &result {
-        Ok((page, _)) if before.is_some() => directory_record_page_retained_bytes(page)?,
-        _ => 0,
-    };
-    readonly_cleanup_standalone(accounting, before, retained)?;
+    let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+        let before = readonly_standalone_live(accounting);
+        let result = async {
+            let (page, allocation) = list_directory_to_file_root_with_accounting(
+                volume,
+                root,
+                path,
+                after,
+                maximum_entries,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            attach_directory_records_to_file_root_with_accounting(
+                volume,
+                root.file_table,
+                page,
+                allocation,
+                maximum_entries,
+                accounting,
+                cancellation,
+                None,
+            )
+            .await
+        }
+        .await;
+        let retained = match &result {
+            Ok((page, _)) if before.is_some() => directory_record_page_retained_bytes(page)?,
+            _ => 0,
+        };
+        readonly_cleanup_standalone(accounting, before, retained)?;
+        result
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
     result
 }
 
@@ -371,64 +376,69 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ),
         FsError,
     > {
-        let before = readonly_standalone_live(accounting);
-        let result = async {
-            let (page, allocation) = self
-                .list_directory_with_accounting(
-                    path,
-                    after,
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            let before = readonly_standalone_live(accounting);
+            let result = async {
+                let (page, allocation) = self
+                    .list_directory_with_accounting(
+                        path,
+                        after,
+                        maximum_entries,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                let (value, allocation) = attach_directory_records_to_file_root_with_accounting(
+                    &self.volume,
+                    self.root.file_table,
+                    page,
+                    allocation,
                     maximum_entries,
                     accounting,
                     cancellation,
+                    Some(&self.dependencies.data_custody),
                 )
                 .await?;
-            let (value, allocation) = attach_directory_records_to_file_root_with_accounting(
-                &self.volume,
-                self.root.file_table,
-                page,
-                allocation,
-                maximum_entries,
-                accounting,
-                cancellation,
-                Some(&self.dependencies.data_custody),
-            )
-            .await?;
-            let page = (value, allocation);
-            if self.tracks_observations() && !page.0.entries.is_empty() {
-                let mut ids = crate::kernel::Owned::<Vec<FileId>>::allocate(
-                    page.0.entries.len(),
-                    accounting,
-                )?;
-                let copied = WorkCounters {
-                    bytes_copied: page
-                        .0
-                        .entries
-                        .len()
-                        .checked_mul(size_of::<FileId>())
-                        .map(crate::foundation::usize_to_u64)
-                        .ok_or(WorkError::Overflow)?,
-                    ..WorkCounters::UNCHARGED
-                };
-                accounting.admit(copied)?;
-                ids.value
-                    .extend(page.0.entries.iter().map(|entry| entry.record.file_id));
-                accounting.record_completed(copied)?;
-                self.observe_base_metadata_ids_with_accounting(
-                    &ids.value,
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-                ids.retire(accounting)?;
+                let page = (value, allocation);
+                if self.tracks_observations() && !page.0.entries.is_empty() {
+                    let mut ids = crate::kernel::Owned::<Vec<FileId>>::allocate(
+                        page.0.entries.len(),
+                        accounting,
+                    )?;
+                    let copied = WorkCounters {
+                        bytes_copied: page
+                            .0
+                            .entries
+                            .len()
+                            .checked_mul(size_of::<FileId>())
+                            .map(crate::foundation::usize_to_u64)
+                            .ok_or(WorkError::Overflow)?,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(copied)?;
+                    ids.value
+                        .extend(page.0.entries.iter().map(|entry| entry.record.file_id));
+                    accounting.record_completed(copied)?;
+                    self.observe_base_metadata_ids_with_accounting(
+                        &ids.value,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                    ids.retire(accounting)?;
+                }
+                Ok((page.0, page.1))
             }
-            Ok((page.0, page.1))
-        }
-        .await;
-        let retained = match &result {
-            Ok((page, _)) if before.is_some() => directory_record_page_retained_bytes(page)?,
-            _ => 0,
-        };
-        readonly_cleanup_standalone(accounting, before, retained)?;
+            .await;
+            let retained = match &result {
+                Ok((page, _)) if before.is_some() => directory_record_page_retained_bytes(page)?,
+                _ => 0,
+            };
+            readonly_cleanup_standalone(accounting, before, retained)?;
+            result
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
         result
     }
 }

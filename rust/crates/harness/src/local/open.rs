@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::BoxProviderFuture;
 
 struct Opening {
     code: crate::package::harness::HarnessCode,
@@ -41,84 +42,87 @@ pub(crate) async fn open(
 }
 
 impl Opening {
-    async fn configure(
+    fn configure(
         code: crate::package::harness::HarnessCode,
         config: LocalHarnessConfig,
-    ) -> Result<Self> {
-        config.limits.validate(&mut None)?;
-        if !config.active_directory.is_empty() {
-            crate::conversation::validate_content_path(&config.active_directory, &mut None)?;
-        }
-        config.session_limits.validate(&mut None)?;
-        if config.concurrency == 0 {
-            return Err(Error::Invalid("local concurrency is zero".into()));
-        }
-        let mut config = config.prepare_state()?;
-        let state_location = config.state_location()?;
-        config.model.0.validate()?;
-        let mut tools = ToolRegistry::default();
-        if config.default_tools {
-            crate::tools::bind_defaults(
-                &mut tools,
-                &mut Vec::new(),
-                None,
-                true,
-                cfg!(any(test, feature = "native-execution")),
-            )?;
-        }
-        for tool in std::mem::take(&mut config.tools) {
-            tools.register((tool, None), &mut None, None)?;
-        }
-        #[cfg(feature = "search-http")]
-        if config.web_tools {
-            web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
-        }
-        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-        let settings_configuration =
-            settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let mcp =
-            crate::native_settings::NativeSettings::load_mcp(Arc::clone(&settings_configuration))
-                .await?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let mcp_workspace =
-            std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let installation = mcp
-            .install(tools, &mcp_workspace, config.mcp_limits)
-            .await?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let tools = installation.tools;
-        let compaction = compaction::select(
-            config.compaction.take(),
-            &config.model.0,
-            config.model.1.as_ref(),
-            &tools,
-            config.limits,
-        )
-        .await?;
-        #[cfg(any(test, feature = "native-execution"))]
-        let native_mounts = tools
-            .get(crate::tools::shell::PLATFORM.name, None, None)?
-            .is_some();
-        #[cfg(any(test, feature = "native-execution"))]
-        if native_mounts {
-            checkout_tools::shell::executable()?;
-        }
-        Ok(Self {
-            code,
-            config,
-            state_location,
-            tools,
-            compaction,
+    ) -> BoxProviderFuture<'static, Result<Self>> {
+        Box::pin(async move {
+            config.limits.validate(&mut None)?;
+            if !config.active_directory.is_empty() {
+                crate::conversation::validate_content_path(&config.active_directory, &mut None)?;
+            }
+            config.session_limits.validate(&mut None)?;
+            if config.concurrency == 0 {
+                return Err(Error::Invalid("local concurrency is zero".into()));
+            }
+            let mut config = config.prepare_state()?;
+            let state_location = config.state_location()?;
+            config.model.0.validate()?;
+            let mut tools = ToolRegistry::default();
+            if config.default_tools {
+                crate::tools::bind_defaults(
+                    &mut tools,
+                    &mut Vec::new(),
+                    None,
+                    true,
+                    cfg!(any(test, feature = "native-execution")),
+                )?;
+            }
+            for tool in std::mem::take(&mut config.tools) {
+                tools.register((tool, None), &mut None, None)?;
+            }
+            #[cfg(feature = "search-http")]
+            if config.web_tools {
+                web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
+            }
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            settings: settings_configuration,
+            let settings_configuration =
+                settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            capabilities: installation.capabilities,
+            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
+                &settings_configuration,
+            ))
+            .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            diagnostics: installation.diagnostics,
+            let mcp_workspace =
+                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = mcp
+                .install(tools, &mcp_workspace, config.mcp_limits)
+                .await?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let tools = installation.tools;
+            let compaction = compaction::select(
+                config.compaction.take(),
+                &config.model.0,
+                config.model.1.as_ref(),
+                &tools,
+                config.limits,
+            )
+            .await?;
             #[cfg(any(test, feature = "native-execution"))]
-            native_mounts,
+            let native_mounts = tools
+                .get(crate::tools::shell::PLATFORM.name, None, None)?
+                .is_some();
+            #[cfg(any(test, feature = "native-execution"))]
+            if native_mounts {
+                checkout_tools::shell::executable()?;
+            }
+            Ok(Self {
+                code,
+                config,
+                state_location,
+                tools,
+                compaction,
+                #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+                settings: settings_configuration,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: installation.capabilities,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                diagnostics: installation.diagnostics,
+                #[cfg(any(test, feature = "native-execution"))]
+                native_mounts,
+            })
         })
     }
 
@@ -152,98 +156,102 @@ impl Opening {
         Ok((directory, checkout))
     }
 
-    async fn storage(&self) -> Result<Storage> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
-        #[cfg(any(test, feature = "native-execution"))]
-        acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        #[cfg(any(test, feature = "native-execution"))]
-        if self.native_mounts {
-            workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
-            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
-        }
-        #[cfg(not(any(test, feature = "native-execution")))]
-        if matches!(self.config.project, LocalProject::Workspace(_)) {
-            return Err(Error::Unsupported(
-                "checkout workspaces require native-execution".into(),
-            ));
-        }
-        if let LocalProject::Workspace(path) = &self.config.project
-            && !path.is_dir()
-        {
-            return Err(Error::Invalid("local workspace is not a directory".into()));
-        }
-        let (directory, checkout) = self.checkout()?;
-        #[cfg(test)]
-        let checkout = match (&self.config.project, owner::RECAPTURE.get()) {
-            (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
-            _ => checkout,
-        };
-        let owner = owner::Owner::open(&directory, &self.config.project, checkout.as_ref())?;
-        let options = acyclic_fs::LocalOptions::new(match &self.config.project {
-            LocalProject::Workspace(_) => directory.join("filesystem"),
-            LocalProject::Volume { directory, .. } => directory.clone(),
-        });
-        let state_owner = self.config.test_state.clone();
-        let filesystem = match &state_owner {
-            Some(owner) if matches!(&self.config.project, LocalProject::Workspace(_)) => {
-                acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await
-            }
-            _ => acyclic_fs::Fs::local(options).await,
-        }
-        .map_err(storage)?;
-        let provider_ref = owner.project.provider();
-        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
-        let issuer = AuthorityIssuer::new(
-            "acyclic.local",
-            owner.key,
-            Authority {
-                kind: AggregateKind::Task,
-                id: owner.task.to_string(),
-            },
-        );
-        let PrivateVolumes {
-            scratch,
-            journal,
-            task_volume,
-        } = PrivateVolumes::open(&files, &owner).await?;
-        #[cfg(any(test, feature = "native-execution"))]
-        let workspace = self
-            .workspace(&filesystem, &directory, &owner, &scratch, checkout, &issuer)
-            .await?;
-        #[cfg(any(test, feature = "native-execution"))]
-        let files = match &workspace {
-            Some(workspace) => files
-                .with_project_family(workspace.view().workspace().id(), workspace.store.clone())?,
-            None => files,
-        };
-        // A configured project is opened, never silently replaced by an empty volume.
-        files
-            .resolve(
-                &crate::filesystem::workspace_ref(
-                    provider_ref.clone(),
-                    &owner.project.storage_name(&mut None)?,
-                )?,
-                None,
-            )
-            .await?;
-        #[cfg(any(test, feature = "native-execution"))]
-        let files = retain_skills(
-            files,
-            directory.join("skill-sources"),
-            &journal,
-            workspace.as_ref(),
-            self.user_roots(),
-        )?;
-        Ok(Storage {
-            issuer,
-            directory,
-            owner,
-            files,
-            scratch,
-            journal,
-            task_volume,
+    fn storage(&self) -> BoxProviderFuture<'_, Result<Storage>> {
+        Box::pin(async move {
+            acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(any(test, feature = "native-execution"))]
-            workspace,
+            acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+            #[cfg(any(test, feature = "native-execution"))]
+            if self.native_mounts {
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+                acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            }
+            #[cfg(not(any(test, feature = "native-execution")))]
+            if matches!(self.config.project, LocalProject::Workspace(_)) {
+                return Err(Error::Unsupported(
+                    "checkout workspaces require native-execution".into(),
+                ));
+            }
+            if let LocalProject::Workspace(path) = &self.config.project
+                && !path.is_dir()
+            {
+                return Err(Error::Invalid("local workspace is not a directory".into()));
+            }
+            let (directory, checkout) = self.checkout()?;
+            #[cfg(test)]
+            let checkout = match (&self.config.project, owner::RECAPTURE.get()) {
+                (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
+                _ => checkout,
+            };
+            let owner = owner::Owner::open(&directory, &self.config.project, checkout.as_ref())?;
+            let options = acyclic_fs::LocalOptions::new(match &self.config.project {
+                LocalProject::Workspace(_) => directory.join("filesystem"),
+                LocalProject::Volume { directory, .. } => directory.clone(),
+            });
+            let state_owner = self.config.test_state.clone();
+            let filesystem = match &state_owner {
+                Some(owner) if matches!(&self.config.project, LocalProject::Workspace(_)) => {
+                    acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await
+                }
+                _ => acyclic_fs::Fs::local(options).await,
+            }
+            .map_err(storage)?;
+            let provider_ref = owner.project.provider();
+            let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
+            let issuer = AuthorityIssuer::new(
+                "acyclic.local",
+                owner.key,
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: owner.task.to_string(),
+                },
+            );
+            let PrivateVolumes {
+                scratch,
+                journal,
+                task_volume,
+            } = PrivateVolumes::open(&files, &owner).await?;
+            #[cfg(any(test, feature = "native-execution"))]
+            let workspace = self
+                .workspace(&filesystem, &directory, &owner, &scratch, checkout, &issuer)
+                .await?;
+            #[cfg(any(test, feature = "native-execution"))]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
+            // A configured project is opened, never silently replaced by an empty volume.
+            files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        provider_ref.clone(),
+                        &owner.project.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?;
+            #[cfg(any(test, feature = "native-execution"))]
+            let files = retain_skills(
+                files,
+                directory.join("skill-sources"),
+                &journal,
+                workspace.as_ref(),
+                self.user_roots(),
+            )?;
+            Ok(Storage {
+                issuer,
+                directory,
+                owner,
+                files,
+                scratch,
+                journal,
+                task_volume,
+                #[cfg(any(test, feature = "native-execution"))]
+                workspace,
+            })
         })
     }
 
@@ -304,94 +312,96 @@ impl Opening {
         }
     }
 
-    async fn finish(self, opened: Storage) -> Result<LocalHarness> {
-        let Storage {
-            issuer,
-            directory,
-            owner,
-            files,
-            scratch,
-            journal,
-            task_volume,
-            #[cfg(any(test, feature = "native-execution"))]
-            workspace,
-        } = opened;
-        let stream = Arc::new(
-            LocalStream::open_with_clock_and_anchor(
-                directory.join("stream"),
-                Default::default(),
-                self.config.clock.clone(),
-                self.config.test_state,
-            )
-            .await
-            .map_err(storage)?,
-        );
-        let verifier = issuer.verifier(&mut None)?;
-        let (runtime, signed, task_files) = runtime::open(
-            &self.code,
-            runtime::Configuration {
-                files: files.clone(),
+    fn finish(self, opened: Storage) -> BoxProviderFuture<'static, Result<LocalHarness>> {
+        Box::pin(async move {
+            let Storage {
+                issuer,
+                directory,
+                owner,
+                files,
+                scratch,
+                journal,
+                task_volume,
                 #[cfg(any(test, feature = "native-execution"))]
-                workspace: workspace.as_ref().map(Arc::clone),
-                stream,
-                task_volume: &task_volume,
-                issuer: &issuer,
-                verifier: &verifier,
-                agent: owner.agent,
-                project: &owner.project,
-                scratch: &scratch,
-                journal: &journal,
-                tools: &self.tools,
-                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-                capabilities: &self.capabilities,
+                workspace,
+            } = opened;
+            let stream = Arc::new(
+                LocalStream::open_with_clock_and_anchor(
+                    directory.join("stream"),
+                    Default::default(),
+                    self.config.clock.clone(),
+                    self.config.test_state,
+                )
+                .await
+                .map_err(storage)?,
+            );
+            let verifier = issuer.verifier(&mut None)?;
+            let (runtime, signed, task_files) = runtime::open(
+                &self.code,
+                runtime::Configuration {
+                    files: files.clone(),
+                    #[cfg(any(test, feature = "native-execution"))]
+                    workspace: workspace.as_ref().map(Arc::clone),
+                    stream,
+                    task_volume: &task_volume,
+                    issuer: &issuer,
+                    verifier: &verifier,
+                    agent: owner.agent,
+                    project: &owner.project,
+                    scratch: &scratch,
+                    journal: &journal,
+                    tools: &self.tools,
+                    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                    capabilities: &self.capabilities,
+                    limits: self.config.limits,
+                    run_limits: self.config.run_limits,
+                    session_limits: self.config.session_limits,
+                    concurrency: self.config.concurrency,
+                    clock: Arc::clone(&self.config.clock),
+                },
+            )
+            .await?;
+            let local = LocalHarness {
+                files,
+                runtime,
+                task_files,
+                project: owner.project.clone(),
+                scratch,
+                journal,
+                verifier,
+                signed,
+                model: self.config.model.0,
+                root_role: self.config.root_role,
+                child_role: self.config.child_role,
+                provider: self.config.model.1,
+                context_manifest: self.config.context_manifest,
+                active_directory: self.config.active_directory,
+                skill_cache: context::skills::cache(),
+                #[cfg(test)]
+                context_read_observer: None,
+                #[cfg(any(test, feature = "native-execution"))]
+                checkout_context: matches!(self.config.project, LocalProject::Workspace(_)),
+                #[cfg(any(test, feature = "hooks"))]
+                settings: self.settings,
                 limits: self.config.limits,
-                run_limits: self.config.run_limits,
-                session_limits: self.config.session_limits,
-                concurrency: self.config.concurrency,
-                clock: Arc::clone(&self.config.clock),
-            },
-        )
-        .await?;
-        let local = LocalHarness {
-            files,
-            runtime,
-            task_files,
-            project: owner.project.clone(),
-            scratch,
-            journal,
-            verifier,
-            signed,
-            model: self.config.model.0,
-            root_role: self.config.root_role,
-            child_role: self.config.child_role,
-            provider: self.config.model.1,
-            context_manifest: self.config.context_manifest,
-            active_directory: self.config.active_directory,
-            skill_cache: context::skills::cache(),
-            #[cfg(test)]
-            context_read_observer: None,
-            #[cfg(any(test, feature = "native-execution"))]
-            checkout_context: matches!(self.config.project, LocalProject::Workspace(_)),
-            #[cfg(any(test, feature = "hooks"))]
-            settings: self.settings,
-            limits: self.config.limits,
-            compaction: self.compaction,
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            mcp_diagnostics: self.diagnostics,
-            goal_continuations: self.config.goal_continuations,
-            admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
-            publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
-            drivers: orphans::Drivers::new(),
-            #[cfg(any(test, feature = "native-execution"))]
-            workspace,
-            #[cfg(test)]
-            environment_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(any(test, feature = "native-execution"))]
-            clock: self.config.clock,
-            #[cfg(any(test, feature = "native-execution"))]
-            environment_platform: self.config.environment_platform,
-        };
-        Ok(local)
+                compaction: self.compaction,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                mcp_diagnostics: self.diagnostics,
+                goal_continuations: self.config.goal_continuations,
+                admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
+                publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
+                drivers: orphans::Drivers::new(),
+                #[cfg(any(test, feature = "native-execution"))]
+                workspace,
+                #[cfg(test)]
+                environment_reads: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(any(test, feature = "native-execution"))]
+                clock: self.config.clock,
+                #[cfg(any(test, feature = "native-execution"))]
+                environment_platform: self.config.environment_platform,
+            };
+            Ok(local)
+        })
     }
 }
 

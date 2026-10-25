@@ -52,6 +52,9 @@ pub(crate) fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
     Ok(key)
 }
 
+mod signatures;
+pub use signatures::SignatureCache;
+
 /// One actual strict signature verification, observable across test crates.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

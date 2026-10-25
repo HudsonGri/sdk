@@ -407,79 +407,85 @@ impl Owned<TransactionState> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), crate::FsError> {
-        for (ordinal, operation) in plan.operations().iter().enumerate() {
-            let Some(action) = self.leaf(accounting, |state, leaf| {
-                state.prepare(leaf, plan, ordinal, operation)
-            })?
-            else {
-                continue;
-            };
-            let (id, payload) = match action {
-                RegularAction::Mutate {
-                    id,
-                    payload,
-                    mutation,
-                } => {
-                    let receipt = super::regular_mutation::apply_regular_mutation_with_accounting(
-                        store,
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            for (ordinal, operation) in plan.operations().iter().enumerate() {
+                let Some(action) = self.leaf(accounting, |state, leaf| {
+                    state.prepare(leaf, plan, ordinal, operation)
+                })?
+                else {
+                    continue;
+                };
+                let (id, payload) = match action {
+                    RegularAction::Mutate {
+                        id,
                         payload,
                         mutation,
-                        config,
-                        accounting,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| {
-                        if is_original(accounting) {
-                            error
-                        } else {
-                            GenerationMutationError::Regular(
-                                super::regular_mutation::project_regular_error(error),
+                    } => {
+                        let receipt =
+                            super::regular_mutation::apply_regular_mutation_with_accounting(
+                                store,
+                                payload,
+                                mutation,
+                                config,
+                                accounting,
+                                cancellation,
                             )
-                            .into()
-                        }
-                    })?;
-                    (id, receipt.payload)
-                }
-                RegularAction::Clone {
-                    destination,
-                    source_payload,
-                    source_offset,
-                    destination_payload,
-                    destination_offset,
-                    length,
-                } => {
-                    let receipt = super::regular_mutation::apply_regular_clone_with_accounting(
-                        store,
+                            .await
+                            .map_err(|error| {
+                                if is_original(accounting) {
+                                    error
+                                } else {
+                                    GenerationMutationError::Regular(
+                                        super::regular_mutation::project_regular_error(error),
+                                    )
+                                    .into()
+                                }
+                            })?;
+                        (id, receipt.payload)
+                    }
+                    RegularAction::Clone {
+                        destination,
                         source_payload,
                         source_offset,
                         destination_payload,
                         destination_offset,
                         length,
-                        config,
-                        accounting,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| {
-                        if is_original(accounting) {
-                            error
-                        } else {
-                            GenerationMutationError::Regular(
-                                super::regular_mutation::project_regular_error(error),
-                            )
-                            .into()
-                        }
-                    })?;
-                    (destination, receipt.destination)
-                }
-            };
-            self.leaf(accounting, |state, leaf| {
-                state.record_mut(leaf, id)?.working.payload = payload;
-                Ok(())
-            })?;
-        }
-        Ok(())
+                    } => {
+                        let receipt = super::regular_mutation::apply_regular_clone_with_accounting(
+                            store,
+                            source_payload,
+                            source_offset,
+                            destination_payload,
+                            destination_offset,
+                            length,
+                            config,
+                            accounting,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|error| {
+                            if is_original(accounting) {
+                                error
+                            } else {
+                                GenerationMutationError::Regular(
+                                    super::regular_mutation::project_regular_error(error),
+                                )
+                                .into()
+                            }
+                        })?;
+                        (destination, receipt.destination)
+                    }
+                };
+                self.leaf(accounting, |state, leaf| {
+                    state.record_mut(leaf, id)?.working.payload = payload;
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     async fn rewrite_directories<S: AsyncObjectStore>(

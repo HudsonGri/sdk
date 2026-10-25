@@ -189,61 +189,68 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     maximum_paths: usize,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, Option<FileRecord>)>, CaptureError> {
-    let mut missing = Vec::new();
-    let mut retired = 0;
-    let ancestors_bytes = vector_bytes(&ancestors);
-    for (path, ()) in ancestors {
-        let current = if below_replaced_parent(&path, &missing, meter)? {
-            None
-        } else {
-            checkout
-                .lookup_no_follow(&path, meter, meter.cancellation())
-                .await?
-                .record
-        };
-        let host_path = namespace_to_host_path_measured(&path, meter)?;
-        let observation = observe_host_path(source_root, &host_path, meter)?;
-        capture_drop_host_path(host_path, meter)?;
-        if !observation
-            .as_ref()
-            .is_some_and(|observation| observation.is_dir())
-        {
-            // A removed ancestor has its own hint, after its descendants.
-            // Replacement by a file still requires a complete rescan.
-            if observation.is_none() && capture_position(ordinary, &path, meter)?.is_ok() {
+    let mut accounting =
+        crate::kernel::allocation::KernelAccounting::native(meter, meter.cancellation());
+    let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+        let mut missing = Vec::new();
+        let mut retired = 0;
+        let ancestors_bytes = vector_bytes(&ancestors);
+        for (path, ()) in ancestors {
+            let current = if below_replaced_parent(&path, &missing, meter)? {
+                None
+            } else {
+                checkout
+                    .lookup_no_follow(&path, meter, meter.cancellation())
+                    .await?
+                    .record
+            };
+            let host_path = namespace_to_host_path_measured(&path, meter)?;
+            let observation = observe_host_path(source_root, &host_path, meter)?;
+            capture_drop_host_path(host_path, meter)?;
+            if !observation
+                .as_ref()
+                .is_some_and(|observation| observation.is_dir())
+            {
+                // A removed ancestor has its own hint, after its descendants.
+                // Replacement by a file still requires a complete rescan.
+                if observation.is_none() && capture_position(ordinary, &path, meter)?.is_ok() {
+                    capture_drop_path(path, meter)?;
+                    continue;
+                }
+                return Err(CaptureError::RescanRequired {
+                    epoch,
+                    reason: WatchInvalidationReason::NativeRescanRequired,
+                });
+            }
+            if current.is_some_and(|record| record.kind == FileKind::Directory) {
                 capture_drop_path(path, meter)?;
-                continue;
+            } else {
+                // A create hint does not make the directory exist in the candidate.
+                // Hydrate it before renames, and retire its ordinary entry so it is
+                // created exactly once in the same transaction.
+                retired += usize::from(capture_position(ordinary, &path, meter)?.is_ok());
+                if combined_path_count_exceeds(
+                    ordinary.len() - retired,
+                    missing.len() + 1,
+                    maximum_paths,
+                ) {
+                    return Err(CaptureError::InvalidOptions);
+                }
+                capture_reserve(&mut missing, 1, meter)?;
+                missing.push((path, current));
             }
-            return Err(CaptureError::RescanRequired {
-                epoch,
-                reason: WatchInvalidationReason::NativeRescanRequired,
-            });
         }
-        if current.is_some_and(|record| record.kind == FileKind::Directory) {
-            capture_drop_path(path, meter)?;
-        } else {
-            // A create hint does not make the directory exist in the candidate.
-            // Hydrate it before renames, and retire its ordinary entry so it is
-            // created exactly once in the same transaction.
-            retired += usize::from(capture_position(ordinary, &path, meter)?.is_ok());
-            if combined_path_count_exceeds(
-                ordinary.len() - retired,
-                missing.len() + 1,
-                maximum_paths,
-            ) {
-                return Err(CaptureError::InvalidOptions);
-            }
-            capture_reserve(&mut missing, 1, meter)?;
-            missing.push((path, current));
-        }
-    }
-    meter
-        .clone()
-        .release(ancestors_bytes)
-        .map_err(capture_demand_error)?;
-    // One stable compaction retires hydrated entries and classifies descendants.
-    retire_hydrated(ordinary, &missing, meter)?;
-    Ok(missing)
+        meter
+            .clone()
+            .release(ancestors_bytes)
+            .map_err(capture_demand_error)?;
+        // One stable compaction retires hydrated entries and classifies descendants.
+        retire_hydrated(ordinary, &missing, meter)?;
+        Ok(missing)
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 pub(super) fn remap_renamed_directory_path(
@@ -294,68 +301,75 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     policy: &CapturePolicy,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
-    if ordinary.len() > maximum {
-        return Err(CaptureError::InvalidOptions);
-    }
-    let limits = checkout.volume_config().limits;
-    let profile = checkout.volume_config().profile;
-    let mut paths = Vec::new();
-    for (path, _) in ordinary.iter() {
-        capture_replace(&mut paths, clone_capture_path(path, meter)?, (), meter)?;
-    }
-    for (path, (_, intent)) in ordinary.iter() {
-        // Expand arriving directories; other hints already name their changed children.
-        if !cfg!(target_os = "macos")
-            && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
-        {
-            continue;
+    let mut accounting =
+        crate::kernel::allocation::KernelAccounting::native(meter, meter.cancellation());
+    let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+        let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
+        if ordinary.len() > maximum {
+            return Err(CaptureError::InvalidOptions);
         }
-        let host_path = namespace_to_host_path_measured(path, meter)?;
-        let observation = observe_host_path(source_root, &host_path, meter)?;
-        if !observation.is_some_and(|observation| observation.is_dir()) {
+        let limits = checkout.volume_config().limits;
+        let profile = checkout.volume_config().profile;
+        let mut paths = Vec::new();
+        for (path, _) in ordinary.iter() {
+            capture_replace(&mut paths, clone_capture_path(path, meter)?, (), meter)?;
+        }
+        for (path, (_, intent)) in ordinary.iter() {
+            // Expand arriving directories; other hints already name their changed children.
+            if !cfg!(target_os = "macos")
+                && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
+            {
+                continue;
+            }
+            let host_path = namespace_to_host_path_measured(path, meter)?;
+            let observation = observe_host_path(source_root, &host_path, meter)?;
+            if !observation.is_some_and(|observation| observation.is_dir()) {
+                capture_drop_host_path(host_path, meter)?;
+                continue;
+            }
             capture_drop_host_path(host_path, meter)?;
-            continue;
-        }
-        capture_drop_host_path(host_path, meter)?;
-        collect_host_walk_measured(
-            source_root,
-            profile,
-            limits,
-            clone_capture_path(path, meter)?,
-            policy,
-            meter,
-            |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
-        )?;
-        let lookup = checkout
-            .lookup_no_follow(path, meter, meter.cancellation())
-            .await?;
-        if lookup
-            .record
-            .is_some_and(|record| record.kind == FileKind::Directory)
-        {
-            collect_checkout_subtree_paths(
-                checkout,
+            collect_host_walk_measured(
+                source_root,
+                profile,
                 limits,
                 clone_capture_path(path, meter)?,
                 policy,
-                maximum,
-                &mut paths,
                 meter,
-            )
-            .await?;
+                |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
+            )?;
+            let lookup = checkout
+                .lookup_no_follow(path, meter, meter.cancellation())
+                .await?;
+            if lookup
+                .record
+                .is_some_and(|record| record.kind == FileKind::Directory)
+            {
+                collect_checkout_subtree_paths(
+                    checkout,
+                    limits,
+                    clone_capture_path(path, meter)?,
+                    policy,
+                    maximum,
+                    &mut paths,
+                    meter,
+                )
+                .await?;
+            }
         }
-    }
-    let paths_bytes = vector_bytes(&paths);
-    for (path, ()) in paths {
-        let current = current_record(rename_records, &path, meter)?;
-        capture_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
-    }
-    meter
-        .clone()
-        .release(paths_bytes)
-        .map_err(capture_demand_error)?;
-    Ok(())
+        let paths_bytes = vector_bytes(&paths);
+        for (path, ()) in paths {
+            let current = current_record(rename_records, &path, meter)?;
+            capture_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
+        }
+        meter
+            .clone()
+            .release(paths_bytes)
+            .map_err(capture_demand_error)?;
+        Ok(())
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 #[cfg(test)]

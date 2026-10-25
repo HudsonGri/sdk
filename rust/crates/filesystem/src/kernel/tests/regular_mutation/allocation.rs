@@ -448,3 +448,60 @@ async fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atom
     assert!(allocated.work.backend_write_operations > 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn regular_mutation_frames_are_bounded_on_the_original_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.allocation_operations = 0;
+    let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+    let payload = FilePayload::InlineRegular(InlineFileData::new(b"a")?);
+    let mutation = RegularMutation::Resize { logical_bytes: 128 };
+    let future = apply_regular_mutation_with_accounting(
+        &store,
+        payload,
+        mutation,
+        config(),
+        &mut accounting,
+        &cancellation,
+    );
+    let bytes = std::mem::size_of_val(&future);
+    eprintln!("REGULAR_FRAME mutation={bytes}");
+    assert!(bytes <= 4096, "regular mutation frame is {bytes} bytes");
+    let failure = future.await.unwrap_err();
+    assert!(matches!(
+        failure,
+        FsError::Work(WorkError::BudgetExceeded { .. })
+    ));
+    assert_eq!(accounting.spent().allocation_operations, 0);
+    let future = apply_sparse(
+        &store,
+        payload,
+        mutation,
+        config(),
+        &mut accounting,
+        &cancellation,
+    );
+    let bytes = std::mem::size_of_val(&future);
+    eprintln!("REGULAR_FRAME sparse={bytes}");
+    assert!(bytes <= 4096, "sparse mutation frame is {bytes} bytes");
+    drop(future);
+    let future = apply_regular_clone_with_accounting(
+        &store,
+        payload,
+        0,
+        payload,
+        0,
+        1,
+        config(),
+        &mut accounting,
+        &cancellation,
+    );
+    let bytes = std::mem::size_of_val(&future);
+    eprintln!("REGULAR_FRAME clone={bytes}");
+    assert!(bytes <= 4096, "regular clone frame is {bytes} bytes");
+    drop(future);
+    Ok(())
+}

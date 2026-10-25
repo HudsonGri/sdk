@@ -195,15 +195,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        accounting.check()?;
-        if let Some(value) = staged.get(metadata, accounting)? {
-            return Ok(value);
-        }
-        let value = self
-            .stage_metadata_with_accounting(metadata, accounting, cancellation)
-            .await?;
-        staged.remember(metadata, value);
-        Ok(value)
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            accounting.check()?;
+            if let Some(value) = staged.get(metadata, accounting)? {
+                return Ok(value);
+            }
+            let value = self
+                .stage_metadata_with_accounting(metadata, accounting, cancellation)
+                .await?;
+            staged.remember(metadata, value);
+            Ok(value)
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     pub(super) async fn set_attributes_with_accounting<F: ContentFile>(

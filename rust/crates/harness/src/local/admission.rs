@@ -632,14 +632,16 @@ fn admitted_task(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>)
 impl LocalHarness {
     /// Closes quiescent native mounts before releasing their provider handles.
     /// An admitted unfinished turn must first settle or be recovered by its owner.
-    pub async fn close(self) -> Result<()> {
-        let (head, _) = self.current_turn().await?;
-        if !self.head_is_terminal(head.as_ref()).await? {
-            return Err(Error::Conflict(
-                "cannot close an unfinished local turn".into(),
-            ));
-        }
-        self.disconnect().await
+    pub fn close(self) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        Box::pin(async move {
+            let (head, _) = self.current_turn().await?;
+            if !self.head_is_terminal(head.as_ref()).await? {
+                return Err(Error::Conflict(
+                    "cannot close an unfinished local turn".into(),
+                ));
+            }
+            self.disconnect().await
+        })
     }
 
     /// Test teardown for a host that deliberately leaves its HEAD turn
@@ -660,12 +662,14 @@ impl LocalHarness {
     /// Releases this host's native mounts while preserving every durable task,
     /// including unfinished admission. Consuming the host excludes live borrows;
     /// callers must first join active execution and drop client observations.
-    pub async fn disconnect(self) -> Result<()> {
-        #[cfg(any(test, feature = "native-execution"))]
-        if let Some(workspace) = &self.workspace {
-            crate::local::workspace::volumes::retire(&workspace.mounts).await?;
-        }
-        Ok(())
+    pub fn disconnect(self) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        Box::pin(async move {
+            #[cfg(any(test, feature = "native-execution"))]
+            if let Some(workspace) = &self.workspace {
+                crate::local::workspace::volumes::retire(&workspace.mounts).await?;
+            }
+            Ok(())
+        })
     }
 }
 

@@ -168,42 +168,50 @@ impl CaptureBatch<'_> {
         (observation, path, current): CapturePathState,
         intent: CaptureIntent,
     ) -> Result<(), CaptureError> {
-        self.meter.cancellation().check()?;
-        let host_path = namespace_to_host_path_measured(&path, self.meter)?;
-        let observation = match observation {
-            Some(observation) => Some(observation),
-            None => observe_host_path(self.source_root, &host_path, self.meter)?,
-        };
-        if let Some(metadata) = observation {
-            return self
-                .present(checkout, path, current, intent, host_path, metadata)
-                .await;
-        }
-        if let Some(record) = current {
-            // A vanished directory requires descendant removals before removing the directory itself.
-            if record.kind == FileKind::Directory {
-                push_subtree_removals(
-                    checkout,
-                    &path,
-                    &mut self.mutations,
-                    &mut self.receipt,
-                    self.meter,
-                )
-                .await?;
+        let meter = self.meter;
+        let mut accounting =
+            crate::kernel::allocation::KernelAccounting::native(meter, meter.cancellation());
+        let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+            self.meter.cancellation().check()?;
+            let host_path = namespace_to_host_path_measured(&path, self.meter)?;
+            let observation = match observation {
+                Some(observation) => Some(observation),
+                None => observe_host_path(self.source_root, &host_path, self.meter)?,
+            };
+            if let Some(metadata) = observation {
+                return self
+                    .present(checkout, path, current, intent, host_path, metadata)
+                    .await;
             }
-            capture_reserve(&mut self.mutations, 1, self.meter)?;
-            self.mutations.push(AuthoredMutation::Remove {
-                path,
-                expected_file_id: Some(record.file_id),
-            });
-            self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
-        } else {
-            capture_drop_path(path, self.meter)?;
-        }
+            if let Some(record) = current {
+                // A vanished directory requires descendant removals before removing the directory itself.
+                if record.kind == FileKind::Directory {
+                    push_subtree_removals(
+                        checkout,
+                        &path,
+                        &mut self.mutations,
+                        &mut self.receipt,
+                        self.meter,
+                    )
+                    .await?;
+                }
+                capture_reserve(&mut self.mutations, 1, self.meter)?;
+                self.mutations.push(AuthoredMutation::Remove {
+                    path,
+                    expected_file_id: Some(record.file_id),
+                });
+                self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
+            } else {
+                capture_drop_path(path, self.meter)?;
+            }
 
-        capture_drop_host_path(host_path, self.meter)?;
-        self.receipt.examined_paths = checked_increment(self.receipt.examined_paths)?;
-        Ok(())
+            capture_drop_host_path(host_path, self.meter)?;
+            self.receipt.examined_paths = checked_increment(self.receipt.examined_paths)?;
+            Ok(())
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     fn link_position(&self, metadata: &HostStat) -> Result<Option<usize>, CaptureError> {
@@ -254,99 +262,108 @@ impl CaptureBatch<'_> {
         host_path: CaptureHostPath,
         metadata: HostStat,
     ) -> Result<(), CaptureError> {
-        let host_kind = host_kind(&metadata)?;
-        let linked_regular = intent != CaptureIntent::MetadataOnly
-            && host_kind == FileKind::Regular
-            && checkout.volume_config().hard_links
-            && metadata.nlink() > 1;
-        if linked_regular {
-            if let Some(index) = self.link_position(&metadata)? {
-                return self.hard_link(index, path, current, host_path, &metadata);
+        let meter = self.meter;
+        let mut accounting =
+            crate::kernel::allocation::KernelAccounting::native(meter, meter.cancellation());
+        let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+            let host_kind = host_kind(&metadata)?;
+            let linked_regular = intent != CaptureIntent::MetadataOnly
+                && host_kind == FileKind::Regular
+                && checkout.volume_config().hard_links
+                && metadata.nlink() > 1;
+            if linked_regular {
+                if let Some(index) = self.link_position(&metadata)? {
+                    return self.hard_link(index, path, current, host_path, &metadata);
+                }
+                if let Some(epoch) = self.watch_epoch {
+                    // An existing alias may lie outside this hint batch. Rebaseline instead of recording a second FileId.
+                    return Err(CaptureError::RescanRequired {
+                        epoch,
+                        reason: WatchInvalidationReason::NativeRescanRequired,
+                    });
+                }
             }
-            if let Some(epoch) = self.watch_epoch {
-                // An existing alias may lie outside this hint batch. Rebaseline instead of recording a second FileId.
-                return Err(CaptureError::RescanRequired {
-                    epoch,
-                    reason: WatchInvalidationReason::NativeRescanRequired,
+            // Created files replace identity; same-kind directories retain identity while reconciling children.
+            let replace = intent == CaptureIntent::Replace
+                && !(host_kind == FileKind::Directory
+                    && current.is_some_and(|record| record.kind == FileKind::Directory));
+            if let Some(record) = current
+                && (record.kind != host_kind || replace)
+            {
+                if record.kind == FileKind::Directory {
+                    push_subtree_removals(
+                        checkout,
+                        &path,
+                        &mut self.mutations,
+                        &mut self.receipt,
+                        self.meter,
+                    )
+                    .await?;
+                }
+                capture_reserve(&mut self.mutations, 1, self.meter)?;
+                self.mutations.push(AuthoredMutation::Remove {
+                    path: clone_capture_path(&path, self.meter)?,
+                    expected_file_id: Some(record.file_id),
                 });
             }
-        }
-        // Created files replace identity; same-kind directories retain identity while reconciling children.
-        let replace = intent == CaptureIntent::Replace
-            && !(host_kind == FileKind::Directory
-                && current.is_some_and(|record| record.kind == FileKind::Directory));
-        if let Some(record) = current
-            && (record.kind != host_kind || replace)
-        {
-            if record.kind == FileKind::Directory {
-                push_subtree_removals(
-                    checkout,
-                    &path,
-                    &mut self.mutations,
-                    &mut self.receipt,
-                    self.meter,
-                )
+            let exists_with_kind =
+                !replace && current.is_some_and(|record| record.kind == host_kind);
+            let (canonical_metadata, prior_metadata) = self
+                .canonical_metadata(checkout, current, host_kind, exists_with_kind, &metadata)
                 .await?;
+            // A directory's timestamps follow what happens to its entries, each captured through its own path, and to reads of it: a change to them alone is no change of the directory's.
+            if host_kind == FileKind::Directory
+                && prior_metadata.is_some_and(|prior| {
+                    prior.without_timestamps() == canonical_metadata.without_timestamps()
+                })
+            {
+                self.receipt.examined_paths = checked_increment(self.receipt.examined_paths)?;
+                capture_drop_path(path, self.meter)?;
+                capture_drop_host_path(host_path, self.meter)?;
+                return Ok(());
             }
-            capture_reserve(&mut self.mutations, 1, self.meter)?;
-            self.mutations.push(AuthoredMutation::Remove {
-                path: clone_capture_path(&path, self.meter)?,
-                expected_file_id: Some(record.file_id),
-            });
-        }
-        let exists_with_kind = !replace && current.is_some_and(|record| record.kind == host_kind);
-        let (canonical_metadata, prior_metadata) = self
-            .canonical_metadata(checkout, current, host_kind, exists_with_kind, &metadata)
-            .await?;
-        // A directory's timestamps follow what happens to its entries, each captured through its own path, and to reads of it: a change to them alone is no change of the directory's.
-        if host_kind == FileKind::Directory
-            && prior_metadata.is_some_and(|prior| {
-                prior.without_timestamps() == canonical_metadata.without_timestamps()
-            })
-        {
-            self.receipt.examined_paths = checked_increment(self.receipt.examined_paths)?;
-            capture_drop_path(path, self.meter)?;
-            capture_drop_host_path(host_path, self.meter)?;
-            return Ok(());
-        }
-        let linked_path = if linked_regular {
-            Some(clone_capture_path(&path, self.meter)?)
-        } else {
-            None
-        };
-        let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
-            self.metadata_only(
-                path,
-                host_path,
-                &metadata,
-                canonical_metadata,
-                prior_metadata,
-            )?
-        } else if host_kind == FileKind::Regular {
-            self.regular(
-                checkout,
-                path,
-                host_path,
-                &metadata,
-                canonical_metadata,
-                (
-                    current.filter(|_| exists_with_kind),
-                    !linked_regular && prior_metadata == Some(canonical_metadata),
-                ),
-            )
-            .await?
-        } else {
-            self.special(
-                path,
-                host_path,
-                &metadata,
-                host_kind,
-                canonical_metadata,
-                exists_with_kind,
-            )?;
-            true
-        };
-        self.finish_present(changed, linked_path, &metadata)
+            let linked_path = if linked_regular {
+                Some(clone_capture_path(&path, self.meter)?)
+            } else {
+                None
+            };
+            let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
+                self.metadata_only(
+                    path,
+                    host_path,
+                    &metadata,
+                    canonical_metadata,
+                    prior_metadata,
+                )?
+            } else if host_kind == FileKind::Regular {
+                self.regular(
+                    checkout,
+                    path,
+                    host_path,
+                    &metadata,
+                    canonical_metadata,
+                    (
+                        current.filter(|_| exists_with_kind),
+                        !linked_regular && prior_metadata == Some(canonical_metadata),
+                    ),
+                )
+                .await?
+            } else {
+                self.special(
+                    path,
+                    host_path,
+                    &metadata,
+                    host_kind,
+                    canonical_metadata,
+                    exists_with_kind,
+                )?;
+                true
+            };
+            self.finish_present(changed, linked_path, &metadata)
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     fn finish_present(

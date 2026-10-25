@@ -10,15 +10,27 @@ pub(crate) enum NativeMaterializationActionPhase {
 pub(super) async fn generation_action<E, F, Fut>(
     control: &mut Option<&mut F>,
     phase: NativeMaterializationActionPhase,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<(), E>
 where
+    E: From<MaterializeError>,
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    if let Some(control) = control {
-        control(phase).await?;
-    }
-    Ok(())
+    let Some(control) = control else {
+        return Ok(());
+    };
+    let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+    let mut frame =
+        crate::heap_future::with_accounting(
+            &mut accounting,
+            |_| async move { control(phase).await },
+        )
+        .map_err(MaterializeError::from)
+        .map_err(E::from)?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 /// Native traversal and host work share the original ledger; standalone SDK reads contribute their measured prefixes.

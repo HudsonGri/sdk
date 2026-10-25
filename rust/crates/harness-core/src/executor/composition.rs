@@ -1,7 +1,12 @@
 use super::*;
 
 impl StockExecutor {
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        test,
+        feature = "hooks",
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.set_hooks(hooks);
         self
@@ -58,7 +63,7 @@ impl StockExecutor {
         Ok(self)
     }
 
-    #[cfg(any(test, feature = "filesystem"))]
+    #[cfg(test)]
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
         self.set_summary_source(source);
         self

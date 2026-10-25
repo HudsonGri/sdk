@@ -68,8 +68,11 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<()>> + Send,
 {
-    let (_, pending) = workspace.checkout_selection().await?;
-    recover_pending(workspace, view, pending, before_effect).await
+    crate::conversation::BoundedContentFuture::new(None, || async move {
+        let (_, pending) = workspace.checkout_selection().await?;
+        recover_pending(workspace, view, pending, before_effect).await
+    })?
+    .await
 }
 
 pub(in crate::local) async fn recover_pending<F, Fut>(
@@ -82,32 +85,36 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<()>> + Send,
 {
-    let Some(pending) = pending else {
-        return Ok(false);
-    };
-    let (_, source) = pending;
-    if source.workspace_id != view.workspace().id() {
-        return Err(Error::Conflict(
-            "unpublished reconciliation belongs to another checkout".into(),
-        ));
-    }
-    before_effect().await?;
-    let outcome =
-        acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
-            .recover_workspace(
-                view.workspace(),
-                acyclic_stream::UnixMillisClock::now_unix_millis(
-                    &acyclic_stream::SystemUnixMillisClock,
-                ),
-                acyclic_fs::OperationReconcileLimits::default(),
-            )
-            .await
-            .map_err(storage)?;
-    if let Some(outcome) = outcome {
-        super::git::reconciliation_generation(outcome)?;
-    }
-    replay(workspace, view, pending, true, before_effect).await?;
-    Ok(true)
+    crate::conversation::BoundedContentFuture::new(None, || async move {
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let (_, source) = pending;
+        if source.workspace_id != view.workspace().id() {
+            return Err(Error::Conflict(
+                "unpublished reconciliation belongs to another checkout".into(),
+            ));
+        }
+        before_effect().await?;
+        let outcome = acyclic_fs::OperationWindowCoordinator::new(
+            workspace.filesystem.operation_window_store(),
+        )
+        .recover_workspace(
+            view.workspace(),
+            acyclic_stream::UnixMillisClock::now_unix_millis(
+                &acyclic_stream::SystemUnixMillisClock,
+            ),
+            acyclic_fs::OperationReconcileLimits::default(),
+        )
+        .await
+        .map_err(storage)?;
+        if let Some(outcome) = outcome {
+            super::git::reconciliation_generation(outcome)?;
+        }
+        replay(workspace, view, pending, true, before_effect).await?;
+        Ok(true)
+    })?
+    .await
 }
 
 /// A file publication's owed capture: its operation and staged generation.

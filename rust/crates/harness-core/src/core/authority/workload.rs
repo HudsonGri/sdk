@@ -290,13 +290,9 @@ pub(super) fn verify(
     if scope.issuer != verifier.id {
         return Err(unauthorized("foreign issuer"));
     }
-    verify_trusted(
-        &*verifier.public.trust.read().map_err(unauthorized)?,
-        audience,
-        scope,
-        timestamp,
-        work,
-    )
+    let trust = verifier.public.trust.read().map_err(unauthorized)?;
+    let trust = verifier.public.signatures.with_trust(&*trust);
+    verify_trusted(&trust, audience, scope, timestamp, work)
 }
 pub(super) fn verify_trusted(
     trust: &dyn verify::Trust,

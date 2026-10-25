@@ -618,14 +618,20 @@ impl LocalHarness {
         mut claim: Option<super::orphans::Driving<'a>>,
     ) -> BoxProviderFuture<'a, Result<TurnOutput>> {
         Box::pin(async move {
-            let root = Box::pin(self.loop_root(task)).await?;
+            let root =
+                crate::conversation::BoundedContentFuture::new(None, || self.loop_root(task))?
+                    .await?;
             let mut current = task;
             loop {
                 let output = self.drive_turn(current, claim.take()).await;
                 if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
                     return output;
                 }
-                match Box::pin(self.continue_goal(current, root)).await? {
+                match crate::conversation::BoundedContentFuture::new(None, || {
+                    self.continue_goal(current, root)
+                })?
+                .await?
+                {
                     Some((next, next_claim)) => {
                         current = next;
                         claim = Some(next_claim);
@@ -666,7 +672,12 @@ impl LocalHarness {
                 .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
             let handle = match self.runtime.harness().attach(task, &definition).await {
                 Ok(handle) => handle,
-                Err(Error::NotFound(_)) => Box::pin(self.recover_unadmitted_turn(task)).await?,
+                Err(Error::NotFound(_)) => {
+                    crate::conversation::BoundedContentFuture::new(None, || {
+                        self.recover_unadmitted_turn(task)
+                    })?
+                    .await?
+                }
                 Err(error) => return Err(error),
             };
             if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {

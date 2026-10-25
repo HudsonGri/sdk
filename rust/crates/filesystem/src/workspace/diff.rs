@@ -212,75 +212,80 @@ async fn complete_between<O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    let [from, to] = &endpoints;
-    let changes = crate::facade::diff_generation_file_tables(
-        to.objects,
-        from.root.file_table,
-        to.root.file_table,
-        maximum_entries,
-        crate::kernel::DecodeLimits::for_volume(to.config),
-        accounting,
-        cancellation,
-    )
-    .await?;
-    if changes.0.truncated {
-        return Err(WorkspaceError::ChangedPathLimit);
-    }
-    // A binding of an existing directory can move unchanged descendants. New
-    // directories have all of their records in the Merkle delta already.
-    let moves_directory = moves_existing_directory(&changes.0, accounting)?;
-    let result = if moves_directory {
-        moved::expand(
-            &endpoints,
-            &changes.0,
+    let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+        let [from, to] = &endpoints;
+        let changes = crate::facade::diff_generation_file_tables(
+            to.objects,
+            from.root.file_table,
+            to.root.file_table,
             maximum_entries,
+            crate::kernel::DecodeLimits::for_volume(to.config),
             accounting,
             cancellation,
         )
-        .await
-    } else {
-        match created::created_paths(
-            &endpoints,
-            &changes.0,
-            maximum_entries,
-            to.config.limits,
-            accounting,
-            cancellation,
-        )
-        .await?
-        {
-            Some(paths) => Ok(paths),
-            None => {
-                resolve_changed_paths(
-                    &endpoints,
-                    &changes.0,
-                    maximum_entries,
-                    accounting,
-                    cancellation,
-                )
-                .await
-            }
+        .await?;
+        if changes.0.truncated {
+            return Err(WorkspaceError::ChangedPathLimit);
         }
-    };
-    let bytes = workspace_vec_bytes(&changes.0.files)
-        + workspace_vec_bytes(&changes.0.bindings)
-        + changes
-            .0
-            .bindings
-            .iter()
-            .map(|binding| {
-                binding.name.retained_bytes() as u64
-                    + binding
-                        .before
-                        .as_ref()
-                        .map_or(0, |entry| entry.name.retained_bytes() as u64)
-                    + binding
-                        .after
-                        .as_ref()
-                        .map_or(0, |entry| entry.name.retained_bytes() as u64)
-            })
-            .sum::<u64>();
-    reverse_drop(changes, bytes, accounting)?;
+        // A binding of an existing directory can move unchanged descendants. New
+        // directories have all of their records in the Merkle delta already.
+        let moves_directory = moves_existing_directory(&changes.0, accounting)?;
+        let result = if moves_directory {
+            moved::expand(
+                &endpoints,
+                &changes.0,
+                maximum_entries,
+                accounting,
+                cancellation,
+            )
+            .await
+        } else {
+            match created::created_paths(
+                &endpoints,
+                &changes.0,
+                maximum_entries,
+                to.config.limits,
+                accounting,
+                cancellation,
+            )
+            .await?
+            {
+                Some(paths) => Ok(paths),
+                None => {
+                    resolve_changed_paths(
+                        &endpoints,
+                        &changes.0,
+                        maximum_entries,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
+                }
+            }
+        };
+        let bytes = workspace_vec_bytes(&changes.0.files)
+            + workspace_vec_bytes(&changes.0.bindings)
+            + changes
+                .0
+                .bindings
+                .iter()
+                .map(|binding| {
+                    binding.name.retained_bytes() as u64
+                        + binding
+                            .before
+                            .as_ref()
+                            .map_or(0, |entry| entry.name.retained_bytes() as u64)
+                        + binding
+                            .after
+                            .as_ref()
+                            .map_or(0, |entry| entry.name.retained_bytes() as u64)
+                })
+                .sum::<u64>();
+        reverse_drop(changes, bytes, accounting)?;
+        result
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
     result
 }
 

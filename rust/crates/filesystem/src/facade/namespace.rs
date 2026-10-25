@@ -328,22 +328,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ),
         FsError,
     > {
-        if selected_restore
-            && (self.mode.access != AccessMode::ReadOnly
-                || self.mode.consistency != ConsistencyMode::Pinned
-                || self.tracks_observations()
-                || *self.root != self.base_root)
-        {
-            return Err(FsError::MutationNotAllowed);
-        }
-        accounting.check()?;
-        let before = readonly_standalone_live(accounting);
-        let result = async {
-            self.synchronize_live_with_accounting(accounting, cancellation)
-                .await?;
-            let config = self.volume.config;
-            if !self.tracks_observations() {
-                let lookup = crate::kernel::lookup_paths_with_accounting(
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            if selected_restore
+                && (self.mode.access != AccessMode::ReadOnly
+                    || self.mode.consistency != ConsistencyMode::Pinned
+                    || self.tracks_observations()
+                    || *self.root != self.base_root)
+            {
+                return Err(FsError::MutationNotAllowed);
+            }
+            accounting.check()?;
+            let before = readonly_standalone_live(accounting);
+            let result = async {
+                self.synchronize_live_with_accounting(accounting, cancellation)
+                    .await?;
+                let config = self.volume.config;
+                if !self.tracks_observations() {
+                    let lookup = crate::kernel::lookup_paths_with_accounting(
+                        &self.volume.fs.inner.objects,
+                        &self.root,
+                        crate::kernel::PathQueries::Owned(paths),
+                        config,
+                        accounting,
+                        cancellation,
+                        Some(&self.dependencies.data_custody),
+                        if selected_restore {
+                            crate::kernel::PathBatchMode::SelectedRestore
+                        } else {
+                            crate::kernel::PathBatchMode::NoFollow
+                        },
+                    )
+                    .await?;
+                    return Ok(lookup);
+                }
+                // The unchanged root answers and observes in the same shared walk.
+                if *self.root == self.base_root {
+                    let (value, allocation) =
+                        crate::kernel::observe_paths_async_with_accounting::<TERMINAL, _>(
+                            &self.volume.fs.inner.objects,
+                            &self.root,
+                            paths,
+                            config,
+                            accounting,
+                            cancellation,
+                            Some(&self.dependencies.data_custody),
+                        )
+                        .await?;
+                    let mut observed = (value, allocation);
+                    let dependencies = std::mem::take(&mut observed.0.dependencies);
+                    self.dependencies.extend_observations(
+                        dependencies,
+                        &mut observed.1,
+                        self.volume.config.limits.maximum_checkout_dependencies,
+                        accounting,
+                        cancellation,
+                    )?;
+                    let bytes = observed
+                        .0
+                        .lookup
+                        .entries
+                        .capacity()
+                        .checked_mul(size_of::<crate::kernel::PathBatchEntry>())
+                        .map(crate::foundation::usize_to_u64)
+                        .ok_or(WorkError::Overflow)?;
+                    let output_allocation = match &mut observed.1 {
+                        crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                            crate::kernel::allocation::KernelOwnedAllocation::Standalone
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(
+                            allocation,
+                        ) => crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(
+                            allocation.split_off(bytes)?,
+                        ),
+                    };
+                    let entries = std::mem::take(&mut observed.0.lookup.entries);
+                    let lookup = PathBatchLookup {
+                        entries,
+                        retained_allocation_bytes: bytes,
+                        work: accounting.spent(),
+                    };
+                    drop(observed);
+                    return Ok((lookup, output_allocation));
+                }
+                let (value, allocation) = crate::kernel::lookup_paths_with_accounting(
                     &self.volume.fs.inner.objects,
                     &self.root,
                     crate::kernel::PathQueries::Owned(paths),
@@ -351,21 +419,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     accounting,
                     cancellation,
                     Some(&self.dependencies.data_custody),
-                    if selected_restore {
-                        crate::kernel::PathBatchMode::SelectedRestore
-                    } else {
-                        crate::kernel::PathBatchMode::NoFollow
-                    },
+                    crate::kernel::PathBatchMode::NoFollow,
                 )
                 .await?;
-                return Ok(lookup);
-            }
-            // The unchanged root answers and observes in the same shared walk.
-            if *self.root == self.base_root {
+                let lookup = (value, allocation);
                 let (value, allocation) =
                     crate::kernel::observe_paths_async_with_accounting::<TERMINAL, _>(
                         &self.volume.fs.inner.objects,
-                        &self.root,
+                        &self.base_root,
                         paths,
                         config,
                         accounting,
@@ -382,78 +443,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     accounting,
                     cancellation,
                 )?;
-                let bytes = observed
-                    .0
-                    .lookup
-                    .entries
-                    .capacity()
-                    .checked_mul(size_of::<crate::kernel::PathBatchEntry>())
-                    .map(crate::foundation::usize_to_u64)
-                    .ok_or(WorkError::Overflow)?;
-                let output_allocation = match &mut observed.1 {
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                        crate::kernel::allocation::KernelOwnedAllocation::Standalone
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(
-                        allocation,
-                    ) => crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(
-                        allocation.split_off(bytes)?,
-                    ),
-                };
-                let entries = std::mem::take(&mut observed.0.lookup.entries);
-                let lookup = PathBatchLookup {
-                    entries,
-                    retained_allocation_bytes: bytes,
-                    work: accounting.spent(),
-                };
                 drop(observed);
-                return Ok((lookup, output_allocation));
+                Ok((lookup.0, lookup.1))
             }
-            let (value, allocation) = crate::kernel::lookup_paths_with_accounting(
-                &self.volume.fs.inner.objects,
-                &self.root,
-                crate::kernel::PathQueries::Owned(paths),
-                config,
-                accounting,
-                cancellation,
-                Some(&self.dependencies.data_custody),
-                crate::kernel::PathBatchMode::NoFollow,
-            )
-            .await?;
-            let lookup = (value, allocation);
-            let (value, allocation) =
-                crate::kernel::observe_paths_async_with_accounting::<TERMINAL, _>(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
-                    paths,
-                    config,
-                    accounting,
-                    cancellation,
-                    Some(&self.dependencies.data_custody),
-                )
-                .await?;
-            let mut observed = (value, allocation);
-            let dependencies = std::mem::take(&mut observed.0.dependencies);
-            self.dependencies.extend_observations(
-                dependencies,
-                &mut observed.1,
-                self.volume.config.limits.maximum_checkout_dependencies,
-                accounting,
-                cancellation,
-            )?;
-            drop(observed);
-            Ok((lookup.0, lookup.1))
-        }
-        .await;
-        let retained = result.as_ref().map_or(0, |(lookup, _)| {
-            (lookup.entries.capacity() * size_of::<crate::kernel::PathBatchEntry>()) as u64
-        });
-        readonly_cleanup_standalone(accounting, before, retained)?;
-        result.map(|(mut lookup, allocation)| {
-            lookup.work = accounting.spent();
-            (lookup, allocation)
-        })
+            .await;
+            let retained = result.as_ref().map_or(0, |(lookup, _)| {
+                (lookup.entries.capacity() * size_of::<crate::kernel::PathBatchEntry>()) as u64
+            });
+            readonly_cleanup_standalone(accounting, before, retained)?;
+            result.map(|(mut lookup, allocation)| {
+                lookup.work = accounting.spent();
+                (lookup, allocation)
+            })
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
     pub(super) async fn lookup_content_record<F: ContentFile>(
         &mut self,

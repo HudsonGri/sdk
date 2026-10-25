@@ -13,7 +13,12 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+    generation_action(
+        before_effect,
+        NativeMaterializationActionPhase::Before,
+        receipt.custody.work(),
+    )
+    .await?;
     let length = bytes.len() as u64;
     let custody = receipt
         .custody
@@ -24,7 +29,12 @@ where
         .write_async(offset, bytes, meter, custody)
         .map_err(|error| receipt.runtime_error(error))?;
     write.await.map_err(|error| receipt.runtime_error(error))?;
-    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+    generation_action(
+        before_effect,
+        NativeMaterializationActionPhase::Completed,
+        receipt.custody.work(),
+    )
+    .await?;
     Ok(length)
 }
 
@@ -38,13 +48,23 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+    generation_action(
+        before_effect,
+        NativeMaterializationActionPhase::Before,
+        receipt.custody.work(),
+    )
+    .await?;
     let meter = receipt.custody.work().runtime_meter();
     let sync = file
         .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
         .map_err(|error| receipt.runtime_error(error))?;
     sync.await.map_err(|error| receipt.runtime_error(error))?;
-    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
+    generation_action(
+        before_effect,
+        NativeMaterializationActionPhase::Completed,
+        receipt.custody.work(),
+    )
+    .await
 }
 
 #[cfg(windows)]
@@ -88,6 +108,9 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    let native = receipt.custody.work().clone();
+    let mut accounting = crate::kernel::KernelAccounting::native(&native, native.cancellation());
+    let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
     let resolved = read_source!(reader, receipt, remaining, value,
         reader.resolve_files(std::slice::from_ref(path), receipt.custody.work(), cancellation)
             => receipt.accept_source(value.0, value.1)?,
@@ -132,7 +155,7 @@ where
                 ExtentKind::Hole => {
                     #[cfg(target_os = "macos")]
                     {
-                        generation_action(before_effect, NativeMaterializationActionPhase::Before)
+                        generation_action(before_effect, NativeMaterializationActionPhase::Before, receipt.custody.work())
                             .await?;
                         let meter = receipt.custody.work().runtime_meter();
                         let control = file
@@ -154,10 +177,7 @@ where
                         control
                             .await
                             .map_err(|error| receipt.runtime_error(error))?;
-                        generation_action(
-                            before_effect,
-                            NativeMaterializationActionPhase::Completed,
-                        )
+                        generation_action(before_effect, NativeMaterializationActionPhase::Completed, receipt.custody.work())
                         .await?;
                     }
                 }
@@ -215,6 +235,10 @@ where
         offset += length;
     }
     Ok(metadata)
+    }).map_err(MaterializeError::from).map_err(E::from)?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectStore>(

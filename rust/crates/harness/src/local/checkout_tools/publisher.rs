@@ -83,65 +83,68 @@ impl CheckoutPublisher {
         publication: Publication<'_>,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<FileRef> {
-        let (volume, path) = match &publication {
-            Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
-            Publication::Replace(source) => (Some(source.volume()), source.path()),
-        };
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
-            acyclic_fs::access::Action::Write,
-            &relative,
-            self.tools.clock.now_unix_millis() / 1000,
-        )?;
-        serialized(&self.tools.state, async |mut state| {
-            let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
-            if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
-                state.watcher = None;
-            }
-            let State { active, watcher, .. } = &mut *state;
-            let view = active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
-            let native = match &mount.view.source {
-                Some(source) => Some(source.native().await),
-                None => None,
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let (volume, path) = match &publication {
+                Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
+                Publication::Replace(source) => (Some(source.volume()), source.path()),
             };
-            let native = native.as_ref().and_then(|guard| guard.as_ref());
-            let workspace = mount.view.source.as_ref()
-                .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-            access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
-            let writer = self.writer_for(&mount.view.volume, workspace)?;
-            // Recover the original committed generation before capture: a
-            // missing physical publication must not become a deletion.
-            let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
-                Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
-                Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
-            };
-            if original.is_none() {
+            let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
+            mount.check(
+                acyclic_fs::access::Action::Write,
+                &relative,
+                self.tools.clock.now_unix_millis() / 1000,
+            )?;
+            serialized(&self.tools.state, async |mut state| {
+                let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+                if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
+                    state.watcher = None;
+                }
+                let State { active, watcher, .. } = &mut *state;
+                let view = active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+                let native = match &mount.view.source {
+                    Some(source) => Some(source.native().await),
+                    None => None,
+                };
+                let native = native.as_ref().and_then(|guard| guard.as_ref());
+                let workspace = mount.view.source.as_ref()
+                    .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+                access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
+                let writer = self.writer_for(&mount.view.volume, workspace)?;
+                // Recover the original committed generation before capture: a
+                // missing physical publication must not become a deletion.
+                let original = match &publication {
+                    Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
+                    Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
+                    Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
+                };
+                if original.is_none() {
+                    if let Some(native) = native {
+                        native.sync().await?;
+                    } else if mount.view.source.is_none() {
+                        self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
+                    }
+                }
+                self.tools.retain_diff_base(workspace, false).await?;
+                let file = match publication {
+                    Publication::Once { media, display, .. } => {
+                        writer.stage_once(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
+                    }
+                    Publication::Path { media, display, .. } => {
+                        writer.stage(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
+                    }
+                    Publication::Replace(source) => writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0,
+                };
                 if let Some(native) = native {
-                    native.sync().await?;
+                    native.advance_to_head().await?;
                 } else if mount.view.source.is_none() {
-                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
+                    return self.settle(view, watcher, operation, file).await;
                 }
-            }
-            self.tools.retain_diff_base(workspace, false).await?;
-            let file = match publication {
-                Publication::Once { media, display, .. } => {
-                    writer.stage_once(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
-                }
-                Publication::Path { media, display, .. } => {
-                    writer.stage(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
-                }
-                Publication::Replace(source) => writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0,
-            };
-            if let Some(native) = native {
-                native.advance_to_head().await?;
-            } else if mount.view.source.is_none() {
-                return self.settle(view, watcher, operation, file).await;
-            }
-            Ok(file)
-        })
+                Ok(file)
+            })
+            .await
+            .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
+        })?
         .await
-        .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
     }
 
     /// Settles a staged file in an unmounted checkout: materializes its exact
@@ -156,40 +159,43 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
-        // The physical write carries host metadata (mode, owner, times) that
-        // the staged generation cannot predict, so it is owed a capture of
-        // its own, under the write's operation, so the agent's own write is
-        // not observed later as a foreign change to its file. The debt is
-        // recorded durably before the write reaches disk. This write
-        // finishes it under the same lock; after an interruption, the next
-        // capture of this checkout finishes it first, whichever command or
-        // replay that is, while the staged generation is still the head. One
-        // operation may publish several paths, so the capture's identity
-        // names the path too.
-        let selected = (&*self.tools.workspace, view);
-        let owed = (
-            publication_operation(operation, file.path()),
-            acyclic_fs::GitGenerationRef {
-                workspace_id: view.workspace().id(),
-                generation: self.staged_generation(&file)?,
-            },
-        );
-        self.tools
-            .owe_write_capture(selected, watcher, owed)
-            .await?;
-        self.materialize(view, operation, &file).await?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        if tests::KILL_BEFORE_CAPTURE.get() {
-            return Err(Error::Storage("killed before the write's capture".into()));
-        }
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        if tests::REPLAY_SKIPS_CAPTURE.get() {
-            return self.observed(view, operation, file).await;
-        }
-        self.tools
-            .finish_owed_write(selected, watcher, PublicationPermit::Unrestricted)
-            .await?;
-        self.observed(view, operation, file).await
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            // The physical write carries host metadata (mode, owner, times) that
+            // the staged generation cannot predict, so it is owed a capture of
+            // its own, under the write's operation, so the agent's own write is
+            // not observed later as a foreign change to its file. The debt is
+            // recorded durably before the write reaches disk. This write
+            // finishes it under the same lock; after an interruption, the next
+            // capture of this checkout finishes it first, whichever command or
+            // replay that is, while the staged generation is still the head. One
+            // operation may publish several paths, so the capture's identity
+            // names the path too.
+            let selected = (&*self.tools.workspace, view);
+            let owed = (
+                publication_operation(operation, file.path()),
+                acyclic_fs::GitGenerationRef {
+                    workspace_id: view.workspace().id(),
+                    generation: self.staged_generation(&file)?,
+                },
+            );
+            self.tools
+                .owe_write_capture(selected, watcher, owed)
+                .await?;
+            self.materialize(view, operation, &file).await?;
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            if tests::KILL_BEFORE_CAPTURE.get() {
+                return Err(Error::Storage("killed before the write's capture".into()));
+            }
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            if tests::REPLAY_SKIPS_CAPTURE.get() {
+                return self.observed(view, operation, file).await;
+            }
+            self.tools
+                .finish_owed_write(selected, watcher, PublicationPermit::Unrestricted)
+                .await?;
+            self.observed(view, operation, file).await
+        })?
+        .await
     }
 
     /// Rebinds a published file to the generation that captured its own
@@ -205,63 +211,66 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        let key = acyclic_fs::IdempotencyKey::from_bytes(
-            capture::capture_operation(write_capture(operation, file.path()), 1).into_bytes(),
-        );
-        let Some(capture) = view
-            .workspace()
-            .operation_generation(key, budget, &cancellation)
-            .await
-            .map_err(storage)?
-            .value
-        else {
-            return Ok(file);
-        };
-        let parents = capture
-            .parents(budget, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        if parents != [self.staged_generation(&file)?] {
-            return Ok(file);
-        }
-        let descriptor = file.descriptor();
-        let bytes = match capture
-            .read(
-                &format!("/{}", file.path()),
-                descriptor.byte_length().saturating_add(1),
-                budget,
-                &cancellation,
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            let key = acyclic_fs::IdempotencyKey::from_bytes(
+                capture::capture_operation(write_capture(operation, file.path()), 1).into_bytes(),
+            );
+            let Some(capture) = view
+                .workspace()
+                .operation_generation(key, budget, &cancellation)
+                .await
+                .map_err(storage)?
+                .value
+            else {
+                return Ok(file);
+            };
+            let parents = capture
+                .parents(budget, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+            if parents != [self.staged_generation(&file)?] {
+                return Ok(file);
+            }
+            let descriptor = file.descriptor();
+            let bytes = match capture
+                .read(
+                    &format!("/{}", file.path()),
+                    descriptor.byte_length().saturating_add(1),
+                    budget,
+                    &cancellation,
+                )
+                .await
+            {
+                Ok(read) => read.value,
+                Err(failure) => match failure.error {
+                    acyclic_fs::WorkspaceError::NotFound
+                    | acyclic_fs::WorkspaceError::NotRegularFile
+                    | acyclic_fs::WorkspaceError::IsDirectory
+                    | acyclic_fs::WorkspaceError::ReadLimitExceeded => return Ok(file),
+                    error => return Err(storage(error)),
+                },
+            };
+            let bytes: &[u8] = bytes.as_ref();
+            if bytes.len() as u64 != descriptor.byte_length()
+                || <sha2::Sha256 as sha2::Digest>::digest(bytes).as_slice() != descriptor.sha256()
+            {
+                return Ok(file);
+            }
+            // Retain it as publication retains the staged generation.
+            crate::filesystem::retain_published_generation(&capture).await?;
+            FileRef::new(
+                file.volume().clone(),
+                file.path().to_owned(),
+                hex::encode(capture.id().digest().into_bytes()),
+                descriptor.clone(),
+                file.display_name().to_owned(),
+                &mut None,
             )
-            .await
-        {
-            Ok(read) => read.value,
-            Err(failure) => match failure.error {
-                acyclic_fs::WorkspaceError::NotFound
-                | acyclic_fs::WorkspaceError::NotRegularFile
-                | acyclic_fs::WorkspaceError::IsDirectory
-                | acyclic_fs::WorkspaceError::ReadLimitExceeded => return Ok(file),
-                error => return Err(storage(error)),
-            },
-        };
-        let bytes: &[u8] = bytes.as_ref();
-        if bytes.len() as u64 != descriptor.byte_length()
-            || <sha2::Sha256 as sha2::Digest>::digest(bytes).as_slice() != descriptor.sha256()
-        {
-            return Ok(file);
-        }
-        // Retain it as publication retains the staged generation.
-        crate::filesystem::retain_published_generation(&capture).await?;
-        FileRef::new(
-            file.volume().clone(),
-            file.path().to_owned(),
-            hex::encode(capture.id().digest().into_bytes()),
-            descriptor.clone(),
-            file.display_name().to_owned(),
-            &mut None,
-        )
+        })?
+        .await
     }
 
     fn staged_generation(&self, file: &FileRef) -> Result<acyclic_fs::GenerationId> {
@@ -277,45 +286,48 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: &FileRef,
     ) -> Result<()> {
-        let reference = self.files.file_generation(file, None)?;
-        let digest = acyclic_fs::Digest::from_bytes(
-            reference.as_resource().key().try_into().map_err(storage)?,
-        );
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let workspace = view.workspace();
-        let to = workspace
-            .generation(
-                acyclic_fs::GenerationId::new(digest),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let reference = self.files.file_generation(file, None)?;
+            let digest = acyclic_fs::Digest::from_bytes(
+                reference.as_resource().key().try_into().map_err(storage)?,
+            );
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let workspace = view.workspace();
+            let to = workspace
+                .generation(
+                    acyclic_fs::GenerationId::new(digest),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value;
+            let parents = to
+                .parents(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+            let [parent] = parents.as_slice() else {
+                return Err(Error::Storage(
+                    "file publication has no unique parent generation".into(),
+                ));
+            };
+            let from = workspace
+                .generation(*parent, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+            crate::tools::git::publish_checkout_transition(
+                &self.tools.workspace.path,
+                self.tools.workspace.identity,
+                &self.tools.workspace.store,
+                publication_operation(operation, file.path()),
+                from,
+                to,
+                &|| std::future::ready(Ok(())),
             )
             .await
-            .map_err(storage)?
-            .value;
-        let parents = to
-            .parents(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        let [parent] = parents.as_slice() else {
-            return Err(Error::Storage(
-                "file publication has no unique parent generation".into(),
-            ));
-        };
-        let from = workspace
-            .generation(*parent, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        crate::tools::git::publish_checkout_transition(
-            &self.tools.workspace.path,
-            self.tools.workspace.identity,
-            &self.tools.workspace.store,
-            publication_operation(operation, file.path()),
-            from,
-            to,
-            &|| std::future::ready(Ok(())),
-        )
+        })?
         .await
     }
 }

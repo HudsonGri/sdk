@@ -187,22 +187,6 @@ where
         Ok(self)
     }
 
-    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
-        self.set_summary_source(source);
-        self
-    }
-
-    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
-        self.set_role(role);
-        self
-    }
-
-    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-    pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
-        self.set_hooks(hooks);
-        self
-    }
-
     #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
     pub(crate) fn set_hooks(&mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) {
         self.executor.set_hooks(hooks);

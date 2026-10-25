@@ -16,78 +16,81 @@ where
         reconciliation_only: bool,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
-        use crate::filesystem::task_runtime::observed::boundary;
-        use crate::wire::ErrorCode;
-        mail::require_native_observer(io)?;
-        let task = context
-            .durable_task_id()
-            .ok_or_else(|| boundary(io, ErrorCode::Unauthorized, "command has no admitted task"))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let original = io
-            .and_then(|io| io.original_native_work())
-            .map(|work| context.admission(work))
-            .transpose()?
-            .flatten();
-        #[cfg(target_arch = "wasm32")]
-        let original: Option<&crate::runtime::TaskAdmissionRecord> = None;
-        let observed;
-        let admission = if let Some(original) = original {
-            original
-        } else {
-            observed = self.runtime.admission_observed(task, io).await?;
-            &observed
-        };
-        if context.as_ref().scope().grants() != &admission.grants
-            || context.as_ref().scope().limits() != admission.limits
-            || context.as_ref().scope().run_limits() != admission.run_limits
-        {
-            return Err(boundary(
+        BoundedContentFuture::new(io, || async move {
+            use crate::filesystem::task_runtime::observed::boundary;
+            use crate::wire::ErrorCode;
+            mail::require_native_observer(io)?;
+            let task = context.durable_task_id().ok_or_else(|| {
+                boundary(io, ErrorCode::Unauthorized, "command has no admitted task")
+            })?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let original = io
+                .and_then(|io| io.original_native_work())
+                .map(|work| context.admission(work))
+                .transpose()?
+                .flatten();
+            #[cfg(target_arch = "wasm32")]
+            let original: Option<&crate::runtime::TaskAdmissionRecord> = None;
+            let observed;
+            let admission = if let Some(original) = original {
+                original
+            } else {
+                observed = self.runtime.admission_observed(task, io).await?;
+                &observed
+            };
+            if context.as_ref().scope().grants() != &admission.grants
+                || context.as_ref().scope().limits() != admission.limits
+                || context.as_ref().scope().run_limits() != admission.run_limits
+            {
+                return Err(boundary(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "command scope differs from retained task",
+                ));
+            }
+            if admission.execution.is_some() {
+                return Err(boundary(
+                    io,
+                    ErrorCode::Unsupported,
+                    "stock routed execution provider is not composed",
+                ));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.is_some() && !context.original_task_binding_matches(task, &fence) {
+                return Err(boundary(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "command differs from original task binding",
+                ));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let owner = io
+                .and_then(|io| io.original_native_work())
+                .map(|work| context.journal_owner::<P>(&fence, work))
+                .transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let owner: Option<Arc<crate::durable_host::TaskJournalOwner<P>>> = None;
+            let invocation = CommandInvocation {
+                context: &context,
+                admission,
+                fence: &fence,
+                command: &command,
+                reconciliation_only,
                 io,
-                ErrorCode::Unauthorized,
-                "command scope differs from retained task",
-            ));
-        }
-        if admission.execution.is_some() {
-            return Err(boundary(
-                io,
-                ErrorCode::Unsupported,
-                "stock routed execution provider is not composed",
-            ));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if io.is_some() && !context.original_task_binding_matches(task, &fence) {
-            return Err(boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "command differs from original task binding",
-            ));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let owner = io
-            .and_then(|io| io.original_native_work())
-            .map(|work| context.journal_owner::<P>(&fence, work))
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let owner: Option<Arc<crate::durable_host::TaskJournalOwner<P>>> = None;
-        let invocation = CommandInvocation {
-            context: &context,
-            admission,
-            fence: &fence,
-            command: &command,
-            reconciliation_only,
-            io,
-        };
-        self.verify_command_owner(owner.as_deref(), invocation)
-            .await?;
-        let progress = self.dispatch_command(invocation, payload)?.await;
-        #[cfg(not(target_arch = "wasm32"))]
-        let progress = match progress {
-            Err(error) if error.is_native_failure() => return Err(error),
-            progress => progress,
-        };
-        self.verify_command_owner(owner.as_deref(), invocation)
-            .await?;
-        progress
+            };
+            self.verify_command_owner(owner.as_deref(), invocation)
+                .await?;
+            let progress = self.dispatch_command(invocation, payload)?.await;
+            #[cfg(not(target_arch = "wasm32"))]
+            let progress = match progress {
+                Err(error) if error.is_native_failure() => return Err(error),
+                progress => progress,
+            };
+            self.verify_command_owner(owner.as_deref(), invocation)
+                .await?;
+            progress
+        })?
+        .await
     }
     async fn verify_command_owner(
         &self,

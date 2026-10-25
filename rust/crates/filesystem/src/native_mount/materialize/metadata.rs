@@ -16,84 +16,113 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    let cancellation = receipt
-        .custody
-        .work()
-        .state
-        .with_original_leaf(|original| original.cancellation().clone());
-    let cancellation = &cancellation;
-    let metadata = match metadata {
-        Some(metadata) => metadata,
-        None => read_source!(reader, receipt, remaining, value,
-            reader.read_metadata(path, receipt.custody.work(), cancellation) => value,
-            reader.read_metadata(path, remaining, cancellation) => value,
-        ),
-    };
-    let (metadata, named_attributes) = host_metadata(metadata);
-    if let Some(root) = named_attributes {
-        let read = read_source!(reader, receipt, remaining, value,
-            reader.read_named_attributes(root, receipt.custody.work(), cancellation)
-                => receipt.accept_source(value.0, value.1)?,
-            reader.read_named_attributes(root, remaining, cancellation) => {
-                receipt.adopt(vec_bytes(&value))?;
-                for (name, bytes) in &value {
-                    receipt.adopt(name.retained_bytes())?;
-                    receipt.adopt(bytes.len())?;
-                }
-                value
-            },
-        );
-        let source_array_bytes = vec_bytes(&read);
-        let mut attributes = Vec::new();
-        let mut payload_bytes = 0_usize;
-        for (name, value) in read {
-            // Volume policy is authority metadata, never a host xattr/stream.
-            // In particular, Linux's security.* namespace requires privilege.
-            if name.as_bytes() == crate::access::POLICY_METADATA_KEY {
-                let retained = name.retained_bytes()
-                    + if reader.validate_native_work(receipt.custody.work()).is_ok() {
-                        0
-                    } else {
-                        value.len()
-                    };
-                drop((name, value));
-                receipt
-                    .custody
-                    .release(retained as u64)
-                    .map_err(MaterializeError::from)?;
-                continue;
-            }
-            if name.class() != crate::kernel::AttributeClass::PosixXattr {
-                return Err(MaterializeError::UnsupportedMetadata("named_attributes").into());
-            }
-            let name = name.bytes;
-            let value_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() {
-                0
-            } else {
-                value.len()
-            };
-            payload_bytes = payload_bytes
-                .checked_add(name.capacity())
-                .and_then(|bytes| bytes.checked_add(value_bytes))
-                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-            receipt.push(&mut attributes, (name, value))?;
-        }
-        receipt
+    let native = receipt.custody.work().clone();
+    let mut accounting = crate::kernel::KernelAccounting::native(&native, native.cancellation());
+    let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+        let cancellation = receipt
             .custody
-            .release(source_array_bytes as u64)
-            .map_err(MaterializeError::from)?;
-        let host_array_bytes = vec_bytes(&attributes);
-        let retained = host_array_bytes
-            .checked_add(payload_bytes)
-            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-        apply_host_attributes_offloaded(host_root, host_path, attributes, retained, receipt)
+            .work()
+            .state
+            .with_original_leaf(|original| original.cancellation().clone());
+        let cancellation = &cancellation;
+        let metadata = match metadata {
+            Some(metadata) => metadata,
+            None => read_source!(reader, receipt, remaining, value,
+                reader.read_metadata(path, receipt.custody.work(), cancellation) => value,
+                reader.read_metadata(path, remaining, cancellation) => value,
+            ),
+        };
+        let (metadata, named_attributes) = host_metadata(metadata);
+        if let Some(root) = named_attributes {
+            let read = read_source!(reader, receipt, remaining, value,
+                reader.read_named_attributes(root, receipt.custody.work(), cancellation)
+                    => receipt.accept_source(value.0, value.1)?,
+                reader.read_named_attributes(root, remaining, cancellation) => {
+                    receipt.adopt(vec_bytes(&value))?;
+                    for (name, bytes) in &value {
+                        receipt.adopt(name.retained_bytes())?;
+                        receipt.adopt(bytes.len())?;
+                    }
+                    value
+                },
+            );
+            let source_array_bytes = vec_bytes(&read);
+            let mut attributes = Vec::new();
+            let mut payload_bytes = 0_usize;
+            for (name, value) in read {
+                // Volume policy is authority metadata, never a host xattr/stream.
+                // In particular, Linux's security.* namespace requires privilege.
+                if name.as_bytes() == crate::access::POLICY_METADATA_KEY {
+                    let retained = name.retained_bytes()
+                        + if reader.validate_native_work(receipt.custody.work()).is_ok() {
+                            0
+                        } else {
+                            value.len()
+                        };
+                    drop((name, value));
+                    receipt
+                        .custody
+                        .release(retained as u64)
+                        .map_err(MaterializeError::from)?;
+                    continue;
+                }
+                if name.class() != crate::kernel::AttributeClass::PosixXattr {
+                    return Err(MaterializeError::UnsupportedMetadata("named_attributes").into());
+                }
+                let name = name.bytes;
+                let value_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() {
+                    0
+                } else {
+                    value.len()
+                };
+                payload_bytes = payload_bytes
+                    .checked_add(name.capacity())
+                    .and_then(|bytes| bytes.checked_add(value_bytes))
+                    .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+                receipt.push(&mut attributes, (name, value))?;
+            }
+            receipt
+                .custody
+                .release(source_array_bytes as u64)
+                .map_err(MaterializeError::from)?;
+            let host_array_bytes = vec_bytes(&attributes);
+            let retained = host_array_bytes
+                .checked_add(payload_bytes)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            generation_action(
+                before_effect,
+                NativeMaterializationActionPhase::Before,
+                receipt.custody.work(),
+            )
             .await?;
-        generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-    }
-    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-    apply_host_metadata_offloaded(host_root, host_path, metadata, receipt).await?;
-    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
+            apply_host_attributes_offloaded(host_root, host_path, attributes, retained, receipt)
+                .await?;
+            generation_action(
+                before_effect,
+                NativeMaterializationActionPhase::Completed,
+                receipt.custody.work(),
+            )
+            .await?;
+        }
+        generation_action(
+            before_effect,
+            NativeMaterializationActionPhase::Before,
+            receipt.custody.work(),
+        )
+        .await?;
+        apply_host_metadata_offloaded(host_root, host_path, metadata, receipt).await?;
+        generation_action(
+            before_effect,
+            NativeMaterializationActionPhase::Completed,
+            receipt.custody.work(),
+        )
+        .await
+    })
+    .map_err(MaterializeError::from)
+    .map_err(E::from)?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 pub(super) async fn apply_host_attributes_offloaded(

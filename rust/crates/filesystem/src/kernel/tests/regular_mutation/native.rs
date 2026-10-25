@@ -36,7 +36,13 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         denied,
         FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)
     ));
-    assert_eq!(original.receipt(), before);
+    let mut completed = original.receipt();
+    // The admitted operation frame is real work even when copying is denied.
+    assert!(completed.allocation_operations > before.allocation_operations);
+    assert!(completed.peak_allocation_bytes > before.peak_allocation_bytes);
+    completed.allocation_operations = before.allocation_operations;
+    completed.peak_allocation_bytes = before.peak_allocation_bytes;
+    assert_eq!(completed, before);
     assert_eq!(original.live_allocation_bytes(), baseline);
 
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)

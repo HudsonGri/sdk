@@ -30,12 +30,13 @@ where
             available: Default::default(),
             labels: Default::default(),
         };
-        let mut attempt = match Box::pin(
+        let mut attempt = match crate::conversation::BoundedContentFuture::new(None, || async {
             local
                 .task_runtime()
                 .task_host()
-                .recover_work(task, &mut None),
-        )
+                .recover_work(task, &mut None)
+                .await
+        })?
         .await?
         {
             crate::distributed::WorkPull::Claimed(lease) => Some(

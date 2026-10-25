@@ -380,9 +380,9 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
         .await?
         .value;
     let page = checkout
-        .list_directory_records(&directory, std::ops::Bound::Unbounded, 8, B, &cancel)
-        .await?
-        .value;
+        .list_directory_records(&directory, std::ops::Bound::Unbounded, 8, B, &cancel);
+    assert!(std::mem::size_of_val(&page) <= 4096);
+    let page = page.await?.value;
     assert!(page.entries.is_empty() && !page.has_more);
     let unknown = FileId::from_bytes([250; 16]);
     let attribute = AttributeName::new(
