@@ -1,126 +1,155 @@
 #!/usr/bin/env node
-// Exercise lazy discovery and its authenticated read through the shipping binary.
+// Shared mock replay owns framing, binding, finite steps and recording.
+// Provenance remains pending fixtures/responses-skill-read; this is integration
+// evidence until the coordinator supplies the actual provider capture.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { Processes } from "./graphcoder-e2e/process.mjs";
+import { Processes, Events } from "./graphcoder-e2e/process.mjs";
+import { recordedRequests } from "./graphcoder-e2e/assertions.mjs";
+import { qualified } from "./graphcoder-e2e/qualification.mjs";
 import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 
-const [binary, mode = "prompt", selection = "valid"] = process.argv.slice(2);
-assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
-assert.ok(["prompt", "jsonl"].includes(mode));
-assert.ok(["valid", "escaped", "ungranted", "unretained"].includes(selection));
-const validRead = selection === "valid" || selection === "escaped";
-const begin = performance.now(), processes = new Processes();
-const root = scratchDirectory("skill-read-");
-const workspace = join(root, "workspace"), settings = join(root, "settings");
-const skillDirectory = join(settings, ".agents/skills/private-skill");
-for (const path of [workspace, skillDirectory]) mkdirSync(path, { recursive: true });
-const header = "---\nname: private-skill\ndescription: LAZY_READ_DISCOVERY\n---\nPRIVATE_SKILL_BODY_λ\n";
-// Exercise a larger body whose escaped JSON exceeds its source length. Exact
-// caller file/render bounds are covered by the shared executor's boundary test.
-const body = selection === "escaped" ? header + '"'.repeat(65536 - Buffer.byteLength(header)) : header;
-writeFileSync(join(skillDirectory, "SKILL.md"), body);
-const captures = [], requests = [];
-let step = 0, source, rejectFailure;
-const failed = new Promise((_, reject) => { rejectFailure = reject; });
-failed.catch(() => {});
-const sse = value => `data: ${JSON.stringify(value)}\n\n`;
-const server = createServer(async (request, response) => {
-  try {
-    let bytes = ""; for await (const chunk of request) bytes += chunk;
-    const requestBody = JSON.parse(bytes);
-    if (request.url === "/count") {
-      response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ input_tokens: 64 })); return;
-    }
-    assert.equal(request.url, "/responses");
-    requests.push(requestBody);
-    const outputs = requestBody.input.filter(item => item.type === "function_call_output");
-    const current = step++;
-    response.setHeader("content-type", "text/event-stream");
-    let selected;
-    if (current === 0) {
-      assert.ok(!bytes.includes("PRIVATE_SKILL_BODY"), "discovery must keep the body lazy");
-      const catalogs = requestBody.input.flatMap(item => item.content ?? [])
-        .filter(item => item.type === "input_text")
-        .flatMap(item => { try { return [JSON.parse(item.text)]; } catch { return []; } })
-        .filter(item => Array.isArray(item.skills));
-      assert.equal(catalogs.length, 1, "one shared model-facing skill catalog");
-      assert.ok(catalogs[0].instructions.includes('"source"'), "catalog explains the portable read contract");
-      const skill = catalogs[0].skills.find(skill => skill.name === "private-skill");
-      assert.ok(skill); source = skill.source;
-      const contract = requestBody.tools.find(tool => tool.name === "read");
-      assert.ok(JSON.stringify(contract).includes("ReadSourceInput"), "the offered read schema accepts lazy sources");
-      assert.equal(contract.parameters.type, "object", "read parameters require an object root");
-      selected = structuredClone(source);
-      if (selection === "ungranted") selected.root.volume.id += "-ungranted";
-      if (selection === "unretained") selected.path = "inputs/skills/unretained/SKILL.md";
-    } else {
-      assert.notEqual(selection, "ungranted", "a forged grant must terminate before another model request");
-      assert.equal(current, 1);
-      assert.equal(outputs.length, 1);
-      if (validRead) {
-        assert.doesNotMatch(outputs.at(-1).output, /tool executor rejected/,
-          "a granted source within the file bound must fit its independent result bound");
-        const result = JSON.parse(outputs.at(-1).output);
-        const value = result.kind === "json" ? result.value : result;
-        assert.equal(value.text, body);
-        assert.equal(value.file.path, source.path);
-        assert.deepEqual(value.file.volume, source.root.volume);
-      } else {
-        assert.match(outputs[0].output, /tool executor rejected the admitted call \(invalid\).*retained identity/);
-        assert.ok(!bytes.includes("PRIVATE_SKILL_BODY"), "an unretained source must not disclose a body");
-      }
-      response.write(sse({ type: "response.output_item.done", output_index: 0,
-        item: { type: "message", role: "assistant", content: [{ type: "output_text", text: validRead ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED" }] } }));
-    }
-    if (selected) response.write(sse({ type: "response.output_item.done", output_index: 0,
-      item: { type: "function_call", call_id: `read-${current}`, name: "read", arguments: JSON.stringify({ source: selected }) } }));
-    response.end(sse({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 8 } } }));
-  } catch (error) { rejectFailure(error); if (!response.headersSent) response.writeHead(500); response.end("fixture assertion failed"); }
-});
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const catalog = join(root, "catalog.json"), operation = randomUUID();
-writeFileSync(catalog, JSON.stringify({ fixture: { adapter: "responses", authentication: "optional",
-  base_url: `http://127.0.0.1:${server.address().port}`,
-  models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
-  token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
-const env = environment(settings);
-for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
-let passed = false;
-const timer = setTimeout(() => rejectFailure(new Error("skill read exceeded the existing nine-second work budget")), 9000);
+const [binary, mock, mode = "prompt", selection = "valid"] = process.argv.slice(2);
+const command = [process.execPath, ...process.argv.slice(1)];
+const recovery = process.platform === "win32"
+  ? "& " + command.map(value => "'" + value.replaceAll("'", "''") + "'").join(" ")
+  : command.map(value => "'" + value.replaceAll("'", "'\"'\"'") + "'").join(" ");
+const mutations = {
+  valid: {}, escaped: {},
+  ungranted: { "/root/volume/id": "00000000-0000-0000-0000-000000000000" },
+  unretained: { "/path": "inputs/skills/unretained/SKILL.md" },
+  "wrong-owner": { "/root/volume/owner/id": "00000000-0000-0000-0000-000000000000" },
+  "wrong-provider": { "/root/volume/provider/namespace": "ungranted-provider" },
+};
+let step = "admit-inputs", root, output, passed = false, failure, localCounter;
+const begin = performance.now(), processes = new Processes(), captures = [];
+let records = [];
 try {
+  assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
+  assert.ok(mock && isAbsolute(mock), "absolute source-admitted harness-mock-model required");
+  assert.ok(["prompt", "jsonl"].includes(mode), "mode must be prompt or jsonl");
+  assert.ok(Object.hasOwn(mutations, selection), "unknown selector mutation");
+  const providerTests = process.env.E2E_PROVIDER_TEST_BINARY;
+  assert.ok(providerTests && isAbsolute(providerTests), "E2E_PROVIDER_TEST_BINARY must name the admitted provider test executable");
+  root = scratchDirectory("skill-read-");
+  const workspace = join(root, "workspace"), settings = join(root, "settings");
+  const skillDirectory = join(settings, ".agents/skills/private-skill");
+  for (const path of [workspace, skillDirectory]) mkdirSync(path, { recursive: true });
+  output = process.env.E2E_OUTPUT ? resolve(process.env.E2E_OUTPUT) : join(root, "proof");
+  mkdirSync(output, { recursive: true });
+  const header = "---\nname: private-skill\ndescription: LAZY_READ_DISCOVERY\n---\nPRIVATE_SKILL_BODY_λ\n";
+  const body = selection === "escaped" ? header + '"'.repeat(65536 - Buffer.byteLength(header)) : header;
+  writeFileSync(join(skillDirectory, "SKILL.md"), body);
+  const env = environment(settings);
+  for (const key of Object.keys(env)) if (/API_KEY$|AUTH_TOKEN$|^GRAPHCODER_MODEL$/.test(key)) delete env[key];
+  // Never redirect the Codex-login endpoint. Exercise its actual local counter
+  // and no-count-route assertion separately from the custom loopback endpoint.
+  step = "assert-codex-local-counter";
+  localCounter = await processes.run(providerTests,
+    ["codex_dispatch_tests::stock::codex_stock_execution_counts_locally_without_a_backend_count_route", "--exact"],
+    { env, cwd: workspace });
+  qualified(localCounter, "libtest", 1);
+  const authorized = ["valid", "escaped", "unretained"].includes(selection);
+  const validRead = ["valid", "escaped"].includes(selection);
+  const script = { cases: { skill: { steps: [
+    { when: { path: "responses", user: "use the private skill" }, tools: [{ id: "read-private", name: "read",
+      arguments: { source: { $json: { text: { $request: "/input/2/content/0/text" },
+        pointer: "/skills/0/source", set: mutations[selection] } } } }] },
+    ...(authorized ? [{ when: { path: "responses", tool_result: validRead ? "PRIVATE_SKILL_BODY" : "retained identity" },
+      text: [validRead ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED"] }] : []),
+  ] } } };
+  const scriptPath = join(output, "script.json"), recordPath = join(output, "requests.jsonl");
+  writeFileSync(scriptPath, JSON.stringify(script));
+  step = "start-shared-finite-replay";
+  const server = processes.start(mock, ["--script", scriptPath, "--record", recordPath], { env });
+  const events = new Events(server.child.stdout, server.closed);
+  const { port } = await events.wait(event => event.event === "ready");
+  const catalog = join(root, "catalog.json"), operation = randomUUID();
+  // Custom loopback endpoints require a counter. The existing shared mock owns
+  // this simulated route; the actual Codex local-counter assertion is above.
+  writeFileSync(catalog, JSON.stringify({ fixture: { adapter: "responses", authentication: "optional",
+    base_url: `http://127.0.0.1:${port}/skill/v1`,
+    models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } },
+    max_event_bytes: 65536,
+    token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
+  } }));
+  step = "run-shipping-finite-operation";
   const args = ["--workspace", workspace, "--settings-root", settings, "--catalog", catalog, "--model", "fixture/tiny", "--operation", operation];
   args.push(...(mode === "prompt" ? ["-p", "use the private skill"] : ["--input-format", "jsonl"]));
   const running = processes.start(binary, args, { env, cwd: workspace });
   running.child.stdin.end(mode === "prompt" ? "" : JSON.stringify({ key: { Session: { session: operation, file: { Request: operation } } },
     channel: null, bytes: { text: JSON.stringify({ kind: "prompt", text: "use the private skill", source: null, mentions: [] }) } }) + "\n");
-  const result = await Promise.race([failed, running.closed]); captures.push(result);
-  assert.equal(result.code, selection === "ungranted" ? 1 : 0, result.stderr + result.stdout.slice(-2500));
+  // Finite, non-held steps settle the operation. Owner death is observed by the
+  // shared lifecycle and finally drains all children; no adapter-local timer.
+  const result = await Promise.race([running.closed, server.closed.then(result => {
+    throw new Error(`shared replay exited before operation settlement: ${JSON.stringify(result)}`);
+  })]);
+  captures.push(result);
+  step = "verify-selector-and-terminal-outcome";
+  records = recordedRequests(readFileSync(recordPath, "utf8"), events.seen);
+  const requests = records.filter(record => record.path === "responses");
+  assert.ok(records.every(record => record.status === 200), "every finite request must match");
+  assert.equal(requests.length, authorized ? 2 : 1);
+  assert.deepEqual(requests.map(record => record.step), authorized ? [0, 1] : [0]);
+  const first = requests[0].body;
+  assert.ok(!JSON.stringify(first).includes("PRIVATE_SKILL_BODY"), "discovery must keep the body lazy");
+  const catalogs = first.input.flatMap(item => item.content ?? []).flatMap(item => {
+    try { const value = JSON.parse(item.text); return Array.isArray(value.skills) ? [value] : []; } catch { return []; }
+  });
+  assert.equal(catalogs.length, 1, "one shared model-facing skill catalog");
+  assert.deepEqual(JSON.parse(first.input[2].content[0].text), catalogs[0], "bind the actual catalog");
+  assert.ok(catalogs[0].instructions.includes('"source"'));
+  const source = catalogs[0].skills[0].source;
+  assert.equal(catalogs[0].skills[0].name, "private-skill");
+  const contract = first.tools.find(tool => tool.name === "read");
+  assert.ok(JSON.stringify(contract).includes("ReadSourceInput"));
+  assert.equal(contract.parameters.type, "object", "read parameters require an object root");
   const frames = result.stdout.trim().split("\n").map(JSON.parse);
   const files = [...frames[0][1].files, ...frames.slice(1).flatMap(change => [change.file, ...(change.files ?? [])].filter(Boolean))];
   const outcomes = files.filter(file => file.key.Session?.file.ExecutionResult === operation).map(file => JSON.parse(file.bytes.text));
-  assert.equal(outcomes.length, 1);
-  if (selection !== "ungranted") {
+  assert.equal(outcomes.length, 1, "one authoritative terminal outcome");
+  assert.equal(result.code, authorized ? 0 : 1, result.stderr);
+  if (authorized) {
     assert.equal(outcomes[0].completion, "completed");
     assert.equal(outcomes[0].ok.text, validRead ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED");
-    assert.equal(step, 2);
+    const outputs = requests[1].body.input.filter(item => item.type === "function_call_output");
+    assert.equal(outputs.length, 1);
+    if (validRead) {
+      const result = JSON.parse(outputs[0].output), value = result.kind === "json" ? result.value : result;
+      assert.equal(value.text, body); assert.equal(value.file.path, source.path);
+      assert.deepEqual(value.file.volume, source.root.volume);
+    } else assert.match(outputs[0].output, /tool executor rejected the admitted call \(invalid\).*retained identity/);
   } else {
     assert.equal(outcomes[0].completion, "failed");
-    assert.equal(typeof outcomes[0].error, "string");
-    if (selection === "ungranted") assert.match(outcomes[0].error, /original private source grant/);
-    assert.equal(step, 1);
-    assert.ok(!JSON.stringify(requests).includes("PRIVATE_SKILL_BODY"));
+    assert.match(outcomes[0].error, selection === "wrong-provider"
+      ? /pinned context path is outside its declared root/ : /original private source grant/);
   }
-  if (selection === "unretained") assert.ok(!JSON.stringify(requests).includes("PRIVATE_SKILL_BODY"));
+  if (!validRead) assert.ok(!JSON.stringify(requests).includes("PRIVATE_SKILL_BODY"));
   assert.equal(readFileSync(join(skillDirectory, "SKILL.md"), "utf8"), body);
-  passed = true; console.log(`PASS lazy private skill read (${mode}, ${selection})`);
-} finally {
-  clearTimeout(timer); await processes.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-  const proof = { passed, mode, selection, seconds: (performance.now() - begin) / 1000, requests, captures, fixture: passed ? null : root };
-  if (process.env.E2E_OUTPUT) { const output = resolve(process.env.E2E_OUTPUT); mkdirSync(output, { recursive: true }); writeFileSync(join(output, "skill-read.json"), JSON.stringify(proof)); }
-  if (passed) rmSync(root, { recursive: true, force: true }); else console.error(`SKILL_READ_FAILURE_FIXTURE ${root}`);
+  passed = true;
+} catch (error) { failure = { step, error: error.stack, recovery }; }
+finally {
+  try { await processes.close(); } catch (error) {
+    passed = false; failure = { step: "drain-shared-process-scope", error: error.stack, recovery };
+  }
+  if (passed && process.env.E2E_OUTPUT && !output.startsWith(root)) {
+    try { rmSync(root, { recursive: true }); }
+    catch (error) { passed = false; failure = { step: "retire-owned-fixture", error: error.stack, recovery }; }
+  }
+  try {
+    if (output) writeFileSync(join(output, "skill-read.json"), JSON.stringify({ passed, mode, selection,
+      seconds: (performance.now() - begin) / 1000, fixture_origin: "pending-real-capture",
+      counting: { codex: "actual local counter; zero backend count requests", replay: "shared simulated loopback counter" },
+      mutations: mutations[selection], localCounter, records, captures, failure,
+      fixture: passed ? null : root, children_after_drain: processes.children.size }));
+  } catch (error) { passed = false; failure = { step: "retain-replay-proof", error: error.stack, recovery }; }
+  if (passed) console.log(`PASS lazy private skill read (${mode}, ${selection})`);
+  else {
+    console.error(`STEP ${failure.step}: ${failure.error}\nRECOVERY: ${failure.recovery}`);
+    if (root) console.error(`SKILL_READ_FAILURE_FIXTURE ${root}`);
+    process.exitCode = 1;
+  }
 }

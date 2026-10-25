@@ -20,6 +20,49 @@ fn json_value() -> impl Strategy<Value = serde_json::Value> {
 
 proptest! {
     #[test]
+    fn encoded_json_selection_preserves_identity_and_mutates_only_requested_leaves(
+        value in json_value(), replacement in json_value(),
+    ) {
+        let source = json!({"identity":value,"path":"retained","literal":{"$request":"/missing"}});
+        let body = json!({"catalog":json!({"sources":[source]}).to_string(),"replacement":replacement});
+        let template = |set| serde_json::from_value::<Step>(json!({"json":{"$json":{
+            "text":{"$request":"/catalog"},"pointer":"/sources/0","set":set
+        }}})).unwrap();
+        let copied = bind_result(&template(json!({})), &body).unwrap().json.unwrap();
+        prop_assert_eq!(&copied, &source);
+        let mutated = bind_result(&template(json!({"/identity":{"$request":"/replacement"}})), &body).unwrap().json.unwrap();
+        let mut expected = source;
+        expected.as_object_mut().unwrap().insert("identity".into(), replacement);
+        prop_assert_eq!(mutated, expected);
+        // Missing mutation paths must refuse instead of inventing authority.
+        prop_assert!(bind_result(&template(json!({"/missing":"new"})), &body).is_err(), "missing mutation paths must refuse");
+    }
+}
+
+#[test]
+fn encoded_json_selection_rejects_missing_malformed_and_ambiguous_inputs() {
+    for spec in [
+        json!({"text":7,"pointer":""}),
+        json!({"text":"{","pointer":""}),
+        json!({"text":"{}","pointer":"/missing"}),
+        json!({"text":"{}","pointer":"","extra":true}),
+        json!({"text":{"$request":"/missing"},"pointer":""}),
+    ] {
+        let step: Step = serde_json::from_value(json!({"json":{"$json":spec}})).unwrap();
+        assert!(bind_result(&step, &json!({})).is_err());
+    }
+    let step: Step = serde_json::from_value(json!({"json":{"$json":{
+        "text":"{\"a/b\":{\"~id\":1}}","pointer":"/a~1b","set":{"/~0id":2}
+    }}}))
+    .unwrap();
+    assert_eq!(
+        bind_result(&step, &json!({})).unwrap().json,
+        Some(json!({"~id":2}))
+    );
+}
+
+proptest! {
+    #[test]
     fn json_reply_selection_survives_every_request_value(value in json_value()) {
         let step: Step = serde_json::from_value(json!({"json":{"$request":""}})).unwrap();
         prop_assert_eq!(bind_result(&step,&value).unwrap().json,Some(value));
