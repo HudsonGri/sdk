@@ -67,12 +67,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             key.as_str()
         };
-        let receipt_path = content_receipt_path_io(
-            receipt_identity,
-            internal_class.is_some(),
-            true,
-            Some(io),
-        )?;
+        let receipt_path =
+            content_receipt_path_io(receipt_identity, internal_class.is_some(), true, Some(io))?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
         let receipt =

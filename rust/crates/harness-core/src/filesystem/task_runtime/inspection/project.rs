@@ -411,8 +411,7 @@ where
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
             Ok(metadata) => Some(crate::filesystem::host::decode_content_metadata(
-                &metadata,
-                &self.io,
+                &metadata, &self.io,
             )?),
             Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),

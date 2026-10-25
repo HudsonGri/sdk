@@ -138,15 +138,112 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
     Ok(())
 }
 
+type MemoryHost = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+
+struct InternalPublicationCase<'a> {
+    host: &'a MemoryHost,
+    volume: &'a VolumeRef,
+    write: &'a ContentGrant,
+    read: &'a ContentGrant,
+    io: Option<&'a PreparationIo>,
+}
+
+impl InternalPublicationCase<'_> {
+    async fn put(&self, path: &str, bytes: &[u8], key: &IdempotencyKey,
+        class: InternalContentClass) -> Result<FileRef> {
+        self.host.put_internal_content(self.volume, self.write, path, bytes,
+            "application/json", "payload", 64, key, class, self.io).await
+    }
+
+    async fn single_record(&self, workspace: &WorkspaceRef, path: &str) -> Result<bool> {
+        let metadata_path = content_metadata_path_io(path, true, None)?;
+        let receipt_path = content_receipt_path_io(path, true, true, None)?;
+        let obsolete = format!(
+            "/.system/harness-uploads/{}.json",
+            blake3::hash(path.as_bytes()).to_hex()
+        );
+        let single_record = receipt_path == metadata_path
+            && self.host.read(workspace, None, &obsolete, 4096, None).await.is_err();
+        let record = self.host
+            .read(workspace, None, &metadata_path, 4096, None)
+            .await?;
+        let (staged, expected): (FileRef, Option<GenerationRef>) =
+            serde_json::from_slice(&record)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(staged.path(), path);
+        assert!(expected.is_none());
+        assert_eq!(
+            crate::contract::canonical_json_bytes(&(staged, expected))?,
+            record.as_ref()
+        );
+        Ok(single_record)
+    }
+
+    async fn verify(&self, workspace: &WorkspaceRef, class: InternalContentClass) -> Result<bool> {
+        let path = format!("{}payload.json", class.prefix());
+        let key = IdempotencyKey::new(format!("first-{path}"))?;
+        let original = self.put(&path, b"original", &key, class)
+            .await?;
+        let single_record = self.single_record(workspace, &path).await?;
+        self.put(&path, b"replacement", &IdempotencyKey::new(format!("second-{path}"))?, class)
+        .await?;
+        let recovered = self.host
+            .content_for_operation_record_io(
+                PublicationLookup {
+                    volume: self.volume,
+                    key: &key,
+                    expected_path: Some(&path),
+                    maximum_bytes: 64,
+                    internal_class: Some(class),
+                    purpose: PublicationPurpose::Content,
+                    scope: self.write.policy_scope(),
+                    ceiling: None,
+                },
+                self.io,
+            )
+            .await?
+            .ok_or_else(|| Error::Storage("original publication is absent".into()))?;
+        assert_eq!(recovered.0, original);
+        assert_eq!(
+            recovered
+                .1
+                .ok_or_else(|| Error::Storage("recovered payload is absent".into()))?
+                .as_ref(),
+            b"original"
+        );
+        assert_eq!(
+            self.host.read_content(&original, self.read, 64, self.io)
+                .await?
+                .as_ref(),
+            b"original"
+        );
+        let before = self.host.resolve(workspace, None).await?;
+        assert!(
+            self.put(&path, b"forged", &key, class)
+            .await
+            .is_err()
+        );
+        assert_eq!(self.host.resolve(workspace, None).await?, before);
+        Ok(single_record)
+    }
+}
+
 #[tokio::test]
-async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()> {
+async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()>
+{
     let mut single_records = Vec::new();
     for adapter in 0..3 {
-        let provider = ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let provider =
+            ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
         let agent = crate::AgentId::from_bytes([37; 16]);
-        let volume = VolumeRef::new(provider.clone(), "private".into(), VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent), &mut None)?;
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -159,42 +256,23 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
             _ => Some(PreparationIo::from_native_work(&native)?),
         };
         let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
-        for class in [InternalContentClass::Interaction, InternalContentClass::Workflow,
-            InternalContentClass::Execution, InternalContentClass::ModelPrefix,
-            InternalContentClass::Conversation] {
-            let path = format!("{}payload.json", class.prefix());
-            let key = IdempotencyKey::new(format!("first-{path}"))?;
-            let original = host.put_internal_content(&volume, &write, &path, b"original",
-                "application/json", "payload", 64, &key, class, io.as_ref()).await?;
-            let metadata_path = content_metadata_path_io(&path, true, None)?;
-            let receipt_path = content_receipt_path_io(&path, true, true, None)?;
-            let obsolete = format!("/.system/harness-uploads/{}.json", blake3::hash(path.as_bytes()).to_hex());
-            single_records.push(receipt_path == metadata_path
-                && host.read(&workspace, None, &obsolete, 4096, None).await.is_err());
-            let record = host.read(&workspace, None, &metadata_path, 4096, None).await?;
-            let (staged, expected): (FileRef, Option<GenerationRef>) = serde_json::from_slice(&record)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            assert_eq!(staged.path(), path);
-            assert!(expected.is_none());
-            assert_eq!(crate::contract::canonical_json_bytes(&(staged, expected))?, record.as_ref());
-            host.put_internal_content(&volume, &write, &path, b"replacement", "application/json",
-                "payload", 64, &IdempotencyKey::new(format!("second-{path}"))?, class, io.as_ref()).await?;
-            let recovered = host.content_for_operation_record_io(PublicationLookup {
-                volume: &volume, key: &key, expected_path: Some(&path), maximum_bytes: 64,
-                internal_class: Some(class), purpose: PublicationPurpose::Content,
-                scope: write.policy_scope(), ceiling: None,
-            }, io.as_ref()).await?.expect("original publication exists");
-            assert_eq!(recovered.0, original);
-            assert_eq!(recovered.1.expect("content lookup returns payload").as_ref(), b"original");
-            assert_eq!(host.read_content(&original, &read, 64, io.as_ref()).await?.as_ref(), b"original");
-            let before = host.resolve(&workspace, None).await?;
-            assert!(host.put_internal_content(&volume, &write, &path, b"forged", "application/json",
-                "payload", 64, &key, class, io.as_ref()).await.is_err());
-            assert_eq!(host.resolve(&workspace, None).await?, before);
+        for class in [
+            InternalContentClass::Interaction,
+            InternalContentClass::Workflow,
+            InternalContentClass::Execution,
+            InternalContentClass::ModelPrefix,
+            InternalContentClass::Conversation,
+        ] {
+            let case = InternalPublicationCase {
+                host: &host, volume: &volume, write: &write, read: &read, io: io.as_ref(),
+            };
+            single_records.push(case.verify(&workspace, class).await?);
         }
     }
-    assert_eq!(single_records, [true; 15],
-        "internal publications retained duplicate metadata and recovery indexes");
+    assert_eq!(
+        single_records, [true; 15],
+        "internal publications retained duplicate metadata and recovery indexes"
+    );
     Ok(())
 }
 
