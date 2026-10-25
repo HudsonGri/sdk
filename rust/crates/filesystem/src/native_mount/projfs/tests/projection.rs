@@ -150,7 +150,8 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
             .read(true)
             .share_mode(FILE_SHARE_READ.0)
             .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-            .open(&projected)?;
+            .open(&projected)
+            .map_err(|error| format!("open held link, replacement={replacement}: {error}"))?;
         source.remove(&name, None, &work)?;
         if replacement {
             source.create_directory(&name, FileMetadata::default(), &work)?;
@@ -162,11 +163,21 @@ async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn 
             std::thread::sleep(std::time::Duration::from_millis(300));
             drop(held);
         });
-        session.revalidate(&work)?;
+        session
+            .revalidate(&work)
+            .map_err(|error| format!("revalidate held link, replacement={replacement}: {error}"))?;
         closer.join().map_err(|_| "closer panicked")?;
         if replacement {
-            assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-            assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+            assert!(
+                std::fs::symlink_metadata(&projected)
+                    .map_err(|error| format!("replacement directory metadata: {error}"))?
+                    .is_dir()
+            );
+            assert_eq!(
+                std::fs::read(projected.join("inner.txt"))
+                    .map_err(|error| format!("replacement child read: {error}"))?,
+                b"inner"
+            );
         } else {
             assert!(sorted_names(&destination)?.is_empty());
         }

@@ -1,104 +1,11 @@
 use super::*;
 use crate::kernel::KernelAccounting;
-use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode};
-use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
-use crate::native_mount::{MountFilesystem, MountPath};
 use std::sync::Arc;
 
-pub(super) type MemorySource =
-    CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
-
-pub(super) fn windows_name(name: &str) -> Vec<u8> {
-    name.encode_utf16().flat_map(u16::to_le_bytes).collect()
-}
-
-pub(super) fn windows_path(name: &str) -> MountPath {
-    MountPath::root().child(windows_name(name))
-}
-
-pub(super) async fn windows_checkout_source()
--> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    windows_checkout_source_with_files(0).await
-}
-
-pub(super) async fn windows_checkout_source_with_files(
-    files: usize,
-) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.profile = crate::model::FilesystemProfile::Windows;
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = fs
-        .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let mut checkout = volume
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode {
-                access: AccessMode::ReadWrite,
-                consistency: ConsistencyMode::Pinned,
-                mutations: MutationMode::PrivateOverlay,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    if files != 0 {
-        let mut mutations = Vec::with_capacity(files);
-        for index in 0..files {
-            let portable =
-                crate::path::PortablePath::parse(&format!("/f{index}.txt"), config.limits)?;
-            mutations.push(crate::AuthoredMutation::CreateFile {
-                path: crate::kernel::NamespacePath::from_portable_in_profile(
-                    &portable,
-                    config.profile,
-                    config.limits,
-                )?,
-                bytes: Bytes::from(vec![b'x'; 4096 * (index % 2)]).into(),
-                metadata: FileMetadata::default(),
-            });
-        }
-        checkout
-            .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
-            .await?;
-    }
-    Ok(Arc::new(
-        crate::native_mount::adapter::tests::access::bind_test_access(
-            CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?,
-            vec![],
-            None,
-        )?,
-    ))
-}
-
-pub(super) fn mount_source(
-    source: &Arc<MemorySource>,
-) -> Result<
-    (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        crate::NativeMountSession,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    let root = tempfile::tempdir()?;
-    let destination = root.path().join("projection");
-    std::fs::create_dir(&destination)?;
-    let session = crate::mount_native(
-        crate::NativeMountRequest {
-            mount_id: crate::MountId::new(),
-            volume_id: source.volume_id()?,
-            destination: destination.clone(),
-            writable: true,
-        },
-        Arc::clone(source) as Arc<dyn MountFilesystem>,
-    )?;
-    Ok((root, destination, session))
-}
+// Unit and integration ProjFS adapters use one authorized fixture source.
+#[path = "../../../../tests/projfs_metadata_support.rs"]
+mod shared;
+pub(super) use shared::*;
 
 pub(super) fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<String>> {
     let mut names = std::fs::read_dir(directory)?
@@ -185,14 +92,6 @@ pub(super) async fn writes_only_promised_content(
     Ok(())
 }
 
-pub(super) fn setup_work() -> Result<crate::NativeMaterializationWork, Box<dyn std::error::Error>> {
-    crate::initialize_native_mount_services()?;
-    Ok(
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(cause, _)| cause)?,
-    )
-}
-
 pub(super) fn setup_chunk(
     bytes: &[u8],
     work: &crate::NativeMaterializationWork,
@@ -228,21 +127,3 @@ pub(super) async fn windows_demand_source(
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)
 }
-
-pub(super) async fn local_workspace(
-    root: &std::path::Path,
-    name: &str,
-    work: &crate::NativeMaterializationWork,
-) -> Result<
-    crate::Workspace<crate::facade::LocalAuthorityBackend, crate::facade::LocalObjectBackend>,
-    Box<dyn std::error::Error>,
-> {
-    Ok(Fs::local(LocalOptions::new(root.join("state")))
-        .await?
-        .create_workspace(name, WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map_err(|failure| failure.error)?
-        .value)
-}
-
-pub(super) use crate::native_mount::fixture_access::manual_mount_options;
