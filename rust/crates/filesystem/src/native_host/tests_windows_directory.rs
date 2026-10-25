@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn absolute_creation_returns_its_validated_directory_without_reopening_the_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    for depth in 1..=4 {
+        let path = temporary.path().join(
+            (0..depth)
+                .map(|_| "created&%")
+                .collect::<std::path::PathBuf>(),
+        );
+        // Exercise both new directories and existing directory chains.
+        for _ in 0..2 {
+            let mut work = ordinary_work();
+            let (result, events) = acyclic_test_support::differential::observe::<_, _, &'static str>(
+                || stat_probe::Probe::rescan(false),
+                |probe| {
+                    let result = create_directories(&path, &mut work);
+                    probe.publish();
+                    result
+                },
+            );
+            let held = result?;
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| **event == "CreateFileW")
+                    .count(),
+                1,
+                "directory creation discarded its held result and reopened the ambient path"
+            );
+            assert_eq!(held.identity(), test_root(&path)?.identity());
+            let output = open_leaf(
+                &held.directory,
+                Path::new("literal&%.bin"),
+                &NativeOpenOptions::ReadWriteCreate,
+                &mut work,
+            )?;
+            drop(output);
+            assert!(path.join("literal&%.bin").is_file());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn component_opens_respect_creation_read_and_cancellation_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;

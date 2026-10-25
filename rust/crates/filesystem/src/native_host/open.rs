@@ -16,7 +16,7 @@ pub(crate) enum NativeOpenOptions {
 pub(crate) fn create_directories<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
-) -> Result<(), W::Error> {
+) -> Result<HostRoot, W::Error> {
     let mut base = Path::new(".");
     #[cfg(unix)]
     let directory = {
@@ -74,12 +74,18 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     };
     let relative = relative.strip_prefix(".").unwrap_or(relative);
     #[cfg(unix)]
-    directory_path(&directory, relative, true, work)?;
+    let directory = directory_path(&directory, relative, true, work)?;
     #[cfg(windows)]
-    with_wide_path(relative, work, |path, work| {
+    let directory = with_wide_path(relative, work, |path, work| {
         directory_path(&directory, path, true, work)
     })?;
-    Ok(())
+    // Creation already owns the validated leaf. Return that capability rather
+    // than discarding it and making every caller reopen the ambient path.
+    let identity = directory_identity(&directory, work)?;
+    Ok(HostRoot {
+        directory,
+        identity,
+    })
 }
 
 pub(crate) fn directory_path<W: NativeHostWork>(
