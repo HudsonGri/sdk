@@ -50,7 +50,9 @@ impl NativeFailure {
 pub(super) fn source_failure(error: &MountSourceError) -> NativeFailure {
     use NativeFailure as F;
     match error.semantic_error() {
-        MountSourceError::AccessDenied => F::AccessDenied,
+        MountSourceError::AccessDenied | MountSourceError::NativeCallbackDenied { .. } => {
+            F::AccessDenied
+        }
         MountSourceError::ReadOnly => F::ReadOnly,
         MountSourceError::NotFound => F::NotFound,
         MountSourceError::AlreadyExists => F::AlreadyExists,
@@ -65,7 +67,6 @@ pub(super) fn source_failure(error: &MountSourceError) -> NativeFailure {
         MountSourceError::Io(error, _) => F::io(error),
         MountSourceError::NativeWork(error) => materialization_failure(error),
         MountSourceError::WorkspaceCause(error) => workspace_failure(error),
-        MountSourceError::NativeCallbackDenied { .. } => F::AccessDenied,
         MountSourceError::Filesystem(error) => filesystem_failure(error),
         _ => F::Io,
     }
