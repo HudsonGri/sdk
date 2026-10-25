@@ -98,13 +98,17 @@ impl Sessions {
             },
         )?)
     }
-    fn start(&mut self, reference: &str) -> Result<()> {
-        if self.children.contains_key(reference) {
+    fn start(&mut self, reference: &str, observed: &Value) -> Result<()> {
+        if self.children.contains_key(reference) || self.children.len() >= 16 {
             return Ok(());
         }
-        self.recover(reference)?;
-        if self.children.len() >= 16 {
+        // Retained references include completed sessions. Observing an empty,
+        // settled mailbox must not publish recovery or execution commands.
+        if settled(observed) {
             return Ok(());
+        }
+        if observed.pointer("/status/settled").and_then(Value::as_bool) == Some(false) {
+            self.recover(reference)?;
         }
         let turn = self.request(reference, SessionAction::Next)?;
         if turn.is_null() {
@@ -244,12 +248,12 @@ impl Sessions {
         for reference in references {
             let observed = self.request(&reference, SessionAction::Observe)?;
             let Some(mut running) = self.children.remove(&reference) else {
-                self.start(&reference)?;
+                self.start(&reference, &observed)?;
                 continue;
             };
             match self.refresh_running(&reference, &observed, &mut running) {
-                Ok(true) => self.start(&reference)?,
-                Ok(false) => {
+                Ok(Some(observed)) => self.start(&reference, &observed)?,
+                Ok(None) => {
                     self.children.insert(reference, running);
                 }
                 Err(error) => {
@@ -265,7 +269,7 @@ impl Sessions {
         reference: &str,
         observed: &Value,
         running: &mut Running,
-    ) -> Result<bool> {
+    ) -> Result<Option<Value>> {
         if observed
             .get("control")
             .and_then(Value::as_str)
@@ -273,8 +277,9 @@ impl Sessions {
         {
             running.tree.terminate_descendants()?;
             let _ = self.output(reference, running);
-            self.complete(reference, running, acyclic_harness::Outcome::Cancelled)?;
-            return Ok(true);
+            return self
+                .complete(reference, running, acyclic_harness::Outcome::Cancelled)
+                .map(Some);
         }
         let mut exited = if let Some(error) = &running.failure {
             Err(error.clone().into())
@@ -287,13 +292,13 @@ impl Sessions {
         if matches!(&exited, Ok(Some(_))) {
             running.tree.terminate_descendants()?;
             match running.tree.pump_stdin() {
-                Ok(false) => return Ok(false),
+                Ok(false) => return Ok(None),
                 Ok(true) => {}
                 Err(error) => exited = Err(error.into()),
             }
             match self.output(reference, running) {
                 Ok(true) => {}
-                Ok(false) => return Ok(false),
+                Ok(false) => return Ok(None),
                 Err(error) => exited = Err(error),
             }
         }
@@ -312,17 +317,16 @@ impl Sessions {
             Ok(Some(status)) => acyclic_harness::Outcome::Failed {
                 message: format!("native host exited {status}"),
             },
-            Ok(None) => return Ok(false),
+            Ok(None) => return Ok(None),
         };
-        self.complete(reference, running, outcome)?;
-        Ok(true)
+        self.complete(reference, running, outcome).map(Some)
     }
     fn complete(
         &self,
         reference: &str,
         running: &mut Running,
         outcome: acyclic_harness::Outcome<acyclic_harness::executor::TurnOutput>,
-    ) -> Result<()> {
+    ) -> Result<Value> {
         running.tree.terminate()?;
         if !running.tree.is_reaped() {
             return Err("native containment has not quiesced".into());
@@ -340,8 +344,7 @@ impl Sessions {
                 claim: running.claim.clone(),
                 outcome,
             },
-        )?;
-        Ok(())
+        )
     }
     fn stop(&mut self, reference: &str, control: Control) -> Result<Value> {
         self.request(reference, SessionAction::Control { control })?;
@@ -350,6 +353,7 @@ impl Sessions {
                 running.tree.terminate_descendants()?;
                 let _ = self.output(reference, &mut running);
                 self.complete(reference, &mut running, acyclic_harness::Outcome::Cancelled)
+                    .map(|_| ())
             })();
             if let Err(error) = result {
                 self.children.insert(reference.into(), running);
@@ -381,12 +385,14 @@ impl Sessions {
         };
         match name {
             "spawn" => {
-                self.request(reference, SessionAction::Spawn { prompt: prompt()? })?;
-                self.start(reference)?;
+                let observed =
+                    self.request(reference, SessionAction::Spawn { prompt: prompt()? })?;
+                self.start(reference, &observed)?;
             }
             "send" => {
-                self.request(reference, SessionAction::Send { prompt: prompt()? })?;
-                self.start(reference)?;
+                let observed =
+                    self.request(reference, SessionAction::Send { prompt: prompt()? })?;
+                self.start(reference, &observed)?;
             }
             "resume" => {
                 if self.children.contains_key(reference) {
@@ -399,8 +405,9 @@ impl Sessions {
                         control: Control::Resume,
                     },
                 )?;
-                self.request(reference, SessionAction::Send { prompt: prompt()? })?;
-                self.start(reference)?;
+                let observed =
+                    self.request(reference, SessionAction::Send { prompt: prompt()? })?;
+                self.start(reference, &observed)?;
             }
             "archive" => return self.stop(reference, Control::Archive),
             "cancel" => return self.stop(reference, Control::Interrupt),
