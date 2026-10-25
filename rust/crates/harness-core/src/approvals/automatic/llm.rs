@@ -1,7 +1,9 @@
+//! Independent model review, with one durable dispatch identity across hosts.
 use super::*;
-use crate::model::{
-    ModelDispatch, ModelEvent, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
-};
+use crate::{OperationId, model::{
+    ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
+}};
+use futures::StreamExt as _;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -11,20 +13,15 @@ struct Review {
     reason: Option<String>,
 }
 
-impl LocalHarness {
-    pub(super) async fn review_model(
-        &self,
-        task_files: &crate::task_volume::TaskFiles<LocalStream>,
+    pub(super) async fn review_model<P: StreamProvider + ?Sized>(
+        task_files: &crate::task_volume::TaskFiles<P>,
         request: &FileValue,
         principal: &str,
-        selection: &str,
+        binding: (&Model, &dyn ModelProvider),
         prompt: &str,
         limits: Limits,
     ) -> Result<(RuleVerdict, Option<String>)> {
-        let (model, provider) = self
-            .approval_models
-            .get(selection)
-            .ok_or_else(|| Error::Unsupported("independent approver model is not bound".into()))?;
+        let (model, provider) = binding;
         let capacity = provider.context_capacity(model)?;
         capacity.validate()?;
         let output = capacity.default_output_budget().min(256);
@@ -92,8 +89,6 @@ impl LocalHarness {
         };
         collect_review(events, limits).await
     }
-}
-
 async fn collect_review(
     mut events: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
     limits: Limits,

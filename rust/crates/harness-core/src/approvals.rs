@@ -10,6 +10,8 @@ use serde_json::Value;
 
 mod chain;
 pub use chain::{NextStage, fingerprint, next_stage, request_id, review_key};
+mod automatic;
+pub use automatic::automatic_review;
 
 mod selectors;
 pub use selectors::ApprovalSelector;

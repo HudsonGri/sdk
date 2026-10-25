@@ -6,7 +6,7 @@ use crate::{
         ApprovalReviewFile, Approver, NextStage, RuleVerdict, fingerprint, next_stage, request_id,
         review_key,
     },
-    interaction::{ApprovalDecisionFile, Interaction},
+    interaction::ApprovalDecisionFile,
     runtime::{TaskStateProvider, ToolPolicy},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile},
 };
@@ -14,7 +14,6 @@ use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
 mod connection;
-mod llm;
 mod owner;
 mod parent;
 pub(crate) use connection::HumanConnection;
@@ -234,8 +233,8 @@ impl LocalHarness {
                         return Ok(None);
                     }
                     start = expected.stage + 1;
-                    let review = self
-                        .automatic_review(task_files, request, approver, expected, admission.limits)
+                    let review = crate::approvals::automatic_review(
+                        &self.approval_models, task_files, request, approver, expected, admission.limits)
                         .await?;
                     if review.verdict != RuleVerdict::Ask {
                         return Ok(Some(Stage::Automatic(review)));
@@ -243,59 +242,6 @@ impl LocalHarness {
                 }
             }
         }
-    }
-
-    async fn automatic_review(
-        &self,
-        task_files: &crate::task_volume::TaskFiles<LocalStream>,
-        request: &FileValue,
-        approver: &Approver,
-        expected: ApprovalReviewFile,
-        limits: Limits,
-    ) -> Result<ApprovalReviewFile> {
-        let (verdict, reason) = match approver {
-            Approver::Rules {
-                rules, fallback, ..
-            } => {
-                let interaction: Interaction =
-                    serde_json::from_slice(&request.bytes).map_err(storage)?;
-                let verdict = match &interaction {
-                    Interaction::Approval { subject, .. } => {
-                        crate::approvals::ApprovalRule::evaluate_subject(rules, *fallback, subject)
-                    }
-                    _ => RuleVerdict::Ask,
-                };
-                (verdict, Some("configured approval rules".into()))
-            }
-            Approver::Llm { model, prompt, .. } => {
-                self.review_model(
-                    task_files,
-                    request,
-                    &expected.principal,
-                    model,
-                    prompt,
-                    limits,
-                )
-                .await?
-            }
-            Approver::Human { .. } | Approver::Parent => {
-                return Err(Error::Invalid(
-                    "external approver requires a signed decision".into(),
-                ));
-            }
-        };
-        let review = ApprovalReviewFile {
-            verdict,
-            reason,
-            ..expected
-        };
-        if review.verdict == RuleVerdict::Ask {
-            // Escalation may dispatch another model or external approver, so
-            // its audit must already be durable. A decisive review instead
-            // travels with settlement and shares its canonical receipt.
-            publish_review(task_files, review_key(request, &review.principal)?, &review).await?;
-        }
-        Ok(review)
     }
 
     async fn settle_automatic_review(
