@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// A portable, canonical namespace component.
-#[derive(
-    Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Deserialize, crate::HeapLayout,
-)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Deserialize, crate::HeapLayout)]
 #[serde(try_from = "String")]
 // The conversion copies the decoded text into a shared allocation.
 #[heap_layout(as = std::sync::Arc<str>)]
