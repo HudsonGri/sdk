@@ -414,7 +414,8 @@ fn decision_file_rejects_unbound_bodies() {
 
 #[test]
 fn approval_subject_names_the_exact_tool_call() -> Result<()> {
-    let tool = |tool: &str, call_id: &str| ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
+    let tool = |tool: &str, call_id: &str| ApprovalSubject::Tool {
+        route: crate::interaction::ApprovalRoute::Policy,
         tool: tool.into(),
         call_id: call_id.into(),
         arguments: json!({"command": "rm -rf build", "timeout": 30}),

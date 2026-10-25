@@ -9,13 +9,17 @@ fn request() -> Result<FileValue> {
             file: TaskFile::ApprovalRequest(Component::new("request")?),
         },
         serde_json::to_vec(&crate::interaction::Interaction::approval(
-            "Review exact action".into(), crate::OperationId::from_bytes([1; 16]), [2; 32],
+            "Review exact action".into(),
+            crate::OperationId::from_bytes([1; 16]),
+            [2; 32],
             crate::interaction::ApprovalSubject::Tool {
                 route: crate::interaction::ApprovalRoute::Policy,
-                tool: "write".into(), call_id: "call".into(),
+                tool: "write".into(),
+                call_id: "call".into(),
                 arguments: serde_json::json!({"path":"approved"}),
             },
-        )?).map_err(|error| Error::Invalid(error.to_string()))?,
+        )?)
+        .map_err(|error| Error::Invalid(error.to_string()))?,
     ))
 }
 

@@ -55,7 +55,14 @@ fn subject_copy_denies_exhausted_copy_work_before_allocating() {
     };
     let baseline = work.live_allocation_bytes();
     let allocations = work.receipt().allocation_operations;
-    assert!(copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy).is_err());
+    assert!(
+        copy_approval_subject(
+            &invocation,
+            Some(&work),
+            crate::interaction::ApprovalRoute::Policy
+        )
+        .is_err()
+    );
     assert_eq!(work.receipt().allocation_operations, allocations);
     assert_eq!(work.live_allocation_bytes(), baseline);
 }
