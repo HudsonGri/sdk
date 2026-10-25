@@ -108,7 +108,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let mut accounting = work.accounting(cancellation);
         let result = self
             .stage_file_batch::<true, true>(directories, files, &mut accounting, cancellation)
-            .await;
+            .await
+            .map_err(|error| match error {
+                // Authored IDs are derived from the path. Repeating a creation
+                // in a private candidate can therefore encounter its identity
+                // before its binding; both refuse the same occupied name.
+                WorkspaceError::Filesystem(FsError::Mutation(
+                    crate::kernel::GenerationMutationError::FileIdentityAlreadyExists,
+                )) => {
+                    FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into()
+                }
+                other => other,
+            });
         work.finish(result, &accounting)
     }
 
