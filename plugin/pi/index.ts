@@ -70,11 +70,13 @@ export default function acyclic(pi: ExtensionAPI) {
       input: {task: task().task, native_session: {id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? null}}});
   });
   pi.on("agent_end", async (_event, ctx) => {
-    if (selected) await workspace(ctx.cwd, {kind: "capture", task: selected.task});
+    if (selected) await workspace(ctx.cwd, {kind: "hook", host: "pi", event: "Stop",
+      input: {task: selected.task}});
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     bridge?.stdin.end(); await ended;
-    if (selected) await workspace(ctx.cwd, {kind: "capture", task: selected.task});
+    if (selected) await workspace(ctx.cwd, {kind: "hook", host: "pi", event: "SessionEnd",
+      input: {task: selected.task}});
   });
 
   for (const name of ["spawn", "send", "wait", "archive", "cancel", "resume"]) {

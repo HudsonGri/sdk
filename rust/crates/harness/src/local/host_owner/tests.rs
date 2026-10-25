@@ -83,7 +83,7 @@ async fn native_fence_contract(host: &str) -> Result<()> {
         "native contract {host}: claim fence {:?}",
         started.elapsed()
     );
-    native_completion_fences_physical_custody_through_every_host(&mut fixture).await?;
+    native_completion_fences_physical_custody_through_every_host(&mut fixture, host).await?;
     eprintln!(
         "native contract {host}: physical fence {:?}",
         started.elapsed()
@@ -107,6 +107,7 @@ async fn native_fence_contract(host: &str) -> Result<()> {
 }
 async fn native_completion_fences_physical_custody_through_every_host(
     fixture: &mut Fixture,
+    host: &str,
 ) -> Result<()> {
     use super::super::host_process::HostProcessLease;
 
@@ -126,12 +127,14 @@ async fn native_completion_fences_physical_custody_through_every_host(
     );
     let lease = HostProcessLease::acquire(fixture.checkout.path(), child, &view)?;
     let claimed = fixture.session("physical", SessionAction::Next).await?;
+    assert_eq!(claimed["turn"], 1);
     let claim = serde_json::from_value(claimed["claim"].clone()).map_err(storage)?;
     native_write(&view.join("partial.txt"), b"write before failure")?;
+    managed_boundaries_only_observe_admission(fixture, host, child).await?;
     let action = SessionAction::Complete {
         claim,
         outcome: Outcome::Failed {
-            message: "native tool failed after writing".into(),
+            message: "x".repeat(24 * 1024),
         },
     };
     let error = match fixture.session("physical", action.clone()).await {
@@ -183,6 +186,38 @@ async fn native_completion_fences_physical_custody_through_every_host(
     assert!(proof.verify(fixture.parent, &view).is_err());
     assert!(proof.verify(child, fixture.checkout.path()).is_err());
     proof.verify(child, &view)?;
+    Ok(())
+}
+
+async fn managed_boundaries_only_observe_admission(
+    fixture: &mut Fixture,
+    host: &str,
+    child: TaskId,
+) -> Result<()> {
+    let (canonical, expected_reads) =
+        crate::test_support::admission_work::measure(fixture.owner.require_native(child)).await;
+    assert!(canonical?.is_some());
+    assert!(expected_reads > 0);
+    for event in ["Stop", "SessionEnd"] {
+        let (result, reads) = crate::test_support::admission_work::measure(fixture.owner.dispatch(
+            OperationId::new(),
+            HostAction::Hook {
+                host: host.into(),
+                event: event.into(),
+                input: json!({"task": child}),
+            },
+        ))
+        .await;
+        assert_eq!(
+            result?,
+            json!({}),
+            "managed capture belongs to the physical owner"
+        );
+        assert_eq!(
+            reads, expected_reads,
+            "managed boundary repeated native admission"
+        );
+    }
     Ok(())
 }
 
@@ -735,32 +770,23 @@ async fn live_observation_keeps_latest_result_and_retains_shared_history(
     fixture: &mut Fixture,
 ) -> Result<()> {
     const TURNS: u64 = 3;
-    fixture
-        .session(
-            "history",
-            SessionAction::Spawn {
-                prompt: "initial".into(),
-            },
-        )
-        .await?;
-    // Complete real ordered inputs. Retained history exceeds the endpoint
-    // bound, but the live result must remain independent of that history.
-    for turn in 1..=TURNS {
-        if turn > 1 {
-            fixture
-                .session(
-                    "history",
-                    SessionAction::Send {
-                        prompt: "follow-up".into(),
-                    },
-                )
-                .await?;
-        }
-        let claimed = fixture.session("history", SessionAction::Next).await?;
+    // The physical-custody contract already completes the first real turn
+    // with a retained large result. Continue that session, preserving all
+    // three ordered results without creating another task or repeating turn 1.
+    for turn in 2..=TURNS {
+        fixture
+            .session(
+                "physical",
+                SessionAction::Send {
+                    prompt: "follow-up".into(),
+                },
+            )
+            .await?;
+        let claimed = fixture.session("physical", SessionAction::Next).await?;
         assert_eq!(claimed["turn"], turn);
         fixture
             .session(
-                "history",
+                "physical",
                 SessionAction::Complete {
                     claim: serde_json::from_value(claimed["claim"].clone()).map_err(storage)?,
                     outcome: crate::Outcome::Failed {
@@ -770,7 +796,7 @@ async fn live_observation_keeps_latest_result_and_retains_shared_history(
             )
             .await?;
     }
-    let observed = fixture.session("history", SessionAction::Observe).await?;
+    let observed = fixture.session("physical", SessionAction::Observe).await?;
     assert_eq!(
         observed["results"].as_array().map(Vec::len),
         Some(1),
@@ -778,7 +804,7 @@ async fn live_observation_keeps_latest_result_and_retains_shared_history(
     );
     assert_eq!(observed.pointer("/results/0/turn"), Some(&json!(TURNS)));
     assert!(serde_json::to_vec(&observed).map_err(storage)?.len() < 65_536);
-    let reference = Component::new("history").map_err(storage)?;
+    let reference = Component::new("physical").map_err(storage)?;
     let files = fixture.owner.files(fixture.parent).await?;
     let mut retained_bytes = 0;
     for turn in 1..=TURNS {
@@ -815,7 +841,7 @@ async fn live_observation_keeps_latest_result_and_retains_shared_history(
                 OperationId::new(),
                 HostAction::Session {
                     parent: child,
-                    reference: "history".into(),
+                    reference: "physical".into(),
                     action,
                 },
             )
