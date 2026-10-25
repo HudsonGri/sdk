@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
@@ -51,7 +51,7 @@ for (const host of ["claude-code", "pi"]) {
         `step=private settings publication; recovery=${recovery}`);
       if (host === "pi") {
         assert.equal(installed, readFileSync(join(packageRoot, "pi/index.ts"), "utf8")
-          .replaceAll('"__ACYCLIC_EXECUTABLE__"', JSON.stringify(realpathSync(binary))));
+          .replaceAll('"__ACYCLIC_EXECUTABLE__"', JSON.stringify(toNamespacedPath(realpathSync(binary)))));
       } else {
         const document = JSON.parse(installed);
         assert.deepEqual(document.permissions, foreign.permissions);
