@@ -639,6 +639,10 @@ raise SystemExit(module.client(sys.argv[3:]))
 
     def test_killed_generated_wrapper_cleans_outer_scratch_with_negative_control(self):
         worker=self.worker()
+        # This fixture owns its admission identity; it must not depend on the
+        # enclosing SDK/Cloud caller supplying (or choosing) its tenant.
+        fixture_env=self.worker_env({'BUILD_SLOT_TENANT':'graphcoder',
+                                    'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']})
         generator=self.d/'generator.mjs';generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {launchScript};\n')
         receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(self.d/'jobs')+'/').replace('interval = 1000','interval = 20')
         (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
@@ -659,14 +663,15 @@ fs.writeFileSync(prefix+'.wrap',body);
 const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-meta\\.v2\\.json/);
 fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 ''')
-            subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],check=True,capture_output=True)
+            generated=subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],env=fixture_env,capture_output=True)
+            self.assertEqual(generated.returncode,0,generated.stdout+generated.stderr)
             source=receipt_source.replace("if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
             Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
             code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
             import shlex
             with Path(str(prefix)+'.wrap').open('a') as wrapper:
                 wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META={shlex.quote(str(meta))}\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job {shlex.quote(str(meta))} "$payload"\nwait "$payload"\n')
-            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=self.worker_env({'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']}),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=fixture_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
             try:
                 until=time.monotonic()+4
                 while not marker.exists() and time.monotonic()<until:time.sleep(.01)
@@ -711,13 +716,14 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         # A marker's absence cannot distinguish queued work from a slow child.
         observer='''take=module.Scheduler.take
 reported=False
-def observe(scheduler,cls):
+def observe(scheduler,cls=None):
     global reported
-    waiting=any(tenant=='cloud' and queue for (kind,_),tenants in scheduler.queues.items() if kind==cls for tenant,queue in tenants.items())
+    waiting=any(tenant=='cloud' and queue for (kind,_),tenants in scheduler.queues.items() if cls is None or kind==cls for tenant,queue in tenants.items())
     selected=take(scheduler,cls)
     if waiting and not reported:
         reported=True
-        events.send(json.dumps({'selected':selected['tenant'] if selected else None,'running':scheduler.running[cls]}).encode())
+        running=sum(scheduler.running.values()) if cls is None else scheduler.running[cls]
+        events.send(json.dumps({'selected':selected['tenant'] if selected else None,'running':running}).encode())
     return selected
 module.Scheduler.take=observe
 module.serve()
