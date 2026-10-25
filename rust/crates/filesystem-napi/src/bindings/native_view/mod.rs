@@ -294,12 +294,10 @@ impl NativeWatcher {
         let (rescan, expected_root_identity) = {
             let mut watcher = lock_state(&self.inner, "native watcher state")?;
             let expected_root_identity = watcher.root_identity();
-            match watcher.begin_rescan() {
-                Ok(rescan) => (rescan, expected_root_identity),
-                Err(error) => {
-                    return Err(napi_error(error));
-                }
-            }
+            (
+                watcher.begin_rescan().map_err(napi_error)?,
+                expected_root_identity,
+            )
         };
         let baseline = Box::pin(capture_baseline(
             &mut checkout,
@@ -383,7 +381,7 @@ impl NativeWatcher {
         }
         let completed = lock_state(&self.pending_reconcile, "native watcher state")?
             .take()
-            .ok_or_else(|| napi_error("native baseline lost its scan owner"))?;
+            .ok_or_else(|| napi_error(acyclic_fs::NativeWatchError::RescanOwnerMismatch))?;
         let batch = lock_state(&self.inner, "native watcher state")?
             .finish_rescan(completed.rescan)
             .map_err(napi_error)?;

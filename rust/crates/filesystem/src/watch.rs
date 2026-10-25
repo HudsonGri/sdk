@@ -318,6 +318,11 @@ impl SharedState {
         }
         self.invalidation
     }
+
+    fn abandon_rescan(&mut self, reason: WatchInvalidationReason) {
+        self.rescan = None;
+        self.invalidation.get_or_insert(reason);
+    }
 }
 
 /// Exclusive custody of an authenticated baseline scan.
@@ -342,24 +347,21 @@ impl NativeWatchRescan {
 
     /// Abandons this scan without certifying any captured state.
     pub fn abort(self, reason: WatchInvalidationReason) {
+        self.abandon(reason);
+    }
+
+    fn abandon(&self, reason: WatchInvalidationReason) {
         if let Ok(mut shared) = self.shared.lock()
             && shared.rescan == Some(self.epoch)
         {
-            shared.invalidation.get_or_insert(reason);
+            shared.abandon_rescan(reason);
         }
     }
 }
 
 impl Drop for NativeWatchRescan {
     fn drop(&mut self) {
-        if let Ok(mut shared) = self.shared.lock()
-            && shared.rescan == Some(self.epoch)
-        {
-            shared.rescan = None;
-            shared
-                .invalidation
-                .get_or_insert(WatchInvalidationReason::BackendError);
-        }
+        self.abandon(WatchInvalidationReason::BackendError);
         // Poisoning already makes every watcher entry point fail closed.
     }
 }
@@ -2766,10 +2768,7 @@ impl NativeWatch {
     // its hints remain unusable until a complete baseline succeeds.
     fn abandon_rescan(&mut self) {
         if let Ok(mut shared) = self.shared.lock() {
-            shared.rescan = None;
-            shared
-                .invalidation
-                .get_or_insert(WatchInvalidationReason::BackendError);
+            shared.abandon_rescan(WatchInvalidationReason::BackendError);
         }
         // A poisoned state remains fail-closed through every public method.
     }

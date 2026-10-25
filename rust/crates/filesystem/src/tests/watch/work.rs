@@ -282,6 +282,10 @@ fn a_baseline_owner_cannot_finish_a_different_watcher() -> Result<(), Box<dyn st
     let second_scan = second.begin_rescan()?;
     assert_eq!(first_scan.epoch(), second_scan.epoch());
     assert!(matches!(
+        second.begin_rescan(),
+        Err(NativeWatchError::RescanAlreadyInProgress)
+    ));
+    assert!(matches!(
         second.finish_rescan(first_scan),
         Err(NativeWatchError::RescanOwnerMismatch)
     ));
