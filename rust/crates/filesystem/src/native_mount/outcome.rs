@@ -1,7 +1,9 @@
 //! One semantic classification for every native namespace adapter.
 use super::{MountSourceError, NativeMountError};
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 mod retention;
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 pub(super) use retention::callback_is_terminal;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
