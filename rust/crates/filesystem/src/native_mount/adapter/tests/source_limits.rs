@@ -433,12 +433,30 @@ fn physical_fuse_loop_joins_last_lease_after_caller_poll_bank_exhaustion()
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::FuseLoop)
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn physical_darwin_loop_joins_last_lease_after_caller_poll_bank_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::DarwinLoop)
+}
+
+#[cfg(windows)]
+#[test]
+fn physical_projfs_stop_joins_last_lease_after_caller_poll_bank_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::ProjFsStop)
+}
+
 enum PhysicalCleanupPath {
     Source,
     DriverPacket,
     LazySource,
     #[cfg(target_os = "linux")]
     FuseLoop,
+    #[cfg(target_os = "macos")]
+    DarwinLoop,
+    #[cfg(windows)]
+    ProjFsStop,
 }
 
 fn physical_cleanup_worker(
@@ -464,6 +482,16 @@ fn physical_cleanup_worker(
         return crate::native_mount::fuse::tests::retirement::retire_source_in_physical_loop(
             mounted,
         );
+    }
+    #[cfg(target_os = "macos")]
+    if matches!(path, PhysicalCleanupPath::DarwinLoop) {
+        return crate::native_mount::darwin_mount::tests::lifecycle::retire_source_in_physical_loop(
+            mounted,
+        );
+    }
+    #[cfg(windows)]
+    if matches!(path, PhysicalCleanupPath::ProjFsStop) {
+        return crate::native_mount::projfs::retire_source_in_physical_stop(mounted);
     }
     mounted.shutdown_physical_cleanup()?;
     Ok(true)

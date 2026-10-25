@@ -1,5 +1,46 @@
 use super::*;
 
+/// Drives the real finalizer after it proves this fixture has no mounted
+/// namespace, then hands it the original source's remaining physical join.
+pub(in crate::native_mount) fn retire_source_in_physical_loop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let (_, context, _) = checkout_context(MountPublication::Manual)
+        .map_err(|cause| NativeMountError::Driver(cause.to_string()))?;
+    let original = work(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )?;
+    let destination = tempfile::tempdir()?;
+    let resources =
+        DriverSessionResources::new(Arc::new(context), destination.path(), &original, false)?;
+    {
+        let mut state = resources.state();
+        resources.retire(
+            &mut state,
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Physical,
+        )?;
+        assert!(state.resources.is_none());
+        assert!(state.control.namespace_detach_confirmed());
+        state.retirement = Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+        });
+    }
+    resources.finish();
+    let mut state = resources.state();
+    if let Some(error) = state.failure.take() {
+        return Err(error);
+    }
+    Ok(state.resources.is_none()
+        && state
+            .retirement
+            .as_ref()
+            .is_some_and(crate::native_mount::NativeMountRetirement::is_retired))
+}
+
 #[test]
 fn recovery_probe_rejects_every_changed_kernel_mount_identity() -> TestResult {
     let mount = super::super::reclaim::mount_table()?

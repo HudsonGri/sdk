@@ -30,6 +30,40 @@ pub(in crate::native_mount) struct ProjFsSession {
     pub(super) projection_cleanup: Option<super::cleanup::ProjectionCleanup>,
 }
 
+/// Exercises the post-namespace physical stop with a real retained source,
+/// independently of the host's optional projection filter installation.
+#[cfg(test)]
+pub(in crate::native_mount) fn retire_source_in_physical_stop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let original = crate::NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let mut session = ProjFsSession {
+        controller: None,
+        context: None,
+        runtime: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+            warm_namespace: None,
+        }),
+        original_stop_work: original,
+        sdk_stop_credit: None,
+        worker_close_credit: None,
+        namespace_outcome: None,
+        qualification: None,
+        capture_failure: None,
+        capture_attempted: false,
+        projection_cleanup: None,
+    };
+    session.stop_physical()?;
+    Ok(session.retirement.is_none())
+}
+
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
 unsafe impl Send for ProjFsSession {}
 // SAFETY: mutation of the opaque SDK token requires exclusive session access.
