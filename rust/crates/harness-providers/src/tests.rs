@@ -455,6 +455,66 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
 }
 
 #[tokio::test]
+async fn actual_read_definition_keeps_an_object_root_in_every_protocol() -> Result<()> {
+    let tool = acyclic_harness_core::tool::files::read()?.definition;
+    let mut missing_object = Vec::new();
+    for (adapter, _) in fixtures() {
+        let (provider, script) = provider(adapter, 200);
+        let prepared = PreparedModelRequest::prepare(
+            ModelRequest {
+                model: provider.model.clone(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("read the selected skill".into()),
+                }],
+                tools: vec![tool.clone()],
+                max_output_tokens: Some(64),
+            },
+            Limits::default(),
+            None,
+        )?;
+        provider.count_tokens(&prepared).await?;
+        provider
+            .generate(
+                &prepared,
+                ModelDispatch {
+                    operation_id: acyclic_harness_core::OperationId::new(),
+                    step: 0,
+                    request_digest: prepared.request_digest(),
+                },
+            )
+            .try_collect::<Vec<_>>()
+            .await?;
+        let sent = script
+            .sent
+            .lock()
+            .map_err(|_| invalid("poisoned fixture"))?;
+        let request = sent
+            .first()
+            .ok_or_else(|| invalid("missing read request"))?;
+        let body = json(&request.body)?;
+        let pointer = match adapter {
+            Adapter::Chat => "/tools/0/function/parameters",
+            Adapter::Responses => "/tools/0/parameters",
+            Adapter::Anthropic => "/tools/0/input_schema",
+            Adapter::Gemini => "/tools/0/functionDeclarations/0/parametersJsonSchema",
+        };
+        let parameters = body
+            .pointer(pointer)
+            .ok_or_else(|| invalid("missing read parameters"))?;
+        assert_eq!(parameters, &tool.input_schema);
+        if parameters["type"] != "object" {
+            missing_object.push(adapter);
+        }
+    }
+    assert!(
+        missing_object.is_empty(),
+        "read parameters lack an object root: {missing_object:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_errors_and_changed_dispatches_never_complete() -> Result<()> {
     for (adapter, _) in fixtures() {
         let (provider, _) = provider(adapter, 401);

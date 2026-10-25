@@ -184,7 +184,7 @@ impl FileTool {
                 let text = read_text(bytes.as_ref(), false, work)?;
                 let (value, custody) = value(
                     &ReadSourceResultRef { file: &file, text },
-                    context.effective_scope().limits().file_bytes,
+                    context.effective_scope().limits().render_bytes,
                     work,
                 )?;
                 return Ok((ToolResult { value }, custody));

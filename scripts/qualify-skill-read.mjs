@@ -12,13 +12,17 @@ import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
 const [binary, mode = "prompt", selection = "valid"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
 assert.ok(["prompt", "jsonl"].includes(mode));
-assert.ok(["valid", "ungranted", "unretained"].includes(selection));
+assert.ok(["valid", "boundary", "ungranted", "unretained"].includes(selection));
+const validRead = selection === "valid" || selection === "boundary";
 const begin = performance.now(), processes = new Processes();
 const root = scratchDirectory("skill-read-");
 const workspace = join(root, "workspace"), settings = join(root, "settings");
 const skillDirectory = join(settings, ".agents/skills/private-skill");
 for (const path of [workspace, skillDirectory]) mkdirSync(path, { recursive: true });
-const body = "---\nname: private-skill\ndescription: LAZY_READ_DISCOVERY\n---\nPRIVATE_SKILL_BODY_λ\n";
+const header = "---\nname: private-skill\ndescription: LAZY_READ_DISCOVERY\n---\nPRIVATE_SKILL_BODY_λ\n";
+// Match the shipping file bound without changing it. Escapes make the result
+// envelope larger than the source; the independent render bound must own it.
+const body = selection === "boundary" ? header + '"'.repeat(65536 - Buffer.byteLength(header)) : header;
 writeFileSync(join(skillDirectory, "SKILL.md"), body);
 const captures = [], requests = [];
 let step = 0, source, rejectFailure;
@@ -50,6 +54,7 @@ const server = createServer(async (request, response) => {
       assert.ok(skill); source = skill.source;
       const contract = requestBody.tools.find(tool => tool.name === "read");
       assert.ok(JSON.stringify(contract).includes("ReadSourceInput"), "the offered read schema accepts lazy sources");
+      assert.equal(contract.parameters.type, "object", "read parameters require an object root");
       selected = structuredClone(source);
       if (selection === "ungranted") selected.root.volume.id += "-ungranted";
       if (selection === "unretained") selected.path = "inputs/skills/unretained/SKILL.md";
@@ -57,7 +62,9 @@ const server = createServer(async (request, response) => {
       assert.notEqual(selection, "ungranted", "a forged grant must terminate before another model request");
       assert.equal(current, 1);
       assert.equal(outputs.length, 1);
-      if (selection === "valid") {
+      if (validRead) {
+        assert.doesNotMatch(outputs.at(-1).output, /tool executor rejected/,
+          "a granted source within the file bound must fit its independent result bound");
         const result = JSON.parse(outputs.at(-1).output);
         const value = result.kind === "json" ? result.value : result;
         assert.equal(value.text, body);
@@ -68,7 +75,7 @@ const server = createServer(async (request, response) => {
         assert.ok(!bytes.includes("PRIVATE_SKILL_BODY"), "an unretained source must not disclose a body");
       }
       response.write(sse({ type: "response.output_item.done", output_index: 0,
-        item: { type: "message", role: "assistant", content: [{ type: "output_text", text: selection === "valid" ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED" }] } }));
+        item: { type: "message", role: "assistant", content: [{ type: "output_text", text: validRead ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED" }] } }));
     }
     if (selected) response.write(sse({ type: "response.output_item.done", output_index: 0,
       item: { type: "function_call", call_id: `read-${current}`, name: "read", arguments: JSON.stringify({ source: selected }) } }));
@@ -99,7 +106,7 @@ try {
   assert.equal(outcomes.length, 1);
   if (selection !== "ungranted") {
     assert.equal(outcomes[0].completion, "completed");
-    assert.equal(outcomes[0].ok.text, selection === "valid" ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED");
+    assert.equal(outcomes[0].ok.text, validRead ? "SKILL_READ_DONE" : "SKILL_READ_REJECTED");
     assert.equal(step, 2);
   } else {
     assert.equal(outcomes[0].completion, "failed");
