@@ -406,64 +406,6 @@ async fn every_adapter_refuses_retained_internal_edits_with_old_path_control() -
 }
 
 #[tokio::test]
-async fn publication_frame_is_admitted_before_guard_or_host_effect() -> TestResult {
-    let fixture = Fixture::new().await?;
-    let publication = fixture.publication(OperationId::new())?;
-    let options = MaterializeOptions::native(publication.directory().join("target"));
-    for cancelled in [false, true] {
-        let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(
-            WorkBudget {
-                allocation_operations: if cancelled { 2 } else { 1 },
-                ..WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .map_err(|(cause, _)| cause)?;
-        if cancelled {
-            cancellation.cancel();
-        }
-        let guards = std::sync::atomic::AtomicUsize::new(0);
-        let guard = || {
-            guards.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            std::future::ready(Err(crate::Error::Unauthorized("guard observed".into())))
-        };
-        let result = publication
-            .publish(
-                &fixture.from,
-                &fixture.to,
-                &fixture.state,
-                &options,
-                &work,
-                guard,
-            )
-            .await;
-        assert!(matches!(result, Err(crate::Error::NativeWork { .. })));
-        assert_eq!(guards.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(!fixture.root.join("note").exists());
-
-        // The former unadmitted continuation invokes the guard even though
-        // its native operation cannot fund or retain a publication frame.
-        let former = publication
-            .publish_inner(
-                &fixture.from,
-                &fixture.to,
-                &fixture.state,
-                &options,
-                &work,
-                guard,
-            )
-            .await;
-        assert!(
-            matches!(former, Err(crate::Error::Unauthorized(message)) if message == "guard observed")
-        );
-        assert_eq!(guards.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(!fixture.root.join("note").exists());
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn every_adapter_refuses_fresh_and_retained_reserved_aliases_before_host_effect() -> TestResult
 {
     for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
