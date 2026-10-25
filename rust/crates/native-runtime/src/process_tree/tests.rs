@@ -420,7 +420,14 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
             std::io::stdin()
                 .read_to_end(&mut input)
                 .expect("prompt EOF");
-            fs::write(root.join("stdin-captured"), input).expect("captured prompt");
+            crate::private_file::publish(
+                &root.join("stdin-captured"),
+                &root.join("stdin-captured.next"),
+                crate::RenameMode::NoReplace,
+                |file| file.write_all(&input),
+                |_| Ok(()),
+            )
+            .expect("atomically captured prompt");
         }
         "stdin-stall" => {
             std::io::stdout()
