@@ -30,6 +30,8 @@ mod commit;
 mod completion;
 mod coordinator;
 mod journal;
+#[cfg(feature = "filesystem")]
+mod journal_authority;
 mod observe;
 mod origin_locator;
 mod origins;
@@ -46,6 +48,8 @@ mod tests;
 pub use authority::JournalWrite;
 #[cfg(feature = "filesystem")]
 pub(crate) use commit::journal_request;
+#[cfg(feature = "filesystem")]
+pub(crate) use journal_authority::JournalAuthority;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use commit::native_call_result;
 pub(crate) use commit::{CommitPhase, add_condition, add_record, append, commit, commit_request};

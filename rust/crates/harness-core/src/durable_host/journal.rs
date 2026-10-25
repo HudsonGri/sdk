@@ -346,9 +346,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             coordinator
                 .journal_condition(
-                    &self.host.owner,
-                    &self.host.owner_scope,
-                    &self.host.verifier,
+                    &self.authority,
                     self.operation_id(),
                     &self.fence,
                     write,

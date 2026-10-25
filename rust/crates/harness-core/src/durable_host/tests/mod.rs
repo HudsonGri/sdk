@@ -24,6 +24,8 @@ mod admission;
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
 mod journal;
+#[cfg(feature = "filesystem")]
+mod journal_authority;
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
 mod mail;

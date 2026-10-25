@@ -330,6 +330,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .spec
             .owner_scope
             .agent();
+        let authority = coordinator.authenticate_journal(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation,
+            &mut work,
+        )?;
         drop(coordinator);
         if admission.parent.is_none() && declared_agent != self.owner_scope.agent() {
             return Err(Error::Unauthorized(
@@ -421,6 +428,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let owner = TaskJournalOwner {
             host: self.clone(),
+            authority,
             fence,
             workflow,
             admission: Arc::new(admission),
