@@ -68,14 +68,8 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
             .fold((0, 0), |(files, bytes), (_, (_, value))| {
                 (files + 1, bytes + value.len())
             });
-        assert_eq!(
-            files,
-            match step {
-                1 => 1,
-                2 => 3,
-                _ => 2,
-            }
-        );
+        // Every call, initial or continuation, is exactly one file.
+        assert_eq!(files, 1);
         assert!(bytes < 4096, "step {step} encoded {bytes} bytes");
         largest_delta = largest_delta.max(bytes);
         if [1, 100, 1000].contains(&step) {

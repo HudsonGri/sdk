@@ -6,7 +6,9 @@ mod projection;
 
 pub(crate) use projection::load_projection;
 
-pub(crate) const REQUEST_MEDIA: &str = "application/vnd.acyclic.request-segments+json";
+/// One file per continuation call: the call's own header (unless shared)
+/// and new messages, linked to the earlier calls' manifests.
+pub(crate) const REQUEST_MEDIA: &str = "application/vnd.acyclic.request-manifest+json";
 
 #[cfg(all(
     test,
@@ -24,15 +26,102 @@ mod tests;
 ))]
 mod metadata_tests;
 
+/// A continuation request, published as exactly one file. It carries its
+/// header inline unless an earlier manifest already holds the same header,
+/// and its new messages after a prefix of earlier manifests. Every reference
+/// names an already published manifest, so one call is one publication.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestManifest {
-    header: FileRef,
+    header: Option<RequestHeader>,
+    shared_header: Option<FileRef>,
     header_digest: [u8; 32],
-    messages: MessagePrefix,
+    messages: MessageSegment,
+    count: u32,
+    content_digest: [u8; 32],
     request_digest: [u8; 32],
     admitted_limits: Limits,
     proof: Option<([u8; 32], [u8; 32])>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Negative control: publishes the header on its own first, as the
+    /// former separate-part format did.
+    pub(crate) static STAGE_HEADER_APART: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[derive(Serialize)]
+struct ManifestView<'a> {
+    header: Option<&'a HeaderView<'a>>,
+    shared_header: Option<&'a FileRef>,
+    header_digest: [u8; 32],
+    messages: SegmentView<'a>,
+    count: u32,
+    content_digest: [u8; 32],
+    request_digest: [u8; 32],
+    admitted_limits: Limits,
+    proof: Option<([u8; 32], [u8; 32])>,
+}
+
+/// The attested content of a manifest: every field but the proof.
+#[cfg(feature = "filesystem")]
+fn manifest_payload_digest<H: Serialize, M: Serialize>(
+    (header, shared_header): (Option<&H>, Option<&FileRef>),
+    header_digest: [u8; 32],
+    messages: &M,
+    (count, content_digest): (u32, [u8; 32]),
+    (request_digest, admitted_limits): ([u8; 32], Limits),
+    io: Option<&PreparationIo>,
+) -> Result<[u8; 32]> {
+    preparation_digest(
+        &(
+            header,
+            shared_header,
+            header_digest,
+            messages,
+            count,
+            content_digest,
+            request_digest,
+            admitted_limits,
+        ),
+        io,
+    )
+}
+
+#[cfg(feature = "filesystem")]
+fn request_proof(
+    digest: [u8; 32],
+    verifier: &crate::core::AuthorityVerifier,
+    io: Option<&PreparationIo>,
+) -> Result<([u8; 32], [u8; 32])> {
+    let signature = with_history_io(io, |work| verifier.model_request_proof(digest, work))?;
+    let mut first = [0; 32];
+    let mut second = [0; 32];
+    first.copy_from_slice(&signature[..32]);
+    second.copy_from_slice(&signature[32..]);
+    Ok((first, second))
+}
+
+impl RequestManifest {
+    /// The prefix a later manifest links to: this manifest when it adds
+    /// messages, else its own parent, so no link has an empty suffix.
+    fn prefix(
+        self,
+        reference: &FileRef,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<MessagePrefix>> {
+        if self.messages.suffix.is_empty() {
+            return Ok(self.messages.parent);
+        }
+        Ok(Some(MessagePrefix {
+            chain_digest: chain_digest(self.messages.parent.as_ref(), reference, io)?,
+            reference: crate::model::clone_file(reference, io)?,
+            count: self.count,
+            content_digest: self.content_digest,
+        }))
+    }
 }
 
 /// Admission is monotone in these bounds. Control-loop limits do not affect
@@ -49,30 +138,14 @@ pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
 #[cfg(feature = "filesystem")]
 impl RequestManifest {
     fn payload_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
-        preparation_digest(
-            &(
-                &self.header,
-                self.header_digest,
-                &self.messages,
-                self.request_digest,
-                self.admitted_limits,
-            ),
+        manifest_payload_digest(
+            (self.header.as_ref(), self.shared_header.as_ref()),
+            self.header_digest,
+            &self.messages,
+            (self.count, self.content_digest),
+            (self.request_digest, self.admitted_limits),
             io,
         )
-    }
-
-    fn attestation(
-        &self,
-        verifier: &crate::core::AuthorityVerifier,
-        io: Option<&PreparationIo>,
-    ) -> Result<([u8; 32], [u8; 32])> {
-        let digest = self.payload_digest(io)?;
-        let signature = with_history_io(io, |work| verifier.model_request_proof(digest, work))?;
-        let mut first = [0; 32];
-        let mut second = [0; 32];
-        first.copy_from_slice(&signature[..32]);
-        second.copy_from_slice(&signature[32..]);
-        Ok((first, second))
     }
 
     pub(crate) fn authenticates(
@@ -153,60 +226,47 @@ struct ContextView<'a> {
 
 #[cfg(feature = "filesystem")]
 impl PreparationRecord for RequestManifest {
-    fn diagnostic_label_bytes() -> u64 {
-        // This closed record cannot reach model/tool/workflow diagnostics.
-        // Fund all labels in its own DTO graph instead of those unrelated
-        // schemas; caller-controlled unexpected data is funded separately.
-        concat!(
-            "RequestManifest header header_digest messages request_digest admitted_limits proof ",
-            "MessagePrefix reference count content_digest chain_digest ",
-            "FileRef volume path version descriptor display_name ",
-            "VolumeRef provider id class owner VolumeOwner kind id project agent session ",
-            "VolumeClass project agent_private session_shared ",
-            "ProviderRef ProviderRefWire namespace family version ",
-            "FileDescriptor sha256 byte_length media_type ",
-            "Limits file_bytes path_bytes attachments render_bytes model_steps ",
-            "model_events_per_step tool_calls_per_step context_messages ",
-            "a sequence of length 2 a sequence of length 32 u8 u32 u64 usize UUID ",
-            "provider identity is invalid file or volume label is invalid ",
-            "volume-relative path is invalid file byte length exceeds cross-language precision ",
-            "media type is invalid a hyphenated UUID string"
-        )
-        .len() as u64
-    }
-
-    fn maximum_slot_bytes() -> u64 {
-        // Heap collections contain closed FileRef metadata or serde Content.
-        // The root manifest is funded separately, including fixed signatures.
-        crate::filesystem::preparation_file_record_slot_bytes()
-    }
-
     fn container_collection_slots() -> bool {
-        // Large typed values are FileRef/MessagePrefix objects. Digest bytes,
-        // counts and limits need Content buffering, not workflow-sized slots.
-        // Resident values without a container census keep the coarse bound.
+        // As for a context: message and part headers have object encodings,
+        // and arbitrary Values keep their schema-based inventory.
         true
     }
 
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::RequestManifest
+    }
+
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        crate::core::owned_sum([
+        // An inline header keeps the conservative decode custody; a manifest
+        // that shares its header retains exactly its links and messages.
+        if self.header.is_some() {
+            return Ok(None);
+        }
+        let mut bytes = crate::core::owned_sum([
             std::mem::size_of::<Self>() as u64,
-            self.header.logical_owned_bytes()?,
-            self.messages.reference.logical_owned_bytes()?,
-        ])
-        .map(Some)
+            crate::core::owned_buffer::<ModelMessage>(self.messages.suffix.capacity())?,
+        ])?;
+        for file in self.shared_header.iter().chain(
+            self.messages
+                .parent
+                .as_ref()
+                .map(|parent| &parent.reference),
+        ) {
+            bytes = crate::core::owned_sum([bytes, file.logical_owned_bytes()?])?;
+        }
+        self.messages
+            .suffix
+            .iter()
+            .try_fold(bytes, |bytes, message| {
+                crate::core::owned_sum([bytes, message.content.retained_payload_bytes()?])
+            })
+            .map(Some)
     }
 }
 #[cfg(feature = "filesystem")]
 impl PreparationRecord for RequestHeader {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::ModelRequest
-    }
-}
-#[cfg(feature = "filesystem")]
-impl PreparationRecord for MessageSegment {
-    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::MessageSegment
     }
 }
 
@@ -223,8 +283,8 @@ fn chain_digest(
     suffix: &FileRef,
     io: Option<&PreparationIo>,
 ) -> Result<[u8; 32]> {
-    // Fixed-size chaining commits to the segment's exact bytes and the entire
-    // preceding chain without re-hashing any historical payload.
+    // Fixed-size chaining commits to the linked manifest's exact bytes and
+    // the entire preceding chain without re-hashing any historical payload.
     let mut frame = [0; 65];
     if let Some(parent) = parent {
         frame[0] = 1;
@@ -256,7 +316,7 @@ async fn stage_manifest(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
-    manifest: &RequestManifest,
+    manifest: &ManifestView<'_>,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
     validate_journal(journal, io)?;
@@ -334,97 +394,92 @@ async fn stage_request_inner(
         previous,
     } = staging;
     let request = prepared.request();
-    // Without an existing prefix there is nothing to share. One private file
-    // avoids three generations and their admission work for the initial call.
-    // Continuations install the segmented prefix once and then append deltas.
-    if previous.is_none() {
+    // Without an existing prefix there is nothing to share: the initial call
+    // is one private file of the whole request.
+    let Some(previous_ref) = previous else {
         return stage_json(journal, operation, key, request, io).await;
-    }
+    };
     let header = HeaderView {
         model: &request.model,
         tools: &request.tools,
         max_output_tokens: request.max_output_tokens,
     };
     let header_digest = preparation_digest(&header, io)?;
-    let previous =
-        previous_manifest(journal, previous, prepared.admitted_limits(), verifier, io).await?;
-    let header = match &previous {
-        Some(previous) if previous.header_digest == header_digest => {
-            crate::model::clone_file(&previous.header, io)?
-        }
-        _ => {
-            let key = with_history_io(io, |work| {
-                preparation_format(format_args!("{key}:header"), work)
-            })?;
-            stage_json(journal, operation, &key, &header, io).await?
-        }
-    };
-    let messages = stage_messages(
+    #[cfg(test)]
+    if STAGE_HEADER_APART.get() {
+        let key = format!("{key}:header");
+        stage_json(journal, operation, &key, &header, io).await?;
+    }
+    let previous = previous_manifest(
         journal,
-        operation,
-        key,
-        prepared,
-        previous.map(|manifest| manifest.messages),
+        Some(previous_ref),
+        prepared.admitted_limits(),
+        verifier,
         io,
     )
     .await?;
-    let manifest = RequestManifest {
-        header,
-        header_digest,
-        messages,
-        request_digest: prepared.request_digest(),
-        admitted_limits: prepared.admitted_limits(),
-        proof: None,
+    let (shared_header, parent) = match previous {
+        Some(previous) => {
+            let shared = if previous.header_digest == header_digest {
+                Some(match &previous.shared_header {
+                    Some(shared) => crate::model::clone_file(shared, io)?,
+                    None => crate::model::clone_file(previous_ref, io)?,
+                })
+            } else {
+                None
+            };
+            (shared, previous.prefix(previous_ref, io)?)
+        }
+        None => (None, None),
     };
-    #[cfg(feature = "filesystem")]
-    let manifest = if let Some(verifier) = verifier {
-        let proof = Some(manifest.attestation(verifier, io)?);
-        RequestManifest { proof, ..manifest }
-    } else {
-        manifest
-    };
-    stage_manifest(journal, operation, key, &manifest, io).await
-}
-
-async fn stage_messages(
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    key: &str,
-    prepared: &crate::model::PreparedModelRequest,
-    previous: Option<MessagePrefix>,
-    io: Option<&PreparationIo>,
-) -> Result<MessagePrefix> {
-    let messages = &prepared.request().messages;
-    let previous_count = previous.as_ref().map(|previous| previous.count as usize);
+    let messages = &request.messages;
+    let previous_count = parent.as_ref().map(|parent| parent.count as usize);
     let (content_digest, prefix_digest) =
         match prepared.cached_message_digests(previous_count, io)? {
             Some(digests) => digests,
             None => digests::messages(messages, previous_count, io)?,
         };
-    let parent = previous.filter(|previous| Some(previous.content_digest) == prefix_digest);
+    let parent = parent.filter(|parent| Some(parent.content_digest) == prefix_digest);
     let count = u32::try_from(messages.len()).map_err(|_| invalid(io))?;
-    let messages = match parent {
-        Some(parent) if parent.count == count => parent,
-        parent => {
-            let parent_count = parent.as_ref().map_or(0, |parent| parent.count as usize);
-            let suffix = messages.get(parent_count..).ok_or_else(|| invalid(io))?;
-            let view = SegmentView {
-                parent: parent.as_ref(),
-                suffix,
-            };
-            let segment_key = with_history_io(io, |work| {
-                preparation_format(format_args!("{key}:messages"), work)
-            })?;
-            let reference = stage_json(journal, operation, &segment_key, &view, io).await?;
-            MessagePrefix {
-                chain_digest: chain_digest(parent.as_ref(), &reference, io)?,
-                reference,
-                count,
-                content_digest,
-            }
-        }
+    let parent_count = parent.as_ref().map_or(0, |parent| parent.count as usize);
+    let suffix = messages.get(parent_count..).ok_or_else(|| invalid(io))?;
+    let (request_digest, admitted_limits) = (prepared.request_digest(), prepared.admitted_limits());
+    let inline_header = shared_header.is_none().then_some(&header);
+    let segment = SegmentView {
+        parent: parent.as_ref(),
+        suffix,
     };
-    Ok(messages)
+    #[cfg(feature = "filesystem")]
+    let proof = verifier
+        .map(|verifier| {
+            let digest = manifest_payload_digest(
+                (inline_header, shared_header.as_ref()),
+                header_digest,
+                &segment,
+                (count, content_digest),
+                (request_digest, admitted_limits),
+                io,
+            )?;
+            request_proof(digest, verifier, io)
+        })
+        .transpose()?;
+    #[cfg(not(feature = "filesystem"))]
+    let proof = {
+        let _ = verifier;
+        None
+    };
+    let manifest = ManifestView {
+        header: inline_header,
+        shared_header: shared_header.as_ref(),
+        header_digest,
+        messages: segment,
+        count,
+        content_digest,
+        request_digest,
+        admitted_limits,
+        proof,
+    };
+    stage_manifest(journal, operation, key, &manifest, io).await
 }
 
 async fn load_request_inner(
@@ -434,26 +489,41 @@ async fn load_request_inner(
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
     let manifest = load_manifest(journal, reference, io).await?;
-    if manifest.messages.count == 0 || manifest.messages.count as usize > limits.context_messages {
+    if manifest.count == 0 || manifest.count as usize > limits.context_messages {
         return Err(invalid(io));
     }
-    let header =
-        retain_preparation(load_json::<RequestHeader>(journal, &manifest.header, io).await?)?;
+    let header = match (manifest.header, &manifest.shared_header) {
+        (Some(header), None) => header,
+        (None, Some(shared)) => {
+            let holder = load_manifest(journal, shared, io).await?;
+            match (holder.header, holder.shared_header) {
+                (Some(header), None) => header,
+                _ => return Err(invalid(io)),
+            }
+        }
+        _ => return Err(invalid(io)),
+    };
     if preparation_digest(&header, io)? != manifest.header_digest {
         return Err(invalid(io));
     }
-    let expected_count = manifest.messages.count as usize;
-    let expected_content = manifest.messages.content_digest;
-    let mut cursor = Some(manifest.messages);
+    let expected_count = manifest.count as usize;
+    let expected_content = manifest.content_digest;
+    let parent_count =
+        |parent: &Option<MessagePrefix>| parent.as_ref().map_or(0, |parent| parent.count as usize);
+    if parent_count(&manifest.messages.parent).checked_add(manifest.messages.suffix.len())
+        != Some(expected_count)
+    {
+        return Err(invalid(io));
+    }
+    let mut cursor = manifest.messages.parent;
     let mut segments = Vec::new();
+    stock_vec_push(&mut segments, manifest.messages.suffix, io)?;
     while let Some(prefix) = cursor {
-        let segment = load_segment(journal, &prefix.reference, io).await?;
-        let parent_count = segment
-            .parent
-            .as_ref()
-            .map_or(0, |parent| parent.count as usize);
+        let (count, segment) = load_link(journal, &prefix.reference, io).await?;
         if segment.suffix.is_empty()
-            || parent_count.checked_add(segment.suffix.len()) != Some(prefix.count as usize)
+            || count != prefix.count
+            || parent_count(&segment.parent).checked_add(segment.suffix.len())
+                != Some(prefix.count as usize)
             || chain_digest(segment.parent.as_ref(), &prefix.reference, io)? != prefix.chain_digest
         {
             return Err(invalid(io));
@@ -487,26 +557,29 @@ async fn load_request_inner(
     Ok(prepared)
 }
 
-async fn load_segment(
+/// One earlier manifest's message count and link, keeping only its funded
+/// cursor and messages rather than its decoder or header.
+async fn load_link(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     io: Option<&PreparationIo>,
-) -> Result<MessageSegment> {
+) -> Result<(u32, MessageSegment)> {
     #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(io)?;
     #[cfg(feature = "filesystem")]
     let io = scope.io();
-    let segment = retain_preparation(load_json::<MessageSegment>(journal, reference, io).await?)?;
+    let manifest = load_manifest(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     {
         if io.is_none() {
-            return Ok(segment);
+            return Ok((manifest.count, manifest.messages));
         }
         // Serde's admission reserves scratch for its largest possible typed
-        // alternative. Release it after each segment, retaining only funded
+        // alternative. Release it after each link, retaining only funded
         // message and cursor copies rather than a decoder per historical turn.
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let parent = segment
+        let parent = manifest
+            .messages
             .parent
             .as_ref()
             .map(|parent| {
@@ -518,17 +591,19 @@ async fn load_segment(
                 })
             })
             .transpose()?;
-        let suffix = crate::model::clone_messages(&segment.suffix, io)?;
+        let suffix = crate::model::clone_messages(&manifest.messages.suffix, io)?;
+        let count = manifest.count;
+        drop(manifest);
         let retained = io.map_or(Ok(0), |io| {
             io.owned_bytes()?
                 .checked_sub(before)
                 .ok_or_else(|| invalid(Some(io)))
         })?;
         scope.finish(retained)?;
-        Ok(MessageSegment { parent, suffix })
+        Ok((count, MessageSegment { parent, suffix }))
     }
     #[cfg(not(feature = "filesystem"))]
-    Ok(segment)
+    Ok((manifest.count, manifest.messages))
 }
 
 pub(super) async fn stage_request(

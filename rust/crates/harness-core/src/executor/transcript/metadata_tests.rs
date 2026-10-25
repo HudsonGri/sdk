@@ -13,13 +13,15 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
     // FileRef, ProviderRefWire, the adjacent-tagged owner and its buffered id.
     for (pointer, is_string) in [
         ("/request_digest/0", false),
-        ("/messages/count", false),
+        ("/count", false),
+        ("/messages/parent/count", false),
         ("/proof/0/31", false),
-        ("/header/descriptor/sha256/0", false),
-        ("/header/volume/provider/family", true),
-        ("/header/volume/owner/kind", false),
-        ("/header/volume/owner/id", true),
-        ("/header/path", true),
+        ("/shared_header/descriptor/sha256/0", false),
+        ("/shared_header/volume/provider/family", true),
+        ("/shared_header/volume/owner/kind", false),
+        ("/shared_header/volume/owner/id", true),
+        ("/shared_header/path", true),
+        ("/messages/parent/reference/path", true),
         ("/admitted_limits/context_messages", false),
     ] {
         for replacement in [
@@ -204,21 +206,45 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         )
         .await?;
     let manifest = RequestManifest {
-        header: reference.clone(),
+        header: None,
+        shared_header: Some(reference.clone()),
         header_digest: [255; 32],
-        messages: MessagePrefix {
-            reference: reference.clone(),
-            count: 1,
-            content_digest: [255; 32],
-            chain_digest: [255; 32],
+        messages: MessageSegment {
+            parent: Some(MessagePrefix {
+                reference: reference.clone(),
+                count: 1,
+                content_digest: [255; 32],
+                chain_digest: [255; 32],
+            }),
+            suffix: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("history".repeat(128)),
+            }],
         },
+        count: 2,
+        content_digest: [255; 32],
         request_digest: [255; 32],
         admitted_limits: Limits::default(),
         proof: Some(([255; 32], [255; 32])),
     };
-    check_decode(&manifest, 2 * 1024 * 1024, true)?;
+    check_decode(&manifest, 16 * 1024 * 1024, true)?;
     check_manifest_diagnostics(&manifest)?;
-    check_decode(&CoarseMetadata(manifest), 2 * 1024 * 1024, false)?;
+    // Negative control: the previous admission policy retains decode scratch.
+    let bytes = crate::contract::canonical_json_bytes(&manifest)?;
+    let io = PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024),
+        &acyclic_fs::CancellationToken::new(),
+    )?;
+    let (_decoded, hold) = io.decode(
+        std::marker::PhantomData::<CoarseMetadata<RequestManifest>>,
+        &bytes,
+        crate::wire::ErrorCode::Storage,
+    )?;
+    assert!(
+        hold.bytes() > 256 * 1024,
+        "negative control did not retain manifest decode scratch"
+    );
+    drop((_decoded, hold));
     let compaction = crate::context::CompactionReference {
         source_digest: [255; 32],
         maximum_messages: 10,

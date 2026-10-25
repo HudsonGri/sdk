@@ -157,3 +157,86 @@ where
     }
     Ok(())
 }
+
+/// Counts filesystem publications of execution payloads.
+#[derive(Clone, Default)]
+struct Publications(Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Publications {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let mut published = false;
+        event.record(
+            &mut |field: &tracing::field::Field, _: &dyn std::fmt::Debug| {
+                published |= field.name() == "payload_stages";
+            },
+        );
+        if event.metadata().target() == "acyclic_harness::journal_work" && published {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Publications made by each of three continuation calls, the first after an
+/// initial whole-request file and later ones sharing its header.
+async fn continuation_publications() -> Result<Vec<usize>> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let publications = Publications::default();
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(publications.clone()));
+    let _dispatch = tracing::dispatcher::set_default(&dispatch);
+    let (journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    let mut retained: Option<PreparedModelRequest> = None;
+    let mut previous = None;
+    let mut counts = Vec::new();
+    for step in 0..4 {
+        let message = ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text(format!("turn {step}")),
+        };
+        let prepared = match retained.take() {
+            Some(previous) => {
+                let mut continued = previous.into_continuation();
+                continued.messages().push(message);
+                continued.finish(Limits::default(), None)?
+            }
+            None => prepare(&[message])?,
+        };
+        let before = publications.0.load(std::sync::atomic::Ordering::Relaxed);
+        let request = journal
+            .stage_prepared_model_request(
+                operation,
+                &format!("request:{step}"),
+                &prepared,
+                previous.as_ref(),
+                None,
+            )?
+            .ok_or_else(|| Error::Invalid("missing request admission".into()))?
+            .await?;
+        let loaded =
+            crate::executor::load_model_request(&journal, &request, Limits::default(), None)
+                .await?;
+        assert_eq!(loaded.bytes(), prepared.bytes(), "step {step}");
+        if step > 0 {
+            counts.push(publications.0.load(std::sync::atomic::Ordering::Relaxed) - before);
+        }
+        previous = Some(request);
+        retained = Some(prepared);
+    }
+    Ok(counts)
+}
+
+#[tokio::test]
+async fn a_continuation_request_is_one_publication() -> Result<()> {
+    assert_eq!(continuation_publications().await?, [1, 1, 1]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn negative_control_a_separately_published_header_is_counted() -> Result<()> {
+    crate::executor::transcript::STAGE_HEADER_APART.set(true);
+    let counts = continuation_publications().await;
+    crate::executor::transcript::STAGE_HEADER_APART.set(false);
+    assert_eq!(counts?, [2, 2, 2]);
+    Ok(())
+}

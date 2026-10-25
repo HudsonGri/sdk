@@ -187,21 +187,14 @@ fn assert_component_proofs(
         serde_json::to_value(manifest).map_err(|error| Error::Invalid(error.to_string()))?;
     let reference =
         serde_json::to_value(reference).map_err(|error| Error::Invalid(error.to_string()))?;
-    let header = serde_json::to_value(&manifest.header)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(manifest.header.is_some() && manifest.shared_header.is_none());
     for (path, replacement) in [
-        ("/header", reference),
+        ("/header/max_output_tokens", 7.into()),
+        ("/shared_header", reference),
         ("/header_digest/0", (manifest.header_digest[0] ^ 1).into()),
-        ("/messages/reference", header),
-        ("/messages/count", (manifest.messages.count + 1).into()),
-        (
-            "/messages/content_digest/0",
-            (manifest.messages.content_digest[0] ^ 1).into(),
-        ),
-        (
-            "/messages/chain_digest/0",
-            (manifest.messages.chain_digest[0] ^ 1).into(),
-        ),
+        ("/messages/suffix/0/content", "changed".into()),
+        ("/count", (manifest.count + 1).into()),
+        ("/content_digest/0", (manifest.content_digest[0] ^ 1).into()),
         ("/request_digest/0", (manifest.request_digest[0] ^ 1).into()),
         ("/admitted_limits/render_bytes", 1.into()),
         ("/proof", Value::Null),
@@ -209,7 +202,7 @@ fn assert_component_proofs(
         let mut changed = value.clone();
         *changed
             .pointer_mut(path)
-            .ok_or_else(|| Error::Invalid("missing fixture field".into()))? = replacement;
+            .ok_or_else(|| Error::Invalid(format!("missing fixture field {path}")))? = replacement;
         let changed: RequestManifest =
             serde_json::from_value(changed).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(
