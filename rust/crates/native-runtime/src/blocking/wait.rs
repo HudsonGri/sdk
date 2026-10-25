@@ -1,76 +1,20 @@
 use crate::*;
 
-pub(crate) struct BlockingWaitWake {
-    pub(crate) notified: Mutex<bool>,
-    pub(crate) changed: Condvar,
-}
-
 /// A wait's notifier and its charge. The waiting thread owns the charge, not
 /// the shared notifier: the worker that wakes it may still hold its waker
 /// clone for a moment after the waiter returns, and the charge must already
 /// be retired when the observer sees the result.
 pub(crate) struct PreparedWake {
-    wake: Arc<BlockingWaitWake>,
+    wake: Arc<NativeWake>,
     _allocation: ReadAllocation,
-}
-
-impl BlockingWaitWake {
-    pub(crate) fn notify(&self) {
-        *self
-            .notified
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        self.changed.notify_one();
-    }
-
-    pub(crate) fn wait(&self, deadline: Option<std::time::Instant>) {
-        let mut notified = self
-            .notified
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while !*notified {
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                let (next, timeout) = self
-                    .changed
-                    .wait_timeout(notified, remaining)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                notified = next;
-                if timeout.timed_out() {
-                    break;
-                }
-            } else {
-                notified = self
-                    .changed
-                    .wait(notified)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        }
-        *notified = false;
-    }
-}
-
-impl std::task::Wake for BlockingWaitWake {
-    fn wake(self: Arc<Self>) {
-        self.notify();
-    }
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.notify();
-    }
 }
 
 pub(crate) fn allocate_blocking_wait_wake(
     meter: &Arc<dyn NativeReadMeter>,
 ) -> io::Result<PreparedWake> {
-    let allocation = ReadAllocation::new(meter, std::mem::size_of::<BlockingWaitWake>())?;
+    let allocation = ReadAllocation::new(meter, std::mem::size_of::<NativeWake>())?;
     Ok(PreparedWake {
-        wake: Arc::new(BlockingWaitWake {
-            notified: Mutex::new(false),
-            changed: Condvar::new(),
-        }),
+        wake: Arc::new(NativeWake::default()),
         _allocation: allocation,
     })
 }
