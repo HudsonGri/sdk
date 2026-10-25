@@ -105,8 +105,16 @@ impl<C> AuthorizedCheckout<'_, C> {
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<()>> + Send,
     {
-        self.approval.publication
-            .publish(self.approval.from, self.approval.to, state, options, work, guard)
+        self.approval
+            .publication
+            .publish(
+                self.approval.from,
+                self.approval.to,
+                state,
+                options,
+                work,
+                guard,
+            )
             .await
     }
 }

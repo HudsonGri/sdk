@@ -141,12 +141,20 @@ impl PiControlHost<'_> {
                 return Err(denied("applied writeback changed its original approval"));
             }
             let authorization = crate::pi_operator_host::conversation_journal(
-                &self.filesystem, &self.stream, &self.protected, &(&approved.0).into(), work,
+                &self.filesystem,
+                &self.stream,
+                &self.protected,
+                &(&approved.0).into(),
+                work,
             )?;
             validate_applied_writeback(
-                &root, &generations, &journal,
-                (digest, &authorization.0, authorization.1), work,
-            ).await?;
+                &root,
+                &generations,
+                &journal,
+                (digest, &authorization.0, authorization.1),
+                work,
+            )
+            .await?;
             let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
             owner.verify(false, &mut Some(&mut io)).await?;
             return ready(
@@ -235,7 +243,11 @@ impl PiControlHost<'_> {
             return Err(denied("approval differs from the exact original-root plan"));
         }
         let authorization = crate::pi_operator_host::conversation_journal(
-            &self.filesystem, &self.stream, &self.protected, &descriptor, work,
+            &self.filesystem,
+            &self.stream,
+            &self.protected,
+            &descriptor,
+            work,
         )?;
         let published = publish_writeback(
             &root,

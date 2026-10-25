@@ -37,7 +37,11 @@ pub(crate) fn publish_writeback<'a>(
     journal: &'a acyclic_fs::MaterializationJournal,
     options: &'a acyclic_fs::MaterializeOptions,
     state: &'a acyclic_fs::LocalCoreStateStore,
-    approval: (&'a str, &'a dyn acyclic_harness::tool::ToolApprovalVerifier, acyclic_harness::InteractionId),
+    approval: (
+        &'a str,
+        &'a dyn acyclic_harness::tool::ToolApprovalVerifier,
+        acyclic_harness::InteractionId,
+    ),
     native_work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> impl std::future::Future<Output = Result<acyclic_fs::MaterializationJournal>> + Send + 'a {
     async move {
@@ -51,9 +55,7 @@ pub(crate) fn publish_writeback<'a>(
         writeback_digest_value(root, generations, journal)?
             .authorize(approval.1, approval.2, &confirmation, native_work)
             .await?
-            .publish(state, options, native_work, || {
-                root.verify(native_work)
-            })
+            .publish(state, options, native_work, || root.verify(native_work))
             .await
     }
 }
@@ -63,7 +65,11 @@ pub(crate) async fn validate_applied_writeback(
     root: &PiWritebackRoot,
     generations: &PiWritebackGenerations<'_>,
     journal: &acyclic_fs::MaterializationJournal,
-    approval: (&str, &dyn acyclic_harness::tool::ToolApprovalVerifier, acyclic_harness::InteractionId),
+    approval: (
+        &str,
+        &dyn acyclic_harness::tool::ToolApprovalVerifier,
+        acyclic_harness::InteractionId,
+    ),
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     if journal.phase != acyclic_fs::MaterializationPhase::Applied
@@ -75,8 +81,10 @@ pub(crate) async fn validate_applied_writeback(
     }
     writeback_digest_value(root, generations, journal)?
         .authorize(
-            approval.1, approval.2,
-            &crate::pi_operator::parse_digest(approval.0)?, native_work,
+            approval.1,
+            approval.2,
+            &crate::pi_operator::parse_digest(approval.0)?,
+            native_work,
         )
         .await?;
     Ok(())

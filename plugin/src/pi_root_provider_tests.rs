@@ -453,10 +453,16 @@ impl acyclic_harness::tool::ToolApprovalVerifier for PublicationDecision {
         digest: [u8; 32],
     ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<()>> {
         Box::pin(async move {
-            if self.approved && id == self.id && operation == self.operation && digest == self.digest {
+            if self.approved
+                && id == self.id
+                && operation == self.operation
+                && digest == self.digest
+            {
                 Ok(())
             } else {
-                Err(acyclic_harness::Error::Unauthorized("publication decision is absent, denied or foreign".into()))
+                Err(acyclic_harness::Error::Unauthorized(
+                    "publication decision is absent, denied or foreign".into(),
+                ))
             }
         })
     }
@@ -564,8 +570,10 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     .to_string();
     let approval_id = acyclic_harness::InteractionId::from_bytes([97; 16]);
     let verifier = PublicationDecision {
-        id: approval_id, operation,
-        digest: crate::pi_operator::parse_digest(&digest).unwrap(), approved: true,
+        id: approval_id,
+        operation,
+        digest: crate::pi_operator::parse_digest(&digest).unwrap(),
+        approved: true,
     };
     // Recover after candidate publication, before host publication. The fork
     // owner's original generation must remain the exact approval baseline.
@@ -609,12 +617,27 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
         std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
         b"original native bytes"
     );
-    let denied = PublicationDecision { approved: false, ..verifier };
-    assert!(publish_writeback(
-        &root, &recovered, &prepared, &options, &fixture.resources.store,
-        (&digest, &denied, approval_id), work,
-    ).await.is_err());
-    assert_eq!(std::fs::read(fixture.native.join("untouched.txt")).unwrap(), b"original native bytes");
+    let denied = PublicationDecision {
+        approved: false,
+        ..verifier
+    };
+    assert!(
+        publish_writeback(
+            &root,
+            &recovered,
+            &prepared,
+            &options,
+            &fixture.resources.store,
+            (&digest, &denied, approval_id),
+            work,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
+        b"original native bytes"
+    );
     let applied = publish_writeback(
         &root,
         &recovered,

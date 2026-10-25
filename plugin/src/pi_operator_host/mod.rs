@@ -103,9 +103,7 @@ mod dispatch;
 mod inspection;
 mod status;
 pub(crate) use approval::conversation_journal;
-pub(crate) use approval::{
-    open_prepared_approval, read_prepared_approval,
-};
+pub(crate) use approval::{open_prepared_approval, read_prepared_approval};
 pub(crate) use inspection::{inspect_operator, stage_operator_command, validate_approval_request};
 pub(crate) use status::passive_status;
 use status::{PiInspectionResponse, PiPendingResponse, observe_writeback, status_response};
