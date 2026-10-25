@@ -103,9 +103,9 @@ acyclic_test_support::partitioned_tests! {
 }
 
 fn publication_writes(selected: Vec<usize>) -> TestResult {
-    let [partition] = selected.as_slice() else {
-        return Err("one registered publication partition must be selected".into());
-    };
+    let [partition]: [usize; 1] = selected
+        .try_into()
+        .map_err(|_| "one registered publication partition must be selected")?;
     let root = tempfile::tempdir()?;
     let baseline = root.path().join("baseline");
     succeeds(spawn(&baseline, None)?)?;
@@ -120,7 +120,7 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
     // neither wave can fan out processes, descriptors or filesystem flushes.
     let total = usize::try_from(writes.checked_add(1).ok_or("write count overflow")?)?;
     let assigned =
-        acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, *partition, |index| {
+        acyclic_test_support::partitions::indices(total, WRITE_PARTITIONS, partition, |index| {
             index == 0 || index + 1 == total
         })?;
     // The measured transition has 299 crash positions. Four partitions still
