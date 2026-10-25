@@ -74,6 +74,17 @@ enum Kind {
     Write,
 }
 
+/// A writer's one overlapped write, observed in one step.
+#[derive(Debug)]
+pub(in crate::process_tree) enum WriteState {
+    /// The write is still in flight.
+    Pending,
+    /// A write that was pending has completed; its count is now consumed.
+    Completed(io::Result<usize>),
+    /// Nothing is in flight and no count is unconsumed: room to write.
+    Idle,
+}
+
 /// One pipe's single outstanding overlapped operation.
 ///
 /// While an operation is pending the kernel owns `overlapped` and `buffer`,
@@ -178,13 +189,25 @@ impl PipeOperation {
 
     /// Writes at most one chunk of `bytes`: `Ok(Some(n))` when the pipe took
     /// `n` bytes at once, `Ok(None)` while the write is pending. A pending
-    /// write's count arrives through [`Self::take_written`].
+    /// write's count arrives through [`Self::write_state`], and no write
+    /// starts while that count is unconsumed: the caller has not advanced
+    /// past those bytes, so a new write would send them twice.
     pub(in crate::process_tree) fn write(
         self: &Arc<Self>,
         bytes: &[u8],
     ) -> io::Result<Option<usize>> {
         if self.pending.load(Ordering::SeqCst) {
             return Ok(None);
+        }
+        if self
+            .result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+        {
+            return Err(io::Error::other(
+                "a completed stdin write's count is unconsumed",
+            ));
         }
         let length = bytes.len().min(WRITE_CHUNK);
         // SAFETY: no operation is pending, so this process owns the buffer.
@@ -213,15 +236,22 @@ impl PipeOperation {
         self.pending.load(Ordering::SeqCst)
     }
 
-    /// The result of a write that completed after it was started.
-    pub(in crate::process_tree) fn take_written(&self) -> Option<io::Result<usize>> {
+    /// The writer's state, read once. `complete` stores a write's result
+    /// before it clears `pending`, so a writer seen not pending already shows
+    /// any result: a completion cannot land between deciding and acting.
+    pub(in crate::process_tree) fn write_state(&self) -> WriteState {
         if self.pending() {
-            return None;
+            return WriteState::Pending;
         }
-        self.result
+        match self
+            .result
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
+        {
+            Some(result) => WriteState::Completed(result),
+            None => WriteState::Idle,
+        }
     }
 
     fn arm(self: &Arc<Self>, token: u64) -> io::Result<Option<Registration>> {
@@ -262,6 +292,56 @@ impl PipeOperation {
         }
         self.pending.store(false, Ordering::SeqCst);
         self.token.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod write_state_tests {
+    use super::*;
+
+    /// A writer joined to no port: these tests drive its completions directly.
+    fn detached() -> Arc<PipeOperation> {
+        Arc::new(PipeOperation {
+            // SAFETY: an all-zero OVERLAPPED is its documented initial value.
+            overlapped: UnsafeCell::new(unsafe { std::mem::zeroed() }),
+            handle: std::ptr::null_mut(),
+            kind: Kind::Write,
+            pending: AtomicBool::new(false),
+            token: AtomicU64::new(0),
+            buffer: UnsafeCell::new(Vec::new()),
+            result: Mutex::new(None),
+        })
+    }
+
+    /// The port delivering a pending write's completion of `bytes`.
+    fn complete(operation: &PipeOperation, bytes: u32) {
+        operation.pending.store(true, Ordering::SeqCst);
+        // SAFETY: an all-zero entry is a successful status.
+        let mut entry: OVERLAPPED_ENTRY = unsafe { std::mem::zeroed() };
+        entry.dwNumberOfBytesTransferred = bytes;
+        operation.complete(&entry);
+    }
+
+    #[test]
+    fn a_pending_writes_count_is_observed_once_and_never_rewritten() {
+        let operation = detached();
+        operation.pending.store(true, Ordering::SeqCst);
+        assert!(matches!(operation.write_state(), WriteState::Pending));
+        assert!(matches!(operation.write(b"abc"), Ok(None)));
+        complete(&operation, 3);
+        assert!(matches!(operation.write_state(), WriteState::Completed(Ok(3))));
+        assert!(matches!(operation.write_state(), WriteState::Idle));
+    }
+
+    #[test]
+    fn no_write_starts_while_a_completed_count_is_unconsumed() {
+        // The completion lands after the caller saw the write pending: its
+        // bytes are not yet advanced past, so a new write would repeat them.
+        let operation = detached();
+        complete(&operation, 3);
+        let refused = operation.write(b"abc").unwrap_err();
+        assert_eq!(refused.raw_os_error(), None, "a write started: {refused}");
+        assert!(matches!(operation.write_state(), WriteState::Completed(Ok(3))));
     }
 }
 
