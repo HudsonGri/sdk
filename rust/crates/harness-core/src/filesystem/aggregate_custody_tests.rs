@@ -111,7 +111,7 @@ impl Constructor {
                             &authority,
                             4096,
                             io,
-                        )?)
+                        )?);
                     }
                     Self::AuthenticatedPublisher => {
                         drop(FilesystemContentPublisher::from_authenticated(
@@ -120,7 +120,7 @@ impl Constructor {
                             &authority,
                             4096,
                             io,
-                        )?)
+                        )?);
                     }
                     _ => drop(FilesystemInteractionHost::from_authenticated(
                         Arc::new(MemoryStream::default()),

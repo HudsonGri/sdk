@@ -324,7 +324,7 @@ impl OperationRegistry {
             .changes
             .subscribe();
         loop {
-            let current = changes.borrow_and_update().clone();
+            let current = *changes.borrow_and_update();
             if current.phase != OperationPhase::Pending {
                 return Ok(current);
             }
