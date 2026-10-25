@@ -163,20 +163,25 @@ fn policy(case: Case, address: std::net::SocketAddr) -> Value {
     policy
 }
 fn response_text(text: &str, streamed: &str) -> String {
-    let event = json!({"type":"response.output_text.delta","delta":streamed});
-    let completed = json!({"type":"response.output_item.done", "output_index":0,
-        "item":{"type":"message","role":"assistant","content":[
-            {"type":"output_text","text":text}]}});
-    format!(
-        "data: {event}\n\ndata: {completed}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n"
-    )
+    let step = harness_mock_model::Step {
+        text: vec![streamed.to_owned()],
+        ..Default::default()
+    };
+    harness_mock_model::responses_with_completed_text(&step, 64, text)
+        .unwrap()
+        .concat()
 }
 fn call(name: &str, arguments: &Value, sequence: usize) -> String {
-    let event = json!({"type":"response.output_item.done","output_index":0,
-        "item":{"type":"function_call","call_id":format!("approval-{sequence}"),"name":name,"arguments":arguments.to_string()}});
-    format!(
-        "data: {event}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n"
-    )
+    let step = harness_mock_model::Step {
+        tools: vec![harness_mock_model::Tool {
+            id: format!("approval-{sequence}"),
+            name: name.to_owned(),
+            namespace: None,
+            arguments: arguments.clone(),
+        }],
+        ..Default::default()
+    };
+    harness_mock_model::events("responses", &step).unwrap().concat()
 }
 fn tool_result(body: &Value) -> Value {
     let item = body["input"]
@@ -360,7 +365,7 @@ impl Fixture {
                 2 => {
                     assert_eq!(tool_result(body), json!("approval read content\n"));
                     self.effects.fetch_add(1, Ordering::SeqCst);
-                    ANSWER.to_owned()
+                    response_text("fixture answer", "fixture answer")
                 }
                 _ => panic!("read approval repeated the effect"),
             };
@@ -372,7 +377,7 @@ impl Fixture {
                 step,
             )
         } else {
-            ANSWER.to_owned()
+            response_text("fixture answer", "fixture answer")
         }
     }
     fn parent(&self, body: &Value, step: usize) -> String {
@@ -389,7 +394,7 @@ impl Fixture {
             }
             2 => {
                 if self.case.child_human() {
-                    return ANSWER.to_owned();
+                    return response_text("fixture answer", "fixture answer");
                 }
                 let result = tool_result(body);
                 let agent = result
@@ -405,7 +410,7 @@ impl Fixture {
                     "parent was not woken by the approval: {result}"
                 );
                 if matches!(self.case, Case::ParentCompletes) {
-                    return ANSWER.to_owned();
+                    return response_text("fixture answer", "fixture answer");
                 }
                 if matches!(self.case, Case::ParentError) {
                     return "data: malformed\n\n".into();
@@ -427,9 +432,9 @@ impl Fixture {
                     step,
                 )
             }
-            3 if matches!(self.case, Case::ParentHumanWait) => ANSWER.to_owned(),
+            3 if matches!(self.case, Case::ParentHumanWait) => response_text("fixture answer", "fixture answer"),
             3 => call("wait", &json!({"agents":["worker"],"mode":"all"}), step),
-            _ => ANSWER.to_owned(),
+            _ => response_text("fixture answer", "fixture answer"),
         }
     }
     fn router(self) -> Router {

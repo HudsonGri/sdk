@@ -26,6 +26,7 @@ tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 workspace = true
 
 [dev-dependencies]
+harness-mock-model = { path = "../../../../harness-mock-model" }
 acyclic-harness = { path = "../../..", features = ["test-support"] }
 serde.workspace = true
 serde_json.workspace = true
