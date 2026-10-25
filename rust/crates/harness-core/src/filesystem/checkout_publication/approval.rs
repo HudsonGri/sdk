@@ -73,6 +73,7 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
         confirmed: &[u8; 32],
         work: &NativeMaterializationWork,
     ) -> Result<AuthorizedCheckout<'a, C>> {
+        self.require_original_work(work)?;
         self.require_confirmation(confirmed, work)?;
         verifier
             .verify(
@@ -85,6 +86,19 @@ impl<'a, C: Serialize> CheckoutApproval<'a, C> {
             approval: self,
             work: work.clone(),
         })
+    }
+
+    fn require_original_work(&self, work: &NativeMaterializationWork) -> Result<()> {
+        if !self.publication._custody.work().shares_allocation_context(work)
+            || self.journal.custody.as_ref().is_none_or(|custody| {
+                !custody.work().shares_allocation_context(work)
+            })
+        {
+            return Err(Error::Unauthorized(
+                "checkout approval changed its original work owner".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

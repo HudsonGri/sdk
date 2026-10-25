@@ -463,6 +463,50 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
 }
 
 #[tokio::test]
+async fn selected_approval_refuses_a_foreign_work_owner() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let publication = fixture.publication(OperationId::new())?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    let paths = vec!["note".into()];
+    let journal = publication
+        .prepare_selected(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+            (&paths, "original creator"),
+        )
+        .await?;
+    let approval = publication.approval_value(
+        &fixture.from,
+        &fixture.to,
+        &paths,
+        &journal,
+        "original creator",
+    )?;
+    let digest = approval.digest(&fixture.work)?;
+    let interaction = crate::InteractionId::from_bytes([101; 16]);
+    let verifier = PublicationDecision {
+        id: interaction,
+        operation: crate::OperationId::from_bytes(publication.operation.into_bytes()),
+        digest,
+        approved: true,
+    };
+    let foreign = NativeMaterializationWork::new(fixture.work.budget(), &CancellationToken::new())
+        .map_err(|(cause, _)| cause)?;
+    assert!(!foreign.shares_allocation_context(&fixture.work));
+    fixture.work.cancellation().cancel();
+    assert!(matches!(
+        approval.authorize(&verifier, interaction, &digest, &foreign).await,
+        Err(crate::Error::Unauthorized(message))
+            if message == "checkout approval changed its original work owner"
+    ), "foreign work owner authorized");
+    assert!(!fixture.root.join("note").exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_authority_retains_cancellation_and_original_work() -> TestResult {
     let fixture = Fixture::new().await?;
     let publication = fixture.publication(OperationId::new())?;
