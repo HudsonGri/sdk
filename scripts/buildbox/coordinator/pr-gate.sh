@@ -58,6 +58,15 @@ cp Q:/lanes/gate-test-runner.sh "$W/.gate-test-runner.sh"
 # The coordinator helper also protects PRs based on an older source runner.
 printf '\nexport GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh\n' > "$W/.gate-runner-env"
 sed -i '2r '"$W/.gate-runner-env" "$W/.gate-checks.sh"
+# Older reviewed source runners predate diagnostic-stream receipts. Attest
+# their emitted records against the private Cargo output before job cleanup;
+# never synthesize completion from the coordinator's potentially partial log.
+cp Q:/lanes/gate-clippy.py "$W/.gate-clippy.py" &&
+  mv "$W/.gate-checks.sh" "$W/.gate-pr-payload.sh" &&
+  printf '%s\n' '#!/bin/bash' 'exec python3 .gate-clippy.py run bash .gate-pr-payload.sh "$@"' > "$W/.gate-checks.sh" || {
+    echo "error: GATE_RUNNER_INFRA Clippy stream adapter preparation failed; recovery command: bash Q:/lanes/pr-gate.sh $prs" >> "$log"
+    exit 6
+  }
 if [ "$(tr -d '\r' < "$W/.gate-scope-mode")" = full ] || grep -qx 'acyclic-native-runtime' "$W/.gate-clippy-packages" "$W/.gate-tests-packages"; then
   echo 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all' >> "$log"
 fi

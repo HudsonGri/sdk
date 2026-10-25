@@ -6,6 +6,7 @@ workspace discovery still cannot claim coverage; legacy green runs retain only
 package roots actually observed in their output.
 """
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -66,7 +67,10 @@ def check_complete(text, phase):
         covered = re.findall(r'^GATE_TEST_COVERAGE all-targets\+doc packages=(\S+)\s*$', text, re.M)
         return len(covered) == 1
     if phase == 'clippy':
-        return bool(re.search(r'^GATE_CLIPPY rc=0\s*$', text, re.M))
+        spec = importlib.util.spec_from_file_location('gate_clippy_completion', Path(__file__).with_name('gate-clippy.py'))
+        clippy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(clippy)
+        return clippy.complete(text) and re.findall(r'^GATE_CLIPPY rc=(-?\d+)$', text, re.M) == ['0']
     # The native matrix owns the first wall marker; later Windows matrix
     # results must never complete an interrupted or failed native phase.
     native = re.split(r'^GATE_WINDOWS_FEATURES_START(?: |$)', text, maxsplit=1, flags=re.M)[0]
@@ -98,6 +102,10 @@ def select(checkout, base, directory, alerts, phase='tests', exact=False):
     logs = list(directory.glob('[0-9a-f]*.log'))
     if phase != 'tests' or exact:
         logs.extend((directory / 'wide').glob('[0-9a-f]*.log'))
+    if phase == 'clippy' and exact:
+        # A one-phase migration qualification can replace a damaged legacy
+        # stream without rebuilding unrelated test and feature phases.
+        logs.extend((directory / 'clippy').glob('[0-9a-f]*.log'))
     for log in sorted(logs, key=lambda p: p.stat().st_mtime, reverse=True):
         if not re.fullmatch(r'[0-9a-f]{7,40}', log.stem):
             continue

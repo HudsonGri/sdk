@@ -1,6 +1,7 @@
 """Real Git repositories and captured Cargo/main output qualify the base."""
 import importlib.util
 import contextlib
+from hashlib import sha256
 import io
 import json
 import os
@@ -15,6 +16,16 @@ FIXTURES = HERE/'fixtures'
 spec = importlib.util.spec_from_file_location('baseline', HERE/'gate-baseline.py')
 baseline = importlib.util.module_from_spec(spec); spec.loader.exec_module(baseline)
 PHASES = (FIXTURES/'main-32b799-phases.txt').read_text()
+
+
+def completed_clippy_phase(text):
+    # A test-only repaired envelope around an actual complete captured finding;
+    # the original truncated external fixture remains unchanged and refused.
+    warning = next(line for line in (FIXTURES/'main-32b799-truncated-clippy.txt').read_text().splitlines()
+                   if line.startswith('GATE_CLIPPY_FINDING '))
+    block = warning + '\n'
+    original = next(line for line in text.splitlines() if line.startswith('GATE_CLIPPY_FINDING '))
+    return text.replace(original, block + f'GATE_CLIPPY_COMPLETE rc=0 records=1 sha256={sha256(block.encode()).hexdigest()}\nGATE_FEATURES rc=0')
 TEST_PHASES = (FIXTURES/'main-32b799-test-phases.txt').read_text()
 GREEN_PHASES = (FIXTURES/'main-7989-green-test-phases.txt').read_text()
 RED_FEATURES = (FIXTURES/'main-da7eee-red-features.txt').read_text()
@@ -22,6 +33,21 @@ CAPTURED_HEAD = '32b79969bc504e875bb6e9f65611bf0d02ea45e9'
 
 
 class ExactBaselineTests(unittest.TestCase):
+    def test_real_requalified_clippy_replaces_damaged_stream_only_for_its_exact_phase(self):
+        complete = (FIXTURES/'main-32b799-complete-clippy.txt').read_text()
+        self.assertTrue(baseline.check_complete(complete, 'clippy'))
+        self.assertFalse(baseline.check_complete(complete, 'tests'))
+        self.assertFalse(baseline.check_complete(complete, 'features'))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); (root/'clippy').mkdir(); (root/'wide').mkdir()
+            log = root/'clippy'/(CAPTURED_HEAD+'.log'); log.write_text(complete)
+            (root/'wide'/(CAPTURED_HEAD+'.log')).write_text(PHASES)
+            from unittest.mock import patch
+            with patch.object(baseline.subprocess, 'run', return_value=subprocess.CompletedProcess([],0)):
+                self.assertEqual(baseline.select(root,CAPTURED_HEAD,root,
+                    'MAIN_WIDE RED '+CAPTURED_HEAD+': actual captured run', 'clippy', True),log)
+            self.assertFalse(baseline.check_complete(complete.replace('GATE_CLIPPY_COMPLETE ', 'lost '), 'clippy'))
+
     def test_historical_green_fallback_requires_its_executor_receipt(self):
         self.assertTrue(baseline.eligible(GREEN_PHASES))
         for replacement in ['', 'GATE_EXECUTOR rc=-9', 'GATE_EXECUTOR rc=101']:
@@ -137,8 +163,9 @@ class ExactBaselineTests(unittest.TestCase):
             old = commit(); new = commit()
             logs = root/'logs'; (logs/'wide').mkdir(parents=True)
             ancestor = logs/(old+'.log'); exact = logs/'wide'/(new+'.log')
-            ancestor.write_text(PHASES.replace(CAPTURED_HEAD, old))
-            exact.write_text(PHASES.replace(CAPTURED_HEAD, new))
+            qualified = completed_clippy_phase(PHASES)
+            ancestor.write_text(qualified.replace(CAPTURED_HEAD, old))
+            exact.write_text(qualified.replace(CAPTURED_HEAD, new))
             os.utime(ancestor, (exact.stat().st_mtime+10,)*2)
             alerts = f'MAIN_WIDE RED {old}: captured\nMAIN_WIDE RED {new}: captured\n'
             alert_file = root/'alerts'; alert_file.write_text(alerts)
@@ -169,6 +196,7 @@ class ExactBaselineTests(unittest.TestCase):
                 exact.write_text(original)
 
     def test_native_completion_cannot_be_borrowed_from_windows(self):
+        self.assertFalse(baseline.check_complete(PHASES, 'clippy'), 'Cargo success cannot complete truncated findings')
         self.assertTrue(baseline.check_complete(PHASES, 'features'))
         lines = PHASES.splitlines(keepends=True)
         wall = next(line for line in lines if line.startswith('GATE_FEATURES_WALL '))

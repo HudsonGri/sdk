@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const coordinator = dirname(fileURLToPath(import.meta.url));
+const emptyClippy = `GATE_CLIPPY rc=0\nGATE_CLIPPY_COMPLETE rc=0 records=0 sha256=${createHash('sha256').update('').digest('hex')}\n`;
 const scripts = resolve(coordinator, '../..');
 const checker = readFileSync(join(coordinator, 'gate-checks.sh'), 'utf8');
 const pr = readFileSync(join(scripts, 'pr-gate-checks.sh'), 'utf8');
@@ -219,7 +221,7 @@ test('required-phase policy distinguishes formatting, missing execution and exac
 test('actual coordinator validates executor before formatting and never retries a completed rejection', () => fixture(({ cwd, put }) => {
   const source = readFileSync(join(coordinator, 'pr-gate.sh'), 'utf8');
   const from = source.indexOf('# An ended client stream');
-  const to = source.indexOf('# One selector owns');
+  const to = source.indexOf('# Prefer completed tests');
   assert.ok(from >= 0 && to > from);
   const publicScript = join(cwd, 'coordinator.sh');
   const chunk = source.slice(from, to).replaceAll('Q:/lanes', join(cwd, 'scripts/buildbox/coordinator'));
@@ -248,12 +250,12 @@ test('public lint verdict uses the same required-phase policy and retains typed 
   put('scripts/buildbox/coordinator/gate-checks-verdict.sh', readFileSync(join(coordinator, 'gate-checks-results.sh')));
   const log = join(cwd, 'verdict.log');
   const base = join(cwd, 'baseline.log');
-  writeFileSync(base, 'GATE_CLIPPY rc=0\n');
+  writeFileSync(base, emptyClippy);
   const required = 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
   const format = 'Diff in fixture.rs:1:\nGATE_RUSTFMT rc=1 seconds=0 scope=\n';
   const success = 'GATE_WINDOWS_RUNTIME_CLIPPY rc=0 seconds=1 target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all\n';
   const run = (text) => {
-    writeFileSync(log, text + 'GATE_CLIPPY rc=0\n');
+    writeFileSync(log, text + emptyClippy);
     return spawnSync('bash', ['scripts/buildbox/coordinator/gate-checks-verdict.sh', log, base], { cwd, encoding: 'utf8' });
   };
   for (const [text, rc] of [[required + format, 1], [required, 4], [required + success, 0],
@@ -269,7 +271,7 @@ test('public lint verdict uses the same required-phase policy and retains typed 
 test('real log-writer and tool failures stay INFRA through every public host adapter', () => fixture(({ cwd, put, invoke }) => {
   put('bin/tee', '#!/bin/bash\nif [[ "$1" == *gate-windows-runtime.out ]]; then cat; exit 23; fi\nexec /usr/bin/tee "$@"\n');
   const source = readFileSync(join(coordinator, 'pr-gate.sh'), 'utf8');
-  const chunk = source.slice(source.indexOf('# An ended client stream'), source.indexOf('# One selector owns'))
+  const chunk = source.slice(source.indexOf('# An ended client stream'), source.indexOf('# Prefer completed tests'))
     .replaceAll('Q:/lanes', join(cwd, 'scripts/buildbox/coordinator'));
   put('coordinator.sh', '#!/bin/bash\n' + chunk + '\nexit 0\n');
   mkdirSync(join(cwd, '.codex-fleet'));
