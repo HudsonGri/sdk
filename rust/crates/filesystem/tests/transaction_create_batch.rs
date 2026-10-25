@@ -1,3 +1,5 @@
+//! Public create-only batch atomicity, conflict, and staging-cost contracts.
+
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::kernel::FileMetadata;
@@ -51,7 +53,9 @@ async fn commit(
 
 async fn publish(transaction: &mut MemoryTransaction) {
     assert!(matches!(
-        commit(transaction).await.unwrap(),
+        commit(transaction)
+            .await
+            .expect("fixture publication must succeed"),
         TransactionCommit::Committed(_)
     ));
 }
@@ -97,10 +101,12 @@ async fn immutable_batch_rejects_existing_and_duplicate_bindings_atomically() {
                 if pending {
                     transaction.write_text("/pending", target).await.unwrap();
                 }
-                let mut files = vec![("/out/new", content()), (target, content())];
-                if folded && target == "/out/new" {
-                    files[1].0 = "/out/NEW";
-                }
+                let second = if folded && target == "/out/new" {
+                    "/out/NEW"
+                } else {
+                    target
+                };
+                let files = [("/out/new", content()), (second, content())];
                 let failure = transaction
                     .create_batch(
                         &["/uncommitted"],
