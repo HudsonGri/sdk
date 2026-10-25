@@ -324,11 +324,15 @@ jobs:
           set -euo pipefail
           chmod 755 "$RUNNER_TEMP/installer-binary/linux-x64-gnu/acyclic"
           npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+          npm ci --prefix plugin/scripts/fixtures --ignore-scripts --no-audit --no-fund || {
+            printf '%s\n' 'step=prepare pinned installer package managers; recovery: npm ci --prefix plugin/scripts/fixtures --ignore-scripts --no-audit --no-fund' >&2
+            exit 1
+          }
       - name: Exercise transactional installer recovery
         env:
           ACYCLIC_TEST_BINARY: ${{ runner.temp }}/installer-binary/linux-x64-gnu/acyclic
           ACYCLIC_TEST_TEMP_ROOT: ${{ runner.temp }}/installer-fixtures
-        run: node --test --test-reporter=tap --test-concurrency=1 plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs plugin/scripts/install-durable-rename.test.mjs plugin/scripts/install-custody.test.mjs
+        run: node --test --test-reporter=tap plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs plugin/scripts/install-durable-rename.test.mjs plugin/scripts/install-custody.test.mjs
 
   assemble:
     name: Validate and assemble
