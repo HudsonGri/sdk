@@ -1225,8 +1225,8 @@ fn tool_admission_children_keep_bounded_frames() {
                 false,
             )
         });
-        assert!(hooks <= 4096, "tool hooks future is {hooks} bytes");
+        assert!(hooks <= 512, "tool hooks future is {hooks} bytes");
     }
-    assert!(refusal <= 4096, "tool refusal future is {refusal} bytes");
-    assert!(policy <= 4096, "tool policy future is {policy} bytes");
+    assert!(refusal <= 512, "tool refusal future is {refusal} bytes");
+    assert!(policy <= 512, "tool policy future is {policy} bytes");
 }

@@ -188,20 +188,6 @@ fn materialization_children_keep_bounded_frames() {
     ] {
         assert!(bytes <= 4096, "{name} future is {bytes} bytes");
     }
-    let arguments: Option<Inputs<'_>> = None;
-    let symlink = future_bytes(|| {
-        let input = arguments.unwrap();
-        materialize_symlink::<_, _, MaterializeError, _, _>(
-            (input.reader, input.cancellation),
-            input.path,
-            &input.root.0,
-            &input.host.0,
-            0,
-            input.receipt,
-            input.control,
-        )
-    });
-    assert!(symlink <= 4096, "symlink future is {symlink} bytes");
     assert!(metadata <= 4096, "metadata future is {metadata} bytes");
     assert!(sparse <= 4096, "sparse future is {sparse} bytes");
 }

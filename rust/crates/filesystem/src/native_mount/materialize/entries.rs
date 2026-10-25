@@ -2,6 +2,40 @@ use super::*;
 
 type KnownFileLinks = Vec<(FileId, HeldHostPath)>;
 type PendingDirectoryMetadata = Vec<(HeldNamespacePath, HeldHostPath)>;
+
+#[cfg(test)]
+#[test]
+fn symlink_materialization_keeps_its_original_work_frame_bounded() {
+    type Reader = PinnedReader<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+    type Control =
+        fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>;
+    struct Inputs<'a> {
+        reader: &'a Reader,
+        root: &'a HostRoot,
+        path: &'a NamespacePath,
+        host: &'a [HostPathUnit],
+        cancellation: &'a CancellationToken,
+        receipt: &'a mut GenerationReceipt,
+        control: &'a mut Option<&'a mut Control>,
+    }
+    fn future_bytes<F: Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<Inputs<'_>> = None;
+    let bytes = future_bytes(|| {
+        let input = arguments.unwrap();
+        materialize_symlink::<_, _, MaterializeError, _, _>(
+            (input.reader, input.cancellation),
+            input.path,
+            input.root,
+            input.host,
+            0,
+            input.receipt,
+            input.control,
+        )
+    });
+    assert!(bytes <= 4096, "symlink future is {bytes} bytes");
+}
 #[cfg(any(target_os = "macos", windows))]
 type KnownPayload = ((u64, ObjectId, ObjectId), HeldHostPath);
 
