@@ -43,7 +43,6 @@ pub trait AdmissionPolicy: ProviderPlatform {
     ) -> BoxProviderFuture<'a, Result<()>>;
 }
 
-#[derive(Clone)]
 struct Installed {
     manifest: Manifest,
     machines: Vec<Arc<dyn ResumableMachine>>,
@@ -58,7 +57,7 @@ pub struct InProcessRuntime<P: StreamProvider> {
     bindings: Bindings,
     authority: Arc<dyn AdmissionPolicy>,
     effects: Arc<dyn EffectHost>,
-    installed: Mutex<Option<Installed>>,
+    installed: Mutex<Option<Arc<Installed>>>,
 }
 
 impl<P: StreamProvider> InProcessRuntime<P> {
@@ -79,7 +78,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
         }
     }
 
-    fn package(&self) -> Result<Installed> {
+    fn package(&self) -> Result<Arc<Installed>> {
         self.installed
             .lock()
             .map_err(|_| Error::Storage("package installation lock poisoned".into()))?
@@ -111,7 +110,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
         action: AdmissionAction,
         placement: &Placement,
         event: Option<&Event>,
-    ) -> Result<(Installed, Arc<Journal<P>>)> {
+    ) -> Result<(Arc<Installed>, Arc<Journal<P>>)> {
         let package = self.package()?;
         self.authority
             .authorize(action, &package.manifest, Some(placement), event)
@@ -260,7 +259,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
                 ));
             }
             let mut host = DurableWorkflowHost::open(
-                package.registry,
+                package.registry.clone(),
                 current.bootstrap.admission.initial,
                 journal.clone(),
             )
@@ -308,11 +307,11 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                     ));
                 }
             } else {
-                *installed = Some(Installed {
+                *installed = Some(Arc::new(Installed {
                     manifest,
                     machines,
                     registry,
-                });
+                }));
             }
             Ok(())
         })
@@ -403,7 +402,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
                 .create(Entry {
                     snapshot: snapshot.clone(),
                     bootstrap: Some(Bootstrap {
-                        manifest: package.manifest,
+                        manifest: package.manifest.clone(),
                         input,
                         admission,
                     }),
@@ -445,7 +444,7 @@ impl<P: StreamProvider> ActorRuntime for InProcessRuntime<P> {
             // Recovery validates all retained workflow transitions against the
             // pinned implementation even when there is no pending work.
             DurableWorkflowHost::open(
-                package.registry,
+                package.registry.clone(),
                 current.bootstrap.admission.initial,
                 journal.clone(),
             )

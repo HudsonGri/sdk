@@ -146,7 +146,7 @@ async fn replay_decodes_workflow_records_without_duplicate_snapshot_bodies() {
         decoded.is_empty(),
         "replay decoded duplicate snapshot bodies: {decoded:?}"
     );
-    let mut changed = host.package().unwrap().manifest;
+    let mut changed = host.package().unwrap().manifest.clone();
     changed.effects.push("changed".into());
     let changed = Journal::new(stream, changed, owner).unwrap();
     assert!(matches!(

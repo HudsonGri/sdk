@@ -153,6 +153,40 @@ async fn fixture() -> (
 }
 
 #[tokio::test]
+async fn every_admission_shares_the_installed_artifact_and_rechecks_live_authority() {
+    let (_, _, policy, _, host) = fixture().await;
+    let installation = host.package().unwrap();
+    for action in [
+        AdmissionAction::Place,
+        AdmissionAction::Deliver,
+        AdmissionAction::Recover,
+        AdmissionAction::Cancel,
+    ] {
+        let (admitted, _) = host.checked(action, &placement(), None).await.unwrap();
+        assert!(
+            std::ptr::eq(
+                installation.manifest.bindings.streams.as_ptr(),
+                admitted.manifest.bindings.streams.as_ptr(),
+            ),
+            "admission copied the immutable deployment manifest"
+        );
+        assert!(
+            std::ptr::eq(installation.machines.as_ptr(), admitted.machines.as_ptr()),
+            "admission copied the immutable handler table"
+        );
+        policy.0.store(false, Ordering::SeqCst);
+        assert!(
+            matches!(
+                host.checked(action, &placement(), None).await,
+                Err(Error::Unauthorized(_))
+            ),
+            "retained artifact bypassed live workload authorization"
+        );
+        policy.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
 async fn retry_returns_original_checkpoint_and_reopen_replays_the_pinned_machine() {
     let (stream, package, policy, effects, host) = fixture().await;
     let owner = placement();
