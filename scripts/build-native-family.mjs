@@ -3,9 +3,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, rename, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
 import { basename, delimiter, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { napiCli, napiGeneratorIdentity as generatorIdentity } from "./napi-cli.mjs";
 
 
 /** One maintained producer, specialized only by immutable Rust-generated facts. */
@@ -22,7 +22,7 @@ const generationManifestName = "generation-manifest.json";
 const buildInputsReceiptName = `${family.key}-native-build-inputs.receipt.json`;
 const cargoCacheTagSignature = "Signature: 8a477f597d28d172789f06886806bc55";
 const cargoCacheTag = `${cargoCacheTagSignature}\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n`;
-const require = createRequire(import.meta.url);
+const napiGeneratorIdentity = () => generatorIdentity(root);
 const sourceRoots = family.sourceRoots;
 
 function usage() {
@@ -494,24 +494,6 @@ async function createRustcInvocationCapture(crateName = family.rustTarget) {
       await rm(directory, { recursive: true, force: true });
       await rm(invocations, { recursive: true, force: true });
     },
-  };
-}
-
-async function napiGeneratorIdentity() {
-  const packagePath = require.resolve("@napi-rs/cli/package.json");
-  const entryPath = require.resolve("@napi-rs/cli");
-  const packageBytes = await readFile(packagePath);
-  const entryBytes = await readFile(entryPath);
-  const packageManifest = JSON.parse(packageBytes.toString("utf8"));
-  if (typeof packageManifest.version !== "string" || packageManifest.version.length === 0) {
-    throw new Error("@napi-rs/cli package version is unavailable");
-  }
-  return {
-    package: "@napi-rs/cli",
-    version: packageManifest.version,
-    package_sha256: digest(packageBytes),
-    entry_sha256: digest(entryBytes),
-    lock_sha256: digest(await readFile(resolve(root, "bun.lock"))),
   };
 }
 
@@ -1053,7 +1035,7 @@ async function build(options) {
     const packagePath = resolve(temporary, `${randomUUID()}.json`);
     await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
     const runNapiBuild = async () => {
-      const { NapiCli } = require("@napi-rs/cli");
+      const { NapiCli } = napiCli();
       const buildResult = await new NapiCli().build({
         cwd: root,
         packageJsonPath: packagePath,
