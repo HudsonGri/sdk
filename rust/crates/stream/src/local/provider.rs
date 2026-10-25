@@ -7,6 +7,52 @@ impl StreamProvider for LocalStream {
         self.inner.provider.operation_claims()
     }
 
+    fn supports_deferred_durability(&self) -> bool {
+        true
+    }
+
+    async fn durability_barrier(&self) -> Result<(), StreamError> {
+        self.seal_accepted().await
+    }
+
+    fn native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, ()> {
+        let stream = self.clone();
+        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
+            let work = crate::memory::Work::new(meter)?;
+            let stream = Self {
+                work: Some(Arc::clone(&work)),
+                ..stream
+            };
+            let result = async {
+                stream.seal_accepted().await?;
+                Ok(((), None))
+            }
+            .await;
+            work.finish(result)
+        })
+    }
+
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
+        let work = crate::memory::Work::new(Arc::clone(&meter))?;
+        // This ticket survives original cancellation and excludes competing
+        // work from consuming the phase's final durability allowance.
+        work.prepare_durability(1)?;
+        let stream = Self {
+            work: Some(Arc::clone(&work)),
+            ..self.clone()
+        };
+        crate::NativeProviderFuture::try_new(&meter, async move {
+            let result = stream.seal_accepted_with_reservation(true).await;
+            work.finish(result.map(|()| ((), None)))
+        })
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,

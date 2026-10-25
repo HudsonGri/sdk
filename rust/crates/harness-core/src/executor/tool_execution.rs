@@ -452,16 +452,16 @@ impl StockExecution<'_> {
     ) -> Result<ToolInvocationOutcome> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        let claimed = self
-            .claim_tool_invocation(
-                journal,
-                (operation_id, step),
-                &record,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                context,
-                started,
-            )
-            .await?;
+        let completion = super::phase::PreparedPhase::new(journal, self.io)?;
+        let claimed = super::phase::claim(self.claim_tool_invocation(
+            journal,
+            (operation_id, step),
+            &record,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            context,
+            started,
+        ))
+        .await?;
         let execution = self
             .observe_tool_cancellation(
                 journal,
@@ -471,6 +471,14 @@ impl StockExecution<'_> {
                 self.call_tool_executor(tool, context, invocation, claimed),
             )
             .await?;
+        #[cfg(feature = "test-support")]
+        tracing::trace!(
+            target: "acyclic_harness::tool_return",
+            step,
+            executed = claimed,
+            succeeded = execution.as_ref().is_ok_and(|result| result.is_some()),
+            "tool executor returned"
+        );
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
@@ -513,8 +521,15 @@ impl StockExecution<'_> {
                     .map(ToolInvocationOutcome::Settled);
             }
         };
-        self.finish_tool_result(journal, identity, invocation, tool, &result, _hook_context)
-            .await
+        self.finish_tool_result(
+            journal,
+            identity,
+            invocation,
+            tool,
+            &result,
+            (_hook_context, completion),
+        )
+        .await
     }
 
     async fn finish_tool_result(
@@ -524,8 +539,9 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
         result: &ToolResult,
-        _hook_context: &mut Vec<ModelMessage>,
+        completion: (&mut Vec<ModelMessage>, super::phase::PreparedPhase<'_>),
     ) -> Result<ToolInvocationOutcome> {
+        let (_hook_context, completion) = completion;
         let (projection, content) = match self
             .project_tool_output(journal, identity, invocation, tool, result)
             .await?
@@ -536,7 +552,14 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
             match self
-                .complete_with_post_hook::<true>(journal, identity, invocation, result, &projection)
+                .complete_with_post_hook::<true>(
+                    journal,
+                    identity,
+                    invocation,
+                    result,
+                    &projection,
+                    completion,
+                )
                 .await?
             {
                 Ok(feedback) => self.append_hook_context(_hook_context, feedback)?,
@@ -553,6 +576,7 @@ impl StockExecution<'_> {
                     &invocation.call_id,
                     result,
                     &projection,
+                    completion,
                 )
                 .await?;
             Ok(ToolInvocationOutcome::Settled(match publication {
@@ -633,6 +657,7 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         result: &ToolResult,
         projection: &Value,
+        phase: super::phase::PreparedPhase<'_>,
     ) -> Result<ToolSettlement<crate::hooks::HookOutput>> {
         let completion = self.publish_tool_completion(
             journal,
@@ -640,6 +665,7 @@ impl StockExecution<'_> {
             &invocation.call_id,
             result,
             projection,
+            phase,
         );
         let feedback = self.tool_hook(
             identity.0,
@@ -802,6 +828,20 @@ impl StockExecution<'_> {
     }
 
     async fn publish_tool_completion(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        call_id: &str,
+        result: &ToolResult,
+        projection: &Value,
+        completion: super::phase::PreparedPhase<'_>,
+    ) -> Result<ToolSettlement<()>> {
+        completion
+            .run(self.publish_tool_completion_inner(journal, identity, call_id, result, projection))
+            .await
+    }
+
+    async fn publish_tool_completion_inner(
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),

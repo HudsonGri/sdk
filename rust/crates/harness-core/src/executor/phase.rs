@@ -40,7 +40,7 @@ impl ProviderAttempt {
     pub(super) fn generate<'a>(
         self,
         provider: &'a dyn ModelProvider,
-        request: crate::model::PreparedModelRequest,
+        request: &'a crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
         provider.generate(request, dispatch)
@@ -136,5 +136,58 @@ impl DispatchPhase {
             message,
             original,
         }))
+    }
+}
+
+/// Dispatch claims use the provider's pre-admitted durable publication. A
+/// barrier constructed after a committed start could strand an unissued effect.
+pub(crate) async fn claim<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    return acyclic_stream::requiring_durability(future).await;
+    #[cfg(not(all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
+    future.await
+}
+
+pub(crate) async fn run<T>(
+    journal: &dyn ExecutionJournal,
+    io: Option<&PreparationIo>,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    PreparedPhase::new(journal, io)?.run(future).await
+}
+
+/// Completion custody acquired before dispatch or a cancellable phase begins.
+pub(crate) struct PreparedPhase<'a> {
+    barrier: Option<crate::conversation::BoundedContentFuture<'a, ()>>,
+}
+
+impl<'a> PreparedPhase<'a> {
+    pub(crate) fn new(
+        journal: &'a dyn ExecutionJournal,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if journal.supports_deferred_durability() {
+            return Ok(Self {
+                barrier: Some(journal.durability_barrier(io)?),
+            });
+        }
+        let _ = (journal, io);
+        Ok(Self { barrier: None })
+    }
+
+    pub(crate) async fn run<T>(
+        self,
+        future: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some(barrier) = self.barrier {
+            let result = acyclic_stream::deferring_durability(future).await;
+            // Includes errors and the winning branch of a cancellation race.
+            barrier.await?;
+            return result;
+        }
+        let _ = self.barrier;
+        future.await
     }
 }
