@@ -24,11 +24,12 @@ fn key(file: ChildFile) -> FileKey {
         file,
     }
 }
-fn claimed(value: Option<ChildTurn>) -> ChildTurnClaim {
-    let Some(ChildTurn::Claimed { claim, .. }) = value else {
+fn claimed(value: Option<ChildTurn>, expected_input: &[u8]) -> ChildTurnClaim {
+    let Some(ChildTurn::Claimed(execution)) = value else {
         panic!("expected owned input")
     };
-    claim
+    assert_eq!(execution.input().bytes.as_ref(), expected_input);
+    execution.claim().clone()
 }
 
 async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> {
@@ -47,6 +48,7 @@ async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> 
         volume
             .claim_child_turn(&reference(), task(), operation(2), publication(cut))
             .await?,
+        b"first input",
     );
     assert_eq!(volume.head().await?.position, cut.position + 1);
     let observed = observer
@@ -142,6 +144,7 @@ async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> 
         volume
             .claim_child_turn(&reference(), task(), operation(3), publication(cut))
             .await?,
+        b"second input",
     );
     assert_eq!(second.turn, 2);
     let observed = volume
@@ -391,6 +394,7 @@ async fn one_record_replay_and_follow_cannot_split_a_turn_transition() -> Result
         writer
             .claim_child_turn(&reference(), task(), operation(20), publication(cut))
             .await?,
+        b"one",
     );
     let (_, complete) = reader.refresh_bounded::<true>(1).await?;
     assert!(complete, "one replay record contains the entire claim");

@@ -62,16 +62,54 @@ pub struct ChildTurnPublication<'a> {
     pub work: NativeWork<'a>,
 }
 
+/// One execution grant, issued only by the successful input-claim commit.
+///
+/// A durable claim is an observation and can be cloned or deserialized. This
+/// grant cannot: an adapter cannot manufacture another execution from it.
+///
+/// ```compile_fail
+/// use acyclic_harness_core::task_volume::{ChildTurn, ChildTurnClaim, FileValue};
+/// fn manufacture(claim: ChildTurnClaim, input: FileValue) -> ChildTurn {
+///     ChildTurn::Claimed { claim, input }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use acyclic_harness_core::task_volume::{ChildTurnExecution, ChildTurnClaim, FileValue};
+/// fn manufacture(claim: ChildTurnClaim, input: FileValue) -> ChildTurnExecution {
+///     ChildTurnExecution { claim, input }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use acyclic_harness_core::task_volume::ChildTurnExecution;
+/// fn duplicate(execution: ChildTurnExecution) -> (ChildTurnExecution, ChildTurnExecution) {
+///     (execution.clone(), execution)
+/// }
+/// ```
+#[derive(Debug)]
+pub struct ChildTurnExecution {
+    claim: ChildTurnClaim,
+    input: FileValue,
+}
+
+impl ChildTurnExecution {
+    /// Durable identity for observation and recovery, without a second grant.
+    pub fn claim(&self) -> &ChildTurnClaim {
+        &self.claim
+    }
+
+    /// Original accepted input, retaining its immutable segment's custody.
+    pub fn input(&self) -> &FileValue {
+        &self.input
+    }
+}
+
 /// A claim replay cannot accidentally execute an already settled turn.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ChildTurn {
-    /// The exact input owned by the supplied claim operation.
-    Claimed {
-        /// Exact operation fence for this execution.
-        claim: ChildTurnClaim,
-        /// One original accepted input, granted only by the winning commit.
-        input: FileValue,
-    },
+    /// Move-only execution authority returned only by the winning commit.
+    Claimed(ChildTurnExecution),
     /// An existing claim is an observation, never another execution grant.
     /// Recover it only after the native host proves that its previous process
     /// custody has stopped; no input is returned for accidental redelivery.
@@ -187,7 +225,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         drop(index);
         self.commit_append(expected, prepared, deadline, work)
             .await?;
-        Ok(Some(ChildTurn::Claimed { claim, input }))
+        Ok(Some(ChildTurn::Claimed(ChildTurnExecution {
+            claim,
+            input,
+        })))
     }
 
     /// Atomically publishes the outcome and quiescent status of an exact claim.

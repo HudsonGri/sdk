@@ -5,7 +5,7 @@ pub use cancellation::{cancellation_key, is_cancellation};
 mod child_queries;
 pub use child_queries::{ChildObservation, ChildResultWindow};
 mod child_turn;
-pub use child_turn::{ChildTurn, ChildTurnClaim, ChildTurnPublication};
+pub use child_turn::{ChildTurn, ChildTurnClaim, ChildTurnExecution, ChildTurnPublication};
 mod child_result;
 #[doc(hidden)]
 pub use child::child_scope;
