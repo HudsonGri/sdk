@@ -140,6 +140,44 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
 }
 
 #[test]
+fn pending_recovery_control_retires_after_its_original_invocation_is_cancelled() -> TestResult {
+    let cancellation = crate::CancellationToken::new();
+    let original = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let credit = original
+        .reserve_work(WorkCounters::UNCHARGED)?
+        .into_runtime_credit()?;
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = credit.clone();
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || -> std::io::Result<c_int> {
+            blocked.recv().map_err(std::io::Error::other)?;
+            Ok(0)
+        },
+        Some((meter, true)),
+    )?;
+    let mut control = DarwinRecoveryControl {
+        direct: Some(DirectDetach {
+            task,
+            credit: Arc::clone(&credit),
+            started: false,
+        }),
+        ..Default::default()
+    };
+    control.poll_direct(&ProbeWork::Cleanup(&credit, None))?;
+    assert!(
+        control.controls_pending(),
+        "the submitted operation remains owned"
+    );
+    cancellation.cancel();
+    release.send(())?;
+    control.retire_controls(&original)?;
+    assert!(!control.controls_pending());
+    assert!(cancellation.is_cancelled());
+    assert!(!control.namespace_detach_confirmed());
+    Ok(())
+}
+
+#[test]
 fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> TestResult {
     let original = work(
         crate::WorkBudget::UNBOUNDED,
