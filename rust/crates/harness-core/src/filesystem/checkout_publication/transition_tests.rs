@@ -248,7 +248,9 @@ impl crate::tool::ToolApprovalVerifier for PublicationDecision {
         _: crate::OperationId,
         _: [u8; 32],
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>> {
-        panic!("selected approval used an unmetered verifier")
+        Box::pin(std::future::ready(Err(crate::Error::Unsupported(
+            "selected approval requires original native work".into(),
+        ))))
     }
     fn verify_with_native_work<'a>(
         &'a self,
@@ -538,7 +540,9 @@ async fn selected_approval_refuses_an_ordinary_only_verifier() -> TestResult {
             _: crate::OperationId,
             _: [u8; 32],
         ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>> {
-            panic!("selected approval fell back to ordinary verification")
+            Box::pin(std::future::ready(Err(crate::Error::Unsupported(
+                "selected approval fell back to ordinary verification".into(),
+            ))))
         }
     }
     let fixture = Fixture::new().await?;
@@ -576,7 +580,7 @@ async fn selected_approval_refuses_an_ordinary_only_verifier() -> TestResult {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "approval verifier requires original native work support",
         })
-    ));
+    ), "selected approval fell back to ordinary verification");
     assert!(!fixture.root.join("note").exists());
     Ok(())
 }
