@@ -167,8 +167,7 @@ impl ProjectionCore {
         root: MountLookup,
         stamp: Option<ViewStamp>,
         writable: bool,
-        uid: u32,
-        gid: u32,
+        owner: (u32, u32),
         inode_base: u64,
         work: &Work,
     ) -> Result<Arc<Self>, NativeMountError> {
@@ -182,7 +181,7 @@ impl ProjectionCore {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let mut state = ProjectionState::new(writable, uid, gid, inode_base);
+        let mut state = ProjectionState::new(writable, owner.0, owner.1, inode_base);
         state.next_inode = state.root_inode;
         state.intern_projected(
             FuseOwned::empty(MountPath::root()),

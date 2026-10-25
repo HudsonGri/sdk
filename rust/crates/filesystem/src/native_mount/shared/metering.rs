@@ -98,7 +98,7 @@ pub(crate) fn select(
     Ok(selected)
 }
 
-/// Checks a callback's write against the installed guard. ProjFS checks an
+/// Checks a callback's write against the installed guard. `ProjFS` checks an
 /// authored callback's write as part of [`select`] instead.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn verify_write(
