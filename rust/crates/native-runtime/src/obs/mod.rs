@@ -35,14 +35,16 @@ pub struct OperationSpan {
     dispatch: Dispatch,
 }
 
-#[cfg(not(test))]
-use tracing::dispatcher::with_default as with_dispatch;
-
-#[cfg(test)]
 #[inline]
-fn with_dispatch<T>(dispatch: &Dispatch, work: impl FnOnce() -> T) -> T {
+fn dispatch_guard(dispatch: &Dispatch) -> tracing::dispatcher::DefaultGuard {
+    #[cfg(test)]
     tests::DISPATCH_INSTALLS.with(|count| count.set(count.get() + 1));
-    tracing::dispatcher::with_default(dispatch, work)
+    tracing::dispatcher::set_default(dispatch)
+}
+
+fn with_dispatch<T>(dispatch: &Dispatch, work: impl FnOnce() -> T) -> T {
+    let _dispatch = dispatch_guard(dispatch);
+    work()
 }
 
 impl OperationSpan {
@@ -93,16 +95,23 @@ impl OperationSpan {
     }
     /// Runs work under its originating dispatcher and context.
     pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        Self::in_optional_scope(Some(self), work)
+    }
+
+    fn in_optional_scope<T>(origin: Option<&Self>, work: impl FnOnce() -> T) -> T {
         // Preserve isolation when an unobserved producer is later polled under
         // a foreign subscriber, but install no dispatcher when both ends are idle.
-        if self.dispatch.is::<tracing::subscriber::NoSubscriber>()
-            && tracing::dispatcher::get_default(|current| {
-                current.is::<tracing::subscriber::NoSubscriber>()
-            })
-        {
-            return work();
-        }
-        with_dispatch(&self.dispatch, || self.context.in_scope(work))
+        let observed = origin.filter(|origin| {
+            !origin.dispatch.is::<tracing::subscriber::NoSubscriber>()
+                || !tracing::dispatcher::get_default(|current| {
+                    current.is::<tracing::subscriber::NoSubscriber>()
+                })
+        });
+        let _dispatch = observed.map(|origin| dispatch_guard(&origin.dispatch));
+        let _context = observed.map(|origin| origin.context.enter());
+        // Invoke the producer at one site after entering its guards. Branching
+        // around it duplicates inlined poll/drop frames in every tracing layer.
+        work()
     }
     /// Retains a producer's context through polling and destruction.
     pub fn scope<T>(&self, inner: T) -> Scoped<T> {
