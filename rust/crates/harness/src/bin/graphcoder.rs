@@ -27,9 +27,7 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let result = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
+    let result = acyclic_native_runtime::coordination_runtime()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
