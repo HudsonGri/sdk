@@ -8,10 +8,6 @@ use std::{
     time::Duration,
 };
 
-#[expect(
-    clippy::disallowed_macros,
-    reason = "Cargo-provided companion executable metadata"
-)]
 const EXECUTABLE: &str = env!("CARGO_BIN_EXE_sdk-local");
 
 #[tokio::test]

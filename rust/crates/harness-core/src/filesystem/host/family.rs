@@ -162,6 +162,9 @@ mod tests {
             let result = host.select_generation(&parent, selected, &io).await;
             assert!(result.is_err(), "cut={cut}/{required}");
             drop((result, io));
+            // The final receipt drains shared proof-accounting metadata after
+            // the last checkout publisher retires, including error paths.
+            let _completed = original.receipt();
             assert_eq!(
                 original.live_allocation_bytes(),
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),

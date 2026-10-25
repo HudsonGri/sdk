@@ -149,7 +149,7 @@ impl Opening {
         Ok((directory, checkout))
     }
 
-    async fn storage(&self) -> Result<Storage> {
+    fn initialize_storage_services(&self) -> Result<()> {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
@@ -169,6 +169,11 @@ impl Opening {
         {
             return Err(Error::Invalid("local workspace is not a directory".into()));
         }
+        Ok(())
+    }
+
+    async fn storage(&self) -> Result<Storage> {
+        self.initialize_storage_services()?;
         let (directory, checkout) = self.checkout()?;
         #[cfg(test)]
         let checkout = match (&self.config.project, owner::RECAPTURE.get()) {
@@ -215,11 +220,15 @@ impl Opening {
         let workspace = self
             .workspace(
                 &filesystem,
-                &directory,
-                &owner,
-                &scratch,
+                workspace::Attach {
+                    volume: &owner.project,
+                    scratch: &scratch,
+                    directory: &directory,
+                    operation: workspace::attach_operation(owner.task),
+                    native_mounts: self.native_mounts,
+                    authority: Some((&issuer, owner.agent)),
+                },
                 checkout,
-                &issuer,
                 store,
             )
             .await?;
@@ -263,11 +272,8 @@ impl Opening {
     async fn workspace(
         &self,
         filesystem: &acyclic_fs::LocalFs,
-        directory: &Path,
-        owner: &owner::Owner,
-        scratch: &VolumeRef,
+        attach: workspace::Attach<'_>,
         checkout: Option<owner::Checkout>,
-        issuer: &AuthorityIssuer,
         store: acyclic_fs::LocalCoreStateStore,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
@@ -278,15 +284,7 @@ impl Opening {
         // dead previous owner left is dead; owners in this process share it.
         let state = workspace::OwnerState {
             store,
-            processes: Some(fence_stale_processes(directory.join("processes")).await?),
-        };
-        let attach = workspace::Attach {
-            volume: &owner.project,
-            scratch,
-            directory,
-            operation: workspace::attach_operation(owner.task),
-            native_mounts: self.native_mounts,
-            authority: Some((issuer, owner.agent)),
+            processes: Some(fence_stale_processes(attach.directory.join("processes")).await?),
         };
         let workspace = match &self.config.project {
             LocalProject::Workspace(_) => {

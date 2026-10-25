@@ -1112,7 +1112,7 @@ proptest::proptest! {
     ) {
         futures::executor::block_on(async {
             let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
-            let id = |index: usize| WorkspaceId::from_bytes([index as u8 + 1; 16]);
+            let id = |index: usize| WorkspaceId::from_bytes((index as u128 + 1).to_le_bytes());
             let mut parents = Vec::new();
             for (index, link) in links.iter().enumerate() {
                 let parent = usize::from(*link) % (links.len() + 1);
@@ -1139,7 +1139,9 @@ proptest::proptest! {
             }
             let cancellation = CancellationToken::new();
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-            let mut cursor = graph.walk(id(0), links.len() as u32 + 1);
+            let depth = u32::try_from(links.len())
+                .map_err(|_| proptest::test_runner::TestCaseError::fail("chain depth overflows"))?;
+            let mut cursor = graph.walk(id(0), depth + 1);
             let mut observed = Vec::new();
             let outcome = loop {
                 match cursor.next_record(&mut accounting).await {

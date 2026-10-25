@@ -413,31 +413,36 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         },
     )?);
     if create {
-        let operation = OperationId::from_bytes([46; 16]);
-        let interaction = InteractionId::from_bytes([47; 16]);
-        journal
-            .open_interaction(
-                interaction,
-                &Interaction::approval(
-                    "Install this exact MCP catalog".into(),
-                    operation,
-                    catalog().installation_digest(None, 1, 8192)?,
-                )?,
-                None,
-            )?
-            .await?;
-        journal
-            .resolve_interaction(
-                interaction,
-                InteractionResponse::Approval {
-                    approved: true,
-                    reason: None,
-                },
-                &signed,
-            )
-            .await?;
+        approve_installation(&journal, &signed).await?;
     }
     Ok((journal, issuer, signed))
+}
+
+async fn approve_installation(journal: &LocalJournal, signed: &Scope) -> Result<()> {
+    let operation = OperationId::from_bytes([46; 16]);
+    let interaction = InteractionId::from_bytes([47; 16]);
+    journal
+        .open_interaction(
+            interaction,
+            &Interaction::approval(
+                "Install this exact MCP catalog".into(),
+                operation,
+                catalog().installation_digest(None, 1, 8192)?,
+            )?,
+            None,
+        )?
+        .await?;
+    journal
+        .resolve_interaction(
+            interaction,
+            InteractionResponse::Approval {
+                approved: true,
+                reason: None,
+            },
+            signed,
+        )
+        .await?;
+    Ok(())
 }
 
 async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {

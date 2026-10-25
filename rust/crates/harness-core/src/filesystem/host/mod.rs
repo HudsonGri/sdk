@@ -112,7 +112,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             native_skills: self.native_skills.clone(),
             #[cfg(feature = "filesystem-local")]
-            project_family: self.project_family.clone(),
+            project_family: self.project_family,
             _native_custody: None,
         }))
     }

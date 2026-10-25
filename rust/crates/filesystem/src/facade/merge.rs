@@ -254,18 +254,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .workspace_head_state(target, accounting, cancellation)
             .await?
             .0;
-        let target_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: expected_target.digest(),
-        };
-        let base_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: base.id.digest(),
-        };
-        let source_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: source.id.digest(),
-        };
+        let [target_object, base_object, source_object] = [expected_target, base.id, source.id]
+            .map(|generation| ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: generation.digest(),
+            });
         let [mut base_root, mut source_root, target_root] = self
             .read_join_roots_with_accounting(
                 [base_object, source_object, target_object],

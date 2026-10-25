@@ -201,27 +201,8 @@ where
             .map_err(|failure| failure.error)?
             .value
             .0;
-        let mut paths = changed
-            .iter()
-            .map(|change| {
-                portable_namespace_path(&change.path).ok_or_else(|| {
-                    WorkspaceMultiRootPublisherError::Candidate(
-                        "conflict abort cannot represent a non-portable path".to_owned(),
-                    )
-                })
-            })
-            // A held conflict can have no projected delta. Its user's later
-            // resolution still belongs to this merge and must be undone.
-            .chain(conflicts.into_iter().flat_map(|plan| plan.conflicts.iter()).map(|conflict| {
-                conflict.path.as_ref().map(|path| format!("/{}", path.trim_start_matches('/'))).ok_or_else(|| {
-                    WorkspaceMultiRootPublisherError::Candidate(
-                        "conflict abort cannot represent an unresolved identity without a portable path".to_owned(),
-                    )
-                })
-            }))
-            .collect::<Result<Vec<_>, _>>()?;
-        paths.sort_unstable();
-        paths.dedup();
+        let paths = conflict_abort_paths(&changed, conflicts)
+            .map_err(WorkspaceMultiRootPublisherError::Candidate)?;
         if paths.is_empty() {
             // Neither the projection nor its durable conflict set owns a path.
             return Ok(current.id());

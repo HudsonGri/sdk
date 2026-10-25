@@ -154,3 +154,28 @@ pub(super) fn decode_reservation<E: std::error::Error + 'static>(
     }
     Ok(decoded)
 }
+
+// The durable projection and conflict set jointly identify this operation's undo.
+pub(super) fn conflict_abort_paths(
+    changed: &[crate::ChangedPath],
+    conflicts: Option<&crate::MergePlan>,
+) -> Result<Vec<String>, String> {
+    let mut paths = changed
+            .iter()
+            .map(|change| {
+                portable_namespace_path(&change.path).ok_or_else(|| {
+                    "conflict abort cannot represent a non-portable path".to_owned()
+                })
+            })
+            // A held conflict can have no projected delta. Its user's later
+            // resolution still belongs to this merge and must be undone.
+            .chain(conflicts.into_iter().flat_map(|plan| plan.conflicts.iter()).map(|conflict| {
+                conflict.path.as_ref().map(|path| format!("/{}", path.trim_start_matches('/'))).ok_or_else(|| {
+                    "conflict abort cannot represent an unresolved identity without a portable path".to_owned()
+                })
+            }))
+            .collect::<Result<Vec<_>, _>>()?;
+    paths.sort_unstable();
+    paths.dedup();
+    Ok(paths)
+}

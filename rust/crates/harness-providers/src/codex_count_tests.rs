@@ -28,7 +28,7 @@ proptest! {
         // Independent pre-consolidation Serde bytes are the wire oracle. The
         // shared encoder must preserve both the total and every prefix hash.
         let header = serde_json::to_vec(&(&request.model, &request.tools)).unwrap();
-        let mut wire = header.clone();
+        let mut wire = header;
         let mut pretty_wire = serde_json::to_vec_pretty(&(&request.model, &request.tools)).unwrap();
         for (index, message) in request.messages.iter().enumerate() {
             wire.extend(serde_json::to_vec(message).unwrap());

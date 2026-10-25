@@ -65,6 +65,13 @@ pub(super) fn core_lazy_work(
     if let Some(original) = accounting.native_work() {
         return Ok(original.clone());
     }
+    // Standalone callers own service startup. Complete it before creating the
+    // measured bridge; an original native request must already have a host.
+    acyclic_native_runtime::initialize_native_io_services().map_err(|error| {
+        crate::LazyWorkspaceError::NativeWork(
+            crate::NativeTreeMaterializationError::from_runtime_error(error),
+        )
+    })?;
     let cancellation = match &*accounting {
         crate::kernel::KernelAccounting::Standalone { cancellation, .. }
         | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. } => *cancellation,
