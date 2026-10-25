@@ -78,34 +78,64 @@ async fn admitted_child_observation_is_read_only_and_rejects_unknown_or_foreign_
     let reference = crate::task_volume::Component::new("delegate").unwrap();
     let before = harness.task_files.inner.head().await.unwrap();
     let (task, first) = harness
-        .observe_admitted_child(&reference, parent, 0, 1)
+        .observe_admitted_child(
+            &harness.task_files,
+            &reference,
+            parent,
+            crate::task_volume::ChildResultWindow::After(0),
+            1,
+        )
         .await
-        .unwrap()
-        .expect("complete child cut");
+        .unwrap();
     assert_eq!(first.results.len(), 1);
     assert_eq!(first.generation, before);
     let (same, second) = harness
-        .observe_admitted_child(&reference, parent, 1, 1)
+        .observe_admitted_child(
+            &harness.task_files,
+            &reference,
+            parent,
+            crate::task_volume::ChildResultWindow::After(1),
+            1,
+        )
         .await
-        .unwrap()
-        .expect("complete repeated cut");
+        .unwrap();
     assert_eq!(same, task);
     assert!(second.results.is_empty());
     assert_eq!(second.generation, before);
     assert!(matches!(
         harness
-            .observe_admitted_child(&reference, TaskId::new(), 0, 1)
+            .observe_admitted_child(
+                &harness.task_files,
+                &reference,
+                TaskId::new(),
+                crate::task_volume::ChildResultWindow::After(0),
+                1
+            )
             .await,
         Err(Error::Conflict(_))
     ));
     let unknown = crate::task_volume::Component::new("unknown").unwrap();
     assert!(matches!(
-        harness.observe_admitted_child(&unknown, parent, 0, 1).await,
+        harness
+            .observe_admitted_child(
+                &harness.task_files,
+                &unknown,
+                parent,
+                crate::task_volume::ChildResultWindow::After(0),
+                1
+            )
+            .await,
         Err(Error::NotFound(_))
     ));
     assert!(
         harness
-            .observe_admitted_child(&reference, parent, 0, 0)
+            .observe_admitted_child(
+                &harness.task_files,
+                &reference,
+                parent,
+                crate::task_volume::ChildResultWindow::After(0),
+                0
+            )
             .await
             .is_err()
     );

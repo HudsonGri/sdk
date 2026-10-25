@@ -1,19 +1,35 @@
 //! Lifecycle cuts exclude retained prompts, inbox bodies and earlier answers.
 use super::*;
 
+/// Selects a bounded range in the existing ordered child-result index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildResultWindow {
+    /// Results strictly after this completed turn, in increasing order.
+    After(u64),
+    /// The most recent results, in increasing order within the returned page.
+    Latest,
+}
+
 /// One coherent direct-child observation with a caller-bounded answer window.
 /// Retained prompts, older answers and unrelated children are never projected.
 #[derive(Clone, Debug)]
 pub struct ChildObservation {
     /// Desired state after the latest admitted control.
     pub state: ChildState,
+    /// Exact admitted control at this cut; absence differs from Resume.
+    pub control: Option<Control>,
     /// Last worker acknowledgment, absent before its first claim.
     pub status: Option<ChildStatus>,
+    /// Original publication of the status at this same cut.
+    pub status_publication: Option<crate::OperationId>,
+    /// Existing durable execution claim identified by that status publication.
+    /// This is an observation; execution still requires the claim API's fence.
+    pub claim: Option<ChildTurnClaim>,
     /// Inputs not yet acknowledged as delivered.
     pub pending_inputs: u64,
     /// Gapless delivered input sequence.
     pub delivered: u64,
-    /// At most the requested number of immutable answers after the turn cursor.
+    /// At most the requested number of immutable answers in the selected window.
     pub results: Vec<FileValue>,
     /// Exact task-volume cut shared by all fields above.
     pub generation: Generation,
@@ -22,42 +38,46 @@ pub struct ChildObservation {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
-    /// Observes one admitted child without scanning its siblings or replaying
-    /// answer bodies before `after`. `None` denotes bounded journal progress;
-    /// no incomplete observation is returned as a settled child.
+    /// Observes one admitted child at the captured accepted tail. Journal
+    /// continuation stays in the canonical refresh operation; callers never
+    /// repeat an admitted mutation to obtain its observation. Only the selected
+    /// result window is projected, without scanning sibling files.
     pub async fn observe_child(
         &self,
         reference: &Component,
-        after: u64,
+        window: ChildResultWindow,
         maximum: usize,
-    ) -> Result<Option<ChildObservation>> {
+    ) -> Result<ChildObservation> {
         if maximum == 0 {
             return Err(Error::LimitExceeded);
         }
-        let (_, complete) = self.refresh_bounded::<true>(maximum as u64).await?;
-        if !complete {
-            return Ok(None);
-        }
+        self.refresh().await?;
         let index = self.index.lock().await;
         let LifecycleObservation {
             state,
+            control,
             status,
+            status_publication,
+            claim,
             pending_inputs,
             delivered,
             results,
-        } = observation(&index, reference, after, maximum)?;
+        } = observation(&index, reference, window, maximum)?;
         let generation = self.generation(&index);
         drop(index);
         let watermarks = self.provider.watermarks(self.path.clone()).await?;
-        Ok(Some(ChildObservation {
+        Ok(ChildObservation {
             state,
+            control,
             status,
+            status_publication,
+            claim,
             pending_inputs,
             delivered,
             results,
             generation,
             cursor: self.cursor(&Query::Child(reference.clone()), generation, watermarks)?,
-        }))
+        })
     }
 
     /// A bounded direct-child page, resuming strictly after its last reference.
@@ -96,7 +116,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             return Ok(None);
         }
         let index = self.index.lock().await;
-        Ok(Some(result_page(&index, reference, after, maximum)))
+        Ok(Some(result_page(
+            &index,
+            reference,
+            ChildResultWindow::After(after),
+            maximum,
+        )))
     }
 
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -186,25 +211,47 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
-fn result_page(index: &Index, reference: &Component, after: u64, maximum: usize) -> Vec<FileValue> {
-    let Some(first) = after.checked_add(1) else {
-        return Vec::new();
+fn result_page(
+    index: &Index,
+    reference: &Component,
+    window: ChildResultWindow,
+    maximum: usize,
+) -> Vec<FileValue> {
+    let first = match window {
+        ChildResultWindow::After(after) => match after.checked_add(1) {
+            Some(first) => first,
+            None => return Vec::new(),
+        },
+        ChildResultWindow::Latest => 1,
     };
     let key = |turn| FileKey::Child {
         reference: reference.clone(),
         file: ChildFile::Result(turn),
     };
-    index
-        .files
-        .range(key(first)..=key(u64::MAX))
-        .take(maximum)
-        .map(|(_, stored)| stored.file.clone())
-        .collect()
+    let range = index.files.range(key(first)..=key(u64::MAX));
+    match window {
+        ChildResultWindow::After(_) => range
+            .take(maximum)
+            .map(|(_, stored)| stored.file.clone())
+            .collect(),
+        ChildResultWindow::Latest => {
+            let mut page: Vec<_> = range
+                .rev()
+                .take(maximum)
+                .map(|(_, stored)| stored.file.clone())
+                .collect();
+            page.reverse();
+            page
+        }
+    }
 }
 
 struct LifecycleObservation {
     state: ChildState,
+    control: Option<Control>,
     status: Option<ChildStatus>,
+    status_publication: Option<crate::OperationId>,
+    claim: Option<ChildTurnClaim>,
     pending_inputs: u64,
     delivered: u64,
     results: Vec<FileValue>,
@@ -213,7 +260,7 @@ struct LifecycleObservation {
 fn observation(
     index: &Index,
     reference: &Component,
-    after: u64,
+    window: ChildResultWindow,
     maximum: usize,
 ) -> Result<LifecycleObservation> {
     let key = |file| FileKey::Child {
@@ -224,12 +271,15 @@ fn observation(
     if !index.child_requests.contains(reference) {
         return Err(Error::InvalidSegment);
     }
-    let state = super::child_turn::child_state(index, reference)?;
-    let status = index
-        .files
-        .get(&key(ChildFile::Status))
+    let (state, control) = super::child_turn::child_lifecycle(index, reference)?;
+    let status_file = index.files.get(&key(ChildFile::Status));
+    let status = status_file
         .map(|stored| ChildStatus::parse(&stored.file.bytes))
         .transpose()?;
+    let status_publication = status_file.and_then(|stored| stored.file.publication);
+    let claim = status_publication
+        .and_then(|operation| index.child_claims.get(&operation))
+        .cloned();
     let delivered = match index.files.get(&key(ChildFile::Delivered)) {
         Some(stored) => {
             let (task, delivered): (crate::TaskId, u64) =
@@ -247,12 +297,22 @@ fn observation(
         .get(reference)
         .map_or(0, |inputs| inputs.len() as u64);
     let pending_inputs = inputs.checked_sub(delivered).ok_or(Error::InvalidSegment)?;
+    if claim.as_ref().is_some_and(|claim| {
+        claim.reference != *reference
+            || status.is_none_or(|status| status.task != claim.task || status.inputs != claim.turn)
+            || delivered != claim.turn
+    }) {
+        return Err(Error::FenceConflict);
+    }
     Ok(LifecycleObservation {
         state,
+        control,
         status,
+        status_publication,
+        claim,
         pending_inputs,
         delivered,
-        results: result_page(index, reference, after, maximum),
+        results: result_page(index, reference, window, maximum),
     })
 }
 
@@ -305,6 +365,28 @@ mod tests {
                 actual.extend(page);
             }
             prop_assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn latest_results_select_the_bounded_suffix_of_the_same_index(
+            turns in proptest::collection::btree_set(1u64..10_000, 0..256), maximum in 1usize..17,
+        ) {
+            let mut index = Index::default();
+            let reference = reference(7)?;
+            for turn in &turns {
+                let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Result(*turn) };
+                apply(&mut index, FileValue::new(key, Vec::new()), *turn);
+            }
+            let (page, examined) = crate::test_support::measure_task_volume_work(|| {
+                result_page(&index, &reference, ChildResultWindow::Latest, maximum)
+            });
+            let actual: Vec<_> = page.into_iter().filter_map(|file| match file.key {
+                FileKey::Child { file: ChildFile::Result(turn), .. } => Some(turn),
+                _ => None,
+            }).collect();
+            let expected: Vec<_> = turns.iter().skip(turns.len().saturating_sub(maximum)).copied().collect();
+            prop_assert_eq!(actual, expected);
+            prop_assert!(examined <= maximum as u64);
         }
     }
     fn populated() -> Result<Index> {
@@ -380,8 +462,9 @@ mod tests {
                 10 + turn,
             );
         }
-        let (observed, examined) =
-            crate::test_support::measure_task_volume_work(|| observation(&index, &reference, 4, 4));
+        let (observed, examined) = crate::test_support::measure_task_volume_work(|| {
+            observation(&index, &reference, ChildResultWindow::After(4), 4)
+        });
         let observed = observed?;
         assert_eq!(observed.state, ChildState::Running);
         assert_eq!(observed.status, Some(status));
@@ -396,7 +479,10 @@ mod tests {
             vec![5, 6, 7, 8]
         );
         assert_eq!(examined, 9);
-        assert!(result_page(&index, &reference, u64::MAX, 4).is_empty());
+        let latest = observation(&index, &reference, ChildResultWindow::Latest, 1)?;
+        assert_eq!(latest.results.len(), 1);
+        assert_eq!(ChildTurnResult::parse(&latest.results[0].bytes)?.turn, 8);
+        assert!(result_page(&index, &reference, ChildResultWindow::After(u64::MAX), 4).is_empty());
 
         // Restore the former all-files projection before filtering the child.
         // The same four-result request now examines every unrelated request.
