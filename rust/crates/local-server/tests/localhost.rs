@@ -204,3 +204,6 @@ async fn credential_free_transport_cannot_escape_numeric_loopback()
 
 #[path = "localhost/shutdown.rs"]
 mod shutdown;
+
+#[path = "localhost/transport.rs"]
+mod transport;

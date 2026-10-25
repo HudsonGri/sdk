@@ -16,10 +16,11 @@ path = "src/main.rs"
 required-features = ["native-harness"]
 
 [dependencies]
-acyclic-native-runtime = { path = "../native-runtime" }
 acyclic-actors = { path = "../actors" }
 acyclic-harness = { path = "../harness", features = ["filesystem"] }
 acyclic-harness-providers = { path = "../harness-providers", optional = true }
+acyclic-native-runtime = { path = "../native-runtime" }
+acyclic-grpc-observability = { path = "../grpc-observability" }
 acyclic-fs = { path = "../filesystem", features = ["memory"] }
 acyclic-fs-wire = { path = "../filesystem-wire" }
 acyclic-stream = { path = "../stream", features = ["grpc", "local", "test-support"] }
@@ -30,6 +31,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "signal"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic.workspace = true
+tower.workspace = true
 blake3.workspace = true
 tempfile = "3.27.0"
 

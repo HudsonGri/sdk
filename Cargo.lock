@@ -693,6 +693,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-fs",
  "acyclic-fs-wire",
+ "acyclic-grpc-observability",
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-native-runtime",
@@ -708,6 +709,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "tower",
 ]
 [[package]]
 name = "acyclic-machines"

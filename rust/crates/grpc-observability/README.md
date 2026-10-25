@@ -42,3 +42,9 @@ optional `codegen` feature only through host build dependencies. Browser clients
 retain their uninstrumented target output; their existing Tonic tracing dependency
 is unchanged. Alternate native gRPC-web calls have typed observation, while raw
 transport spans cover the shared channel path.
+
+Servers share `service_retirement()` for one transport retirement boundary. Keep
+its signal until admitted effects drain, then drop it before graceful connection
+shutdown. The adapter wakes readiness, pending responses and idle response bodies;
+new calls receive Unavailable and open streams receive explicit Unavailable
+trailers. All services on the router share the same cut, with no polling timer.

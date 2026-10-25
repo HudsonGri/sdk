@@ -5,6 +5,11 @@ mod runtime;
 #[cfg(all(not(target_arch = "wasm32"), feature = "runtime"))]
 pub use runtime::*;
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "runtime"))]
+mod retirement;
+#[cfg(all(not(target_arch = "wasm32"), feature = "runtime"))]
+pub use retirement::{Retirement, RetirementSignal, RetiringService, service_retirement};
+
 #[cfg(feature = "codegen")]
 pub mod codegen;
 

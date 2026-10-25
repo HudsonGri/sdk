@@ -303,13 +303,20 @@ impl Server {
             request_admissions: Arc::new(tokio::sync::RwLock::new(())),
         };
         let filesystem = acyclic_fs::FilesystemWireService::new(filesystem, Default::default())?;
+        let (retire, retirement) = acyclic_grpc_observability::service_retirement();
         let task = acyclic_native_runtime::spawn(tonic::transport::Server::builder()
+            .layer(tower::layer::layer_fn(move |service| retirement.wrap(service)))
             .add_service(acyclic_stream::wire::stream_service_server::StreamServiceServer::new(acyclic_stream::grpc::Service::new(stream.clone())))
             .add_service(acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer::new(acyclic_stream::session::Service::new(
                 stream, acyclic_stream::session::testing::authority(), "local".into(), Default::default())))
             .add_service(acyclic_fs_wire::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(filesystem))
             .add_service(wire::actors_service_server::ActorsServiceServer::new(actors.clone()))
-            .serve_with_incoming_shutdown(incoming(listener), async { let _ = transport_stopped.await; }));
+            .serve_with_incoming_shutdown(incoming(listener), async move {
+                let _ = transport_stopped.await;
+                // Close pending unary calls, follows and sessions before the
+                // transport waits for its connections to finish gracefully.
+                drop(retire);
+            }));
         let (stop, stopped) = oneshot::channel();
         let (complete, finished) = oneshot::channel();
         // Install the retirement owner before publishing the server. The

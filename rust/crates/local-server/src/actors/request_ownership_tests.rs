@@ -204,6 +204,54 @@ async fn disconnected_workflow_requests_retain_the_lease_until_snapshot_publicat
     Ok(())
 }
 
+async fn invoke_workflow(
+    invoking: Actors,
+    actor: String,
+    operation: Operation,
+    placement: Placement,
+    machine: MachineIdentity,
+) -> Result<(), Status> {
+    if matches!(operation, Operation::Checkpoint) {
+        invoking
+            .checkpoint_actor(Request::new(wire::CheckpointActorRequest {
+                actor_id: actor,
+                account_id: vec![1],
+                namespace: Some("scope".into()),
+                ..Default::default()
+            }))
+            .await?;
+    } else {
+        let event = Event {
+            operation_id: OperationId::new(),
+            idempotency_key: IdempotencyKey::new("input").map_err(runtime_error)?,
+            input: Value::Null,
+        };
+        let call = match operation {
+            Operation::Place => Call::Place {
+                placement,
+                machine,
+                input: Value::Null,
+            },
+            Operation::Deliver => Call::Deliver { placement, event },
+            Operation::Recover => Call::Recover { placement },
+            Operation::Cancel => Call::Cancel { placement, event },
+            Operation::Checkpoint => return Err(failure("unexpected checkpoint")),
+        };
+        invoking
+            .invoke_actor(Request::new(wire::InvokeActorRequest {
+                actor_id: actor,
+                account_id: vec![1],
+                namespace: Some("scope".into()),
+                method: "POST".into(),
+                url: "http://localhost/".into(),
+                body: serde_json::to_vec(&call).map_err(failure)?,
+                ..Default::default()
+            }))
+            .await?;
+    }
+    Ok::<_, Status>(())
+}
+
 async fn check_workflow(operation: Operation, disconnect: bool) -> TestResult {
     let (gate, entered, release) = Gate::new();
     let snapshot = snapshot();
@@ -241,47 +289,9 @@ async fn check_workflow(operation: Operation, disconnect: bool) -> TestResult {
     let actor = id.clone();
     let placement = snapshot.placement.clone();
     let machine = snapshot.checkpoint.machine.clone();
-    let task = tokio::spawn(async move {
-        if matches!(operation, Operation::Checkpoint) {
-            invoking
-                .checkpoint_actor(Request::new(wire::CheckpointActorRequest {
-                    actor_id: actor,
-                    account_id: vec![1],
-                    namespace: Some("scope".into()),
-                    ..Default::default()
-                }))
-                .await?;
-        } else {
-            let event = Event {
-                operation_id: OperationId::new(),
-                idempotency_key: IdempotencyKey::new("input").map_err(runtime_error)?,
-                input: Value::Null,
-            };
-            let call = match operation {
-                Operation::Place => Call::Place {
-                    placement,
-                    machine,
-                    input: Value::Null,
-                },
-                Operation::Deliver => Call::Deliver { placement, event },
-                Operation::Recover => Call::Recover { placement },
-                Operation::Cancel => Call::Cancel { placement, event },
-                Operation::Checkpoint => return Err(failure("unexpected checkpoint")),
-            };
-            invoking
-                .invoke_actor(Request::new(wire::InvokeActorRequest {
-                    actor_id: actor,
-                    account_id: vec![1],
-                    namespace: Some("scope".into()),
-                    method: "POST".into(),
-                    url: "http://localhost/".into(),
-                    body: serde_json::to_vec(&call).map_err(failure)?,
-                    ..Default::default()
-                }))
-                .await?;
-        }
-        Ok::<_, Status>(())
-    });
+    let task = tokio::spawn(invoke_workflow(
+        invoking, actor, operation, placement, machine,
+    ));
     entered.await?;
     let observer = if disconnect {
         task.abort();

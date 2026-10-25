@@ -23,6 +23,9 @@ retiring native providers. State is held in a private temporary directory.
 An embedded server's shutdown owner is installed before its handle is returned.
 Dropping that handle or cancelling its shutdown waiter requests the same drain;
 the drain retains effect transports and package owners until retirement.
+Admitted RPCs own their work independently of a connected response observer.
+Shutdown closes the catalog, wakes guest waiters, and drains every request
+lease before recovering workflow effects and retiring the shared transports.
 
 Connect the shipping client:
 
@@ -57,3 +60,6 @@ cargo run --locked -p acyclic-harness-conformance --bin scenarios -- \
 The same pinned scenario package runs on both substrates. Filesystem references
 are published/read through its wire service; Actors invoke the checkpoint/outbox
 contract over the canonical API. SDK providers remain the sole storage engines.
+After effects drain, one shared gRPC retirement boundary terminates open follows
+and sessions with Unavailable trailers, so shutdown never depends on idle clients
+disconnecting.
