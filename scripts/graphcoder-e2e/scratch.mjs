@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // One explicit root owns every temporary directory in a Windows invocation.
@@ -11,12 +11,22 @@ export function scratchDirectory(prefix, env = process.env, platform = process.p
     "use E2E_SCRATCH_ROOT for all acceptance scratch directories");
   const parent = env.E2E_SCRATCH_ROOT ?? (platform === "win32" ? undefined : tmpdir());
   assert.ok(parent && isAbsolute(parent), "E2E_SCRATCH_ROOT must name an absolute scratch directory on Windows");
+  const repository = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
+  const admit = canonical => {
+    const within = relative(repository, canonical);
+    assert.ok(within && (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within)),
+      "acceptance scratch must be outside the source checkout, including through aliases");
+  };
+  let ancestor = parent;
+  while (!existsSync(ancestor)) {
+    const next = dirname(ancestor);
+    assert.notEqual(next, ancestor, "scratch root must have an existing filesystem ancestor");
+    ancestor = next;
+  }
+  admit(resolve(realpathSync(ancestor), relative(ancestor, parent)));
   mkdirSync(parent, { recursive: true });
   const canonical = realpathSync(parent);
-  const repository = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
-  const within = relative(repository, canonical);
-  assert.ok(within && (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within)),
-    "acceptance scratch must be outside the source checkout, including through aliases");
+  admit(canonical);
   return mkdtempSync(join(canonical, prefix));
 }
 

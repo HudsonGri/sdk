@@ -33,6 +33,7 @@ cp.spawn=(program,args,options)=>{
       const result = await processes.run(process.execPath,
         [fileURLToPath(new URL(`../${entry}`, import.meta.url)), binary], {
           env: { ...environment(join(root, "parent")), E2E_SCRATCH_ROOT: scratch,
+            E2E_CONPTY_HOST: join(root, "unused-intercepted-conpty-host"),
             TEMP: inherited, TMP: inherited, TMPDIR: inherited,
             FIXTURE_AUTH_TOKEN: "synthetic-contract-marker",
             NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },

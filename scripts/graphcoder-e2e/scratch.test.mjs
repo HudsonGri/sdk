@@ -1,11 +1,34 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { Processes } from "./process.mjs";
+
+test("rejected missing scratch parents never create source directories through direct paths or aliases", () => {
+  const repository = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
+  const root = mkdtempSync(join(tmpdir(), "scratch-missing-contract-"));
+  const missing = join(repository, basename(root));
+  try {
+    const alias = join(root, "source-alias");
+    symlinkSync(repository, alias, process.platform === "win32" ? "junction" : "dir");
+    for (const source of [repository, alias]) {
+      assert.equal(existsSync(missing), false);
+      assert.throws(() => scratchDirectory("refused-", {
+        E2E_SCRATCH_ROOT: join(source, basename(root), "nested", "scratch"),
+      }), /outside the source checkout/);
+      assert.equal(existsSync(missing), false, "rejected source paths must have zero filesystem side effects");
+    }
+    const allowed = join(root, "missing", "outside");
+    const owned = scratchDirectory("allowed-", { E2E_SCRATCH_ROOT: allowed });
+    assert.equal(dirname(owned), realpathSync(allowed));
+  } finally {
+    rmSync(missing, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("scratch roots cannot overlap the source checkout through direct paths or aliases", () => {
   const repository = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
