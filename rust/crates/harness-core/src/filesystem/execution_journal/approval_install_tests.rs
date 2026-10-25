@@ -166,8 +166,9 @@ proptest! {
                     let expected = acyclic_test_support::measure(|| {
                         drop(crate::contract::json_from_slice::<ApprovalDecisionFile>(encoded).unwrap());
                     });
-                    let rejected = matches!(runtime.block_on(
-                        journal.verify_tool_approval_with_io(id, operation, [6;32], None)),
+                    let ordinary_rejection = runtime.block_on(
+                        journal.verify_tool_approval_with_io(id, operation, [6;32], None));
+                    let rejected = matches!(ordinary_rejection,
                         Err(Error::Unauthorized(ref reason)) if reason == "approval does not authorize this definition");
                     let io = crate::filesystem::PreparationIo::from_native_work(original_work).unwrap();
                     let held = original_work.live_allocation_bytes();
@@ -175,6 +176,13 @@ proptest! {
                     let native = runtime.block_on(native_journal.verify_tool_approval_with_io(
                         id, operation, [6;32], Some(&io),
                     ));
+                    assert!(rejected, "ordinary rejection: {ordinary_rejection:?}");
+                    assert!(matches!(&native, Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "approval does not authorize this definition",
+                    })), "native rejection: {native:?}");
+                    assert_eq!(io.owned_bytes().unwrap(), owned, "rejected approval retained observer custody");
+                    assert_eq!(original_work.live_allocation_bytes(), held, "rejected approval retained native custody");
                     let rejected = rejected && matches!(native, Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,
                         reason: "approval does not authorize this definition",

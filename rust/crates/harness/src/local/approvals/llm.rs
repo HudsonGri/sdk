@@ -88,7 +88,7 @@ impl LocalHarness {
             // Persist the dispatch identity before starting the independent
             // model. Recovery reconciles this run; it never silently repeats it.
             crate::task_volume::publish_durable(&task_files.inner, &started, None).await?;
-            provider.generate(prepared, dispatch)
+            provider.generate(&prepared, dispatch)
         };
         collect_review(events, limits).await
     }
