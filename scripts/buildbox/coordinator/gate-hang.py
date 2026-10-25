@@ -15,9 +15,9 @@ RUNNING = re.compile(r'^\s+Running (.+) \((.+)\)$')
 SLOW = re.compile(r'^test (.+) has been running for over [0-9]+ seconds$')
 FINISHED = re.compile(r'^test (.+) \.\.\. (?:ok|FAILED|ignored)(?:\b|$)')
 WATCHDOG = re.compile(r'^\[buildbox\] hang reaper: .*presumed hung .*killed \(rc 124\), admission slot freed\.')
-BINARY_CUTOFF = re.compile(r'^\[buildbox\] test binary (\S+) still running after [0-9]+s: killed \(rc 124\)\.')
+BINARY_CUTOFF = re.compile(r'^\[buildbox\] test binary (\S+) still running after [0-9]+s: killed \(rc (124|137)\)\.')
 RERUN = re.compile(r'^error: test failed, to rerun pass `([^`]+)`$')
-ABNORMAL = re.compile(r"^\s+process didn't exit successfully: `([^`]+)` \(exit status: 124\)$")
+ABNORMAL = re.compile(r"^\s+process didn't exit successfully: `([^`]+)` \(exit status: (124|137)\)$")
 
 
 def observations(text):
@@ -42,15 +42,16 @@ def observations(text):
         if cutoff:
             if not active or Path(active['executable']).name != cutoff.group(1):
                 raise ValueError('binary cutoff has no matching active Cargo executable')
-            active['cutoff'] = True
+            active['cutoff'] = int(cutoff.group(2))
         rerun = RERUN.match(line)
         if rerun and active:
             active['rerun'] = shlex.split(rerun.group(1))
         abnormal = ABNORMAL.match(line)
         if abnormal and active and active['cutoff']:
             # The wrapper's basename diagnostic is insufficient on its own.
-            # Cargo must confirm rc124 for this exact full executable path.
-            active['confirmed'] = active['executable'] in shlex.split(abnormal.group(1))
+            # Cargo must confirm the same status and exact executable path.
+            active['confirmed'] = (active['executable'] in shlex.split(abnormal.group(1))
+                                   and int(abnormal.group(2)) == active['cutoff'])
         if WATCHDOG.match(line):
             watchdog = True
     return active, runs, watchdog
@@ -81,7 +82,7 @@ def binary_cutoffs(text):
         if pending:
             command += [pending[0], '--', '--exact', '--nocapture']
         reasons.append(f'incomplete test execution: {culprit} in {run["label"]} executable={run["executable"]}; '
-                       f'confirmed per-binary cutoff rc=124; recovery command: {shlex.join(command)}')
+                       f'confirmed per-binary cutoff rc={run["cutoff"]}; recovery command: {shlex.join(command)}')
     return '; '.join(reasons) or None
 
 

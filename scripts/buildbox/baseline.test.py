@@ -153,7 +153,7 @@ raise SystemExit(101)
    pr=root/'pr.log';base=root/'main.log'
    pr.write_text((known.replace('bench harness','bench new_bench') if new else known)+('error: could not compile acyclic-conformance\n' if compiler else '')+'test result: ok. 1 passed; 0 failed\nGATE_DONE rc=101\n')
    base.write_text(known+'test result: ok. 1 passed; 0 failed\n')
-   script=f'rc=101;n=1;log={pr};base_log={base};test_base_log="";clippy_base={base};features_base={base}\n'+block
+   script=f'rc=101;n=1;base=main;log={pr};base_log={base};test_base_log="";clippy_base={base};features_base={base}\n'+block
    result=subprocess.run(['bash','-c',script],capture_output=True,text=True,env={**os.environ,'HOME':str(root)})
    self.assertEqual(result.returncode,expected,result.stdout+result.stderr)
    self.assertIn('GATE '+('FAIL' if expected else 'PASS'),result.stdout)

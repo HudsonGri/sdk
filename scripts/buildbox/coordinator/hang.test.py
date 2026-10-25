@@ -13,10 +13,43 @@ START = '     Running tests/identity.rs (/mnt/bb/targets/debug/deps/identity-abc
 SLOW = 'test identity_processes has been running for over 60 seconds\n'
 KILLED = '[buildbox] hang reaper: the job used 394 ms of CPU in the last 10 min (minimum 5 s): presumed hung (deadlocked test or stuck wait); killed (rc 124), admission slot freed.\n'
 CAPTURE = (HERE/'fixtures/cargo-binary-cutoff.txt').read_text()
+CAPTURE137 = (HERE/'fixtures/cargo-binary-cutoff137.txt').read_text()
 CASE = 'local::tests::checkout_reopen::echo_reuses_the_lazy_checkout_without_reading_untouched_files'
 
 
 class HangTests(unittest.TestCase):
+    def test_real_sigkill_requires_matching_executable_and_status(self):
+        reason = hang.binary_cutoffs(CAPTURE137)
+        self.assertIn('confirmed per-binary cutoff rc=137', reason)
+        self.assertIn('executable=/work/target/cutoff137/debug/deps/cutoff137_evidence-c755b550149560ff', reason)
+        self.assertIn('unidentified case (binary did not complete)', reason)
+        # Mutations of captured diagnostics prove both status directions and
+        # exact Cargo executable identity, without inventing external output.
+        for captured in [CAPTURE, CAPTURE137]:
+            status = '137' if captured == CAPTURE137 else '124'
+            other = '124' if status == '137' else '137'
+            with self.assertRaisesRegex(ValueError, 'missing matching Cargo'):
+                hang.binary_cutoffs(captured.replace('(exit status: '+status+')', '(exit status: '+other+')'))
+        with self.assertRaisesRegex(ValueError, 'missing matching Cargo'):
+            hang.binary_cutoffs(CAPTURE137.replace(' /work/target/cutoff137/', ' /other/target/cutoff137/'))
+        source = (HERE/'gate-hang.py').read_text()
+        old = {'__name__': 'old124_only_control'}
+        exec(compile(source.replace('(124|137)', '(124)'), 'old124-only-control', 'exec'), old)
+        self.assertIsNone(old['binary_cutoffs'](CAPTURE137))
+
+    def test_sigkill_cannot_qualify_after_later_real_successful_targets(self):
+        source = (HERE/'gate-test-baseline.py').read_text()
+        namespace = {'__file__': str(HERE/'gate-test-baseline.py'), '__name__': 'baseline137_control'}
+        exec(compile(source, namespace['__file__'], 'exec'), namespace)
+        later = CAPTURE[CAPTURE.index('     Running tests/client_mailbox_model.rs'):]
+        actual = CAPTURE137+later+'GATE_TEST_BASELINE_COMPLETE rc=101\nGATE_TEST_BASELINE_EXECUTOR rc=101\n'
+        self.assertFalse(namespace['baseline_complete'](actual))
+        # With the old124-only parser the complete Cargo101 footer qualifies
+        # despite the SIGKILL. Remove that shared refusal as the old behavior.
+        exec(compile(source.replace('if evidence.binary_cutoffs(output):', 'if False:'),
+                     'old137-baseline-control', 'exec'), namespace)
+        self.assertTrue(namespace['baseline_complete'](actual))
+
     def test_real_cargo_cutoff_survives_later_successful_targets(self):
         reason = hang.binary_cutoffs(CAPTURE)
         self.assertIn(CASE, reason)

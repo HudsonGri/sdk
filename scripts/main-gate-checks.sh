@@ -110,7 +110,7 @@ grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' "$gate_output/.gate-clipp
   | sort | uniq -c | sed -E 's/^ *([0-9]+) /GATE_CLIPPY_FINDING \1 /'
 grep -aE '^error(\[E[0-9]+\])?: ' "$gate_output/.gate-clippy.out" | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
 wait "$features"
-echo "GATE_FEATURES rc=$(cat "$gate_output/.gate-features.rc")"
+printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"
 grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' "$gate_output/.gate-features.out" | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
 grep -a '^feature check: ' "$gate_output/.gate-features.out" | sed 's/^/GATE_FEATURE_CHECK /'
 grep -aE '^GATE_FEATURES_(CACHE|WALL) ' "$gate_output/.gate-features.out"

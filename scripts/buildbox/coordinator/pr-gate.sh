@@ -133,11 +133,13 @@ if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2> "$log.baseline-
   exit 5
 fi
 echo "GATE_BASELINE log=$base_log" >> "$log"
-clippy_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase clippy 2>> "$log.baseline-error")
-features_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase features 2>> "$log.baseline-error")
+clippy_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase clippy --exact 2>> "$log.baseline-error")
+features_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase features --exact 2>> "$log.baseline-error")
 if [ -z "$clippy_base" ] || [ -z "$features_base" ]; then
-  echo "GATE BASELINE #$n: complete main check baseline unavailable; verdict deferred log=$log"
-  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: complete main check baseline unavailable; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log
+  cat "$log.baseline-error" >> "$log"
+  v="BASELINE #$n: exact-base main check selection step unavailable for $base; recovery command: python Q:/lanes/gate-baseline.py '$W' '$base' --phase features --exact; diagnostics=$log.baseline-error"
+  echo "GATE $v"
+  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE ${v#* }" >> ~/.codex-fleet/alerts.log
   exit 5
 fi
 echo "GATE_CHECKS_BASELINE clippy=$clippy_base features=$features_base" >> "$log"
@@ -166,7 +168,18 @@ fi
 # Keep the prepared tree until gate-drain verifies its head pins and merges.
 # The next preparation owns resetting this checkout.
 pr_fails=$(bash Q:/lanes/failed-tests.sh $log)
-base_fails=$( { bash Q:/lanes/failed-tests.sh "$base_log" 2>/dev/null; [ -z "$test_base_log" ] || bash Q:/lanes/failed-tests.sh "$test_base_log"; cat Q:/lanes/flakes.txt; } | sort -u)  # known flakes (owned, being fixed) never block a PR
+# The historical green log is a coverage anchor, not evidence of failures on
+# this base. A complete focused result replaces it, never unions its failures.
+effective_test_base=""
+if [ -n "$test_base_log" ]; then effective_test_base=$test_base_log
+elif [ "$(basename "$base_log" .log)" = "$base" ]; then effective_test_base=$base_log
+elif [ -n "$pr_fails" ]; then
+  v="BASELINE #$n: exact-base test comparison step unavailable for $base; recovery command: python Q:/lanes/gate-test-baseline.py '$W' '$base' '$log' --scope '$W/.gate-selection.json' --baseline-log '$base_log'"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 5
+fi
+echo "GATE_COMPARISON_BASE base=$base tests=${effective_test_base:-none-no-failing-tests} clippy=$clippy_base features=$features_base" >> "$log"
+base_fails=$( { [ -z "$effective_test_base" ] || bash Q:/lanes/failed-tests.sh "$effective_test_base"; cat Q:/lanes/flakes.txt; } | sort -u)
 new=$(comm -23 <(printf '%s\n' "$pr_fails" | grep .) <(printf '%s\n' "$base_fails" | grep .))
 compile=$(grep -cE '^error(\[E[0-9]+\])?:' $log)
 results=$(grep -cE '^test result:' $log)
@@ -180,7 +193,7 @@ elif [ -n "$terminated" ]; then v="INFRA #$n: build process terminated ($termina
 # failure. The focused main check above has already qualified compiler roots.
 elif grep -aq '^error: could not compile ' "$log"; then v="FAIL #$n: build errors ($compile): $cargo_errors log=$log"
 elif [ "$compile" -gt 0 ] && [ -z "$pr_fails" ]; then v="FAIL #$n: build errors ($compile): $cargo_errors log=$log"
-elif [ -n "$new" ]; then v="FAIL #$n: new failures vs main ($(basename $base_log .log)): $(printf '%s ' $new | cut -c1-500) log=$log"
+elif [ -n "$new" ]; then v="FAIL #$n: new failures vs exact main (${base:0:10}): $(printf '%s ' $new | cut -c1-500) log=$log"
 # A run cut off mid-stream (ssh drop, box stop) can still exit 0 with partial "test result" lines: without gate-checks.sh's
 # GATE_DONE marker the run proves nothing (2026-10-22: #1334 passed on a log truncated mid-test, with no clippy step).
 elif ! grep -aq '^GATE_DONE rc=' $log; then v="INFRA #$n: run cut off before gate-checks finished (rc=$rc) log=$log"
