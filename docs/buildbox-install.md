@@ -118,6 +118,12 @@ charged repeatedly to concurrent clients. Under 15% free, admission prints
 bounded retained quota observations with their age/source before applying the
 unchanged 10% safety floor. Those observations are not current physical usage.
 
+Authority requests are atomic credentialled datagrams, with a single private
+sequence-packet reply channel. Idle clients allocate no authority descriptors.
+The client closes its copy of the sending endpoint after transferring it;
+authority death therefore closes the reply channel and immediately refuses
+the request rather than leaving a compiler waiting for a lost datagram.
+
 CPU admission uses the existing `bb-admit.py` priority/fair-share authority and
 one `CPU_LEASE_SHAPE = (8, 16)` in `admission_policy.py`. No separate scheduler
 or budget-test reserve exists. The 128 job CPUs are spread over CPUs 0–191;

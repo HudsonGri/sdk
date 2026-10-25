@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import socket
+import select
 import signal
 import pwd
 import shutil
@@ -312,7 +313,7 @@ exec(Path(sys.argv[5]).read_text(),m.__dict__)
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as sender:
             sender.connect(str(self.service.CONTROL))
             for data in [b'invalid',b'verify'*20]:
-                receiver,reply=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
+                receiver,reply=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
                 with receiver,reply:
                     receiver.settimeout(3)
                     sender.sendmsg([data],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[reply.fileno()]))])
@@ -322,12 +323,64 @@ exec(Path(sys.argv[5]).read_text(),m.__dict__)
             # the FIFO after them and proves the authority remains alive.
             with open('/dev/null') as file:
                 sender.sendmsg([b'verify'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[file.fileno()]))])
-            receiver,reply=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
+            receiver,reply=socket.socketpair(socket.AF_UNIX,socket.SOCK_SEQPACKET)
             receiver.close()
             with reply:
                 sender.sendmsg([b'verify'],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[reply.fileno(),reply.fileno()]))])
             self.assertEqual(self.service.admitted({}),self.owner)
         self.assertEqual(len(list(Path('/proc',str(self.process.pid),'fd').iterdir())),before)
+
+    def test_authority_death_refuses_inflight_request_and_actual_old_datagram_hangs(self):
+        fixture=HERE/'fixtures/cache-policy/former-reply-channel.py'
+        info=json.loads(fixture.with_suffix('.origin.json').read_text())
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(),info['sha256'])
+        driver='''import sys,importlib.util
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+spec=importlib.util.spec_from_file_location('client',Path(sys.argv[1])/'bb-cache.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m.CONTROL=Path(sys.argv[2])
+if sys.argv[3]:exec(Path(sys.argv[3]).read_text(),m.__dict__)
+try:m.compiler(['/bin/true'])
+except m.CachePolicyError as error:print(error,file=sys.stderr);raise SystemExit(224)
+'''
+        for negative in [False,True]:
+            endpoint=self.root/('death-'+str(negative)+'.sock')
+            reader,writer=os.pipe()
+            listener=socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM)
+            listener.bind(str(endpoint));listener.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
+            server=os.fork()
+            if server==0:
+                try:
+                    os.close(reader)
+                    if negative:exec(fixture.read_text(),self.service.__dict__)
+                    validate=self.service.validate_server
+                    def joined_validation(**kwargs):
+                        validate(**kwargs)
+                        os.write(writer,b'1')
+                        signal.pause()
+                    self.service.validate_server=joined_validation
+                    self.service.verify_request(listener,self.owner)
+                finally:os._exit(1)
+            os.close(writer);listener.close()
+            client=subprocess.Popen([sys.executable,'-B','-c',driver,str(self.stage),str(endpoint),
+                                     str(fixture) if negative else ''],env=self.client_env(),
+                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(select.select([reader],[],[],3)[0],'request reached real server validation')
+                self.assertEqual(os.read(reader,1),b'1')
+                os.kill(server,signal.SIGKILL);os.waitpid(server,0);server=None
+                if negative:
+                    with self.assertRaises(subprocess.TimeoutExpired):client.communicate(timeout=0.2)
+                else:
+                    output,error=client.communicate(timeout=3)
+                    self.assertEqual(client.returncode,224,output.decode()+error.decode())
+                    self.assertIn(b'kind=CACHE_POLICY',error)
+                    self.assertIn(b'authority unavailable',error)
+            finally:
+                os.close(reader)
+                if server is not None:os.kill(server,signal.SIGKILL);os.waitpid(server,0)
+                if client.poll() is None:client.kill();client.communicate(timeout=3)
+                endpoint.unlink()
 
     def test_wrong_and_reused_peer_identity_refused(self):
         for changed in [{'identity':'different-birth'},{'pid':self.owner['pid']+1}]:
