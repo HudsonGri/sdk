@@ -410,7 +410,10 @@ where
         self.verify().await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
-            Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
+            Ok(metadata) => Some(crate::filesystem::host::decode_content_metadata(
+                &metadata,
+                &self.io,
+            )?),
             Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
@@ -420,7 +423,7 @@ where
         })?;
         let raw_descriptor;
         let _descriptor_hold;
-        let (descriptor, display_name) = if let Some(staged) = &staged {
+        let (descriptor, display_name) = if let Some((staged, _hold)) = &staged {
             if staged.volume() != volume || staged.path() != path {
                 return Err(Error::Storage(
                     "selected file metadata does not match immutable data".into(),

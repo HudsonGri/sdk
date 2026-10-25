@@ -170,11 +170,12 @@ mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;
 pub(in crate::filesystem) use keys::{
-    content_identity_path_io, content_metadata_path_io, project_join_key,
+    content_metadata_path_io, content_receipt_path_io, project_join_key,
 };
 pub use keys::{filesystem_key, workspace_ref};
 pub(crate) use reads::file_publication;
 pub(in crate::filesystem) use reads::read_generation;
+pub(in crate::filesystem) use publication::decode_content_metadata;
 
 use crate::executor::stock_boundary;
 #[cfg(not(target_arch = "wasm32"))]

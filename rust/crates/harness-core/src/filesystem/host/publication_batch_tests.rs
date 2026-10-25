@@ -139,6 +139,66 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
 }
 
 #[tokio::test]
+async fn internal_publication_has_one_metadata_and_recovery_record_for_every_adapter() -> Result<()> {
+    let mut single_records = Vec::new();
+    for adapter in 0..3 {
+        let provider = ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = crate::AgentId::from_bytes([37; 16]);
+        let volume = VolumeRef::new(provider.clone(), "private".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent), &mut None)?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
+        for class in [InternalContentClass::Interaction, InternalContentClass::Workflow,
+            InternalContentClass::Execution, InternalContentClass::ModelPrefix,
+            InternalContentClass::Conversation] {
+            let path = format!("{}payload.json", class.prefix());
+            let key = IdempotencyKey::new(format!("first-{path}"))?;
+            let original = host.put_internal_content(&volume, &write, &path, b"original",
+                "application/json", "payload", 64, &key, class, io.as_ref()).await?;
+            let metadata_path = content_metadata_path_io(&path, true, None)?;
+            let receipt_path = content_receipt_path_io(&path, true, true, None)?;
+            let obsolete = format!("/.system/harness-uploads/{}.json", blake3::hash(path.as_bytes()).to_hex());
+            single_records.push(receipt_path == metadata_path
+                && host.read(&workspace, None, &obsolete, 4096, None).await.is_err());
+            let record = host.read(&workspace, None, &metadata_path, 4096, None).await?;
+            let (staged, expected): (FileRef, Option<GenerationRef>) = serde_json::from_slice(&record)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(staged.path(), path);
+            assert!(expected.is_none());
+            assert_eq!(crate::contract::canonical_json_bytes(&(staged, expected))?, record.as_ref());
+            host.put_internal_content(&volume, &write, &path, b"replacement", "application/json",
+                "payload", 64, &IdempotencyKey::new(format!("second-{path}"))?, class, io.as_ref()).await?;
+            let recovered = host.content_for_operation_record_io(PublicationLookup {
+                volume: &volume, key: &key, expected_path: Some(&path), maximum_bytes: 64,
+                internal_class: Some(class), purpose: PublicationPurpose::Content,
+                scope: write.policy_scope(), ceiling: None,
+            }, io.as_ref()).await?.expect("original publication exists");
+            assert_eq!(recovered.0, original);
+            assert_eq!(recovered.1.expect("content lookup returns payload").as_ref(), b"original");
+            assert_eq!(host.read_content(&original, &read, 64, io.as_ref()).await?.as_ref(), b"original");
+            let before = host.resolve(&workspace, None).await?;
+            assert!(host.put_internal_content(&volume, &write, &path, b"forged", "application/json",
+                "payload", 64, &key, class, io.as_ref()).await.is_err());
+            assert_eq!(host.resolve(&workspace, None).await?, before);
+        }
+    }
+    assert_eq!(single_records, [true; 15],
+        "internal publications retained duplicate metadata and recovery indexes");
+    Ok(())
+}
+
+#[tokio::test]
 async fn immutable_records_cannot_enter_the_replacement_batch() -> Result<()> {
     let provider = ProviderRef::new(
         "immutable-batch".into(),
