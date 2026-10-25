@@ -173,17 +173,27 @@ class InstallTests(unittest.TestCase):
         driver='''import importlib.util,sys,tempfile,shutil,json,os
 from pathlib import Path
 source=Path(sys.argv[1]);s=importlib.util.spec_from_file_location('installer',source);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-stage=Path(tempfile.mkdtemp(prefix='bb-install-control-',dir='/mnt/bb/tmp'))
-live=stage/'live';live.mkdir()
+fixture=Path(tempfile.mkdtemp(prefix='bb-install-control-',dir='/mnt/bb/tmp'))
+live=fixture/'live';live.mkdir()
+for name in m.TOOLS:m.publish(live/name,('old-'+name).encode())
+m.BIN=live;m.secure_bin=lambda:live
+# Exercise the real prepare-to-publish path; qualification commands have their
+# own exhaustive controls and must not recursively launch this test here.
+m.qualify=lambda stage,user:None
+stage=m.prepare(source.parent)
 try:
- for name in m.TOOLS:
-  m.publish(stage/name,(source.parent/name).read_bytes(),0o444)
-  m.publish(live/name,('old-'+name).encode())
  hashes={name:m.file_hash(stage/name) for name in m.TOOLS}
- previous={name:m.file_hash(live/name) for name in m.TOOLS}
- m.publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
- m.publish(stage/'.predecessors.json',json.dumps(previous).encode(),0o400)
- m.BIN=live;m.secure_bin=lambda:live
+ assert stage.parent.name=='scripts' and stage.name=='buildbox'
+ # The exact former flat-layout validator rejects the actual prepared output.
+ old={'__file__':str(source),'__name__':'old_layout_installer'}
+ before="if (stage != bundle/'scripts'/'buildbox' or bundle.parent != Path('/mnt/bb/tmp')\\n            or not bundle.name.startswith('bb-install-')):"
+ code=source.read_text();assert before in code
+ code=code.replace(before,"if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():")
+ exec(compile(code,'flat-layout-installer','exec'),old)
+ old['BIN']=live;old['secure_bin']=lambda:live
+ try:old['publish_candidate'](stage,['bb-install.py'])
+ except ValueError as error:assert str(error)=='not an installer candidate'
+ else:raise AssertionError('former layout admitted the nested generation')
  peer=live/'bb-job.py';m.publish(peer,b'newer peer runtime')
  for selection in [[],['unknown'],['bb-install.py','bb-install.py']]:
   try:m.publish_candidate(stage,selection)
@@ -207,7 +217,9 @@ try:
  old['BIN']=live;old['secure_bin']=lambda:live
  old['publish_candidate'](stage,['bb_target_store.py'])
  assert before['bb_target_store.py']!=m.file_hash(live/'bb_target_store.py')
-finally:shutil.rmtree(stage)
+finally:
+ shutil.rmtree(stage.parent.parent)
+ shutil.rmtree(fixture)
 '''
         subprocess.run(['sudo','-n',*isolated_python('-c',driver,HERE/'bb-install.py')],check=True)
 

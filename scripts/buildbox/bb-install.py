@@ -151,11 +151,13 @@ def select_tools(only):
 def publish_candidate(candidate, only=None):
     if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
     stage=Path(candidate)
-    if stage.parent != Path('/mnt/bb/tmp') or not stage.name.startswith('bb-install-') or stage.is_symlink():
+    bundle=stage.parent.parent
+    if (stage != bundle/'scripts'/'buildbox' or bundle.parent != Path('/mnt/bb/tmp')
+            or not bundle.name.startswith('bb-install-')):
         raise ValueError('not an installer candidate')
     token=stage/'.qualified.json'; fence=stage/'.predecessors.json'
     selected=select_tools(only)
-    for file in [stage, token, fence, *[stage/name for name in TOOLS]]:
+    for file in [bundle, stage.parent, stage, token, fence, *[stage/name for name in TOOLS]]:
         if file.is_symlink() or file.stat().st_uid != 0 or file.stat().st_mode & 0o022:
             raise PermissionError('candidate custody is unproven: '+str(file))
     hashes=json.loads(token.read_text())
