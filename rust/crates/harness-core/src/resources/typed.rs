@@ -25,12 +25,17 @@ macro_rules! typed_reference {
             }
 
             fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-                schemars::json_schema!({
-                    "allOf": [
-                        generator.subschema_for::<ResourceRef>(),
-                        {"type":"object", "properties":{"kind":{"const":ResourceKind::$kind}}}
-                    ]
-                })
+                // Generate the shared wire shape with only this reference's kind.
+                // An intersection with ResourceRef would also offer every unrelated
+                // resource kind and retain their definitions in every tool request.
+                #[derive(schemars::JsonSchema)]
+                #[schemars(inline)]
+                #[serde(rename_all = "snake_case")]
+                enum Kind {
+                    $kind,
+                }
+                let _ = Kind::$kind;
+                <super::resource::ResourceRefWire<Kind> as schemars::JsonSchema>::json_schema(generator)
             }
         }
 

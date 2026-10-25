@@ -14,8 +14,13 @@ fn lazy_source_read_schema_and_decoder_reject_ambiguous_selectors() -> Result<()
         generation,
         path: file.path().into(),
     };
-    let schema =
-        crate::executor::compile_json_schema(&read()?.definition.input_schema, "read", &mut None)?;
+    let definition = read()?.definition;
+    // Typed references generate their actual wire shape without carrying the
+    // schema for unrelated resource kinds into every model request.
+    for unused in ["ResourceRef", "ResourceKind"] {
+        assert!(definition.input_schema["$defs"].get(unused).is_none());
+    }
+    let schema = crate::executor::compile_json_schema(&definition.input_schema, "read", &mut None)?;
     for value in [json!({"file":file}), json!({"source":source})] {
         assert!(schema.is_valid(&value));
         assert!(serde_json::from_value::<ReadInput>(value).is_ok());

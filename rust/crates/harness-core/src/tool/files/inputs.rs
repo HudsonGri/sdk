@@ -1,22 +1,22 @@
 use super::*;
 
-/// The read tool accepts either an immutable file or a lazy discovery source.
+/// Read a pinned file or a discovered private source.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ReadInput {
-    /// An already resolved immutable file, with optional byte range.
+    /// Read a pinned file.
     File(ReadFileInput),
-    /// Resolve and read a discovered private source through its owner.
+    /// Resolve a discovered source.
     Source(ReadSourceInput),
 }
 
-/// Lazy source arguments. A source is a volume path, never a host filesystem path.
+/// A discovered source within its declared volume.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSourceInput {
-    /// Copy the complete source from discovered skill metadata.
+    /// Complete source copied from discovery.
     pub source: crate::context::PinnedContextPath,
 }
 
