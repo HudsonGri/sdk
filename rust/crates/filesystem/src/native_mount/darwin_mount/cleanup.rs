@@ -8,6 +8,7 @@ pub(in crate::native_mount) struct DarwinRecoveryControl {
     pub(super) diskutil: Option<Diskutil>,
     pub(super) detached: bool,
     pub(super) start_aborted: bool,
+    pub(super) recovery_probe: Option<MountProbe>,
 }
 
 pub(super) struct DirectDetach {
@@ -155,6 +156,18 @@ pub(super) const fn control_visits(timeout: Duration, interval: Duration) -> u64
 }
 
 impl DarwinRecoveryControl {
+    pub(super) fn bind_mount(
+        &mut self,
+        mount: &libc::statfs,
+        original: &Work,
+    ) -> Result<(), NativeMountError> {
+        if self.recovery_probe.is_some() || self.controls_pending() || self.detached {
+            return Err(NativeMountError::ControlPending);
+        }
+        self.recovery_probe = Some(MountProbe::for_mount(mount, original)?);
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn controls_pending(&self) -> bool {
         self.direct.as_ref().is_some_and(|task| task.started)
             || self
@@ -307,17 +320,24 @@ impl DarwinRecoveryControl {
         original: &Work,
     ) -> Result<(), NativeMountError> {
         let work = ProbeWork::Live(original);
-        self.detach(
-            destination,
-            &mut MountProbe::new(destination, original)?,
-            &work,
-        )?;
-        self.poll_direct(&work)?;
-        if self.controls_pending() {
-            Err(NativeMountError::ControlPending)
-        } else {
-            Ok(())
+        let bound = self.recovery_probe.is_some();
+        let mut probe = match self.recovery_probe.take() {
+            Some(probe) => probe,
+            None => MountProbe::new(destination, original)?,
+        };
+        let result = (|| {
+            self.detach(destination, &mut probe, &work)?;
+            self.poll_direct(&work)?;
+            if self.controls_pending() {
+                Err(NativeMountError::ControlPending)
+            } else {
+                Ok(())
+            }
+        })();
+        if bound {
+            self.recovery_probe = Some(probe);
         }
+        result
     }
 
     pub(in crate::native_mount) fn retire_controls(

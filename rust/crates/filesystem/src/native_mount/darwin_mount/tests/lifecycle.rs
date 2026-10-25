@@ -1,5 +1,36 @@
 use super::*;
 
+#[test]
+fn recovery_probe_rejects_every_changed_kernel_mount_identity() -> TestResult {
+    let mount = super::super::reclaim::mount_table()?
+        .first()
+        .copied()
+        .ok_or("empty kernel mount table")?;
+    let original = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let probe = MountProbe::for_mount(&mount, &original)?;
+    probe.verify_mount(&mount)?;
+    let mut changed = mount;
+    changed.f_owner = changed.f_owner.wrapping_add(1);
+    assert!(probe.verify_mount(&changed).is_err());
+    changed = mount;
+    changed.f_mntonname[0] ^= 1;
+    assert!(probe.verify_mount(&changed).is_err());
+    changed = mount;
+    changed.f_mntfromname[0] ^= 1;
+    assert!(probe.verify_mount(&changed).is_err());
+    changed = mount;
+    // SAFETY: Darwin's fsid_t is two initialized int32_t values.
+    let mut identity = unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(mount.f_fsid) };
+    identity[0] ^= 1;
+    // SAFETY: the changed values retain the same fsid_t representation.
+    changed.f_fsid = unsafe { std::mem::transmute::<[i32; 2], libc::fsid_t>(identity) };
+    assert!(probe.verify_mount(&changed).is_err());
+    Ok(())
+}
+
 fn sdk(
     path: &Path,
     work: &Work,

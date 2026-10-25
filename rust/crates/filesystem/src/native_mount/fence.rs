@@ -164,6 +164,51 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
 }
 
 impl MountDestinationGuard {
+    // A kernel-supplied canonical name must not be resolved through a dead
+    // mount just to reach its durable ownership fence. Never create a marker
+    // here: a missing marker supplies no authority for startup recovery.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn acquire_existing_canonical(
+        destination: &Path,
+        native: &NativeMaterializationWork,
+        guard: &mut Option<Self>,
+    ) -> Result<(), NativeMountError> {
+        if guard.is_some() || !destination.is_absolute() {
+            return Err(NativeMountError::InvalidDestination);
+        }
+        let name = Self::fence_name(destination, None, false, native, true)?;
+        let work = &mut &*native;
+        let registry = registry::shared(work)?;
+        let held = registry.lock(work)?;
+        let file = crate::native_host::open_leaf(
+            &registry.directory,
+            Path::new(
+                std::str::from_utf8(&name).map_err(|_| NativeMountError::InvalidDestination)?,
+            ),
+            &crate::native_host::NativeOpenOptions::ReadWrite,
+            work,
+        )?;
+        *guard = Some(Self {
+            file: Some(file.into()),
+            lock_path: PathBuf::new(),
+            parent_directory: None,
+            fence_name: Some(name),
+            registry_file: Some(crate::sync::native::Arc::clone(&registry)),
+            cleanup_name: None,
+            birth_cleanup: None,
+            destination_cleanup: None,
+        });
+        lock_mount_file_with_work(
+            guard
+                .as_ref()
+                .and_then(|guard| guard.file.as_ref())
+                .ok_or(NativeMountError::ControlPending)?,
+            false,
+            work,
+        )?;
+        held.unlock(work)
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     pub(super) fn acquire_with_work(
         destination: &Path,
@@ -680,7 +725,7 @@ impl Drop for MountDestinationGuard {
     fn drop(&mut self) {
         // A finite fence is retired only by its original invocation. Dropping
         // it must not invent an unbounded cleanup engine after denied work.
-        if self.parent_directory.is_none() && self.file.is_some() {
+        if self.parent_directory.is_none() && self.registry_file.is_none() && self.file.is_some() {
             let cancellation = crate::CancellationToken::new();
             let mut work =
                 crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);

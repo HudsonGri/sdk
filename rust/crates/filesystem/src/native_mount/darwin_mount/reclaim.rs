@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_mount::fence::{MountDestinationGuard, acquire_existing_mount_lock};
+use crate::native_mount::NativeMountRecoveryOwner;
 use std::os::unix::fs::MetadataExt;
 
 // Read the kernel's cached mount table, never stat or enumerate a potentially
@@ -33,84 +33,25 @@ fn is_loopback_mount(mount: &libc::statfs, uid: u32) -> Result<bool, NativeMount
         && socket_id.is_some_and(|id| !id.is_empty() && !id.contains(&b'/')))
 }
 
-fn same_mount(left: &libc::statfs, right: &libc::statfs) -> bool {
-    // SAFETY: Darwin's fsid_t consists of two initialized int32_t values.
-    let identity = |mount: &libc::statfs| unsafe {
-        std::mem::transmute::<libc::fsid_t, [i32; 2]>(mount.f_fsid)
-    };
-    identity(left) == identity(right)
-        && left.f_owner == right.f_owner
-        && left.f_mntonname == right.f_mntonname
-        && left.f_mntfromname == right.f_mntfromname
-}
-
-// Like ordinary mount retirement, startup recovery must use Disk Arbitration
-// when the mount owner cannot issue the privileged unmount syscall directly.
-// The caller retains the authenticated destination fence throughout this call.
-fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
-    let destination = field(&mount.f_mntonname)?;
-    // SAFETY: the caller retains the terminated kernel name and exclusive fence.
-    if unsafe { libc::unmount(destination.as_ptr(), libc::MNT_FORCE) } == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() != Some(libc::EPERM) {
-        return Err(error.into());
-    }
-    // A failed direct attempt is no authority to detach a replacement mount.
-    if !mount_table()?
-        .iter()
-        .any(|current| same_mount(mount, current))
-    {
-        return Ok(());
-    }
-    let mut command = std::process::Command::new("/usr/sbin/diskutil");
-    command
-        .args([
-            std::ffi::OsStr::new("unmount"),
-            std::ffi::OsStr::new("force"),
-        ])
-        .arg(std::ffi::OsStr::from_bytes(destination.to_bytes()))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-    let clock = crate::native_mount::clock::Clock::capture();
-    let deadline = clock.instant() + DISKUTIL_UNMOUNT_TIMEOUT;
-    let status = loop {
-        if let Some(status) = tree.try_wait(None)? {
-            break status;
-        }
-        if clock.instant() >= deadline {
-            tree.terminate(None)?;
-            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
-        }
-        std::thread::sleep(STOP_POLL_INTERVAL);
-    };
-    tree.terminate(None)?;
-    if !status.success() {
-        return Err(NativeMountError::DriverExit {
-            operation: "Darwin stale mount retirement",
-            status,
-        });
-    }
-    Ok(())
-}
-
 // Bootstrap is deliberately outside a bounded callback invocation. The fence
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
 pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountError> {
+    acyclic_native_runtime::initialize_native_io_services()?;
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
+    let work = Work::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| NativeMountError::from(error))?;
     for mount in mount_table()? {
         if !is_loopback_mount(&mount, uid)? {
             continue;
         }
         let destination = field(&mount.f_mntonname)?;
         let path = Path::new(std::ffi::OsStr::from_bytes(destination.to_bytes()));
-        let (fence, _) = MountDestinationGuard::paths_for_canonical(path)?;
-        let owner = match acquire_existing_mount_lock(&fence) {
+        let mut owner = match NativeMountRecoveryOwner::acquire_existing_canonical(path, &work) {
             Ok(owner) => owner,
             Err(NativeMountError::DestinationBusy) => continue,
             Err(NativeMountError::Demand(crate::DemandError::Io(error)))
@@ -126,27 +67,27 @@ pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountE
             }
             Err(error) => return Err(error),
         };
-        let metadata = owner.metadata()?;
-        if !metadata.is_file() || metadata.uid() != uid || metadata.nlink() != 1 {
+        let authenticated = owner.configure_control(|control, fence| {
+            work.charge(READ_WORK)?;
+            let metadata = fence.metadata()?;
+            if !metadata.is_file() || metadata.uid() != uid || metadata.nlink() != 1 {
+                return Ok(false);
+            }
+            control.bind_mount(&mount, &work)?;
+            Ok(true)
+        })?;
+        if !authenticated {
             continue;
         }
-        // A live or replacing SDK owner cannot pass the still-held fence.
-        // Refuse changed kernel identities even if their destination is equal.
-        if !mount_table()?
-            .iter()
-            .any(|current| same_mount(&mount, current))
-        {
-            continue;
+        // The original fence and kernel identity now belong to the same core
+        // owner used by explicit recovery. Its driver adapter performs every
+        // direct attempt, Disk Arbitration fallback, and physical retirement.
+        if let Err(error) = owner.detach(&work) {
+            return Err(NativeMountError::RecoveryFailed {
+                error: Box::new(error),
+                owner,
+            });
         }
-        detach_stale_mount(&mount)?;
-        if mount_table()?
-            .iter()
-            .any(|current| same_mount(&mount, current))
-        {
-            return Err(std::io::Error::other("stale mount remained after retirement").into());
-        }
-        // Keep the fence file: other processes may already hold its inode.
-        drop(owner);
     }
     Ok(())
 }

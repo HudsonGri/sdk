@@ -109,6 +109,50 @@ fn a_mount_cannot_cover_its_ownership_registry() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+#[test]
+fn existing_recovery_fences_need_neither_a_reachable_parent_nor_a_new_marker()
+-> Result<(), Box<dyn std::error::Error>> {
+    registry::initialize()?;
+    let root = tempfile::tempdir()?;
+    let parent = root.path().join("parent");
+    std::fs::create_dir(&parent)?;
+    let destination = parent.canonicalize()?.join("mount");
+    let (fence, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error)?;
+    assert!(NativeMountRecoveryOwner::acquire_existing_canonical(&destination, &original).is_err());
+    assert!(!fence.exists(), "recovery invented mount ownership");
+    drop(acquire_mount_lock(&fence, false)?);
+    std::fs::remove_dir(&parent)?;
+    assert!(NativeMountRecoveryOwner::acquire_with_original(&destination, &original).is_err());
+
+    let owner = NativeMountRecoveryOwner::acquire_existing_canonical(&destination, &original)?;
+    let identity = owner.cleanup_state()?.fence_identity;
+    assert!(matches!(
+        NativeMountRecoveryOwner::acquire_existing_canonical(&destination, &original),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    assert!(
+        fence.is_file(),
+        "a refused contender removed the owner's fence"
+    );
+    let before_close = original.receipt().backend_write_operations;
+    await_recovery_worker(owner)?;
+    assert_eq!(
+        original.receipt().backend_write_operations,
+        before_close + 1
+    );
+    let unlocked = acquire_existing_mount_lock(&fence)?;
+    assert_eq!(
+        crate::native_host::file_identity_and_length(&unlocked, &mut &original)?.0,
+        identity
+    );
+    drop(unlocked);
+    MountDestinationGuard::reclaim_canonical(&destination)?;
+    assert!(!fence.exists());
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error::Error>> {
