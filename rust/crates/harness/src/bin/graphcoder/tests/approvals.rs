@@ -342,12 +342,19 @@ impl Fixture {
         }
         if self.case.pinned() {
             return match step {
-                0 => call("write", &json!({"path":"probe.txt","text":"pinned approval content\n",
-                    "media_type":"text/plain","display_name":"probe.txt"}), step),
+                0 => call(
+                    "write",
+                    &json!({"path":"probe.txt","text":"pinned approval content\n",
+                    "media_type":"text/plain","display_name":"probe.txt"}),
+                    step,
+                ),
                 1 => {
                     let result = tool_result(body);
                     let file = result["file"].clone();
-                    assert!(file.is_object(), "setup write did not return its immutable file: {result}");
+                    assert!(
+                        file.is_object(),
+                        "setup write did not return its immutable file: {result}"
+                    );
                     call("read@portable-6", &json!({"file":file}), step)
                 }
                 2 => {
@@ -614,10 +621,13 @@ impl Followed {
                     let interaction: acyclic_harness::interaction::Interaction =
                         serde_json::from_slice(&file.bytes).unwrap();
                     let acyclic_harness::interaction::Interaction::Approval {
-                        subject: acyclic_harness::interaction::ApprovalSubject::Tool {
-                            tool, arguments, ..
-                        }, ..
-                    } = interaction else {
+                        subject:
+                            acyclic_harness::interaction::ApprovalSubject::Tool {
+                                tool, arguments, ..
+                            },
+                        ..
+                    } = interaction
+                    else {
                         panic!("pinned call lost its exact approval subject")
                     };
                     if tool == "read@portable-6" {
@@ -651,9 +661,15 @@ impl Followed {
                     let mut decision = decision(
                         self.requests.get(&(task.clone(), request.clone())).unwrap(),
                         principal,
-                        !matches!(case, Case::HumanDeny | Case::ChildHumanDeny | Case::PinnedHumanDeny),
+                        !matches!(
+                            case,
+                            Case::HumanDeny | Case::ChildHumanDeny | Case::PinnedHumanDeny
+                        ),
                     );
-                    if matches!(case, Case::ForgedSubject | Case::ChildHumanForged | Case::PinnedHumanForged) {
+                    if matches!(
+                        case,
+                        Case::ForgedSubject | Case::ChildHumanForged | Case::PinnedHumanForged
+                    ) {
                         let mut data: Value = serde_json::from_slice(&decision.bytes).unwrap();
                         *data.get_mut("request_sha256").unwrap() = json!("11".repeat(32));
                         decision.bytes = serde_json::to_vec(&data).unwrap().into();
@@ -683,7 +699,8 @@ impl Followed {
                     let interaction: Value = serde_json::from_slice(&request.bytes).unwrap();
                     interaction["subject"]["tool"] == "write"
                 };
-                let root_tool = setup_write || ((case.parent() || case.child_human()) && task == &self.root);
+                let root_tool =
+                    setup_write || ((case.parent() || case.child_human()) && task == &self.root);
                 if !root_tool {
                     self.saw_decision = true;
                 }

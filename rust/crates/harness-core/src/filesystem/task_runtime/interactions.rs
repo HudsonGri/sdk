@@ -674,14 +674,9 @@ where
                     continue;
                 };
                 let definition = &resolved.definition;
-                let Some(pinned) = request
-                    .request()
-                    .tools
-                    .iter()
-                    .find(|pinned| {
-                        pinned.name == definition.name && pinned.revision == definition.revision
-                    })
-                else {
+                let Some(pinned) = request.request().tools.iter().find(|pinned| {
+                    pinned.name == definition.name && pinned.revision == definition.revision
+                }) else {
                     continue;
                 };
                 if definition != pinned {
