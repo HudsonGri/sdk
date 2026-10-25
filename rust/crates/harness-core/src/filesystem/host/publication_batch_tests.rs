@@ -1,6 +1,45 @@
 use super::*;
 use crate::core::{AggregateKind, AuthorityIssuer};
 
+fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
+    let issuer = AuthorityIssuer::new(
+        "batch",
+        [41; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "batch".into(),
+        },
+    );
+    let scope = issuer.issue(
+        "batch-owner",
+        &crate::Capabilities::new([
+            volume.capability(VolumeOperation::Write, &mut None)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+        ]),
+        Some(agent),
+        None,
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let write = ContentGrant::verify(
+        &verifier,
+        &scope,
+        volume,
+        VolumeOperation::Write,
+        64,
+        &mut None,
+    )?;
+    let read = ContentGrant::verify(
+        &verifier,
+        &scope,
+        volume,
+        VolumeOperation::Read,
+        64,
+        &mut None,
+    )?;
+    Ok((write, read))
+}
+
 #[tokio::test]
 async fn publication_adapters_preserve_pinned_content_and_reject_changed_operation() -> Result<()> {
     for adapter in 0..3 {
@@ -16,41 +55,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
             &mut None,
         )?;
         host.create_volume(&volume).await?;
-        let issuer = AuthorityIssuer::new(
-            "batch",
-            [41; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "batch".into(),
-            },
-        );
-        let scope = issuer.issue(
-            "batch-owner",
-            &crate::Capabilities::new([
-                volume.capability(VolumeOperation::Write, &mut None)?,
-                volume.capability(VolumeOperation::Read, &mut None)?,
-            ]),
-            Some(agent),
-            None,
-            &mut None,
-        )?;
-        let verifier = issuer.verifier(&mut None)?;
-        let write = ContentGrant::verify(
-            &verifier,
-            &scope,
-            &volume,
-            VolumeOperation::Write,
-            64,
-            &mut None,
-        )?;
-        let read = ContentGrant::verify(
-            &verifier,
-            &scope,
-            &volume,
-            VolumeOperation::Read,
-            64,
-            &mut None,
-        )?;
+        let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
