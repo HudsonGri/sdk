@@ -193,7 +193,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
             let mut overlay = state.overlay;
             for path in paths.iter().chain(selected) {
-                let removed = self.removed_source_version(&state, path, ctx).await?;
+                // `None` is a path already hidden, or one the source lacks and
+                // the overlay never observed. The overlay records no absence
+                // it merely looked up, so such a path stays unobserved like any
+                // other: a file created and removed in the view (an editor's
+                // temporary, a client's `._` or `.nfs.` file) leaves no node.
+                let Some(removed) = self.removed_source_version(&state, path, ctx).await? else {
+                    continue;
+                };
+                let removed = Some(removed);
                 overlay = self
                     .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
                     .await?;

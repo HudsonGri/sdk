@@ -53,6 +53,8 @@ struct CountingSource {
     directory_entries: usize,
     counts: Arc<SourceCounts>,
     cancel_on_page: AtomicBool,
+    /// Every lookup answers that the path is absent from the source.
+    absent: AtomicBool,
 }
 impl CountingSource {
     fn new(bytes: Bytes) -> Self {
@@ -71,6 +73,7 @@ impl CountingSource {
             directory_entries: 1,
             counts: Arc::default(),
             cancel_on_page: AtomicBool::new(false),
+            absent: AtomicBool::new(false),
         }
     }
     fn replace(&self, bytes: Bytes) {
@@ -181,6 +184,9 @@ impl DemandSource for CountingSource {
             })
             .map_err(DemandError::from)?;
             self.counts.lookups.fetch_add(1, Ordering::Relaxed);
+            if self.absent.load(Ordering::Relaxed) {
+                return Err(DemandError::Absent);
+            }
             self.versioned_node(source)
                 .map(Some)
                 .ok_or(DemandError::StaleSource)

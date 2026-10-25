@@ -304,6 +304,42 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
     }
 }
 
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn a_mounted_removal_of_a_path_the_source_lacks_leaves_no_overlay_node() {
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let root = attach(
+        &Fs::memory(),
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    // A source path is deleted by a tombstone; a file created and removed in
+    // the view (`._x`, `.nfs.*`, an editor temporary) has nothing to hide.
+    for (absent, grows) in [(true, false), (false, true)] {
+        source.absent.store(absent, Ordering::Relaxed);
+        let key = IdempotencyKey::new();
+        root.prepare_mount_removals(&["/._file.txt".to_owned()], &[], &[], key, accounting!())
+            .await
+            .unwrap();
+        let pending = root
+            .store
+            .load_lazy_workspace(root.workspace.id(), accounting!())
+            .await
+            .unwrap()
+            .unwrap()
+            .pending_remove
+            .unwrap();
+        assert_eq!(
+            pending.prepared_overlay != pending.prior_overlay,
+            grows,
+            "absent source path: {absent}"
+        );
+        assert!(!root.finish_mount_removals(accounting!()).await.unwrap());
+    }
+}
+
 #[cfg(all(feature = "native-mount", feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
