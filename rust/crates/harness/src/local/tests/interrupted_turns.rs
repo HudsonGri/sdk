@@ -721,3 +721,71 @@ async fn negative_control_an_unrecoverable_partial_response_keeps_its_reservatio
         Err(Error::Indeterminate(_) | Error::CommandIndeterminate { .. })
     ));
 }
+
+/// A process killed after a model observation group is staged, before any
+/// of it is appended, recovers on reopen: the provider's continuation
+/// regroups those observations, and each staged member is adopted.
+async fn resume_after_group_stage() -> Result<String> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let text = |delta: &str| ModelEvent::Content {
+        delta: delta.into(),
+    };
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(text("a")),
+            ScriptedEvent::Event(text("b")),
+            ScriptedEvent::Pending {},
+        ])])
+        .with_reconciliations([crate::test_support::ScriptedReconciliation {
+            orphan: false,
+            observed: Vec::new(),
+            continuation: Some(vec![
+                text("a"),
+                text("b"),
+                text("c"),
+                ModelEvent::Completed {
+                    metadata: json!({}),
+                },
+            ]),
+        }])
+        .with_context_capacity(capacity()),
+    );
+    let harness = LocalHarness::open(volume_config(
+        directory.path(),
+        project.clone(),
+        provider.clone(),
+    )?)
+    .await?;
+    let task = admitted(harness.submit(OperationId::new(), "start").await?);
+    crate::executor::model_group_faults::crash_after_stage(true);
+    {
+        let resume = std::pin::pin!(harness.resume(task));
+        let reached = std::pin::pin!(async {
+            while !crate::executor::model_group_faults::reached() {
+                tokio::task::yield_now().await;
+            }
+        });
+        if let futures::future::Either::Left((result, _)) =
+            futures::future::select(resume, reached).await
+        {
+            panic!("the group was never staged: {result:?}");
+        }
+    }
+    crate::executor::model_group_faults::crash_after_stage(false);
+    drop(harness);
+    let reopened =
+        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
+    crate::executor::model_group_faults::refuse_adoption(false);
+    let output = reopened.resume(task).await?;
+    assert_eq!(provider.dispatches().len(), 1, "the model call ran again");
+    // Both members staged before the crash were adopted, not republished.
+    assert_eq!(crate::executor::model_group_faults::adopted(), 2);
+    Ok(output.text)
+}
+
+#[tokio::test]
+async fn a_staged_but_unappended_observation_group_recovers_when_regrouped() -> Result<()> {
+    assert_eq!(resume_after_group_stage().await?, "abc");
+    Ok(())
+}

@@ -18,6 +18,17 @@ pub(super) fn validate_journal(
     Ok(())
 }
 
+/// One payload of [`ExecutionJournal::stage_all`].
+#[derive(Clone, Copy, Debug)]
+pub struct StagedPayload<'a> {
+    /// The payload's own retry key within its operation.
+    pub idempotency_key: &'a str,
+    /// The immutable bytes.
+    pub bytes: &'a [u8],
+    /// The bytes' media type.
+    pub media_type: &'static str,
+}
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Excludes live attempts before replay can mistake them for crashed work.
@@ -83,6 +94,34 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         media_type: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>;
+
+    /// Stages several immutable private payloads before any observation
+    /// referring to them is appended: a group commit. A journal with
+    /// generations publishes them together; the group is one retry unit, so
+    /// a caller restages exactly the same sequence or none of it.
+    fn stage_all<'a>(
+        &'a self,
+        operation_id: OperationId,
+        payloads: &'a [StagedPayload<'a>],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<FileRef>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let mut files = crate::model::vec_with_capacity(payloads.len(), io)?;
+            for payload in payloads {
+                files.push(
+                    self.stage(
+                        operation_id,
+                        payload.idempotency_key,
+                        payload.bytes,
+                        payload.media_type,
+                        io,
+                    )?
+                    .await?,
+                );
+            }
+            Ok(files)
+        })
+    }
 
     /// Observes an already staged immutable payload by its original operation and retry key.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

@@ -109,23 +109,70 @@ where
         media_type: &'static str,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        if bytes.len() as u64 > self.maximum_payload_bytes {
+        let payload = crate::executor::StagedPayload {
+            idempotency_key,
+            bytes,
+            media_type,
+        };
+        let mut files = self
+            .stage_all_with_io(operation_id, std::slice::from_ref(&payload), io)
+            .await?;
+        files.pop().ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "execution journal staged no payload",
+            )
+        })
+    }
+
+    /// Stages every payload in one generation. A single payload keeps its own
+    /// retry key; a group is published, and retried, under one key derived
+    /// from every member key, so a group must be restaged whole.
+    pub(super) async fn stage_all_with_io(
+        &self,
+        operation_id: OperationId,
+        payloads: &[crate::executor::StagedPayload<'_>],
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<FileRef>> {
+        if payloads.is_empty() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "execution journal group is empty",
+            ));
+        }
+        if payloads
+            .iter()
+            .any(|payload| payload.bytes.len() as u64 > self.maximum_payload_bytes)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "execution journal payload exceeds limit",
             ));
         }
-        let (_identity_hold, key, path) = {
+        let (_identity_hold, key, paths) = {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, io)?;
+            let mut paths = crate::model::vec_with_capacity(payloads.len(), io)?;
+            let mut key = None;
+            for payload in payloads {
+                let (member, path) =
+                    self.stage_identity_with_io(operation_id, payload.idempotency_key, io)?;
+                paths.push(path);
+                key.get_or_insert(member);
+            }
+            let key = match key {
+                Some(key) if payloads.len() == 1 => key,
+                _ => self.group_identity_with_io(operation_id, payloads, io)?,
+            };
             let _identity_hold = io
                 .map(|io| {
                     let retained = io.owned_since(before)?;
                     io.guard_owned(retained)
                 })
                 .transpose()?;
-            (_identity_hold, key, path)
+            (_identity_hold, key, paths)
         };
         let grant = crate::executor::with_history_io(io, |work| {
             ContentGrant::verify(
@@ -142,24 +189,54 @@ where
         let grant_hold = io
             .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
             .transpose()?;
+        let mut items = crate::model::vec_with_capacity(payloads.len(), io)?;
+        for (payload, path) in payloads.iter().zip(&paths) {
+            items.push(super::super::ContentItem {
+                path,
+                input: payload.bytes,
+                media_type: payload.media_type,
+                display_name: "execution.json",
+            });
+        }
         let result = self
             .host
-            .put_internal_content(
+            .put_internal_contents(
                 &self.volume,
                 &grant,
-                &path,
-                bytes,
-                media_type,
-                "execution.json",
+                &items,
                 self.maximum_payload_bytes,
                 &key,
                 InternalContentClass::Execution,
                 io,
             )
             .await;
+        drop(items);
         drop(grant);
         drop(grant_hold);
         result
+    }
+
+    /// The retry key of a group: one digest over every member's retry
+    /// digest, in order, so it names exactly this sequence of members.
+    fn group_identity_with_io(
+        &self,
+        operation_id: OperationId,
+        payloads: &[crate::executor::StagedPayload<'_>],
+        io: Option<&PreparationIo>,
+    ) -> Result<IdempotencyKey> {
+        let mut members = crate::model::vec_with_capacity(32 * payloads.len(), io)?;
+        for payload in payloads {
+            members.extend_from_slice(
+                operation_digest(operation_id, payload.idempotency_key, io)?.as_bytes(),
+            );
+        }
+        let digest = blake3::Hash::from(crate::model::hash_bytes(&members, io)?);
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(
+                format_args!("journal-group-{}", digest.to_hex()),
+                work,
+            )
+        })?)
     }
 
     pub(super) async fn load_content(

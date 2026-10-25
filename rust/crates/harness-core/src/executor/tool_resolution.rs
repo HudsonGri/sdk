@@ -153,20 +153,47 @@ impl StockExecution<'_> {
         }
     }
 
-    pub(super) async fn publish_tool_payload<T: Serialize>(
+    /// Stages a completed call's result and projection as one group commit.
+    pub(super) async fn publish_tool_output(
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,
         step: u32,
         call: &str,
-        kind: &str,
-        value: &T,
-    ) -> Result<std::result::Result<FileRef, crate::model::ToolResultContent>> {
-        let key = with_history_io(self.io, |work| {
-            preparation_format(format_args!("tool:{step}:{call}:{kind}"), work)
-        })?;
-        match stage_json(journal, operation, &key, value, self.io).await {
-            Ok(reference) => Ok(Ok(reference)),
+        result: &ToolResult,
+        projection: &Value,
+    ) -> Result<std::result::Result<(FileRef, FileRef), crate::model::ToolResultContent>> {
+        let keys = [
+            with_history_io(self.io, |work| {
+                preparation_format(format_args!("tool:{step}:{call}:result"), work)
+            })?,
+            with_history_io(self.io, |work| {
+                preparation_format(format_args!("tool:{step}:{call}:projection"), work)
+            })?,
+        ];
+        let staged = async {
+            let encoded = [
+                encode_canonical(result, self.io)?,
+                encode_canonical(projection, self.io)?,
+            ];
+            let payloads = [
+                (keys[0].as_str(), encoded[0].0.as_ref()),
+                (keys[1].as_str(), encoded[1].0.as_ref()),
+            ];
+            let mut references = stage_json_all(journal, operation, &payloads, self.io)
+                .await?
+                .into_iter();
+            match (references.next(), references.next()) {
+                (Some(result), Some(projection)) => Ok((result, projection)),
+                _ => Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "tool output staged a different payload count",
+                )),
+            }
+        };
+        match staged.await {
+            Ok(references) => Ok(Ok(references)),
             Err(error) if error.is_native_failure() => Err(error),
             Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
             Err(error) => self

@@ -810,25 +810,11 @@ impl StockExecution<'_> {
         projection: &Value,
     ) -> Result<ToolSettlement<()>> {
         let (operation_id, step) = identity;
-        let result = match self
-            .publish_tool_payload(journal, operation_id, step, call_id, "result", result)
+        let (result, projection) = match self
+            .publish_tool_output(journal, operation_id, step, call_id, result, projection)
             .await?
         {
-            Ok(result) => result,
-            Err(reason) => return Ok(Err(reason)),
-        };
-        let projection = match self
-            .publish_tool_payload(
-                journal,
-                operation_id,
-                step,
-                call_id,
-                "projection",
-                projection,
-            )
-            .await?
-        {
-            Ok(projection) => projection,
+            Ok(references) => references,
             Err(reason) => return Ok(Err(reason)),
         };
         let (tail, current) = self

@@ -729,6 +729,7 @@ mod compaction;
 mod compaction_resolution;
 mod content;
 mod final_message;
+mod group_commit;
 mod invocation_bounds;
 mod live_execution;
 mod output_bounds;

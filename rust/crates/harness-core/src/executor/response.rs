@@ -62,30 +62,42 @@ impl StockExecution<'_> {
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
-        let reference = stage_json(
-            journal,
-            input.operation_id,
-            &projection_key,
-            &projection,
-            self.io,
-        )
-        .await?;
-        let accounting_ref = if let Some(accounting) = &accounting {
+        // The projection and its accounting are one group commit.
+        let (reference, accounting_ref) = if let Some(accounting) = &accounting {
             let accounting_key = with_history_io(self.io, |work| {
                 crate::executor::preparation_format(format_args!("context:{step}:accounting"), work)
             })?;
-            Some(
-                stage_json(
-                    journal,
-                    input.operation_id,
-                    &accounting_key,
-                    accounting,
-                    self.io,
-                )
-                .await?,
-            )
+            let encoded = [
+                encode_canonical(&projection, self.io)?,
+                encode_canonical(accounting, self.io)?,
+            ];
+            let payloads = [
+                (projection_key.as_str(), encoded[0].0.as_ref()),
+                (accounting_key.as_str(), encoded[1].0.as_ref()),
+            ];
+            let mut references = stage_json_all(journal, input.operation_id, &payloads, self.io)
+                .await?
+                .into_iter();
+            match (references.next(), references.next()) {
+                (Some(projection), Some(accounting)) => (projection, Some(accounting)),
+                _ => {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Storage,
+                        "context projection staged a different payload count",
+                    ));
+                }
+            }
         } else {
-            None
+            let reference = stage_json(
+                journal,
+                input.operation_id,
+                &projection_key,
+                &projection,
+                self.io,
+            )
+            .await?;
+            (reference, None)
         };
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)

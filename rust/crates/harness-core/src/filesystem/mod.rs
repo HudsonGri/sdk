@@ -211,7 +211,6 @@ pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectS
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     #[allow(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "one implementation pins the complete staged file contract"
     )]
     async fn put_content_impl<B: ContentInput + ?Sized>(
@@ -233,7 +232,60 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
-        let bytes = input.as_ref();
+        let item = ContentItem {
+            path,
+            input,
+            media_type,
+            display_name,
+        };
+        let mut files = self
+            .put_contents_impl(
+                volume,
+                grant,
+                std::slice::from_ref(&item),
+                maximum_bytes,
+                idempotency_key,
+                internal_class,
+                expected_generation,
+                ceiling,
+                io,
+            )
+            .await?;
+        files.pop().ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "content publication returned no file",
+            )
+        })
+    }
+
+    /// Publishes every item in one generation under one idempotency key: a
+    /// group commit. Each item keeps its own path, metadata index and upload
+    /// receipt, and every returned reference names the shared generation.
+    /// Several items need the execution class, whose paths derive from each
+    /// member's own retry key and whose receipt identity is that path.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one implementation pins the complete staged file contract"
+    )]
+    async fn put_contents_impl<B: ContentInput + ?Sized>(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        items: &[ContentItem<'_, B>],
+        maximum_bytes: u64,
+        idempotency_key: &IdempotencyKey,
+        internal_class: Option<InternalContentClass>,
+        expected_generation: Option<&GenerationRef>,
+        ceiling: Option<&crate::Capabilities>,
+        io: Option<&fork_preparer_io::PreparationIo>,
+    ) -> Result<Vec<FileRef>>
+    where
+        A: 'static,
+        O: 'static,
+    {
         grant.require(volume, VolumeOperation::Write, io)?;
         if let Some(grants) = ceiling
             && !crate::executor::with_history_io(io, |work| {
@@ -246,31 +298,374 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "content caller lacks a filesystem write grant",
             ));
         }
-        if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
+        // Execution payload paths derive from their own retry keys, so a
+        // member keeps its identity whichever publication carries it.
+        let keyed = matches!(internal_class, Some(InternalContentClass::Execution));
+        let group = items.len() > 1;
+        if items.is_empty()
+            || (group && (!keyed || expected_generation.is_some()))
+            || items
+                .iter()
+                .enumerate()
+                .any(|(index, item)| items[..index].iter().any(|prior| prior.path == item.path))
+        {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "a group commit needs distinct execution paths",
+            ));
+        }
+        if volume.provider() != &self.provider
+            || items
+                .iter()
+                .any(|item| item.input.as_ref().len() as u64 > maximum_bytes)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "content provider or size limit mismatch",
             ));
         }
-        crate::executor::with_history_io(io, |work| {
-            crate::conversation::validate_content_path(path, work)
+        // Refuse an invalid path before anything is allocated for it.
+        for item in items {
+            crate::executor::with_history_io(io, |work| {
+                crate::conversation::validate_content_path(item.path, work)
+            })?;
+        }
+        let publication = ContentPublication {
+            volume,
+            idempotency_key,
+            internal_class,
+            expected_generation,
+            maximum_bytes,
+            io,
+        };
+        let mut operation = None;
+        let mut staged = crate::model::vec_with_capacity(items.len(), io)?;
+        for item in items {
+            staged.push(self.stage_content_item(&publication, item, &mut operation)?);
+        }
+        let operation = operation.ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "content publication has no items",
+            )
         })?;
+        let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
+        let (opened, prior) = crate::conversation::BoundedContentFuture::new(io, || async {
+            let owned;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
+            };
+            let opened = self.open(&workspace, Some(io)).await?;
+            let prior = io.sdk(
+                opened
+                    .operation_generation(operation, io, io.cancellation())
+                    .await,
+            )?;
+            Ok::<_, Error>((opened, prior))
+        })?
+        .await?;
+        let mut paths = crate::model::vec_with_capacity(staged.len(), io)?;
+        for item in &staged {
+            paths.push(item.provisional.path());
+        }
+        let (authorized_generation, policy_fence, head) = self
+            .authorize_content_write(&opened, grant, &paths, prior.is_some(), ceiling, io)
+            .await?;
+        drop(paths);
+        let generation_hold = io
+            .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
+            .transpose()?;
+        let authorized_generation = (authorized_generation, generation_hold);
+        if let Some(prior) = prior {
+            let generation = (self).generation_ref_id(prior.id(), io)?;
+            fork_preparer_io::retain(&prior, io).await?;
+            let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
+            let mut references = crate::model::vec_with_capacity(items.len(), io)?;
+            for (item, staged) in items.iter().zip(&staged) {
+                let member = if keyed {
+                    let own = (operation, Some(&prior));
+                    self.published_member(&publication, &opened, &prior, item, own)
+                        .await?
+                } else {
+                    None
+                };
+                references.push(match member {
+                    Some(member) => member,
+                    None => {
+                        self.replayed_content_item(&publication, &prior, item, staged, &version)
+                            .await?
+                    }
+                });
+            }
+            grant.recheck(io)?;
+            return Ok(references);
+        }
+        // An execution path is unique to its member's own retry key, so a
+        // member already present was staged by an earlier publication, which
+        // may have grouped it differently: it is that publication's member,
+        // proven identical, and only the absent members are published.
+        let (head, present) = head.ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "content authorization returned no head",
+            )
+        })?;
+        let mut resolved = crate::model::vec_with_capacity(items.len(), io)?;
+        for (item, present) in items.iter().zip(&present) {
+            resolved.push(
+                if *present
+                    && keyed
+                    && expected_generation.is_none()
+                    && !crate::executor::model_group_faults::adoption_refused()
+                {
+                    let own = (operation, None);
+                    self.published_member(&publication, &opened, &head, item, own)
+                        .await?
+                } else {
+                    None
+                },
+            );
+        }
+        drop((head, present));
+        if resolved.iter().all(Option::is_some) {
+            grant.recheck(io)?;
+            return Ok(resolved.into_iter().flatten().collect());
+        }
+        if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "workspace generation changed before content authorization",
+            ));
+        }
+        let policy_fence = if expected_generation.is_some() {
+            policy_fence.pin_generation()
+        } else {
+            policy_fence
+        };
+        let mut mutations = crate::model::vec_with_capacity(2 + 4 * staged.len(), io)?;
+        for ((item, staged), _) in items
+            .iter()
+            .zip(&staged)
+            .zip(&resolved)
+            .filter(|(_, resolved)| resolved.is_none())
+        {
+            let absolute = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("/{}", staged.provisional.path()),
+                    work,
+                )
+            })?;
+            if let Some((parent, _)) = absolute.rsplit_once('/')
+                && !parent.is_empty()
+            {
+                mutations.push(WorkspaceMutation::CreateDirectory {
+                    path: stock_string_copy(parent, io)?,
+                });
+            }
+            let owned_bytes = item.input.mutation_bytes(io)?;
+            mutations.push(WorkspaceMutation::PutFile {
+                path: absolute,
+                bytes: owned_bytes,
+            });
+        }
+        mutations.push(WorkspaceMutation::CreateDirectory {
+            path: stock_string_copy("/.system/harness-uploads", io)?,
+        });
+        mutations.push(WorkspaceMutation::CreateDirectory {
+            path: stock_string_copy("/.system/harness-file-metadata", io)?,
+        });
+        let mut descriptors = crate::model::vec_with_capacity(staged.len(), io)?;
+        for (staged, _) in staged
+            .into_iter()
+            .zip(&resolved)
+            .filter(|(_, resolved)| resolved.is_none())
+        {
+            let StagedContentItem {
+                descriptor,
+                metadata_path,
+                metadata_bytes,
+                receipt_path,
+                receipt_bytes,
+                ..
+            } = staged;
+            descriptors.push(descriptor);
+            mutations.push(WorkspaceMutation::PutFile {
+                path: crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
+                })?,
+                bytes: metadata_bytes,
+            });
+            mutations.push(WorkspaceMutation::PutFile {
+                path: crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
+                })?,
+                bytes: receipt_bytes,
+            });
+        }
+        let generation = self
+            .apply_authorized_generation(
+                &workspace,
+                (policy_fence, grant),
+                &mutations,
+                IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
+                io,
+                None,
+            )?
+            .await?;
+        let generation_reference = (self).generation_ref_id(generation.id(), io)?;
+        let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
+        {
+            match io {
+                Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
+                None => retain_published_generation(&generation).await?,
+            }
+        }
+        let mut references = crate::model::vec_with_capacity(items.len(), io)?;
+        let mut descriptors = descriptors.iter();
+        for (item, resolved) in items.iter().zip(resolved) {
+            if let Some(reference) = resolved {
+                references.push(reference);
+                continue;
+            }
+            let descriptor = descriptors.next().ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "content publication lost a member",
+                )
+            })?;
+            let reference = content_reference(volume, item, descriptor, &version, io)?;
+            self.read_retained_file(&generation, &reference, maximum_bytes, io)
+                .await?;
+            references.push(reference);
+        }
+        grant.recheck(io)?;
+        Ok(references)
+    }
+
+    /// Returns the member an earlier publication staged at this execution
+    /// item's path, proven to be this item: its metadata index names that
+    /// publication's retry key, and its receipt, index and content match this
+    /// item staged under that key. `None` when no harness publication staged
+    /// the path, so a raw file there proves nothing and is published over.
+    /// `own` is this request's filesystem key and, on a replay, its
+    /// publication, already retained.
+    async fn published_member<B: ContentInput + ?Sized>(
+        &self,
+        publication: &ContentPublication<'_>,
+        opened: &Workspace<A, O>,
+        generation: &Generation<A, O>,
+        item: &ContentItem<'_, B>,
+        own: (acyclic_fs::IdempotencyKey, Option<&Generation<A, O>>),
+    ) -> Result<Option<FileRef>> {
+        let io = publication.io;
+        let mismatch = || {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "upload metadata index does not match",
+            )
+        };
+        let metadata_path = content_metadata_path_io(item.path, false, io)?;
+        let indexed_path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
+        })?;
+        let indexed =
+            match read_generation(generation, &indexed_path, CONTENT_RECORD_BYTES, io).await {
+                Ok(indexed) => indexed,
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+        let indexed: FileRef = decode_record(&indexed, io)?;
+        let mut origin = [0; 16];
+        hex::decode_to_slice(indexed.version(), &mut origin).map_err(|_| mismatch())?;
+        drop(indexed);
+        let origin = acyclic_fs::IdempotencyKey::from_bytes(origin);
+        let restaged = self.stage_content_item(publication, item, &mut Some(origin))?;
+        let owned;
+        let (prior, adopted) = if origin == own.0
+            && let Some(retained) = own.1
+        {
+            (retained, false)
+        } else {
+            let found = crate::conversation::BoundedContentFuture::new(io, || async {
+                let unmeasured;
+                let io = if let Some(io) = io {
+                    io
+                } else {
+                    unmeasured =
+                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &unmeasured
+                };
+                io.sdk(
+                    opened
+                        .operation_generation(origin, io, io.cancellation())
+                        .await,
+                )
+            })?
+            .await?;
+            let Some(found) = found else {
+                return Ok(None);
+            };
+            owned = found;
+            fork_preparer_io::retain(&owned, io).await?;
+            (&owned, true)
+        };
+        let version = fork_preparer_io::hex_key(
+            self.generation_ref_id(prior.id(), io)?.as_resource().key(),
+            io,
+        )?;
+        let member = self
+            .replayed_content_item(publication, prior, item, &restaged, &version)
+            .await?;
+        if adopted {
+            crate::executor::model_group_faults::record_adoption();
+        }
+        Ok(Some(member))
+    }
+
+    /// Validates one item and encodes its metadata index and upload receipt.
+    fn stage_content_item<B: ContentInput + ?Sized>(
+        &self,
+        publication: &ContentPublication<'_>,
+        item: &ContentItem<'_, B>,
+        operation: &mut Option<acyclic_fs::IdempotencyKey>,
+    ) -> Result<StagedContentItem> {
+        let ContentPublication {
+            volume,
+            idempotency_key,
+            internal_class,
+            expected_generation,
+            io,
+            ..
+        } = *publication;
+        let bytes = item.input.as_ref();
         let descriptor = crate::executor::with_history_io(io, |work| {
-            FileDescriptor::from_bytes(bytes, media_type, work)
+            FileDescriptor::from_bytes(bytes, item.media_type, work)
         })?;
-        let operation = fork_preparer_io::operation_key(idempotency_key, io)?;
+        let operation = match *operation {
+            Some(operation) => operation,
+            None => *operation.insert(fork_preparer_io::operation_key(idempotency_key, io)?),
+        };
         let provisional = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 volume.copy(work)?,
-                stock_string_copy(path, io)?,
+                stock_string_copy(item.path, io)?,
                 fork_preparer_io::hex_key(&operation.into_bytes(), io)?,
                 FileDescriptor::new(
                     *descriptor.sha256(),
                     descriptor.byte_length(),
                     stock_string_copy(descriptor.media_type(), io)?,
                 )?,
-                stock_string_copy(display_name, io)?,
+                stock_string_copy(item.display_name, io)?,
                 work,
             )
         })?;
@@ -303,7 +698,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             None => {}
         }
-        let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let receipt_identity = if internal_class.is_some() {
             provisional.path()
         } else {
@@ -330,183 +724,67 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 expected_generation,
             ))?),
         };
-        let (opened, prior) = crate::conversation::BoundedContentFuture::new(io, || async {
-            let owned;
-            let io = if let Some(io) = io {
-                io
-            } else {
-                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                &owned
-            };
-            let opened = self.open(&workspace, Some(io)).await?;
-            let prior = io.sdk(
-                opened
-                    .operation_generation(operation, io, io.cancellation())
-                    .await,
-            )?;
-            Ok::<_, Error>((opened, prior))
-        })?
-        .await?;
-        let (authorized_generation, policy_fence) = self
-            .authorize_content_write(
-                &opened,
-                grant,
-                provisional.path(),
-                prior.is_some(),
-                ceiling,
-                io,
-            )
-            .await?;
-        let generation_hold = io
-            .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
-            .transpose()?;
-        let authorized_generation = (authorized_generation, generation_hold);
-        if let Some(prior) = prior {
-            let generation = (self).generation_ref_id(prior.id(), io)?;
-            fork_preparer_io::retain(&prior, io).await?;
-            let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-            let receipt_path = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
-            })?;
-            const RECORD_BYTES: u64 = 6
-                * (crate::conversation::MAX_PATH_BYTES as u64
-                    + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                    + 1024);
-            let original_receipt = read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
-            if original_receipt.as_ref() != receipt_bytes.as_ref() {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "upload identity belongs to a different request",
-                ));
-            }
-            drop(original_receipt);
-            let indexed_path = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-            })?;
-            let indexed =
-                read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io).await?;
-            if indexed.as_ref() != metadata_bytes.as_slice() {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "upload metadata index does not match",
-                ));
-            }
-            let reference = {
-                let descriptor = &descriptor;
-                crate::executor::with_history_io(io, |work| {
-                    crate::conversation::FileRef::new(
-                        (volume).copy(work)?,
-                        stock_string_copy(path, io)?,
-                        stock_string_copy(&version, io)?,
-                        crate::conversation::FileDescriptor::new(
-                            *descriptor.sha256(),
-                            descriptor.byte_length(),
-                            stock_string_copy(descriptor.media_type(), io)?,
-                        )?,
-                        stock_string_copy(display_name, io)?,
-                        work,
-                    )
-                })
-            }?;
-            let committed = self
-                .read_retained_file(&prior, &reference, maximum_bytes, io)
-                .await?;
-            if committed.as_ref() != bytes {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "upload identity belongs to different content",
-                ));
-            }
-            grant.recheck(io)?;
-            return Ok(reference);
-        }
-        if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
+        Ok(StagedContentItem {
+            descriptor,
+            provisional,
+            receipt_path,
+            metadata_path,
+            metadata_bytes,
+            receipt_bytes,
+        })
+    }
+
+    /// Returns one item of a replayed publication after proving it unchanged.
+    async fn replayed_content_item<B: ContentInput + ?Sized>(
+        &self,
+        publication: &ContentPublication<'_>,
+        prior: &Generation<A, O>,
+        item: &ContentItem<'_, B>,
+        staged: &StagedContentItem,
+        version: &str,
+    ) -> Result<FileRef> {
+        let ContentPublication {
+            volume,
+            maximum_bytes,
+            io,
+            ..
+        } = *publication;
+        let receipt_path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("/{}", staged.receipt_path), work)
+        })?;
+        let original_receipt =
+            read_generation(prior, &receipt_path, CONTENT_RECORD_BYTES, io).await?;
+        if original_receipt.as_ref() != staged.receipt_bytes.as_ref() {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
-                "workspace generation changed before content authorization",
+                "upload identity belongs to a different request",
             ));
         }
-        let policy_fence = if expected_generation.is_some() {
-            policy_fence.pin_generation()
-        } else {
-            policy_fence
-        };
-        let absolute = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
+        drop(original_receipt);
+        let indexed_path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("/{}", staged.metadata_path), work)
         })?;
-        let mut mutations = crate::model::vec_with_capacity(6, io)?;
-        if let Some((parent, _)) = absolute.rsplit_once('/')
-            && !parent.is_empty()
-        {
-            mutations.push(WorkspaceMutation::CreateDirectory {
-                path: stock_string_copy(parent, io)?,
-            });
-        }
-        let owned_bytes = input.mutation_bytes(io)?;
-        mutations.push(WorkspaceMutation::PutFile {
-            path: absolute,
-            bytes: owned_bytes,
-        });
-        mutations.push(WorkspaceMutation::CreateDirectory {
-            path: stock_string_copy("/.system/harness-uploads", io)?,
-        });
-        mutations.push(WorkspaceMutation::CreateDirectory {
-            path: stock_string_copy("/.system/harness-file-metadata", io)?,
-        });
-        mutations.push(WorkspaceMutation::PutFile {
-            path: crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-            })?,
-            bytes: metadata_bytes,
-        });
-        mutations.push(WorkspaceMutation::PutFile {
-            path: crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
-            })?,
-            bytes: receipt_bytes,
-        });
-        let generation = self
-            .apply_authorized_generation(
-                &workspace,
-                (policy_fence, grant),
-                &mutations,
-                IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
+        let indexed =
+            read_generation(prior, &indexed_path, staged.metadata_bytes.len() as u64, io).await?;
+        if indexed.as_ref() != staged.metadata_bytes.as_slice() {
+            return Err(stock_boundary(
                 io,
-                None,
-            )?
-            .await?;
-        let generation_reference = (self).generation_ref_id(generation.id(), io)?;
-        let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
-        {
-            match io {
-                Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
-                None => retain_published_generation(&generation).await?,
-            }
+                crate::wire::ErrorCode::Conflict,
+                "upload metadata index does not match",
+            ));
         }
-        let reference = {
-            let descriptor = &descriptor;
-            crate::executor::with_history_io(io, |work| {
-                crate::conversation::FileRef::new(
-                    (volume).copy(work)?,
-                    stock_string_copy(path, io)?,
-                    stock_string_copy(&version, io)?,
-                    crate::conversation::FileDescriptor::new(
-                        *descriptor.sha256(),
-                        descriptor.byte_length(),
-                        stock_string_copy(descriptor.media_type(), io)?,
-                    )?,
-                    stock_string_copy(display_name, io)?,
-                    work,
-                )
-            })
-        }?;
-        self.read_retained_file(&generation, &reference, maximum_bytes, io)
+        let reference = content_reference(volume, item, &staged.descriptor, version, io)?;
+        let committed = self
+            .read_retained_file(prior, &reference, maximum_bytes, io)
             .await?;
-        grant.recheck(io)?;
+        if committed.as_ref() != item.input.as_ref() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "upload identity belongs to different content",
+            ));
+        }
         Ok(reference)
     }
     async fn read_retained_file(
@@ -826,3 +1104,62 @@ mod checkout_publication;
 pub use checkout_publication::CheckoutPublication;
 
 pub use host::DirectoryOptions;
+
+/// One content publication's request: what every one of its items shares.
+#[derive(Clone, Copy)]
+struct ContentPublication<'p> {
+    volume: &'p VolumeRef,
+    idempotency_key: &'p IdempotencyKey,
+    internal_class: Option<InternalContentClass>,
+    expected_generation: Option<&'p GenerationRef>,
+    maximum_bytes: u64,
+    io: Option<&'p PreparationIo>,
+}
+
+/// The most bytes one upload receipt or metadata index occupies.
+const CONTENT_RECORD_BYTES: u64 = 6
+    * (crate::conversation::MAX_PATH_BYTES as u64
+        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
+        + 1024);
+
+/// One file of a content publication.
+pub(super) struct ContentItem<'a, B: ?Sized> {
+    pub path: &'a str,
+    pub input: &'a B,
+    pub media_type: &'a str,
+    pub display_name: &'a str,
+}
+
+/// An item's validated identity and its encoded index records.
+struct StagedContentItem {
+    descriptor: FileDescriptor,
+    provisional: FileRef,
+    receipt_path: String,
+    metadata_path: String,
+    metadata_bytes: acyclic_stream::OwnedBytes,
+    receipt_bytes: acyclic_stream::OwnedBytes,
+}
+
+/// The published reference to one item of a generation.
+fn content_reference<B: ?Sized>(
+    volume: &VolumeRef,
+    item: &ContentItem<'_, B>,
+    descriptor: &FileDescriptor,
+    version: &str,
+    io: Option<&PreparationIo>,
+) -> Result<FileRef> {
+    crate::executor::with_history_io(io, |work| {
+        FileRef::new(
+            volume.copy(work)?,
+            stock_string_copy(item.path, io)?,
+            stock_string_copy(version, io)?,
+            FileDescriptor::new(
+                *descriptor.sha256(),
+                descriptor.byte_length(),
+                stock_string_copy(descriptor.media_type(), io)?,
+            )?,
+            stock_string_copy(item.display_name, io)?,
+            work,
+        )
+    })
+}

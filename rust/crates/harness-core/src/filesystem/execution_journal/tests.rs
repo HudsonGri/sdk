@@ -3,6 +3,7 @@ use super::*;
 use crate::filesystem::*;
 use crate::{AgentId, conversation::VolumeOwner, executor::ModelPurpose, resources::ProviderRef};
 
+mod group_commit;
 mod staged_ref;
 
 #[tokio::test]
