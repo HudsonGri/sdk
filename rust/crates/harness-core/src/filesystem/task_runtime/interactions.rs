@@ -398,7 +398,10 @@ where
         }
         let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
         let host = self.interaction_host(io)?;
-        match host.read_request(id, io).await? {
+        // Request identity and terminal status must belong to the same cut.
+        // This is an observation; execution still consumes the durable decision.
+        let aggregate = host.aggregate(io).await?;
+        match host.read_request_at(&aggregate.0, id, io).await? {
             None => return Ok(ApprovalWait::Absent),
             Some(Interaction::Approval {
                 operation_id,
@@ -427,14 +430,13 @@ where
             .map(super::super::PreparationIo::owned_bytes)
             .transpose()?
             .unwrap_or(0);
-        let read = host.read(id, io).await?;
+        let read = host.read_outcome(&aggregate.0, id, io)?;
         let read_hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         let ready = read
             .as_ref()
-            .and_then(|(_, resolution)| resolution.as_ref())
-            .is_some_and(|resolution| resolution.outcome.is_terminal());
+            .is_some_and(crate::interaction::InteractionOutcome::is_terminal);
         drop(read);
         drop(read_hold);
         Ok(if ready {
