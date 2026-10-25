@@ -44,7 +44,8 @@ export default function acyclic(pi: ExtensionAPI) {
         } catch { stop(new Error("Invalid Acyclic coordination response")); }
       });
       bridge.on("error", stop);
-      ended = new Promise(resolve => bridge!.once("exit", () => {stop(new Error("Acyclic coordination session ended")); bridge = undefined; resolve();}));
+      bridge.stdin.on("error", stop);
+      ended = new Promise(resolve => bridge!.once("close", () => {stop(new Error("Acyclic coordination session ended")); bridge = undefined; resolve();}));
       bridge.stdin.write(JSON.stringify({jsonrpc: "2.0", id: 0, method: "initialize", params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "acyclic-pi", version: "0.2.0"}}}) + "\n");
       bridge.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/initialized"}) + "\n");
     }
