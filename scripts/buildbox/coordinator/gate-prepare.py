@@ -78,14 +78,22 @@ class Gate:
         key = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
         old = self.read('preparation-hold.json', {})
         if old.get('key') != key:
-            self.alert('GATE_PREPARATION_INFRA', f'#{"+".join(map(str, prs))} preparation-INFRA: gate-speed annotation: {reason} key={key}; explicit repository recovery required')
+            self.alert('GATE_PREPARATION_INFRA', f'#{"+".join(map(str, prs))} preparation-INFRA: gate-speed annotation: {reason} key={key}; automatic validated recovery on next dispatch')
         self.write('preparation-hold.json', {**value, 'key': key})
-        print('GATE preparation-INFRA: gate-speed annotation: ' + reason + '; candidates preserved; explicit repository recovery required')
+        print('GATE preparation-INFRA: gate-speed annotation: ' + reason + '; candidates preserved; automatic validated recovery on next dispatch')
         return 6
 
     def reset(self):
         self.checked(self.worktree, 'checkout', '-q', '--detach', '-f', self.base)
         self.checked(self.worktree, 'clean', '-qfdx', '-e', 'target')
+
+    def repair(self, prs, reason):
+        detail = self.validate()
+        self.refresh(prs)
+        self.reset()  # checkout AND clean must succeed before releasing hold
+        (self.state / 'preparation-hold.json').unlink(missing_ok=True)
+        self.write('recovery.json', {'at': datetime.now(timezone.utc).isoformat(), 'reason':reason, **detail})
+        print('GATE_PREPARATION_RECOVERED ' + json.dumps(detail))
 
     def merge(self, pr, label):
         r = self.git(self.worktree, '-c', 'rerere.enabled=false', '-c', 'rerere.autoupdate=false',
@@ -157,7 +165,7 @@ class Gate:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation', choices=['prepare', 'refresh', 'eligible', 'park', 'hold', 'recover'])
+    p.add_argument('operation', choices=['prepare', 'refresh', 'eligible', 'park', 'hold', 'recover', 'repair'])
     p.add_argument('prs', type=int, nargs='*')
     p.add_argument('--repo', default='Q:/sdk')
     p.add_argument('--worktree', default='Q:/wt/pr-gate')
@@ -166,26 +174,21 @@ def main():
     p.add_argument('--reason', default='policy')
     a = p.parse_args()
     g = Gate(a.repo, a.worktree, a.state, a.alerts)
-    if a.operation != 'recover' and g.read('preparation-hold.json'):
-        print('GATE preparation-INFRA: gate-speed annotation: held pending explicit repository recovery')
-        return 6
     try:
         if a.operation == 'hold':
             return g.hold(a.prs, a.reason)
+        if a.operation == 'repair':
+            # Caller owns the gate lock. A fence failure cannot poison peers.
+            g.repair(a.prs, a.reason)
+            return 0
         if a.operation == 'recover':
             lock=g.state/'.lock'
             try:lock.mkdir()
             except FileExistsError:
                 print('GATE recovery deferred: a gate owns the lock');return 75
             try:
-                detail = g.validate()
-                g.refresh([])
-                g.reset()  # checkout AND clean must succeed before releasing hold
+                g.repair([], a.reason)
                 g.release_failed_merges()
-                # Explicit recovery command, not an automatic retry loop.
-                (g.state / 'preparation-hold.json').unlink(missing_ok=True)
-                g.write('recovery.json', {'at': datetime.now(timezone.utc).isoformat(), **detail})
-                print('GATE_PREPARATION_RECOVERED ' + json.dumps(detail))
                 return 0
             finally:lock.rmdir()
         if a.operation == 'eligible':
@@ -195,6 +198,9 @@ def main():
             return 0
         if a.operation == 'refresh':
             g.refresh(a.prs)
+            if g.read('preparation-hold.json'):
+                g.reset()
+                (g.state/'preparation-hold.json').unlink(missing_ok=True)
             return 0
         return g.prepare(a.prs)
     except (PreparationError, subprocess.TimeoutExpired, OSError) as e:

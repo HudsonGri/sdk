@@ -2,6 +2,10 @@
 # All direct and bisect paths share the same preparation/conflict handling.
 T=${GATE_LANES:-Q:/lanes}; L=${GATE_STATE:-$T/pr-gate}; P=$L/pending.txt
 mkdir -p "$L"
+if [ "${1:-}" != --owned-by-dispatch ]; then
+  exec python "$T/gate-queue.py" "$L" dispatch "$0"
+fi
+shift
 queue(){ python "$T/gate-queue.py" "$L" "$@"; }
 enqueue(){ queue add pending "$@" || { preparation_infra=1; return 6; }; }
 prep(){ python "$T/gate-prepare.py" "$@" --repo "${GATE_REPO:-Q:/sdk}" --worktree "${GATE_WORKTREE:-Q:/wt/pr-gate}" --state "$L" --alerts "${GATE_ALERTS:-$HOME/.codex-fleet/alerts.log}"; }
@@ -11,6 +15,14 @@ run_gate(){
   reason=$(mktemp "$L/route-verdict.XXXXXXXX.out") || return 6
   bash "$T/pr-gate.sh" "$@" > "$reason" 2>&1; rc=$?
   cat "$reason"
+  pass_pin=
+  if [ "$rc" = 0 ]; then
+    pass_pin=$(sed -n 's/^GATE_PASS_PIN //p' "$reason")
+    if [ -z "$pass_pin" ] || [ ! -f "$pass_pin" ]; then
+      echo 'preparation-INFRA: successful run did not retain its owned pin'
+      return 6
+    fi
+  fi
   if [ "$rc" = 3 ]; then
     p=$(cat "$L/.conflict")
     if grep -aq "^GATE FAIL .*: #$p conflicts (rebase needed)$" "$reason"; then
@@ -30,10 +42,12 @@ run_gate(){
 }
 merge(){
   local diagnostic
-  if ! diagnostic=$(python "$T/gate-merge.py" merge "$@" --repo "${GATE_REPO:-Q:/sdk}" --worktree "${GATE_WORKTREE:-Q:/wt/pr-gate}" --state "$L" --alerts "${GATE_ALERTS:-$HOME/.codex-fleet/alerts.log}" 2>&1); then
+  if ! diagnostic=$(python "$T/gate-merge.py" merge "$@" --pin "$pass_pin" --repo "${GATE_REPO:-Q:/sdk}" --worktree "${GATE_WORKTREE:-Q:/wt/pr-gate}" --state "$L" --alerts "${GATE_ALERTS:-$HOME/.codex-fleet/alerts.log}" 2>&1); then
     printf '%s\n' "$diagnostic"
-    prep hold "$@" --reason "$diagnostic"
-    enqueue "$@"; preparation_infra=1
+    # A stale fence is not a repository-wide hold. Restore validated local
+    # preparation once, retain this group for a new run, then allow peers.
+    prep repair "$@" --reason "$diagnostic" || { preparation_infra=1; }
+    enqueue "$@"
   fi
 }
 # Read readiness at dispatch, including recursive bisects and deferred solos.
@@ -142,8 +156,8 @@ while :; do
     queue ack active "${claimed[@]}" || preparation_infra=1
   fi
   rmdir "$L/.lock"; trap - EXIT
-  # Local metadata failures are held for explicit coordinator recovery. They
-  # must never submit a build-box availability probe or loop on pending.txt.
+  # Preserve preparation failures for validated recovery on the next dispatch.
+  # Never submit a build-box availability probe for local metadata failures.
   [ "$preparation_infra" = 0 ] || exit 0
   [ "$api_infra" = 0 ] || exit 0
   queue has pending; queue_rc=$?

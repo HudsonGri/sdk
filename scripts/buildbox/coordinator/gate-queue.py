@@ -11,8 +11,10 @@ import argparse
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import sys
+import subprocess
 import tempfile
 
 QUEUES = {'pending', 'held-pending', 'baseline-pending', 'active'}
@@ -43,11 +45,11 @@ def publish(path, prs):
 
 
 @contextmanager
-def locked(state):
+def locked(state, name=".queue-lock.sqlite3", timeout=5):
     state.mkdir(parents=True, exist_ok=True)
     # Native database locking avoids PID files, stale-lock recovery and a
     # second per-OS implementation. No command is retried on failure.
-    with sqlite3.connect(state/'.queue-lock.sqlite3') as lock:
+    with sqlite3.connect(state/name, timeout=timeout) as lock:
         lock.execute('BEGIN IMMEDIATE')
         yield
 
@@ -88,11 +90,25 @@ def acknowledge(state, prs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('state', type=Path)
-    parser.add_argument('operation', choices=['add', 'take', 'move', 'has', 'ack'])
-    parser.add_argument('queue', choices=sorted(QUEUES))
+    parser.add_argument('operation', choices=['add', 'take', 'move', 'has', 'ack', 'dispatch'])
+    parser.add_argument('queue')
     parser.add_argument('values', nargs='*')
     args = parser.parse_args()
     try:
+        if args.operation == 'dispatch':
+            if args.values:
+                raise ValueError('dispatch accepts one drain script')
+            # Separate long lease: queue producers remain independent. The
+            # OS/database releases it on exit; directory removal cannot admit
+            # a second reader of the shared worktree while this drain runs.
+            try:
+                with locked(args.state, '.drain-lock.sqlite3', timeout=0):
+                    return subprocess.call([shutil.which('bash') or 'bash', args.queue, '--owned-by-dispatch'])
+            except sqlite3.OperationalError as error:
+                if getattr(error, 'sqlite_errorcode', None) == sqlite3.SQLITE_BUSY:
+                    print('GATE_DRAIN_BUSY owner is still running', file=sys.stderr)
+                    return 0
+                raise
         if args.operation == 'add':
             add(args.state, args.queue, list(map(int, args.values)))
             return 0

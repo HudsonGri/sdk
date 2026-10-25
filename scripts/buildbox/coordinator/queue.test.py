@@ -123,6 +123,29 @@ raise SystemExit(namespace['main']())
                 queue.acknowledge(state, [1])
             self.assertEqual(queue.members(state/'active.txt'), [2])
 
+    def test_dispatch_lease_excludes_a_second_drain_without_blocking_producers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            script = state/'reader.sh'
+            script.write_text('echo READY; read -r line; echo DONE\n')
+            args = [sys.executable, str(HERE/'gate-queue.py'), str(state), 'dispatch', str(script)]
+            first = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(first.stdout.readline().strip(), 'READY')
+                second = subprocess.run(args, input='release\n', capture_output=True, text=True)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertNotIn('READY', second.stdout)
+                self.assertIn('GATE_DRAIN_BUSY', second.stderr)
+                queue.add(state, 'pending', [7])
+                self.assertEqual(queue.members(state/'pending.txt'), [7])
+                # Actual former direct entry ignores the live SQLite owner.
+                old = subprocess.run(['bash', str(script)], input='release\n', capture_output=True, text=True)
+                self.assertEqual(old.stdout.splitlines(), ['READY', 'DONE'])
+            finally:
+                first.communicate('release\n')
+            again = subprocess.run(args, input='release\n', capture_output=True, text=True)
+            self.assertEqual(again.stdout.splitlines(), ['READY', 'DONE'])
+
     def test_bad_queue_is_infra_and_does_not_erase_other_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)

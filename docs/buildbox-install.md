@@ -38,6 +38,15 @@ before this lock is acquired. Never interrupt a running gate. Daemon upgrades
 must drain existing leases before stopping the idle daemon; replacing its file
 does not replace already loaded code.
 
+The gate drain owns a separate SQLite lifetime lease through `gate-queue.py
+STATE dispatch DRAIN_SCRIPT`. Queue producers use the short queue transaction
+and do not wait for a build. Each prepared run exclusively creates its own pin;
+`gate-merge.py record` and `merge` both require that pathname with `--pin`.
+Never reconstruct a pass from the mutable shared checkout or another run's pin.
+A fence mismatch keeps its candidates queued and invokes the single checked
+preparation repair while holding the gate lock. A retained infrastructure
+record is diagnostic, not permission to refuse unrelated healthy work.
+
 The current tool list is the SDK-owned runtime set. Another tool must be added
 to the installer's explicit list with its required checks before installation;
 an unreviewed filename cannot silently become a privileged tool.
