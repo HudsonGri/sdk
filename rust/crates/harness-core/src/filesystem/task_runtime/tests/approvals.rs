@@ -395,10 +395,9 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
         let (operation, digest) =
             crate::runtime::tool_approval_binding(task, &policy, definition, &invocation, None)?;
         let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
-        let context = executor.block_on(runtime.task_context(
-            task,
-            LeaseFence::from(&initialized.lease.reservation),
-        ))?;
+        let context = executor.block_on(
+            runtime.task_context(task, LeaseFence::from(&initialized.lease.reservation)),
+        )?;
         let admission = executor.block_on(runtime.admission_observed(task, None))?;
         let journal = executor.block_on(runtime.open_execution_journal(
             task,
@@ -441,11 +440,21 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
             }
             let (ready, trace) = differential::observe::<_, _, (&'static str, u64)>(
                 || (),
-                |()| executor.block_on(runtime.tool_approval_ready(&context, definition, &invocation, None)),
+                |()| {
+                    executor.block_on(runtime.tool_approval_ready(
+                        &context,
+                        definition,
+                        &invocation,
+                        None,
+                    ))
+                },
             );
             assert_eq!(ready?, state == 2);
             assert_eq!(
-                trace.iter().filter(|(name, _)| *name == "interaction-reconstruction").count(),
+                trace
+                    .iter()
+                    .filter(|(name, _)| *name == "interaction-reconstruction")
+                    .count(),
                 1,
                 "approval readiness reconstructed more than one cut"
             );
@@ -454,16 +463,28 @@ fn approval_readiness_observes_request_and_outcome_at_one_cut() -> Result<()> {
                 // Both allow and deny are terminal observations, not authority.
                 let (old_ready, old_trace) = differential::observe::<_, _, (&'static str, u64)>(
                     || (),
-                    |()| executor.block_on(async {
-                        let host = runtime.interaction_host(None)?;
-                        assert!(host.read_request(id, None).await?.is_some());
-                        Ok::<_, Error>(host.read(id, None).await?.as_ref()
-                            .and_then(|(_, resolution)| resolution.as_ref())
-                            .is_some_and(|resolution| resolution.outcome.is_terminal()))
-                    }),
+                    |()| {
+                        executor.block_on(async {
+                            let host = runtime.interaction_host(None)?;
+                            assert!(host.read_request(id, None).await?.is_some());
+                            Ok::<_, Error>(
+                                host.read(id, None)
+                                    .await?
+                                    .as_ref()
+                                    .and_then(|(_, resolution)| resolution.as_ref())
+                                    .is_some_and(|resolution| resolution.outcome.is_terminal()),
+                            )
+                        })
+                    },
                 );
                 assert_eq!(old_ready?, state == 2);
-                assert_eq!(old_trace.iter().filter(|(name, _)| *name == "interaction-reconstruction").count(), 2);
+                assert_eq!(
+                    old_trace
+                        .iter()
+                        .filter(|(name, _)| *name == "interaction-reconstruction")
+                        .count(),
+                    2
+                );
             }
         }
     }
