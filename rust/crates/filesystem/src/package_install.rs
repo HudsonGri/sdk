@@ -268,18 +268,3 @@ pub fn install(
     private_file::discard_unpublished(&intent_path)?;
     Ok(installed)
 }
-
-/// Publish a verified release report through the same shared lock/private-file
-/// primitives. Receipt verification must precede this call; no source reread is
-/// performed here. The stable lock is retained across sidecar recovery.
-pub fn publish_report(path: &Path, document: &serde_json::Value) -> io::Result<()> {
-    let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
-    private_file::create_directory_all(parent)?;
-    let lock = path.with_extension("json.lock");
-    let temporary = path.with_extension("json.next");
-    let _lock = FileLock::acquire(
-        private_file::open_or_create(&lock)?,
-        FileLockMode::Exclusive,
-    )?;
-    publish_record(path, &temporary, document)
-}

@@ -4,42 +4,15 @@
 // JavaScript only locates and verifies the executable before starting it.
 // The shared native installer owns locking, durable publication and recovery.
 const { spawnSync } = require("node:child_process");
-const { homedir, tmpdir } = require("node:os");
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { hostTarget, verifyTarget } = require("./verify.js");
-
-function durableRename(from, to, helper, replace) {
-  const args = ["__installer-rename", from, to, replace ? "replace" : "no-replace"];
-  const result = spawnSync(helper, args, {
-    stdio: "inherit",
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(`step=durably rename installed artifact${result.error ? `: ${result.error.message}` : ""}; recovery argv: ${JSON.stringify([helper, ...args])}`);
-  }
-}
-
-function durableStateDirectory() {
-  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, "Acyclic", "state-v5");
-  }
-  if (process.platform !== "win32" && process.env.XDG_STATE_HOME) {
-    return join(process.env.XDG_STATE_HOME, "acyclic", "state-v5");
-  }
-  const home = process.env.HOME || homedir();
-  if (process.platform !== "win32" && home) {
-    return join(home, ".local", "state", "acyclic", "state-v5");
-  }
-  return join(tmpdir(), "acyclic-state-v5");
-}
 
 function installCertification(version, helper) {
   const name = `native-mount-${hostTarget()}.json`;
   const source = join(__dirname, "..", "certification", name);
   if (!existsSync(source)) return;
-  const destination = join(durableStateDirectory(), "certification", name);
-  const args = ["__publish-certification", source, version, destination];
+  const args = ["__verify-certification", source, version];
   const result = spawnSync(helper, args, { stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", windowsHide: true });
   if (result.error || result.status !== 0) {
     throw new Error(`step=verify installed release certification: ${result.error?.message || result.stderr}; recovery argv: ${JSON.stringify([helper, ...args])}`);
@@ -82,4 +55,3 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-module.exports = { durableRename };
