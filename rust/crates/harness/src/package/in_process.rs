@@ -86,7 +86,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
             .ok_or_else(|| Error::NotFound("no Actors package installed".into()))
     }
 
-    fn journal(&self, package: &Installed, placement: &Placement) -> Result<Arc<Journal<P>>> {
+    fn journal(&self, package: &Arc<Installed>, placement: &Placement) -> Result<Arc<Journal<P>>> {
         if !crate::is_valid_component_label(&placement.node) || placement.epoch == 0 {
             return Err(Error::Invalid("invalid actor placement".into()));
         }
@@ -97,12 +97,7 @@ impl<P: StreamProvider> InProcessRuntime<P> {
                 "node-local actor volume is unavailable on this node".into(),
             ));
         }
-        Journal::new(
-            self.stream.clone(),
-            package.manifest.clone(),
-            placement.clone(),
-        )
-        .map(Arc::new)
+        Journal::new(self.stream.clone(), Arc::clone(package), placement.clone()).map(Arc::new)
     }
 
     async fn checked(

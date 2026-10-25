@@ -117,6 +117,144 @@ where
     Ok(results)
 }
 
+/// Validated recipes and their independent oracles, admitted once for replay.
+/// Filesystem changes after admission affect a new corpus, never this one.
+pub struct Corpus {
+    root: PathBuf,
+    cases: Vec<Arc<PreparedCase>>,
+}
+
+struct PreparedCase {
+    name: String,
+    requires: Vec<String>,
+    input: Result<CaseInput, String>,
+}
+
+struct CaseInput {
+    recipe: Value,
+    oracle: Option<Case>,
+    missing_reason: &'static str,
+}
+
+impl PreparedCase {
+    fn load(root: &Path, path: &Path) -> Self {
+        let name = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut requires = Vec::new();
+        let admitted = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut recipe = scenario_data::load_value(root, path)?;
+            requires = requirements(&recipe)?;
+            let missing_reason = fixture_reason(&recipe);
+            let oracle = if requires
+                .iter()
+                .any(|capability| capability.starts_with("local-driver:"))
+            {
+                crate::native_schema::validate(recipe.clone())?;
+                None
+            } else {
+                Some(Case::parse(&mut recipe)?)
+            };
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(CaseInput {
+                recipe,
+                oracle,
+                missing_reason,
+            })
+        }));
+        let input = match admitted {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => Err("substrate or case runner panicked".into()),
+        };
+        Self {
+            name,
+            requires,
+            input,
+        }
+    }
+}
+
+impl Corpus {
+    /// Discover and validate every recipe, including cases a host cannot execute.
+    /// Invalid cases retain failing records rather than disappearing from reports.
+    pub fn load(root: &Path) -> TestResult<Self> {
+        let mut paths = Vec::new();
+        scenario_data::discover(root, &mut paths)?;
+        paths.sort();
+        if paths.is_empty() {
+            return Err("no scenarios discovered".into());
+        }
+        Ok(Self {
+            root: root.to_owned(),
+            cases: paths
+                .into_iter()
+                .map(|path| Arc::new(PreparedCase::load(root, &path)))
+                .collect(),
+        })
+    }
+
+    /// Source provenance; replay never reopens this path.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Replay the same admitted recipes and oracles through another host.
+    pub async fn run(
+        &self,
+        substrate: Arc<dyn Substrate>,
+        filter: Option<&str>,
+        concurrency: usize,
+    ) -> TestResult<Report> {
+        self.run_at(
+            substrate,
+            filter,
+            concurrency,
+            tokio::time::Instant::now() + Duration::from_secs(55),
+        )
+        .await
+    }
+
+    async fn run_at(
+        &self,
+        substrate: Arc<dyn Substrate>,
+        filter: Option<&str>,
+        concurrency: usize,
+        deadline: tokio::time::Instant,
+    ) -> TestResult<Report> {
+        let concurrency =
+            NonZeroUsize::new(concurrency).ok_or("scenario concurrency must be positive")?;
+        let capabilities = substrate.capabilities();
+        let inputs = Arc::new((substrate, filter.map(str::to_owned), capabilities));
+        let mut records = run_cases(
+            self.cases.iter().cloned().map(|case| {
+                let inputs = Arc::clone(&inputs);
+                async move {
+                    let (substrate, filter, capabilities) = inputs.as_ref();
+                    run_case(
+                        &case,
+                        substrate.as_ref(),
+                        filter.as_deref(),
+                        capabilities,
+                        deadline,
+                    )
+                    .await
+                }
+            }),
+            concurrency,
+        )
+        .await?;
+        records.sort_by(|a, b| a.case.cmp(&b.case));
+        Ok(Report {
+            version: 1,
+            passed: records.iter().filter(|r| r.status == Status::Pass).count(),
+            failed: records.iter().filter(|r| r.status == Status::Fail).count(),
+            skipped: records.iter().filter(|r| r.status == Status::Skip).count(),
+            records,
+        })
+    }
+}
+
 /// Runs every discovered case with bounded admission and client-side oracles.
 pub async fn run(
     root: &Path,
@@ -124,85 +262,28 @@ pub async fn run(
     filter: Option<&str>,
     concurrency: usize,
 ) -> TestResult<Report> {
-    let concurrency =
-        NonZeroUsize::new(concurrency).ok_or("scenario concurrency must be positive")?;
-    let mut paths = Vec::new();
-    scenario_data::discover(root, &mut paths)?;
-    paths.sort();
-    let capabilities = substrate.capabilities();
-    let inputs = Arc::new((
-        root.to_owned(),
-        substrate,
-        filter.map(str::to_owned),
-        capabilities,
-    ));
-    // One corpus deadline, including queued cases. A stalled host still produces
-    // a failing record for every case instead of hanging or truncating JSON.
+    // Preserve the original single deadline, including recipe admission and
+    // queued cases. Explicit corpus replay has already admitted those recipes.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(55);
-    let mut records = run_cases(
-        paths.into_iter().map(|path| {
-            let inputs = Arc::clone(&inputs);
-            async move {
-                let (root, substrate, filter, capabilities) = inputs.as_ref();
-                run_case(
-                    root,
-                    path,
-                    substrate.as_ref(),
-                    filter.as_deref(),
-                    capabilities,
-                    deadline,
-                )
-                .await
-            }
-        }),
-        concurrency,
-    )
-    .await?;
-    records.sort_by(|a, b| a.case.cmp(&b.case));
-    if records.is_empty() {
-        return Err("no scenarios discovered".into());
-    }
-    Ok(Report {
-        version: 1,
-        passed: records.iter().filter(|r| r.status == Status::Pass).count(),
-        failed: records.iter().filter(|r| r.status == Status::Fail).count(),
-        skipped: records.iter().filter(|r| r.status == Status::Skip).count(),
-        records,
-    })
+    Corpus::load(root)?
+        .run_at(substrate, filter, concurrency, deadline)
+        .await
 }
 
 async fn run_case(
-    root: &Path,
-    path: PathBuf,
+    case: &PreparedCase,
     substrate: &dyn Substrate,
     filter: Option<&str>,
     capabilities: &std::collections::BTreeSet<String>,
     deadline: tokio::time::Instant,
 ) -> Record {
-    let case = path
-        .strip_prefix(root)
-        .unwrap_or(&path)
-        .to_string_lossy()
-        .replace('\\', "/");
-    let mut requires = Vec::new();
     let result = AssertUnwindSafe(async {
-        let mut value = scenario_data::load_value(root, &path)?;
-        requires = requirements(&value)?;
-        // Capability and filter exclusions do not excuse an invalid recipe.
-        // Native drivers share these exact schemas with their original runner.
-        let parsed = if requires
-            .iter()
-            .any(|capability| capability.starts_with("local-driver:"))
-        {
-            crate::native_schema::validate(value.clone())?;
-            None
-        } else {
-            Some(Case::parse(root, &path, &mut value)?)
-        };
-        if filter.is_some_and(|filter| !case.contains(filter)) {
+        let input = case.input.as_ref().map_err(Clone::clone)?;
+        if filter.is_some_and(|filter| !case.name.contains(filter)) {
             return Ok((Status::Skip, "excluded by --filter".into()));
         }
-        let missing: Vec<_> = requires
+        let missing: Vec<_> = case
+            .requires
             .iter()
             .filter(|capability| !capabilities.contains(*capability))
             .cloned()
@@ -210,15 +291,15 @@ async fn run_case(
         if !missing.is_empty() {
             return Ok((
                 Status::Skip,
-                format!(
-                    "requires {}: {}",
-                    missing.join(", "),
-                    fixture_reason(&value)
-                ),
+                format!("requires {}: {}", missing.join(", "), input.missing_reason),
             ));
         }
-        let parsed = parsed.ok_or("no portable adapter for declared native capability")?;
+        let parsed = input
+            .oracle
+            .as_ref()
+            .ok_or("no portable adapter for declared native capability")?;
         let paths = parsed.paths();
+        let mut value = input.recipe.clone();
         parsed.prepare(&mut value)?;
         let observed = tokio::time::timeout_at(deadline, substrate.execute(value, paths))
             .await
@@ -237,10 +318,10 @@ async fn run_case(
         Err(_) => (Status::Fail, "substrate or case runner panicked".into()),
     };
     Record {
-        case,
+        case: case.name.clone(),
         status,
         reason,
-        requires,
+        requires: case.requires.clone(),
     }
 }
 
@@ -270,7 +351,7 @@ enum Case {
     FilesystemPolicy(crate::policy_owner::Case),
 }
 impl Case {
-    fn parse(root: &Path, path: &Path, value: &mut Value) -> TestResult<Self> {
+    fn parse(value: &mut Value) -> TestResult<Self> {
         let driver = value
             .as_object_mut()
             .ok_or("scenario must be an object")?
@@ -283,7 +364,9 @@ impl Case {
             Some("executor") => Ok(Self::Executor(Box::new(Scenario::from_value(
                 value.clone(),
             )?))),
-            None if driver.is_none() => Ok(Self::Executor(Box::new(Scenario::load(root, path)?))),
+            None if driver.is_none() => Ok(Self::Executor(Box::new(Scenario::from_value(
+                value.clone(),
+            )?))),
             _ => Err("no portable adapter for declared driver".into()),
         }
     }

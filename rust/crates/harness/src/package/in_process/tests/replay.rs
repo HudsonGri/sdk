@@ -146,9 +146,19 @@ async fn replay_decodes_workflow_records_without_duplicate_snapshot_bodies() {
         decoded.is_empty(),
         "replay decoded duplicate snapshot bodies: {decoded:?}"
     );
-    let mut changed = host.package().unwrap().manifest.clone();
+    let installation = host.package().unwrap();
+    let mut changed = installation.manifest.clone();
     changed.effects.push("changed".into());
-    let changed = Journal::new(stream, changed, owner).unwrap();
+    let changed = Journal::new(
+        stream,
+        Arc::new(Installed {
+            manifest: changed,
+            machines: installation.machines.clone(),
+            registry: installation.registry.clone(),
+        }),
+        owner,
+    )
+    .unwrap();
     assert!(matches!(
         changed.replay(0, 64, None).unwrap().await,
         Err(Error::Conflict(_))

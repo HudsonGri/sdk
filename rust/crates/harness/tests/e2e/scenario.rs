@@ -6,7 +6,9 @@ use acyclic_harness::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +56,7 @@ impl Scenario {
         .ok_or_else(|| "missing scenario instruction".into())
     }
 
+    #[cfg(test)]
     pub fn load(root: &Path, path: &Path) -> Result<Self, String> {
         Self::from_value(load_value(root, path)?)
     }
@@ -113,6 +116,7 @@ impl Scenario {
     }
 }
 
+#[cfg(test)]
 pub(super) use super::scenario_data::load_value;
 
 #[test]

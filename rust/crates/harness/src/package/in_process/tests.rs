@@ -162,7 +162,7 @@ async fn every_admission_shares_the_installed_artifact_and_rechecks_live_authori
         AdmissionAction::Recover,
         AdmissionAction::Cancel,
     ] {
-        let (admitted, _) = host.checked(action, &placement(), None).await.unwrap();
+        let (admitted, journal) = host.checked(action, &placement(), None).await.unwrap();
         assert!(
             std::ptr::eq(
                 installation.manifest.bindings.streams.as_ptr(),
@@ -173,6 +173,10 @@ async fn every_admission_shares_the_installed_artifact_and_rechecks_live_authori
         assert!(
             std::ptr::eq(installation.machines.as_ptr(), admitted.machines.as_ptr()),
             "admission copied the immutable handler table"
+        );
+        assert!(
+            std::ptr::eq(&installation.manifest, journal.manifest()),
+            "journal copied the immutable deployment manifest"
         );
         policy.0.store(false, Ordering::SeqCst);
         assert!(

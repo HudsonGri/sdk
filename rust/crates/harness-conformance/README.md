@@ -27,6 +27,10 @@ The deployed-parity integration target uses the same discovered corpus and
 oracles for both hosts, including complete report equality and a deliberately
 changed deployed answer that must fail:
 
+`runner::Corpus::load` admits the recipes and their oracles once. Replaying that
+corpus through each host never reopens its source files. A new admission observes
+subsequent edits; the existing admitted corpus keeps its original inputs.
+
 ```sh
 cargo test --locked -p acyclic-harness-conformance --all-features --test localhost
 ```

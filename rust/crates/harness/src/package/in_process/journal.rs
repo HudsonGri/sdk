@@ -55,7 +55,7 @@ fn record_decode<T>(sequence: u64) {
 
 pub(super) struct Journal<P: StreamProvider> {
     stream: Arc<P>,
-    manifest: Manifest,
+    installation: Arc<Installed>,
     placement: Placement,
     path: StreamPath,
     inbox: StreamPath,
@@ -77,7 +77,8 @@ pub(super) fn codec_error(error: &serde_json::Error) -> Error {
 }
 
 impl<P: StreamProvider> Journal<P> {
-    pub fn new(stream: Arc<P>, manifest: Manifest, placement: Placement) -> Result<Self> {
+    pub fn new(stream: Arc<P>, installation: Arc<Installed>, placement: Placement) -> Result<Self> {
+        let manifest = &installation.manifest;
         let path = StreamPath::new(format!(
             "{}/{}",
             manifest.bindings.streams,
@@ -92,11 +93,15 @@ impl<P: StreamProvider> Journal<P> {
         .map_err(|error| stream_error(&error))?;
         Ok(Self {
             stream,
-            manifest,
+            installation,
             placement,
             path,
             inbox,
         })
+    }
+
+    pub(super) fn manifest(&self) -> &Manifest {
+        &self.installation.manifest
     }
 
     async fn entry(&self, sequence: u64) -> Result<(Entry, CommitId)> {
@@ -191,7 +196,7 @@ impl<P: StreamProvider> Journal<P> {
     }
 
     fn require_manifest(&self, manifest: &Manifest) -> Result<()> {
-        if manifest != &self.manifest {
+        if manifest != self.manifest() {
             return Err(Error::Conflict(
                 "actor package identity or bindings changed".into(),
             ));
@@ -592,7 +597,7 @@ impl<P: StreamProvider> WorkflowJournal for Journal<P> {
                     "actor checkpoint or placement changed".into(),
                 ));
             }
-            self.manifest.validate_transition(&record.transition)?;
+            self.manifest().validate_transition(&record.transition)?;
             let mut snapshot = current.last.snapshot;
             snapshot.checkpoint = MachineCheckpoint {
                 machine: record.prior.machine.clone(),

@@ -34,9 +34,10 @@ impl Substrate for Corrupted {
 async fn complete_corpus_has_identical_results_on_both_hosts() -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
     let host = Arc::new(substrate::localhost::Localhost::start().await?);
+    let corpus = runner::Corpus::load(&root)?;
     let (reference, deployed) = futures::join!(
-        runner::run(&root, Arc::new(substrate::InProcess::default()), None, 4),
-        runner::run(&root, host.clone(), None, 4),
+        corpus.run(Arc::new(substrate::InProcess::default()), None, 4),
+        corpus.run(host.clone(), None, 4),
     );
     let reference = reference?;
     let deployed = deployed?;
@@ -62,16 +63,17 @@ async fn complete_corpus_has_identical_results_on_both_hosts() -> TestResult {
 #[tokio::test]
 async fn differing_localhost_observation_fails_the_shared_oracle() -> TestResult {
     let root = acyclic_test_support::source_path("rust/crates/harness/tests/scenarios");
-    let original = runner::run(
-        &root,
-        Arc::new(substrate::InProcess::default()),
-        Some("core/text.json"),
-        1,
-    )
-    .await?;
+    let corpus = runner::Corpus::load(&root)?;
+    let original = corpus
+        .run(
+            Arc::new(substrate::InProcess::default()),
+            Some("core/text.json"),
+            1,
+        )
+        .await?;
     assert!(original.success());
     let host = Arc::new(substrate::localhost::Localhost::start().await?);
-    let deployed = runner::run(&root, host.clone(), Some("core/text.json"), 1).await?;
+    let deployed = corpus.run(host.clone(), Some("core/text.json"), 1).await?;
     for record in &deployed.records {
         assert_ne!(
             record.status,
@@ -82,13 +84,9 @@ async fn differing_localhost_observation_fails_the_shared_oracle() -> TestResult
         );
     }
     assert!(deployed.success());
-    let changed = runner::run(
-        &root,
-        Arc::new(Corrupted(host.clone())),
-        Some("core/text.json"),
-        1,
-    )
-    .await?;
+    let changed = corpus
+        .run(Arc::new(Corrupted(host.clone())), Some("core/text.json"), 1)
+        .await?;
     assert_eq!(changed.failed, 1);
     assert!(!changed.success());
     Arc::into_inner(host)
