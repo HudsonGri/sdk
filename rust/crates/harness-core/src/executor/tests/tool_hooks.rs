@@ -395,21 +395,44 @@ async fn hook_approvals_use_the_existing_interaction_before_tool_admission() -> 
         assert_eq!(hooks.post.load(Ordering::SeqCst), usize::from(approved));
         if !approved && !cancelled {
             let records = hooks.journal.0.lock().unwrap();
-            assert!(!records.iter().any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. })));
-            let failures = records.iter().filter_map(|record| match &record.event {
-                ExecutionEvent::ToolFailed { reason, cause, .. } => Some((reason, cause)),
-                _ => None,
-            }).collect::<Vec<_>>();
+            assert!(
+                !records
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+            );
+            let failures = records
+                .iter()
+                .filter_map(|record| match &record.event {
+                    ExecutionEvent::ToolFailed { reason, cause, .. } => Some((reason, cause)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             assert_eq!(failures.len(), 1);
             assert_eq!(*failures[0].0, ToolFailureKind::Refused);
             assert_eq!(failures[0].1.class, ToolErrorClass::Denied);
             assert!(failures[0].1.message.contains("Approve changed arguments"));
             drop(records);
-            executor.execute_progress(input(), hooks.journal.as_ref()).await?;
-            assert_eq!(provider.requests().len(), 2, "replay must not ask the model again");
+            executor
+                .execute_progress(input(), hooks.journal.as_ref())
+                .await?;
+            assert_eq!(
+                provider.requests().len(),
+                2,
+                "replay must not ask the model again"
+            );
             assert_eq!(hooks.pre.load(Ordering::SeqCst), 1);
             assert_eq!(tool.0.load(Ordering::SeqCst), 0);
-            assert_eq!(hooks.journal.0.lock().unwrap().iter().filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. })).count(), 1);
+            assert_eq!(
+                hooks
+                    .journal
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+                    .count(),
+                1
+            );
         }
     }
     let (executor, _, tool, hooks) =

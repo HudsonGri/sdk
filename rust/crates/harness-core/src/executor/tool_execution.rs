@@ -214,12 +214,19 @@ impl StockExecution<'_> {
                         .await?
                 {
                     match stop {
-                        super::tool_hooks::HookApprovalStop::Progress(progress) => return Ok(progress),
+                        super::tool_hooks::HookApprovalStop::Progress(progress) => {
+                            return Ok(progress);
+                        }
                         super::tool_hooks::HookApprovalStop::Refused(reason, prompt) => {
-                            let content = self.settle_tool_refusal(
-                                journal, operation_id, step, &invocation,
-                                ToolCallRejection::Approval(reason, prompt),
-                            ).await?;
+                            let content = self
+                                .settle_tool_refusal(
+                                    journal,
+                                    operation_id,
+                                    step,
+                                    &invocation,
+                                    ToolCallRejection::Approval(reason, prompt),
+                                )
+                                .await?;
                             return self.push_tool_result(&invocation, content, prior_messages);
                         }
                     }
