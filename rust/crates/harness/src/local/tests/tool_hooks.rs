@@ -316,7 +316,7 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
         let harness = LocalHarness::open(
             configured(
                 root.path(),
-                provider,
+                provider.clone(),
                 vec![guarded("guarded", &["Write"], &executed)],
             )?
             .approval_policy(crate::approvals::ApprovalPolicy::default()),
@@ -471,12 +471,27 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
         };
         let (output, decision) = futures::join!(harness.resume(task), decide);
         decision?;
-        if approved {
-            assert_eq!(output?.text, "finished");
-        } else {
-            assert!(
-                matches!(output, Err(Error::TaskFailed { message, .. }) if message == "declined")
-            );
+        let output = output?;
+        assert_eq!(output.text, "finished");
+        assert_eq!(harness.resume(task).await?, output);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2, "replay must not call the provider again");
+        if !approved {
+            let refusals: Vec<_> = requests.last().expect("second provider request")
+                .messages
+                .iter()
+                .flat_map(|message| message.content.parts())
+                .filter_map(|part| match part {
+                    ModelContentPart::ToolResult {
+                        call_id,
+                        name,
+                        content: crate::model::ToolResultContent::Error { message },
+                    } if call_id == "call-0" && name == "guarded" => Some(message),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(refusals.len(), 1, "the next turn needs one paired refusal");
+            assert!(refusals.iter().any(|message| message.contains("guard approval")));
         }
         assert_eq!(executed.lock().unwrap().len(), usize::from(approved));
         assert_eq!(
