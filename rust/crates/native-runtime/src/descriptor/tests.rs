@@ -24,10 +24,10 @@ fn cached(cache: &Arc<Cache<Native>>, path: &Path) -> io::Result<Arc<Entry<Nativ
 
 /// Descriptors this process holds on files under `directory`.
 fn descriptors_under(directory: &Path) -> io::Result<usize> {
-    Ok(crate::testing::descriptors()?
+    Ok(crate::resources::descriptors()?
         .into_iter()
         .filter(|descriptor| {
-            matches!(descriptor, crate::testing::Descriptor::File(path) if path.starts_with(directory))
+            matches!(descriptor, crate::resources::Descriptor::File(path) if path.starts_with(directory))
         })
         .count())
 }
