@@ -25,9 +25,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<acyclic_stream::CommitCondition> {
         self.refresh(work).await?;
         authority.recheck(self, operation_id, work)?;
-        let operation = self.scheduler.operation(authority.operation()).ok_or_else(|| {
-            guarded_boundary(work, wire::ErrorCode::NotFound, "journal declaration is absent")
-        })?;
+        let operation = self
+            .scheduler
+            .operation(authority.operation())
+            .ok_or_else(|| {
+                guarded_boundary(
+                    work,
+                    wire::ErrorCode::NotFound,
+                    "journal declaration is absent",
+                )
+            })?;
         crate::scheduler::require_execution_owner(
             operation,
             fence,

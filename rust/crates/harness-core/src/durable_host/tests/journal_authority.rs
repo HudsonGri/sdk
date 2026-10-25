@@ -43,7 +43,10 @@ async fn journal_guards_reuse_immutable_authentication_with_original_work_limit(
             break;
         }
     }
-    assert!(denied, "former journal guards did not exercise their repeated wire cost");
+    assert!(
+        denied,
+        "former journal guards did not exercise their repeated wire cost"
+    );
     Ok(())
 }
 
@@ -60,7 +63,13 @@ async fn journal_authentication_rejects_other_provider_operation_and_revocation(
     ] {
         assert!(matches!(
             coordinator
-                .journal_condition(authority, operation, &owner.fence, JournalWrite::Fresh, &mut None)
+                .journal_condition(
+                    authority,
+                    operation,
+                    &owner.fence,
+                    JournalWrite::Fresh,
+                    &mut None
+                )
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -84,11 +93,23 @@ async fn journal_authentication_does_not_retain_cancellation_or_lease() -> Resul
         acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
         &cancellation,
     )?;
-    owner.condition(JournalWrite::Fresh, &mut Some(&mut io.history_io())).await?;
+    owner
+        .condition(JournalWrite::Fresh, &mut Some(&mut io.history_io()))
+        .await?;
     cancellation.cancel();
-    assert!(owner.condition(JournalWrite::Fresh, &mut Some(&mut io.history_io())).await.is_err());
+    assert!(
+        owner
+            .condition(JournalWrite::Fresh, &mut Some(&mut io.history_io()))
+            .await
+            .is_err()
+    );
     let _replacement = f.replace(1).await?;
-    assert!(owner.condition(JournalWrite::Fresh, &mut None).await.is_err());
+    assert!(
+        owner
+            .condition(JournalWrite::Fresh, &mut None)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -105,19 +126,24 @@ async fn journal_authentication_retires_its_native_custody() -> Result<()> {
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::executor::PreparationIo::from_native_work(&native)?;
     let coordinator = f.host.coordinator.lock().await;
-    let authenticate = || coordinator.authenticate_journal(
-        &f.host.owner,
-        &f.host.owner_scope,
-        &f.host.verifier,
-        owner.operation_id(),
-        &mut Some(&mut io.history_io()),
-    );
+    let authenticate = || {
+        coordinator.authenticate_journal(
+            &f.host.owner,
+            &f.host.owner_scope,
+            &f.host.verifier,
+            owner.operation_id(),
+            &mut Some(&mut io.history_io()),
+        )
+    };
     // The public verifier owns its separate retained raw-wire cache. Warm it
     // before measuring the journal proof's independent allocation lifetime.
     drop(authenticate()?);
     let baseline = native.live_allocation_bytes();
     let authority = authenticate()?;
-    assert!(native.live_allocation_bytes() > baseline, "live proof has no custody");
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "live proof has no custody"
+    );
     drop(authority);
     assert_eq!(native.live_allocation_bytes(), baseline);
     Ok(())
