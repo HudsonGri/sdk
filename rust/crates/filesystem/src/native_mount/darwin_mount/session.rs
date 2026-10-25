@@ -191,18 +191,14 @@ impl DarwinMountSession {
         &mut self,
         work: &crate::native_mount::NativeSessionStopWork<'_>,
     ) -> Result<(), NativeMountError> {
-        let wait = match work {
-            crate::native_mount::NativeSessionStopWork::Meter(work) => work.cancellation(),
-            crate::native_mount::NativeSessionStopWork::AcceptedWait(wait) => wait,
-        };
-        wait.check()
-            .map_err(|_| NativeMountError::from(crate::DemandError::Cancelled))?;
+        work.check_wait()?;
+        let wait = work.wait();
         let events = Arc::clone(&self.unmount);
-        let work = ProbeWork::Cleanup(&events.credit, Some(wait));
+        let work = ProbeWork::Cleanup(&events.credit, wait);
         let was_mounted = {
             let mut state = events.state();
             if state.resources.is_none() && self.thread.is_none() {
-                events.retire(&mut state, Some(wait))?;
+                events.retire(&mut state, wait)?;
                 drop(state);
                 return self.classify_detached_loop(false);
             }
@@ -232,7 +228,7 @@ impl DarwinMountSession {
         };
         events.changed.notify_all();
         if !events.provider_exited.load(Ordering::Acquire) {
-            events.interrupt(Some(wait))?;
+            events.interrupt(wait)?;
         }
         let deadline = Instant::now() + MOUNT_LOOP_EXIT_TIMEOUT;
         while let Some(thread) = &self.thread {
@@ -250,7 +246,7 @@ impl DarwinMountSession {
             events.wait_until(STOP_POLL_INTERVAL, |_| thread.is_finished());
         }
         if self.thread.is_some() {
-            events.sdk_credit.started_io(READ_WORK, Some(wait))?;
+            events.sdk_credit.started_io(READ_WORK, wait)?;
             self.loop_result = Some(
                 self.thread
                     .take()
@@ -263,7 +259,7 @@ impl DarwinMountSession {
             );
         }
         let mut state = events.state();
-        events.retire(&mut state, Some(wait))?;
+        events.retire(&mut state, wait)?;
         drop(state);
         self.classify_detached_loop(was_mounted)
     }

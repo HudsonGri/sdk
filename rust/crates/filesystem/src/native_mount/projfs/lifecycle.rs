@@ -110,10 +110,9 @@ impl ProjFsSession {
 
     pub(in crate::native_mount) fn stop(
         &mut self,
-        wait: &crate::CancellationToken,
+        work: &crate::native_mount::NativeSessionStopWork<'_>,
     ) -> Result<(), NativeMountError> {
-        wait.check()
-            .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+        work.check_wait()?;
         if self.controller.is_none() {
             return self.stop_physical();
         }
@@ -133,8 +132,7 @@ impl ProjFsSession {
             if let Some(error) = lifecycle.failure.take() {
                 return Err(error);
             }
-            wait.check()
-                .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+            work.check_wait()?;
             lifecycle = projector
                 .lifecycle_changed
                 .wait_timeout(lifecycle, HELD_RETRY)

@@ -355,10 +355,7 @@ impl NativeMountSession {
                     &mut *driver,
                     session,
                     session.stop(work),
-                    session.stop(match work {
-                        NativeSessionStopWork::Meter(meter) => meter.cancellation(),
-                        NativeSessionStopWork::AcceptedWait(wait) => wait,
-                    }),
+                    session.stop(work),
                     Err(NativeMountError::UnsupportedTarget)
                 )?;
                 self.namespace_detach_confirmed = with_driver!(
@@ -392,6 +389,7 @@ impl NativeMountSession {
                     NativeSessionStopWork::AcceptedWait(wait) => {
                         source.shutdown_with_cleanup_wait(wait)
                     }
+                    NativeSessionStopWork::AcceptedDrop => source.shutdown_accepted_cleanup(),
                 }
                 .map_err(NativeMountError::from)?;
                 // The source confirmed actual watcher quiescence before this
@@ -409,6 +407,9 @@ impl NativeMountSession {
                             .map_err(NativeMountError::from),
                         NativeSessionStopWork::AcceptedWait(wait) => owner
                             .stop_with_cleanup_wait(wait)
+                            .map_err(NativeMountError::from),
+                        NativeSessionStopWork::AcceptedDrop => owner
+                            .stop_accepted_cleanup()
                             .map_err(NativeMountError::from),
                     }
                 };
@@ -467,6 +468,7 @@ impl NativeMountSession {
                 match work {
                     NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter),
                     NativeSessionStopWork::AcceptedWait(wait) => guard.release_cleanup(Some(wait)),
+                    NativeSessionStopWork::AcceptedDrop => guard.release_cleanup(None),
                 }
             }
         });
@@ -477,7 +479,35 @@ impl NativeMountSession {
     }
 }
 
+impl Drop for NativeMountSession {
+    fn drop(&mut self) {
+        // Last-owner release has the same physical retirement boundary as an
+        // explicit stop. It consumes birth-paid cleanup, never a fresh meter
+        // or cancellation token. If a native operation refuses, its existing
+        // driver owner retains the original resources for retirement.
+        let _ = self.stop_with_context(&NativeSessionStopWork::AcceptedDrop);
+    }
+}
+
 pub(super) enum NativeSessionStopWork<'a> {
     Meter(&'a NativeMaterializationWork),
     AcceptedWait(&'a crate::CancellationToken),
+    AcceptedDrop,
+}
+
+impl NativeSessionStopWork<'_> {
+    pub(super) fn wait(&self) -> Option<&crate::CancellationToken> {
+        match self {
+            Self::Meter(work) => Some(work.cancellation()),
+            Self::AcceptedWait(wait) => Some(wait),
+            Self::AcceptedDrop => None,
+        }
+    }
+
+    pub(super) fn check_wait(&self) -> Result<(), NativeMountError> {
+        if let Some(wait) = self.wait() {
+            wait.check().map_err(|_| crate::DemandError::Cancelled)?;
+        }
+        Ok(())
+    }
 }

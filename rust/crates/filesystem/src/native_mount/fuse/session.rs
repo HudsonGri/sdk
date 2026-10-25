@@ -301,8 +301,8 @@ impl FuseSession {
                 work.admit(WorkCounters::UNCHARGED)?;
                 Some(*work)
             }
-            NativeSessionStopWork::AcceptedWait(wait) => {
-                wait.check().map_err(|_| crate::DemandError::Cancelled)?;
+            NativeSessionStopWork::AcceptedWait(_) | NativeSessionStopWork::AcceptedDrop => {
+                work.check_wait()?;
                 None
             }
         };
