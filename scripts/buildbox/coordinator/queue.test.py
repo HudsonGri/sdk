@@ -146,6 +146,36 @@ raise SystemExit(namespace['main']())
             again = subprocess.run(args, input='release\n', capture_output=True, text=True)
             self.assertEqual(again.stdout.splitlines(), ['READY', 'DONE'])
 
+    def test_arrival_after_childs_final_check_is_durably_handed_off(self):
+        source = (HERE/'gate-queue.py').read_text()
+        for negative in [False, True]:
+            with self.subTest(negative=negative), tempfile.TemporaryDirectory() as tmp:
+                state = Path(tmp)
+                selected = state/'queue.py'
+                # Actual former busy-return shape retained no wake-up.
+                selected.write_text(source.replace('UPDATE dispatch_wake SET requested=1',
+                    'UPDATE dispatch_wake SET requested=0') if negative else source)
+                script = state/'reader.sh'
+                script.write_text('echo RUN >> "$1/runs"\n')
+                # Child has already performed its last queue check when READY
+                # is observed. Parent still owns the dispatch lease until exit.
+                script.write_text(f'echo RUN >> "{state}/runs"\n'
+                    f'if [ ! -f "{state}/checked" ]; then touch "{state}/checked"; echo READY; read -r release; fi\n')
+                args = [sys.executable, '-B', str(selected), tmp, 'dispatch', str(script)]
+                first = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, text=True)
+                try:
+                    self.assertEqual(first.stdout.readline().strip(), 'READY')
+                    queue.add(state, 'pending', [9])
+                    arriving = subprocess.run(args, capture_output=True, text=True)
+                    self.assertEqual(arriving.returncode, 0, arriving.stderr)
+                    self.assertIn('GATE_DRAIN_BUSY', arriving.stderr)
+                finally:
+                    output, errors = first.communicate('finish\n')
+                self.assertEqual(first.returncode, 0, output+errors)
+                self.assertEqual((state/'runs').read_text().split(), ['RUN'] if negative else ['RUN', 'RUN'])
+                self.assertEqual(queue.members(state/'pending.txt'), [9])
+
     def test_bad_queue_is_infra_and_does_not_erase_other_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)
