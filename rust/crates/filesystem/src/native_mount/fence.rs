@@ -215,13 +215,6 @@ impl MountDestinationGuard {
         // The actual native allocation guard stays after the path in this
         // tuple, including early-error and panic destruction.
         let canonical = &canonical_owner.0;
-        #[cfg(unix)]
-        let canonical_bytes = canonical.as_os_str().len() as u64;
-        #[cfg(windows)]
-        let canonical_bytes = canonical
-            .len()
-            .checked_mul(std::mem::size_of::<u16>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
         let leaf = if recovery {
             Some(
                 destination
@@ -238,28 +231,7 @@ impl MountDestinationGuard {
             && !canonical
                 .last()
                 .is_some_and(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/'));
-        #[cfg(unix)]
-        let suffix_bytes = leaf.map_or(0, |leaf| leaf.len() as u64) + u64::from(separator);
-        #[cfg(windows)]
-        let suffix_bytes = {
-            use std::os::windows::ffi::OsStrExt;
-            leaf.map_or(0, |leaf| leaf.encode_wide().count() as u64 * 2) + u64::from(separator) * 2
-        };
-        let hashed = crate::WorkCounters {
-            bytes_hashed: canonical_bytes
-                .checked_add(suffix_bytes)
-                .and_then(|bytes| {
-                    bytes.checked_add(b"acyclic-fs/native-mount-destination/v1\0".len() as u64)
-                })
-                .ok_or(crate::WorkError::Overflow)?,
-            ..crate::WorkCounters::UNCHARGED
-        };
-        let result = (|| {
-            if !recovery && registry_is_within(canonical, native)? {
-                return Err(NativeMountError::InvalidDestination);
-            }
-            Self::fence_name(canonical, leaf, separator, hashed, native)
-        })();
+        let result = Self::fence_name(canonical, leaf, separator, native, recovery);
         let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> =
             if recovery && result.is_ok() {
                 #[cfg(unix)]
@@ -351,12 +323,38 @@ impl MountDestinationGuard {
         #[cfg(windows)] canonical: &[u16],
         leaf: Option<&std::ffi::OsStr>,
         separator: bool,
-        hashed: crate::WorkCounters,
         native: &NativeMaterializationWork,
+        recovery: bool,
     ) -> Result<[u8; NATIVE_FENCE_NAME_BYTES], NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
         work.check()?;
+        if !recovery && registry_is_within(canonical, native)? {
+            return Err(NativeMountError::InvalidDestination);
+        }
+        #[cfg(unix)]
+        let canonical_bytes = canonical.as_os_str().len() as u64;
+        #[cfg(windows)]
+        let canonical_bytes = canonical
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or(crate::WorkError::Overflow)? as u64;
+        #[cfg(unix)]
+        let suffix_bytes = leaf.map_or(0, |leaf| leaf.len() as u64) + u64::from(separator);
+        #[cfg(windows)]
+        let suffix_bytes = {
+            use std::os::windows::ffi::OsStrExt;
+            leaf.map_or(0, |leaf| leaf.encode_wide().count() as u64 * 2) + u64::from(separator) * 2
+        };
+        let hashed = crate::WorkCounters {
+            bytes_hashed: canonical_bytes
+                .checked_add(suffix_bytes)
+                .and_then(|bytes| {
+                    bytes.checked_add(b"acyclic-fs/native-mount-destination/v1\0".len() as u64)
+                })
+                .ok_or(crate::WorkError::Overflow)?,
+            ..crate::WorkCounters::UNCHARGED
+        };
         work.admit(hashed)?;
         let mut identity = blake3::Hasher::new();
         identity.update(b"acyclic-fs/native-mount-destination/v1\0");
@@ -454,7 +452,7 @@ impl MountDestinationGuard {
             parent_directory: Some(parent_directory),
             fence_directory: Some(fence_directory),
             fence_name: Some(name),
-            registry_file: Some(registry.into()),
+            registry_file: Some(registry),
             cleanup_name,
             birth_cleanup,
             destination_cleanup: None,
@@ -500,7 +498,7 @@ impl MountDestinationGuard {
         let file = acquire_mount_lock(&lock_path, false)?;
         drop(registry);
         Ok(Self {
-            file: Some(file.into()),
+            file: Some(file),
             lock_path,
             parent_directory: None,
             fence_directory: None,
