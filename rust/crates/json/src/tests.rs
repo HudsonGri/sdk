@@ -16,7 +16,7 @@ proptest! {
         let expected = if pretty { serde_json::to_vec_pretty(&value).unwrap() } else { serde_json::to_vec(&value).unwrap() };
         let mut output = Vec::new();
         prop_assert_eq!(to_writer(&value, &mut output, bounds(expected.len()), pretty).unwrap(), expected.len() as u64);
-        prop_assert_eq!(output, expected.clone());
+        prop_assert_eq!(&output, &expected);
         prop_assert!(matches!(to_writer(&value, &mut Vec::new(), bounds(expected.len() - 1), pretty), Err(EncodeError::Admission(Admission::Bytes))));
         prop_assert_eq!(count(&value, bounds(expected.len())).unwrap(), serde_json::to_vec(&value).unwrap().len() as u64);
     }
@@ -35,7 +35,9 @@ fn byte_only_writer_cannot_satisfy_the_structural_boundary() {
         Err(EncodeError::Admission(Admission::Items))
     ));
     // Exact old byte-only policy admits this document under the same byte cap.
-    assert!(serde_json::to_vec(&value).unwrap().len() < bounds.maximum_bytes as usize);
+    assert!(
+        u64::try_from(serde_json::to_vec(&value).unwrap().len()).unwrap() < bounds.maximum_bytes
+    );
     let nested = json!([[[[0]]]]);
     assert!(matches!(
         count(
