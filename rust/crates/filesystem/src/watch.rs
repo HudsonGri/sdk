@@ -41,7 +41,7 @@ pub type NativeEventWatcher = notify::RecommendedWatcher;
 
 /// Initializes process-global notification services before original native work starts.
 ///
-/// macOS loads CoreServices here because framework loading cannot be charged to
+/// macOS loads `CoreServices` here because framework loading cannot be charged to
 /// a bounded source invocation. Other native notification backends need no loader.
 pub fn initialize_native_watch_services() -> notify::Result<()> {
     #[cfg(target_os = "macos")]
@@ -2909,7 +2909,7 @@ impl NativeWatch {
             shared.invalidation = Some(WatchInvalidationReason::RootChanged);
         }
         shared.rescan = None;
-        Ok(shared.seal_invalidation().map_or(
+        let batch = shared.seal_invalidation().map_or(
             WatchBatch::Changes {
                 epoch: self.epoch,
                 first_sequence: self.next_sequence,
@@ -2921,7 +2921,12 @@ impl NativeWatch {
                 epoch: self.epoch,
                 reason,
             },
-        ))
+        );
+        // Release the state lock before consuming the owner: its cancellation
+        // boundary locks this same state and observes the completed epoch.
+        drop(shared);
+        drop(rescan);
+        Ok(batch)
     }
 
     /// Stops reporting hints for events wholly inside `subtrees`.

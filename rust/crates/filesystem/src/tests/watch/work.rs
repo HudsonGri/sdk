@@ -189,8 +189,7 @@ fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn
                 budget,
                 cancel,
             )
-            .err()
-            .expect("root admission must fail");
+            .expect_err("root admission must fail");
             assert!(matches!(
                 failure.error,
                 NativeWatchError::Work(_) | NativeWatchError::Cancelled(_)
@@ -205,8 +204,7 @@ fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn
         measured_watch_startup_work(),
         &live,
     )
-    .err()
-    .expect("missing root");
+    .expect_err("missing root");
     assert!(matches!(failure.error, NativeWatchError::Io(_)));
     let mut short = measured_watch_startup_work();
     short.backend_write_operations = 1;
@@ -217,8 +215,7 @@ fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn
         short,
         &live,
     )
-    .err()
-    .expect("subscription budget denied");
+    .expect_err("subscription budget denied");
     assert!(matches!(failure.error, NativeWatchError::Work(_)));
     Ok(())
 }
