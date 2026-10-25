@@ -364,6 +364,8 @@ impl CodexLogin {
             let refresh = token(&auth, "refresh_token")?;
             io.graph(refresh.len() as u64 * 6 + 1024, 32)?;
             let request = HttpRequest {
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: None,
                 url: "https://auth.openai.com/oauth/token".into(),
                 headers: BTreeMap::new(),
                 body: io.bytes(serde_json::to_vec(&json!({"grant_type":"refresh_token", "client_id":CLIENT_ID,

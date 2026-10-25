@@ -72,6 +72,8 @@ impl HttpTransport for Script {
 
 fn request() -> HttpRequest {
     HttpRequest {
+        #[cfg(not(target_arch = "wasm32"))]
+        recording: None,
         url: "http://127.0.0.1:1/v1".into(),
         headers: std::collections::BTreeMap::new(),
         body: Bytes::new(),

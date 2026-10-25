@@ -86,6 +86,8 @@ pub(crate) async fn send(
     let response = provider
         .transport
         .send(HttpRequest {
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: provider.recording_identity(),
             url: projection::endpoint(provider)?,
             headers: request_headers(provider, dispatch, conversation, key, account),
             body,

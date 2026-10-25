@@ -1,7 +1,7 @@
 //! Real loopback HTTP server. Stdout is a flushed, line-oriented event stream.
 use axum::body::{Body, Bytes};
 use futures::{StreamExt as _, stream};
-use harness_mock_model::{Engine, Script, bind_result, events_with_usage};
+use harness_mock_model::{Engine, bind_result, load_script, reply_with_usage};
 use http_body_util::BodyExt as _;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -63,35 +63,35 @@ fn answer(
     );
     let tokens = host.engine.input_tokens(namespace, &body).unwrap_or(0);
     let (step, reply) = if let Some((index, step)) = host.engine.take(namespace, endpoint, &body) {
-        let status = step.status.unwrap_or(200);
         let bound = bind_result(step, &body);
         let reply = if let Err(error) = &bound {
             response(500, "json", Body::from(json!({"error":error}).to_string()))
-        } else if let Some(json) = bound.as_ref().ok().and_then(|step| step.json.as_ref()) {
-            let body = if step.hold {
-                Body::from_stream(stream::pending::<Result<Bytes, Infallible>>())
-            } else {
-                Body::from(json.to_string())
-            };
-            response(status, "json", body)
-        } else if let Some(events) = bound
+        } else if let Some(reply) = bound
             .as_ref()
             .ok()
-            .and_then(|bound| events_with_usage(endpoint, bound, tokens))
+            .and_then(|step| reply_with_usage(endpoint, step, tokens))
         {
             let chunks = stream::iter(
-                events
+                reply
+                    .chunks
                     .into_iter()
-                    .map(|text| Ok::<_, Infallible>(Bytes::from(text))),
+                    .map(|bytes| Ok::<_, Infallible>(Bytes::from(bytes))),
             );
-            let hold = step.hold;
+            let hold = reply.hold;
             let tail = stream::once(async move {
                 if hold {
                     std::future::pending::<()>().await;
                 }
                 Ok::<_, Infallible>(Bytes::new())
             });
-            response(status, "sse", Body::from_stream(chunks.chain(tail)))
+            let mut response = Response::new(Body::from_stream(chunks.chain(tail)));
+            *response.status_mut() =
+                StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            if let Some(kind) = reply.content_type {
+                let kind = hyper::header::HeaderValue::from_str(&kind).map_err(|_| std::io::Error::other("STEP replay content type failed; recovery: recapture a valid provider exchange"))?;
+                response.headers_mut().insert("content-type", kind);
+            }
+            response
         } else {
             response(
                 404,
@@ -219,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if flag != "--script" || record_flag != "--record" {
         return Err("expected --script and --record".into());
     }
-    let script: Script = serde_json::from_slice(&std::fs::read(script)?)?;
+    let script = load_script(std::path::Path::new(script))?;
     let host = Rc::new(RefCell::new(Host {
         engine: Engine::new(script),
         record: recorder::Recorder::open(File::create(record)?)?,

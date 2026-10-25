@@ -8,9 +8,14 @@ use std::collections::BTreeMap;
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod owned_bytes;
+#[cfg(not(target_arch = "wasm32"))]
+mod recording;
 
 /// One streaming JSON request. Headers may contain credentials; deliberately not Debug.
 pub struct HttpRequest {
+    /// Model-only recording identity. OAuth credential exchanges leave this absent.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub recording: Option<std::sync::Arc<acyclic_harness_core::http::recording::Identity>>,
     /// Fully resolved endpoint.
     pub url: String,
     /// Protocol and authentication headers.
@@ -51,6 +56,11 @@ impl HttpResponse {
 
 /// Platform HTTP boundary, also used by scripted fixtures.
 pub trait HttpTransport: ProviderPlatform {
+    /// Whether model exchanges should carry recording identity. Off by default.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recording_enabled(&self) -> bool {
+        false
+    }
     /// Sends exactly one request without retries.
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
     /// Waits `duration` on the platform timer: a redelivery backoff, or a deadline's wake-up.
@@ -115,7 +125,10 @@ pub(crate) fn native_now() -> std::time::Duration {
 
 /// Pooled native HTTP with redirects disabled.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct ReqwestTransport(acyclic_harness_core::http::native::Client);
+pub struct ReqwestTransport {
+    client: acyclic_harness_core::http::native::Client,
+    recording: Option<recording::Recorder>,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ReqwestTransport {
@@ -128,8 +141,18 @@ impl ReqwestTransport {
         let native = work.is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
+        let mut capture = match (&self.recording, request.recording.as_ref()) {
+            (Some(recorder), Some(identity)) => Some(recorder.begin(
+                identity,
+                &request.url,
+                request.headers.keys(),
+                &request.body,
+                work,
+            )?),
+            _ => None,
+        };
         let response = acyclic_harness_core::http::native::exchange(
-            &self.0,
+            &self.client,
             acyclic_harness_core::http::native::Request {
                 method: reqwest::Method::POST,
                 url: request.url,
@@ -153,6 +176,16 @@ impl ReqwestTransport {
             }
         })?;
         let status = response.status;
+        if let Some(capture) = capture.as_mut() {
+            let content_type = response.headers.get(reqwest::header::CONTENT_TYPE).map(|v| v.to_str()).transpose()
+                .map_err(|_| crate::invalid("STEP record response content type failed; recovery: recapture a provider response with a valid Content-Type"))?;
+            capture.headers(status, content_type, || {
+                response
+                    .headers
+                    .keys()
+                    .map(reqwest::header::HeaderName::as_str)
+            })?;
+        }
         let retry_after = response
             .headers
             .get(reqwest::header::RETRY_AFTER)
@@ -165,6 +198,7 @@ impl ReqwestTransport {
         });
         #[cfg(not(target_arch = "wasm32"))]
         let body = native::body(body, work)?;
+        let body = recording::body(body, capture)?;
         #[cfg(target_arch = "wasm32")]
         let body = Box::pin(body);
         Ok(HttpResponse {
@@ -176,9 +210,23 @@ impl ReqwestTransport {
     /// Creates the platform transport. Credentials are never forwarded across redirects.
     pub fn new() -> Result<Self> {
         let builder = Self::client_builder();
-        Ok(Self(builder.build().map_err(|_| {
-            super::invalid("HTTP client initialization failed")
-        })?))
+        let client = builder
+            .build()
+            .map_err(|_| super::invalid("HTTP client initialization failed"))?;
+        let recording = std::env::var_os("ACYCLIC_PROVIDER_RECORD")
+            .map(recording::Recorder::new)
+            .transpose()?;
+        Ok(Self { client, recording })
+    }
+
+    /// Explicit recording configuration, shared by embedders and tests. Does not change routing.
+    pub fn with_recording(directory: impl Into<std::path::PathBuf>) -> Result<Self> {
+        Ok(Self {
+            client: Self::client_builder()
+                .build()
+                .map_err(|_| super::invalid("HTTP client initialization failed"))?,
+            recording: Some(recording::Recorder::new(directory.into())?),
+        })
     }
 
     fn client_builder() -> acyclic_harness_core::http::native::ClientBuilder {
@@ -192,6 +240,9 @@ mod http2_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HttpTransport for ReqwestTransport {
+    fn recording_enabled(&self) -> bool {
+        self.recording.is_some()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(self.exchange(
             request,

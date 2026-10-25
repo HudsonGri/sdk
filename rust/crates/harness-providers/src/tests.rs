@@ -295,16 +295,19 @@ pub(super) fn provider_with(
     base_url: &str,
     transport: Arc<dyn HttpTransport>,
 ) -> ResolvedModel {
+    let model = Model {
+        provider: "fixture".into(),
+        name: "model".into(),
+        revision: "1".into(),
+        options: json!({}),
+    };
     ResolvedModel {
+        #[cfg(not(target_arch = "wasm32"))]
+        recording: ResolvedModel::recording_identity_for(transport.as_ref(), &model, adapter),
         files: crate::files::Files::default(),
         prefix_cache: std::sync::Arc::default(),
         estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
-        model: Model {
-            provider: "fixture".into(),
-            name: "model".into(),
-            revision: "1".into(),
-            options: json!({}),
-        },
+        model,
         config: Arc::new(ProviderSpec {
             account_id: Some("fixture-account".into()),
             adapter,

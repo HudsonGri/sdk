@@ -30,11 +30,16 @@ async fn exchange(http1_only: bool, native: bool) -> FixtureResult<bool> {
     } else {
         builder
     };
-    let transport = ReqwestTransport(builder.build()?);
+    let transport = ReqwestTransport {
+        client: builder.build()?,
+        recording: None,
+    };
     let (settled, settlement) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(serve_http2(listener, config, settlement));
     let result: FixtureResult<()> = async {
         let request = HttpRequest {
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: None,
             url: endpoint,
             headers: BTreeMap::new(),
             body: Bytes::from_static(b"{}"),

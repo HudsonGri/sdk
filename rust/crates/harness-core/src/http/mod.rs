@@ -5,3 +5,7 @@ pub mod sse;
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub mod browser;
+
+/// Credential-free provider recording format, shared with the replay host.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod recording;

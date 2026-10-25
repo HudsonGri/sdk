@@ -12,6 +12,8 @@ async fn exact_verified_total_is_single_flight_independent_of_planning_weights()
     let encoded = bodies(&provider, &request, &names, &origin, None).await?;
     crate::counting::VERIFIED_EXCHANGES.with(|count| count.set(0));
     let exchange = || crate::HttpRequest {
+        #[cfg(not(target_arch = "wasm32"))]
+        recording: None,
         url: crate::counting::wire::endpoint(
             &provider.config.base_url,
             &provider.model.name,

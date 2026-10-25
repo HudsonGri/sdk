@@ -176,6 +176,12 @@ impl Registry {
         }
         let transport = crate::deadline::Bounded::new(self.transport.clone(), config.timeouts);
         Ok(ResolvedModel {
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: ResolvedModel::recording_identity_for(
+                transport.as_ref(),
+                &model,
+                config.adapter,
+            ),
             files: self.files.clone(),
             prefix_cache: std::sync::Arc::default(),
             estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),

@@ -55,6 +55,7 @@ httpdate = "1.0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 rcgen = "0.14.10"
+harness-mock-model = { path = "../harness-mock-model" }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring"] }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["test-support", "filesystem-local", "native-execution"] }
 acyclic-test-support = { path = "../test-support" }
