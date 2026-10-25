@@ -16,6 +16,10 @@ pub mod admission_work;
 #[doc(hidden)]
 pub mod crash_cuts;
 mod scripted;
+mod policy;
+pub use policy::FixedToolPolicy;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use policy::native_fixture_policy_identity;
 #[cfg(feature = "test-support")]
 mod task_volume_work;
 
