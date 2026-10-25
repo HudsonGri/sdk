@@ -5,6 +5,33 @@ import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
 const here=path.dirname(new URL(import.meta.url).pathname);
+// Test callers name their tenant explicitly, exactly as production callers
+// must at cut-over; the launcher has no repository/name inference fallback.
+process.env.BUILD_SLOT_TENANT='graphcoder';
+
+test('both services require an explicit tenant and generated phases inherit one kernel lease',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'cpu-lease-dispatch-'));
+ const saved=process.env.BUILD_SLOT_TENANT;
+ try{
+  const file=path.join(cwd,'generator.mjs');
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.writeFileSync(file,source+'\nexport {tenantOf};\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {tenantOf}=await import(file);
+  for(const tenant of ['graphcoder','cloud']){
+   process.env.BUILD_SLOT_TENANT=tenant;
+   assert.equal(tenantOf('unrelated-label','/other/worktree','sdk',['printf','a b']),tenant);
+  }
+  delete process.env.BUILD_SLOT_TENANT;
+  assert.throws(()=>tenantOf('gate-speed','/sdk','sdk',['printf','a b']),/CPU_LEASE.*tenant-label.*recovery=.*printf/u);
+  // Actual former inference/default shape admits an unlabelled SDK caller.
+  assert.equal((()=>process.env.BUILD_SLOT_TENANT||'graphcoder')(),'graphcoder');
+  assert.ok(source.includes('cpu_leases.py work'));
+  assert.doesNotMatch(source,/systemd-run --scope -q --slice=bbjobs\.slice/u);
+ }finally{
+  process.env.BUILD_SLOT_TENANT=saved;fs.rmSync(cwd,{recursive:true,force:true});
+ }
+});
 
 test('gate execution never replays a historical PASS verdict',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-no-verdict-replay-'));

@@ -22,6 +22,7 @@ import sys
 from admission_policy import (CACHE_ROOT, CACHE_ENDPOINT, SCCACHE_DIRECTORY,
                               SCCACHE_CACHE_BYTES, CachePolicyError, cache_environment)
 from admission_policy import process_identity as birth
+from admission_policy import cpu_host_set
 
 SCCACHE = '/home/var/.cargo/bin/sccache'
 CONTROL = CACHE_ROOT / 'control.sock'
@@ -56,13 +57,15 @@ def validate_server(endpoint=CACHE_ENDPOINT, expected=None):
             observed = process_env(pid)
             if Path(f'/proc/{pid}/exe').resolve() != Path(SCCACHE).resolve():
                 raise CachePolicyError(endpoint=endpoint, detail='peer executable mismatch')
-            canonical = cache_environment({}, endpoint)
+            canonical = cache_environment({}, endpoint, server=True)
             if any(observed.get(key) != value for key, value in canonical.items()):
                 raise CachePolicyError(observed.get('SCCACHE_CACHE_SIZE', 'unknown'), endpoint, 'server launch policy')
+            if os.sched_getaffinity(pid)!=set(cpu_host_set()):
+                raise CachePolicyError(endpoint=endpoint,detail='host cache CPU affinity differs from shared policy')
             record = {'pid': pid, 'identity': identity, 'endpoint': str(endpoint),
                       'pid_namespace': os.readlink(f'/proc/{pid}/ns/pid'),
                       'scope': 'host-shared', 'cache_bytes': SCCACHE_CACHE_BYTES,
-                      'directory': SCCACHE_DIRECTORY}
+                      'directory': SCCACHE_DIRECTORY,'host_cpus':list(cpu_host_set())}
             if expected is not None and record != expected:
                 raise CachePolicyError(endpoint=endpoint, detail='server peer/birth differs from READY owner')
             if birth(pid) != identity or select.select([descriptor], [], [], 0)[0]:
@@ -142,9 +145,10 @@ def serve():
             # Never replace a live or unknown endpoint on startup.
             raise CachePolicyError(endpoint=CACHE_ENDPOINT, detail='existing endpoint requires recovery')
         os.chown(directory, account.pw_uid, account.pw_gid); directory.chmod(0o700)
-        env = cache_environment({'PATH': '/usr/bin:/bin', 'HOME': '/mnt/bb/sccache',
-                                 'TMPDIR': '/mnt/bb/sccache'})
+        env = cache_environment({'PATH': '/usr/bin:/bin', 'HOME': SCCACHE_DIRECTORY,
+                                 'TMPDIR': SCCACHE_DIRECTORY})
         def drop():
+            os.sched_setaffinity(0,set(cpu_host_set()))
             os.setgroups(os.getgrouplist('var', account.pw_gid)); os.setgid(account.pw_gid); os.setuid(account.pw_uid)
         try:
             result = subprocess.run([SCCACHE, '--start-server'], env=env, preexec_fn=drop,
@@ -308,6 +312,7 @@ def _migration():
         yield
         unit = ('[Unit]\nDescription=Birth-validated shared buildbox cache\n'
                 '[Service]\nType=notify\nExecStart=/usr/bin/python3 -B /home/var/bin/bb-cache.py serve\n'
+                'AllowedCPUs='+','.join(map(str,cpu_host_set()))+'\n'
                 'KillMode=process\n[Install]\nWantedBy=multi-user.target\n').encode()
         # Reuse the sole atomic installation implementation.
         import importlib.util

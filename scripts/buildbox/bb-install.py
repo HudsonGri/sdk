@@ -22,9 +22,9 @@ BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # Dependencies precede consumers. Every replacement remains a complete file;
 # in-flight interpreters retain their old inode and loaded module generation.
-TOOLS = ['admission_policy.py', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
+TOOLS = ['admission_policy.py', 'cpu_leases.py', 'bbcgroup-systemd-run', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
          'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
-CACHE_TOOLS = frozenset({'admission_policy.py','bb-cache.py','sccache-rustc','bb-job.py','bb-admit.py'})
+CACHE_TOOLS = frozenset({'admission_policy.py','cpu_leases.py','bbcgroup-systemd-run','bb-cache.py','sccache-rustc','bb-job.py','bb-admit.py','build-slot'})
 
 
 def migration_scope(stage, selected):
@@ -96,11 +96,13 @@ def qualify(source, user):
     commands = [[NODE, '--test', 'generated.test.mjs', 'receipt-namespace.test.mjs'],
                 [NODE, '--test', 'receipt-outcome.test.mjs'],
                 [NODE, '--test', 'prune-admission.test.mjs'],
-                ['python3', 'runtime.test.py'], ['python3', 'admission.test.py'],
+                ['python3', '-B', 'cpu_test_fixture.py', 'runtime.test.py'],
+                ['python3', '-B', 'cpu_test_fixture.py', 'admission.test.py'],
                 ['python3', 'install.test.py'], ['python3', 'limits.test.py'],
                 ['python3', 'prune.test.py'],
                 ['python3', 'reaping.test.py'],
                 ['python3', '-B', 'cache_policy.test.py'],
+                ['python3', '-B', 'cpu_leases.test.py'],
                 ['python3', 'cargo_cache.test.py']]
     for command in commands:
         # The tested code cannot modify its frozen source or installed tools.
@@ -181,6 +183,11 @@ def publish_candidate(candidate, only=None):
                 destination=store/name; backup=store/(name+'.bak-gatespeed')
                 if destination.exists() and not backup.exists():publish(backup,destination.read_bytes())
                 publish(destination,data)
+            if 'bbcgroup-systemd-run' in selected:
+                directory=store/'bbcg';directory.mkdir(exist_ok=True)
+                entry=directory/'systemd-run';backup=directory/'systemd-run.bak-gatespeed'
+                if entry.exists() and not backup.exists():publish(backup,entry.read_bytes())
+                publish(entry,payload['bbcgroup-systemd-run'])
         # Existing launchers also cross this privilege boundary; var can
         # execute, but cannot truncate, unlink or replace a tool directly.
         for directory, dirs, files in os.walk(store, followlinks=False):

@@ -27,11 +27,15 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
+        from cpu_test_fixture import KernelFixture
+        self.cpu_fixture=KernelFixture()
+        shutil.copyfile(Path(job.cpu_leases.__file__),self.d/'cpu_leases.py')
         shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         shutil.copyfile(HERE/'bb-cache.py',self.d/'bb-cache.py')
         self.real_home=self.d/'home'
         self.real_home.mkdir()
     def tearDown(self):
+        self.cpu_fixture.close()
         self.temp.cleanup()
     def worker(self,negative=False,cleanup_failure=False):
         shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
@@ -491,7 +495,8 @@ finally:a.close();b.close()
             if p.exists():job.remove_home(p)
 
     def test_admission_disk_refusal_is_stderr_with_stdout_negative(self):
-        source=(HERE/'bb-admit.py').read_text().replace("if ROOT==Path('/mnt/bb/admit'):", 'if True:')
+        source=(self.cpu_fixture.control/'bb-admit.py').read_text().replace("if ROOT==Path('/mnt/bb/admit'):", 'if True:')
+        source='import sys;sys.path.insert(0,'+repr(str(self.cpu_fixture.control))+')\n'+source
         # Read the actual shared policy result, then inject pressure into that
         # observation; admission has no second statvfs implementation to patch.
         source=source.replace('readings=disk_free()', "readings=disk_free();readings[0]['free_percent']=9")
@@ -510,25 +515,25 @@ finally:a.close();b.close()
         root=self.d/'admit';root.mkdir()
         (root/'lease-stale.json').write_text(json.dumps({'pid':999999999,'identity':None}))
         env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
-        first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        first=subprocess.Popen([sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import time;time.sleep(.3)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         until=time.monotonic()+2
         while not any(p.name!='lease-stale.json' for p in root.glob('lease-*')) and time.monotonic()<until:time.sleep(.01)
         self.assertTrue(any(p.name!='lease-stale.json' for p in root.glob('lease-*')))
         marker=self.d/'new-ticket'
         with (root/'upgrade.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
-            second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            second=subprocess.Popen([sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             first.communicate(timeout=2);self.assertEqual(first.returncode,0)
             self.assertFalse(marker.exists())
             # Without the upgrade flock, a new ticket incorrectly enters.
-            negative=self.d/'no-barrier.py';negative.write_text((HERE/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
+            negative=self.d/'no-barrier.py';negative.write_text('import sys;sys.path.insert(0,'+repr(str(self.cpu_fixture.control))+')\n'+(self.cpu_fixture.control/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
             bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
             self.assertEqual(bad.returncode,0)
         second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
         self.assertFalse((root/'lease-stale.json').exists())
         daemon=json.loads((root/'daemon.json').read_text())
         import hashlib
-        self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
+        self.assertEqual(daemon['source_sha256'],hashlib.sha256((self.cpu_fixture.control/'bb-admit.py').read_bytes()).hexdigest())
         os.kill(daemon['pid'],15)
 
     def test_recovered_leases_need_identity_and_survive_pidfd_exit_race(self):
@@ -643,7 +648,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
     def test_daemon_killed_client_holds_until_command_exits_and_releases(self):
         root=self.d/'admit';root.mkdir();(root/'admit.conf').write_text('compile=1 tenant.graphcoder=1 tenant.cloud=1\n')
         env=self.worker_env({'BB_ADMIT_ROOT':str(root),'BB_ADMIT_WRAPPED_COMMAND':'1'})
-        args=[sys.executable,str(HERE/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',f'from pathlib import Path; import time,os;Path({str(self.d/"pid")!r}).write_text(str(os.getpid()));time.sleep(60)']
+        args=[sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',f'from pathlib import Path; import time,os;Path({str(self.d/"pid")!r}).write_text(str(os.getpid()));time.sleep(60)']
         first=subprocess.Popen(args,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
             until=time.monotonic()+5
@@ -651,7 +656,7 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
             self.assertTrue((self.d/'pid').exists())
             pid=int((self.d/'pid').read_text()); self.assertIsNotNone(admit.identity(pid))
             marker=self.d/'second'
-            second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).write_text("ran")'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            second=subprocess.Popen([sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).write_text("ran")'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             time.sleep(.1);self.assertFalse(marker.exists()) # queued negative control
             first.kill();first.wait(timeout=5)
             out,err=second.communicate(timeout=5);self.assertEqual(second.returncode,0,err)

@@ -16,6 +16,20 @@ function run(module,code,unshare=false){
  const result=spawnSync(unshare?'sudo':args.shift(),unshare?['-n','--preserve-env','unshare','--pid','--fork','--kill-child','--mount','--mount-proc','setpriv','--reuid=var','--regid=var','--init-groups',...args]:args,{encoding:'utf8'});
  assert.equal(result.status,0,result.stderr+result.stdout);return result;
 }
+test('CPU custody retains its terminal link without inventing completed counters',()=>{
+ const {root,module}=fixture();
+ try{
+  for(const terminal of [false,true]){
+   const meta=path.join(root,`cpu-${terminal}.receipt-meta.v2.json`),receipt=meta+'.terminal';
+   const lease={id:'cpu-control',cpus:[0],...(terminal?{empty:true,cpu_stat:{usage_usec:'123'}}:{})};
+   run(module,`r.arm(${JSON.stringify(meta)},{receipt_file:${JSON.stringify(receipt)},argv:[],admission_start:new Date().toISOString()});r.atomic(${JSON.stringify(meta+(terminal?'.cpu-lease.terminal':'.cpu-lease'))},${JSON.stringify(lease)});r.finish(${JSON.stringify(meta)},0,'command');`);
+   const value=JSON.parse(fs.readFileSync(receipt)).cpu_lease;
+   assert.equal(value.terminal_file,meta+'.cpu-lease.terminal');
+   assert.equal(value.counters_pending,!terminal);
+   assert.equal(value.cpu_stat?.usage_usec,terminal?'123':undefined);
+  }
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 test('private proc cannot recover or finish a live host owner; old recovery is the negative control',()=>{
  const {root,module}=fixture();
  try{

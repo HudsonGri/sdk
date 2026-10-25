@@ -14,6 +14,12 @@ from admission_policy import cargo_query, resolve_wrapper
 
 
 class AdmissionTests(unittest.TestCase):
+    def setUp(self):
+        from cpu_test_fixture import KernelFixture
+        self.fixture=KernelFixture()
+        self.entry=self.fixture.control/'bb-admit.py'
+
+    def tearDown(self):self.fixture.close()
     def test_query_identity_does_not_admit_compiles_or_shell_guesses(self):
         for name in ['metadata','tree','locate-project','pkgid','verify-project','read-manifest']:
             self.assertTrue(cargo_query(['cargo','+stable','--locked',name]))
@@ -76,7 +82,7 @@ class AdmissionTests(unittest.TestCase):
                 for name in ['first','second']:
                     workspace=root/name;(workspace/'tools').mkdir(parents=True)
                     wrapper=workspace/'tools/wrapper';wrapper.write_text('#!/bin/sh\n# '+name+'\n');wrapper.chmod(0o755)
-                    run=subprocess.run([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c','import os;print(os.environ["RUSTC_WRAPPER"])'],cwd=workspace,env=env,capture_output=True)
+                    run=subprocess.run([sys.executable,str(self.entry),'lane','cloud','--',sys.executable,'-c','import os;print(os.environ["RUSTC_WRAPPER"])'],cwd=workspace,env=env,capture_output=True)
                     self.assertEqual(run.returncode,0,run.stderr.decode());self.assertEqual(run.stdout.decode().strip(),str(wrapper))
                 self.assertNotEqual(str(root/'first/tools/wrapper'),run.stdout.decode().strip(),'second job cannot inherit daemon cwd wrapper')
             finally:
@@ -89,7 +95,7 @@ class AdmissionTests(unittest.TestCase):
             env={**os.environ,'BB_ADMIT_ROOT':str(queue),'BB_ADMIT_WRAPPED_COMMAND':'1'}
             env.pop('BUILD_SLOT_RECEIPT_META',None);env.pop('RUSTC_WRAPPER',None)
             ready=root/'ready'
-            first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;import time;Path({str(ready)!r}).touch();time.sleep(60)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            first=subprocess.Popen([sys.executable,str(self.entry),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;import time;Path({str(ready)!r}).touch();time.sleep(60)'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             negative=None
             try:
                 deadline=time.monotonic()+3
@@ -98,11 +104,11 @@ class AdmissionTests(unittest.TestCase):
                 (root/'Cargo.toml').write_text('[package]\nname="query-control"\nversion="0.0.0"\n')
                 (root/'src').mkdir();(root/'src/lib.rs').write_text('')
                 command=['lane','graphcoder','--','/home/var/.cargo/bin/cargo','metadata','--format-version','1','--no-deps']
-                good=subprocess.run([sys.executable,str(HERE/'bb-admit.py'),*command],cwd=root,env=env,capture_output=True,timeout=2)
+                good=subprocess.run([sys.executable,str(self.entry),*command],cwd=root,env=env,capture_output=True,timeout=2)
                 self.assertEqual(good.returncode,0,good.stderr.decode());self.assertEqual(json.loads(good.stdout)['packages'][0]['name'],'query-control')
                 # Fixture mutant executes the same client with bypass removed.
-                mutant=root/'old.py';mutant.write_text((HERE/'bb-admit.py').read_text().replace('if cargo_query(canonical_argv(argv, os.environ)):', 'if False:'))
-                negative=subprocess.Popen([sys.executable,str(mutant),*command],cwd=root,env={**env,'PYTHONPATH':str(HERE)},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                mutant=root/'old.py';mutant.write_text(self.entry.read_text().replace('if cargo_query(canonical_argv(argv, os.environ)):', 'if False:'))
+                negative=subprocess.Popen([sys.executable,str(mutant),*command],cwd=root,env={**env,'PYTHONPATH':str(self.fixture.control)},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 with self.assertRaises(subprocess.TimeoutExpired):negative.communicate(timeout=.15)
                 negative.terminate();negative.communicate(timeout=2)
             finally:
@@ -116,7 +122,7 @@ class AdmissionTests(unittest.TestCase):
             root=Path(temporary);marker=root/'executed'
             env={**os.environ,'BB_ADMIT_ROOT':str(root/'admit'),'BB_ADMIT_WRAPPED_COMMAND':'1','RUSTC_WRAPPER':str(root/'missing')}
             env.pop('BUILD_SLOT_RECEIPT_META',None)
-            result=subprocess.run([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,capture_output=True)
+            result=subprocess.run([sys.executable,str(self.entry),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).touch()'],env=env,capture_output=True)
             try:
                 self.assertEqual(result.returncode,224,result.stderr.decode());self.assertEqual(result.stdout,b'')
                 self.assertIn(b'RUSTC_WRAPPER_MISSING admission-INFRA',result.stderr);self.assertFalse(marker.exists())

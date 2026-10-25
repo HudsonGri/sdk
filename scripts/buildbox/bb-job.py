@@ -22,7 +22,8 @@ import time
 import uuid
 import bb_target_store
 from admission_policy import resolve_wrapper, capture_limits, restore_limits, LIMIT_ENV, cache_authority, disk_pressure, disk_free, disk_low
-from admission_policy import process_identity as identity
+from admission_policy import process_identity as identity, atomic_json as atomic, cargo_query, canonical_argv
+import cpu_leases
 
 BIN=Path(__file__).parent
 NODE='/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
@@ -32,11 +33,6 @@ PIDFD_SIGNAL_PROCESS_GROUP=1 << 2
 
 def pid_namespace():
     return os.readlink('/proc/self/ns/pid')
-
-def atomic(file,value):
-    tmp=Path(str(file)+'.'+str(os.getpid())+'.tmp')
-    with tmp.open('w') as f: json.dump(value,f); f.flush(); os.fsync(f.fileno())
-    os.replace(tmp,file)
 
 def disk():
     return disk_free()
@@ -381,6 +377,13 @@ def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):
 def run(argv,namespace_ready=False):
     meta=os.environ.get('BUILD_SLOT_RECEIPT_META')
     if not meta: raise RuntimeError('bb-job requires a terminal-receipt owner')
+    # Environment active/admitted flags are not CPU custody. The kernel path,
+    # protected lease record and immutable ancestor ceiling prove nested reuse.
+    cpu_owner=cpu_leases.current(required=not cargo_query(canonical_argv(argv,os.environ)))
+    if cpu_owner:
+        os.environ['BUILD_SLOT_TENANT']=cpu_owner['tenant']
+        os.environ['BB_ADMIT_TENANT']=cpu_owner['tenant']
+        os.environ['BB_CGROUP']=str(Path(cpu_owner['cgroup'])/'work')
     if 'NoNewPrivs:\t1' in Path('/proc/self/status').read_text():
         print('[buildbox] HOME guard INFRA: inherited no_new_privs disables required setuid FUSE',file=sys.stderr,flush=True)
         return 224
@@ -431,7 +434,7 @@ def run(argv,namespace_ready=False):
     admission=json.loads(admission_file.read_text()) if admission_file.exists() else {'tier':env.get('BB_ADMIT_TIER'),'tenant':env.get('BB_ADMIT_TENANT'),'wait_seconds':env.get('BB_ADMIT_WAIT_SECONDS'),'build_jobs':env.get('CARGO_BUILD_JOBS')}
     if admission.get('build_jobs'):env['CARGO_BUILD_JOBS']=str(admission['build_jobs'])
     runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
-             'admission':admission, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
+             'admission':admission,'cpu_lease':cpu_owner, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
     server=None; child=None; rc=224; units=[]
     def interrupted(n,f):

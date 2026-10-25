@@ -7,6 +7,50 @@ import shutil
 import shlex
 import resource
 import ctypes
+import tempfile
+
+# One admission policy, shared by the scheduler, kernel boundary and receipts.
+# No test-only reserve: all eight leases serve the existing priority queues.
+CPU_LEASE_SHAPE = (8, 16)
+
+
+def cpu_layout():
+    count, width = CPU_LEASE_SHAPE
+    # Spread the pool across the host instead of pinning all jobs to one end.
+    # One of every three CPUs stays outside job leases for host/cache services.
+    online = count * width * 3 // 2
+    pool = [cpu for cpu in range(online) if cpu % 3 != 2]
+    return tuple(tuple(pool[index::count]) for index in range(count))
+
+
+def cpu_host_set():
+    used = {cpu for lease in cpu_layout() for cpu in lease}
+    return tuple(cpu for cpu in range(CPU_LEASE_SHAPE[0]*CPU_LEASE_SHAPE[1]*3//2) if cpu not in used)
+
+
+def atomic_json(file, value, mode=0o600):
+    file = Path(file)
+    descriptor, temporary = tempfile.mkstemp(prefix='.'+file.name+'.', dir=file.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            os.fchmod(stream.fileno(), mode)
+            json.dump(value, stream); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, file)
+        descriptor = os.open(file.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def require_tenant(tenant, argv=()):
+    if tenant not in ('graphcoder', 'cloud'):
+        recovery = 'BUILD_SLOT_TENANT=graphcoder '+shlex.join(['/home/var/bin/build-slot',*argv])
+        cloud = 'BUILD_SLOT_TENANT=cloud '+shlex.join(['/home/var/bin/build-slot',*argv])
+        raise RuntimeError('kind=CPU_LEASE step=tenant-label actual='+shlex.quote(str(tenant))+
+                           ' recovery='+shlex.quote(recovery)+' cloud_recovery='+shlex.quote(cloud)+' detail='+shlex.quote(
+                               'set graphcoder for SDK or cloud for Cloud; no inferred/default tenant'))
+    return tenant
 
 # The single host cache policy. All launchers and compiler clients import it;
 # a client environment cannot reconfigure an already-running server.
@@ -34,14 +78,21 @@ class CachePolicyError(RuntimeError):
                          f'recovery={shlex.quote(shlex.join(CACHE_RECOVERY))} detail={shlex.quote(detail)}')
 
 
-def cache_environment(env, endpoint=CACHE_ENDPOINT):
+def cache_environment(env, endpoint=CACHE_ENDPOINT, server=False):
     expected = {'SCCACHE_CACHE_SIZE': SCCACHE_CACHE_SIZE, 'SCCACHE_DIR': SCCACHE_DIRECTORY,
-                'SCCACHE_SERVER_UDS': str(endpoint), 'SCCACHE_IDLE_TIMEOUT': '0'}
+                'SCCACHE_SERVER_UDS': str(endpoint), 'SCCACHE_IDLE_TIMEOUT': '0',
+                'SCCACHE_CONF': '/dev/null'}
+    # v0.18 client-side mode keeps hash/codegen/compiler children in the
+    # admitted cgroup. The one host daemon provides storage only. Its own
+    # daemonization deliberately removes SCCACHE_CLIENT_SIDE.
+    if not server: expected['SCCACHE_CLIENT_SIDE'] = '1'
     for key, value in expected.items():
         if key in env and env[key] != value:
             raise CachePolicyError(env[key], env.get('SCCACHE_SERVER_UDS'), 'caller disagreement: '+key)
     if 'SCCACHE_SERVER_PORT' in env:
         raise CachePolicyError(env['SCCACHE_SERVER_PORT'], detail='TCP endpoint override')
+    if env.get('SCCACHE_ERROR_LOG') or any(key.startswith('SCCACHE_DIST_') for key in env):
+        raise CachePolicyError(detail='error logging/distributed configuration can disable client-side containment')
     return {**env, **expected}
 
 
