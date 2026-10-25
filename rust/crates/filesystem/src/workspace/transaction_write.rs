@@ -90,7 +90,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .stage_file_batch::<true, false>(directories, files, &mut accounting, cancellation)
+            .stage_file_batch::<true, ReplaceFiles>(directories, files, &mut accounting, cancellation)
             .await;
         work.finish(result, &accounting)
     }
@@ -107,7 +107,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result =
-            self.stage_file_batch::<true, true>(directories, files, &mut accounting, cancellation)
+            self.stage_file_batch::<true, CreateFiles>(directories, files, &mut accounting, cancellation)
                 .await
                 .map_err(|error| match error {
                     // Authored IDs are derived from the path. Repeating a creation
@@ -123,7 +123,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn stage_file_batch<const RESET: bool, const CREATE_ONLY: bool>(
+    async fn stage_file_batch<const RESET: bool, M: BatchFileMode>(
         &mut self,
         directories: &[&str],
         files: &[(&str, acyclic_stream::OwnedBytes)],
@@ -136,7 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 != crate::model::CaseSensitivity::Sensitive
         {
             return self
-                .write_batch_serial::<CREATE_ONLY>(directories, files, accounting, cancellation)
+                .write_batch_serial::<M>(directories, files, accounting, cancellation)
                 .await;
         }
         let (paths, directory_count) =
@@ -144,11 +144,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let mut kinds = self
             .batch_kinds(&paths.value, accounting, cancellation)
             .await?;
-        classify_batch_paths::<CREATE_ONLY>(
+        classify_batch_paths(
             &paths.value,
             directory_count,
             &mut kinds.value,
             accounting,
+            M::CREATE_ONLY,
         )?;
         let capacity = directory_count
             .checked_add(
@@ -232,7 +233,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn write_batch_serial<const CREATE_ONLY: bool>(
+    async fn write_batch_serial<M: BatchFileMode>(
         &mut self,
         directories: &[&str],
         files: &[(&str, acyclic_stream::OwnedBytes)],
@@ -251,26 +252,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 .await?;
         }
         for (path, bytes) in files {
-            if CREATE_ONLY {
-                candidate
-                    .mutate_with_accounting(
-                        path,
-                        |path| {
-                            Ok(AuthoredMutation::CreateFile {
-                                path,
-                                bytes: bytes.clone(),
-                                metadata: FileMetadata::default(),
-                            })
-                        },
-                        accounting,
-                        cancellation,
-                    )
-                    .await?;
-            } else {
-                candidate
-                    .write_with_accounting(path, bytes.clone(), accounting, cancellation)
-                    .await?;
-            }
+            M::stage(&mut candidate, path, bytes, accounting, cancellation).await?;
         }
         self.checkout = candidate.checkout;
         Ok(())
@@ -595,12 +577,75 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 }
 
+// A mode selects the existing mutation future directly. Keeping that choice
+// outside the serial future prevents one mode from retaining the other's state.
 #[cfg(not(target_arch = "wasm32"))]
-fn classify_batch_paths<const CREATE_ONLY: bool>(
+trait BatchFileMode {
+    const CREATE_ONLY: bool;
+
+    fn stage<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        transaction: &'a mut Transaction<A, O>,
+        path: &'a str,
+        bytes: &'a acyclic_stream::OwnedBytes,
+        accounting: &'a mut KernelAccounting<'_>,
+        cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<(), WorkspaceError>> + Send;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ReplaceFiles;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BatchFileMode for ReplaceFiles {
+    const CREATE_ONLY: bool = false;
+
+    fn stage<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        transaction: &'a mut Transaction<A, O>,
+        path: &'a str,
+        bytes: &'a acyclic_stream::OwnedBytes,
+        accounting: &'a mut KernelAccounting<'_>,
+        cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<(), WorkspaceError>> + Send {
+        transaction.write_with_accounting(path, bytes.clone(), accounting, cancellation)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CreateFiles;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BatchFileMode for CreateFiles {
+    const CREATE_ONLY: bool = true;
+
+    fn stage<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        transaction: &'a mut Transaction<A, O>,
+        path: &'a str,
+        bytes: &'a acyclic_stream::OwnedBytes,
+        accounting: &'a mut KernelAccounting<'_>,
+        cancellation: &'a CancellationToken,
+    ) -> impl Future<Output = Result<(), WorkspaceError>> + Send {
+        transaction.mutate_with_accounting(
+            path,
+            |path| {
+                Ok(AuthoredMutation::CreateFile {
+                    path,
+                    bytes: bytes.clone(),
+                    metadata: FileMetadata::default(),
+                })
+            },
+            accounting,
+            cancellation,
+        )
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn classify_batch_paths(
     paths: &[NamespacePath],
     directory_count: usize,
     kinds: &mut [Option<FileKind>],
     accounting: &mut KernelAccounting<'_>,
+    create_only: bool,
 ) -> Result<(), WorkspaceError> {
     if paths.len() != kinds.len() || directory_count > paths.len() {
         return Err(FsError::InvalidDiff.into());
@@ -611,7 +656,7 @@ fn classify_batch_paths<const CREATE_ONLY: bool>(
             items_examined: 1,
             ..Default::default()
         })?;
-        if CREATE_ONLY && index >= directory_count && kind.is_some() {
+        if create_only && index >= directory_count && kind.is_some() {
             return Err(
                 FsError::Mutation(crate::kernel::GenerationMutationError::AlreadyExists).into(),
             );
@@ -655,7 +700,7 @@ fn classify_batch_paths<const CREATE_ONLY: bool>(
             if previous.key != current.key {
                 continue;
             }
-            if CREATE_ONLY && current.ordinal >= directory_count {
+            if create_only && current.ordinal >= directory_count {
                 return Err(FsError::Mutation(
                     crate::kernel::GenerationMutationError::AlreadyExists,
                 )

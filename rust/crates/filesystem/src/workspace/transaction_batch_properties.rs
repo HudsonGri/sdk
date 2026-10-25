@@ -96,7 +96,7 @@ async fn check(
         Fault::NoReset => {
             let mut accounting = KernelAccounting::standalone(budget, &cancellation);
             transaction
-                .stage_file_batch::<false, false>(
+                .stage_file_batch::<false, ReplaceFiles>(
                     &directories,
                     &files,
                     &mut accounting,
@@ -248,7 +248,7 @@ async fn check_native(history: &[(u8, Vec<u8>)], fault: Fault) -> TestCaseResult
                 cancellation: &cancellation,
             };
             transaction
-                .stage_file_batch::<false, false>(
+                .stage_file_batch::<false, ReplaceFiles>(
                     &["/out"],
                     &files,
                     &mut accounting,
