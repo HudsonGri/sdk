@@ -392,9 +392,7 @@ async fn selected_approval_binds_original_root_transition_paths_and_creator() ->
         )?
         .authorize(&verifier, interaction, &confirmation, &fixture.work)
         .await?
-        .publish(&fixture.state, &options, || {
-            std::future::ready(Ok(()))
-        })
+        .publish(&fixture.state, &options, || std::future::ready(Ok(())))
         .await?;
     assert_eq!(original, encode(&applied, &paths, "original creator")?);
     Ok(())
@@ -446,11 +444,8 @@ async fn selected_authority_retains_cancellation_and_original_work() -> TestResu
     // Actual former argument shape: a caller could supply a fresh work context
     // after authorization. Its cancellation is unrelated to the approved work.
     // The public authority no longer has an argument that can select this path.
-    let fresh = NativeMaterializationWork::new(
-        fixture.work.budget(),
-        &CancellationToken::new(),
-    )
-    .map_err(|(cause, _)| cause)?;
+    let fresh = NativeMaterializationWork::new(fixture.work.budget(), &CancellationToken::new())
+        .map_err(|(cause, _)| cause)?;
     publication
         .publish(
             &fixture.from,
@@ -461,7 +456,10 @@ async fn selected_authority_retains_cancellation_and_original_work() -> TestResu
             || std::future::ready(Ok(())),
         )
         .await?;
-    assert_eq!(std::fs::read_to_string(fixture.root.join("note"))?, "candidate");
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("note"))?,
+        "candidate"
+    );
     Ok(())
 }
 #[tokio::test]
