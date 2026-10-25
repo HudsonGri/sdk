@@ -351,6 +351,10 @@ impl DemandWork {
         *allocation += retained;
         result
     }
+    pub(crate) fn checked_remaining(&mut self) -> Result<WorkBudget, DemandError> {
+        self.check()?;
+        self.remaining()
+    }
     pub(crate) fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
         self.reconcile_cancellation_registry()?;
         let mut remaining = self.work.remaining(self.budget)?;

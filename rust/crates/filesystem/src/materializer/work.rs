@@ -259,7 +259,7 @@ impl NativeMaterializationWork {
     }
     /// Remaining finite allowance.
     pub fn remaining(&self) -> Result<WorkBudget, NativeTreeMaterializationError> {
-        self.state(|state| state.check().and_then(|()| state.remaining()))
+        self.state(crate::demand::DemandWork::checked_remaining)
             .map_err(native_materialization_work_error)
     }
     /// Reuses item admission while validating an already admitted operation.
@@ -304,6 +304,18 @@ impl NativeMaterializationWork {
     pub fn charge(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         self.state(|state| state.charge(delta))
             .map_err(native_materialization_work_error)
+    }
+    /// Validates existing allowance before charging proposed work under one
+    /// original leaf. Existing failures retain priority over the proposed delta.
+    pub fn charge_after_remaining(
+        &self,
+        delta: WorkCounters,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        self.state(|state| {
+            state.checked_remaining()?;
+            state.charge(delta)
+        })
+        .map_err(native_materialization_work_error)
     }
     /// Records work completed by a nested operation.
     pub fn spent(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {

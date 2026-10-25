@@ -25,6 +25,10 @@ impl Fixture {
     }
 
     fn new(limits: &[(u8, u16)], invocation: bool) -> Self {
+        Self::new_with_window(limits, invocation, false)
+    }
+
+    fn new_with_window(limits: &[(u8, u16)], invocation: bool, window: bool) -> Self {
         let cancellation = CancellationToken::new();
         let root =
             NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
@@ -34,6 +38,9 @@ impl Fixture {
         } else {
             (root.clone(), cancellation.clone())
         };
+        if window {
+            view = view.invocation_window().unwrap();
+        }
         for &(units, bytes) in limits {
             view = view
                 .native_volume_work(crate::performance::work_budget(
@@ -80,6 +87,8 @@ impl Fixture {
                 .claim(u64::from(bytes), 1, delta)
                 .map(|claim| self.claims.push(claim)),
             5 => view.reserve_work(delta).map(drop),
+            7 if legacy => view.remaining().and_then(|_| view.charge(delta)),
+            7 => view.charge_after_remaining(delta),
             _ => {
                 drop(self.claims.pop());
                 Ok(())
@@ -87,6 +96,54 @@ impl Fixture {
         };
         result.map_err(|error| format!("{error:?}"))
     }
+}
+
+proptest! {
+    #[test]
+    fn checked_charge_matches_separate_validation_and_charge(
+        limits in prop::collection::vec((0_u8..65, 0_u16..513), 0..5),
+        invocation in any::<bool>(),
+        window in any::<bool>(),
+        actions in prop::collection::vec((0_u8..8, any::<bool>(), 0_u8..24,
+            prop_oneof![8 => 0_u64..257, 1 => Just(u64::MAX)], 0_u8..5, 0_u8..17, any::<u8>()), 1..33),
+    ) {
+        let mut current = Fixture::new_with_window(&limits, invocation, window);
+        let mut legacy = Fixture::new_with_window(&limits, invocation, window);
+        for (kind, recheck, field, amount, items, cancel, bytes) in actions {
+            match cancel {
+                1 => { current.cancellation.cancel(); legacy.cancellation.cancel(); }
+                2 => { current.invocation.cancel(); legacy.invocation.cancel(); }
+                _ => {}
+            }
+            let delta = delta(field, amount, items);
+            prop_assert_eq!(current.apply(kind, recheck, delta, bytes, false), legacy.apply(kind, recheck, delta, bytes, true));
+            current.compare(&legacy)?;
+        }
+        current.claims.clear();
+        legacy.claims.clear();
+        current.compare(&legacy)?;
+    }
+}
+
+#[test]
+fn checked_charge_keeps_validation_and_charge_under_one_leaf() {
+    let root = NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let work = root.invocation_window().unwrap();
+    let (result, visits) = root.state.count_locks(|| {
+        work.charge_after_remaining(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })
+    });
+    result.unwrap();
+    assert_eq!(
+        visits, 1,
+        "separate validation and charge reacquire the original leaf"
+    );
 }
 
 proptest! {

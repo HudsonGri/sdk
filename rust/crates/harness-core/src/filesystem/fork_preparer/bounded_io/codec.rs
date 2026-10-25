@@ -582,17 +582,20 @@ fn charge_codec(accounting: &mut impl CodecAccounting, charge: Charge, encode: b
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct NativeBuffer<'a>(&'a mut acyclic_fs::NativeAllocation);
+struct NativeBuffer<'a> {
+    custody: &'a mut acyclic_fs::NativeAllocation,
+    validate_allowance: bool,
+}
 #[cfg(not(target_arch = "wasm32"))]
 impl CodecAccounting for NativeBuffer<'_> {
     fn retain(&mut self, bytes: u64) -> Result<()> {
-        let retained = self.0.bytes().checked_add(bytes).ok_or(
+        let retained = self.custody.bytes().checked_add(bytes).ok_or(
             acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
         )?;
-        self.0.resize(retained).map_err(Into::into)
+        self.custody.resize(retained).map_err(Into::into)
     }
     fn release(&mut self, bytes: u64) -> Result<()> {
-        self.0.release(bytes).map_err(Into::into)
+        self.custody.release(bytes).map_err(Into::into)
     }
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
         self.charge(WorkCounters {
@@ -601,7 +604,7 @@ impl CodecAccounting for NativeBuffer<'_> {
         })
     }
     fn admit_copy(&mut self, bytes: u64) -> Result<()> {
-        let work = self.0.work();
+        let work = self.custody.work();
         KernelAccounting::NativeOriginal {
             work,
             cancellation: work.cancellation(),
@@ -613,10 +616,16 @@ impl CodecAccounting for NativeBuffer<'_> {
         .map_err(Into::into)
     }
     fn charge(&mut self, next: WorkCounters) -> Result<()> {
-        self.0.work().charge(next).map_err(Into::into)
+        let work = self.custody.work();
+        if self.validate_allowance {
+            work.charge_after_remaining(next)
+        } else {
+            work.charge(next)
+        }
+        .map_err(Into::into)
     }
     fn admission(&mut self, bytes: u64) -> Result<()> {
-        self.0.resize(bytes).map_err(Into::into)
+        self.custody.resize(bytes).map_err(Into::into)
     }
 }
 
@@ -636,13 +645,17 @@ impl PreparationIo {
                 .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
             // Preserve the former owner's validation of existing allowance
             // before proposing work, without constructing that temporary owner.
-            if !matches!(
-                charge,
-                Charge::Read { .. } | Charge::Retain { .. } | Charge::Admission { .. }
-            ) {
+            if matches!(charge, Charge::CopyAdmission { .. }) {
                 custody.work().remaining()?;
             }
         }
-        charge_codec(&mut NativeBuffer(custody), charge, true)
+        charge_codec(
+            &mut NativeBuffer {
+                custody,
+                validate_allowance: !matches!(charge, Charge::Read { .. }),
+            },
+            charge,
+            true,
+        )
     }
 }
