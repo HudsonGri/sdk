@@ -477,9 +477,10 @@ async fn ask_guard_waits_for_exact_file_decision_before_dispatch() -> Result<()>
         let requests = provider.requests();
         assert_eq!(requests.len(), 2, "replay must not call the provider again");
         if !approved {
-            let refusals: Vec<_> = requests.last().expect("second provider request")
-                .messages
+            let refusals: Vec<_> = requests
                 .iter()
+                .skip(1)
+                .flat_map(|request| &request.messages)
                 .flat_map(|message| message.content.parts())
                 .filter_map(|part| match part {
                     ModelContentPart::ToolResult {
