@@ -163,7 +163,9 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
     set.grants.iter().any(|g| {
         let Target::Resource { action, resource } = r.target else {
             return match (&g.kind, r.target) {
-                (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) => crate::socket::allows(grant, destination),
+                (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) => {
+                    crate::socket::allows(grant, destination)
+                }
                 (GrantKind::Secrets(grant), Target::Secrets(target)) => target.allowed_by(grant),
                 _ => false,
             };
@@ -186,8 +188,15 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
         };
         grant.actions.iter().any(|a| a == action)
             && (resource_matches(&grant.resource, resource)
-                || !record_facts && matches!(action, "streams/list" | "fs/list")
-                    && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
+                || !record_facts
+                    && matches!(action, "streams/list" | "fs/list")
+                    && resource_matches(
+                        &ResourcePattern {
+                            name: resource.into(),
+                            prefix: true,
+                        },
+                        &grant.resource.name,
+                    ))
     })
 }
 fn limits_allow(ceiling: &Limits, usage: &Limits) -> bool {

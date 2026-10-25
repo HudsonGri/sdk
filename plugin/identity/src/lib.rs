@@ -25,7 +25,15 @@ const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub fn is_command(command: &str) -> bool {
     matches!(
         command,
-        "login" | "logout" | "signup" | "whoami" | "orgs" | "refresh" | "bearer" | "identity-mcp" | "secrets"
+        "login"
+            | "logout"
+            | "signup"
+            | "whoami"
+            | "orgs"
+            | "refresh"
+            | "bearer"
+            | "identity-mcp"
+            | "secrets"
     )
 }
 
@@ -402,21 +410,12 @@ struct Identity {
 
 impl Identity {
     fn new(endpoint: &str) -> Result<Self, Error> {
-        let url = Url::parse(endpoint)
-            .map_err(|_| Error::new("configuration_error", "invalid API endpoint"))?;
-        let loopback = matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"));
-        if (url.scheme() != "https" && !(url.scheme() == "http" && loopback))
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || url.path() != "/"
-        {
-            return Err(Error::new(
+        let url = acyclic_auth::credential::endpoint(endpoint).map_err(|_| {
+            Error::new(
                 "configuration_error",
                 "API endpoint must be an HTTPS origin (HTTP loopback is allowed for tests)",
-            ));
-        }
+            )
+        })?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
@@ -946,8 +945,10 @@ pub fn run(
 }
 
 async fn execute(arguments: &[String]) -> Result<Value, Error> {
-    if arguments.first().is_some_and(|command| command == "secrets") {
-        return secrets::execute(&arguments[1..]).await;
+    if let Some((command, rest)) = arguments.split_first()
+        && command == "secrets"
+    {
+        return secrets::execute(rest).await;
     }
     let options = Options::parse(arguments)?;
     let identity = Identity::new(&options.endpoint)?;

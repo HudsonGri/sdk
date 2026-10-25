@@ -168,3 +168,19 @@ Explicit foreground file logging uses the same bound and lock. Foreground
 stderr logging and Chrome trace output keep their existing behavior.
 Log destinations are trusted host configuration: reserve the active and
 archive/staging names, and keep the active file in place while writers run.
+
+## Protected secrets
+
+Use an owner-only bearer file. Put reads the value exactly from stdin or from
+`--value-file`; values are never accepted as command-line arguments.
+
+```sh
+acyclic secrets list --endpoint https://api.example.com --bearer-file ./bearer --scope production
+acyclic secrets put --endpoint https://api.example.com --bearer-file ./bearer --scope production --name API_KEY --kind protected --expected-generation 0 --value-file ./secret-value
+acyclic secrets delete --endpoint https://api.example.com --bearer-file ./bearer --scope production --name API_KEY --expected-generation 1
+```
+
+`ACYCLIC_API_URL` may supply the endpoint. List includes values for declared
+plain rows and metadata for protected rows. Put and delete require the generation
+returned by list. A conflict returns a redacted error; list again before choosing
+a new mutation. There is no account selector, get, reveal or export command.

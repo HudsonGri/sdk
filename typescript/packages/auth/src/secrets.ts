@@ -6,11 +6,15 @@ import { SecretsClient as RustSecretsClient } from "./wasm.js";
 // Inspect the generated descriptor rather than maintaining another request
 // schema. Protobuf create() would silently discard an account selector.
 function admit<Schema extends DescMessage>(schema: Schema, request: MessageInitShape<Schema>) {
-  const fields = new Set(schema.fields.map(field => field.localName));
-  if (Object.keys(request).some(key => !fields.has(key))) {
+  try {
+    const fields = new Set(schema.fields.map(field => field.localName));
+    if (Object.keys(request).some(key => !fields.has(key)
+      && !(key === "$typeName" && Reflect.get(request, key) === schema.typeName))) throw new Error();
+    return toBinary(schema, create(schema, request));
+  } catch {
+    // Generated codecs may report an invalid input's actual contents.
     throw new Error("secrets: invalid request");
   }
-  return toBinary(schema, create(schema, request));
 }
 
 /** Shared Rust client. Generation/version fields stay bigint at the JS boundary. */

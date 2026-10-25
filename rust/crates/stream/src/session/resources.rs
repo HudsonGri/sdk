@@ -120,7 +120,7 @@ impl ResourceAuthorization {
                     GrantKind::Resource(grant) => grant,
                     GrantKind::Execution(grant) => &grant.grant,
                     GrantKind::Billing(grant) => &grant.grant,
-                    GrantKind::WebsocketConnect(_) => continue,
+                    GrantKind::WebsocketConnect(_) | GrantKind::Secrets(_) => continue,
                 };
                 if !resource.actions.iter().any(|action| action == "fs/list") {
                     continue;

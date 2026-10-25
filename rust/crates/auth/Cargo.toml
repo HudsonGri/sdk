@@ -30,6 +30,10 @@ serde_json.workspace = true
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
 acyclic-test-support = { path = "../test-support" }
 futures.workspace = true

@@ -68,15 +68,27 @@ fn label(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_control)
 }
 fn require(valid: bool) -> Result<(), crate::Error> {
-    if valid { Ok(()) } else { Err(crate::Error::Invalid) }
+    if valid {
+        Ok(())
+    } else {
+        Err(crate::Error::Invalid)
+    }
 }
 pub(crate) fn validate_grant(value: &SecretsGrant) -> Result<(), crate::Error> {
-    require(matches!(value.operation, SecretsOperation::Put | SecretsOperation::List | SecretsOperation::Delete)
-        && label(&value.scope) && value.name.as_deref().is_none_or(label))
+    require(
+        matches!(
+            value.operation,
+            SecretsOperation::Put | SecretsOperation::List | SecretsOperation::Delete
+        ) && label(&value.scope)
+            && value.name.as_deref().is_none_or(label),
+    )
 }
 pub(crate) fn validate_put(value: &SecretPutRequest) -> Result<(), crate::Error> {
-    require(label(&value.scope) && label(&value.name)
-        && matches!(value.kind, SecretKind::Plain | SecretKind::Protected))
+    require(
+        label(&value.scope)
+            && label(&value.name)
+            && matches!(value.kind, SecretKind::Plain | SecretKind::Protected),
+    )
 }
 pub(crate) fn validate_list(value: &SecretListRequest) -> Result<(), crate::Error> {
     require(label(&value.scope))
@@ -99,16 +111,22 @@ pub struct Target<'a> {
 
 impl Target<'_> {
     pub(crate) fn valid(self) -> bool {
-        label(self.scope) && match self.operation {
-            SecretsOperation::List => self.name.is_none(),
-            SecretsOperation::Put | SecretsOperation::Delete => self.name.is_some_and(label),
-            SecretsOperation::Unspecified => false,
-        }
+        label(self.scope)
+            && match self.operation {
+                SecretsOperation::List => self.name.is_none(),
+                SecretsOperation::Put | SecretsOperation::Delete => self.name.is_some_and(label),
+                SecretsOperation::Unspecified => false,
+            }
     }
     pub(crate) fn allowed_by(self, grant: &SecretsGrant) -> bool {
-        self.valid() && validate_grant(grant).is_ok()
-            && self.operation == grant.operation && self.scope == grant.scope
-            && grant.name.as_deref().is_none_or(|name| self.name == Some(name))
+        self.valid()
+            && validate_grant(grant).is_ok()
+            && self.operation == grant.operation
+            && self.scope == grant.scope
+            && grant
+                .name
+                .as_deref()
+                .is_none_or(|name| self.name == Some(name))
     }
 }
 
@@ -132,7 +150,12 @@ pub type TransportFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, Erro
 /// diagnostics. No retries, interpretation or authority logic lives here.
 pub trait Transport {
     /// Send exactly one POST. Borrowed inputs remain owned until completion.
-    fn post<'a>(&'a self, path: &'static str, bearer: &'a str, body: &'a [u8]) -> TransportFuture<'a>;
+    fn post<'a>(
+        &'a self,
+        path: &'static str,
+        bearer: &'a str,
+        body: &'a [u8],
+    ) -> TransportFuture<'a>;
 }
 
 /// One client implementation used by native callers, the CLI and WASM.
@@ -144,12 +167,23 @@ pub struct Client<T> {
 impl<T: Transport> Client<T> {
     /// Use an existing credential provider, resolved freshly for each call.
     pub fn new(transport: T, credentials: CredentialProvider) -> Self {
-        Self { transport, credentials }
+        Self {
+            transport,
+            credentials,
+        }
     }
 
-    async fn post<R: DeserializeOwned>(&self, path: &'static str, body: &impl Serialize) -> Result<R, Error> {
+    async fn post<R: DeserializeOwned>(
+        &self,
+        path: &'static str,
+        body: &impl Serialize,
+    ) -> Result<R, Error> {
         let body = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Error::InvalidRequest)?);
-        let bearer = self.credentials.resolve().await.map_err(|_| Error::Credential)?;
+        let bearer = self
+            .credentials
+            .resolve()
+            .await
+            .map_err(|_| Error::Credential)?;
         let response = self.transport.post(path, &bearer, &body).await?;
         match response.status {
             200..=299 => serde_json::from_slice(&response.body).map_err(|_| Error::InvalidResponse),
@@ -164,8 +198,11 @@ impl<T: Transport> Client<T> {
     pub async fn put(&self, request: &SecretPutRequest) -> Result<SecretMutationReply, Error> {
         validate_put(request).map_err(|_| Error::InvalidRequest)?;
         let reply: SecretMutationReply = self.post("/v1/identity/secrets/put", request).await?;
-        if reply.name != request.name || reply.kind != request.kind
-            || reply.generation <= request.expected_generation || reply.version == 0 {
+        if reply.name != request.name
+            || reply.kind != request.kind
+            || reply.generation <= request.expected_generation
+            || reply.version == 0
+        {
             return Err(Error::InvalidResponse);
         }
         Ok(reply)
@@ -190,11 +227,17 @@ impl<T: Transport> Client<T> {
     }
 
     /// Delete at the supplied scope generation, returning metadata only.
-    pub async fn delete(&self, request: &SecretDeleteRequest) -> Result<SecretMutationReply, Error> {
+    pub async fn delete(
+        &self,
+        request: &SecretDeleteRequest,
+    ) -> Result<SecretMutationReply, Error> {
         validate_delete(request).map_err(|_| Error::InvalidRequest)?;
         let reply: SecretMutationReply = self.post("/v1/identity/secrets/delete", request).await?;
-        if reply.name != request.name || reply.kind != SecretKind::Deleted
-            || reply.generation <= request.expected_generation || reply.version == 0 {
+        if reply.name != request.name
+            || reply.kind != SecretKind::Deleted
+            || reply.generation <= request.expected_generation
+            || reply.version == 0
+        {
             return Err(Error::InvalidResponse);
         }
         Ok(reply)
@@ -209,52 +252,64 @@ pub struct HttpTransport {
     client: reqwest::Client,
 }
 
-/// Admit an origin only: no embedded credential, query, fragment or path.
-/// HTTPS is required except for the literal loopback hosts used by local tools.
-pub fn endpoint(value: &str) -> Result<url::Url, Error> {
-    let url = url::Url::parse(value).map_err(|_| Error::InvalidRequest)?;
-    let local = matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
-        || matches!(url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
-    if url.username().is_empty() && url.password().is_none() && url.query().is_none()
-        && url.fragment().is_none() && url.path() == "/" && url.host().is_some()
-        && (url.scheme() == "https" || url.scheme() == "http" && local) {
-        Ok(url)
-    } else {
-        Err(Error::InvalidRequest)
-    }
-}
-
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
 impl HttpTransport {
     /// Create a redirect-free HTTP adapter. Origin validation happens before
     /// any credential resolution or network operation.
     pub fn new(origin: &str) -> Result<Self, Error> {
         Ok(Self {
-            endpoint: endpoint(origin)?,
-            client: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
-                .build().map_err(|_| Error::Transport)?,
+            endpoint: crate::credential::endpoint(origin).map_err(|_| Error::InvalidRequest)?,
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()
+                .map_err(|_| Error::Transport)?,
         })
     }
 }
 
 #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
 impl Transport for HttpTransport {
-    fn post<'a>(&'a self, path: &'static str, bearer: &'a str, body: &'a [u8]) -> TransportFuture<'a> {
+    fn post<'a>(
+        &'a self,
+        path: &'static str,
+        bearer: &'a str,
+        body: &'a [u8],
+    ) -> TransportFuture<'a> {
         Box::pin(async move {
-            let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {bearer}"))
-                .map_err(|_| Error::Credential)?;
+            let mut authorization =
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {bearer}"))
+                    .map_err(|_| Error::Credential)?;
             authorization.set_sensitive(true);
-            let response = self.client.post(self.endpoint.join(path).map_err(|_| Error::InvalidRequest)?)
+            let response = self
+                .client
+                .post(
+                    self.endpoint
+                        .join(path)
+                        .map_err(|_| Error::InvalidRequest)?,
+                )
                 .header(reqwest::header::AUTHORIZATION, authorization)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body.to_vec()).send().await.map_err(|_| Error::Transport)?;
+                .body(body.to_vec())
+                .send()
+                .await
+                .map_err(|_| Error::Transport)?;
             let status = response.status().as_u16();
             // Never consume an error body: even a malicious provider cannot
             // attach a planted value to a propagated error or source chain.
             let body = if (200..300).contains(&status) {
-                response.bytes().await.map_err(|_| Error::Transport)?.to_vec()
-            } else { Vec::new() };
-            Ok(Response { status, body: Zeroizing::new(body) })
+                response
+                    .bytes()
+                    .await
+                    .map_err(|_| Error::Transport)?
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
+            Ok(Response {
+                status,
+                body: Zeroizing::new(body),
+            })
         })
     }
 }

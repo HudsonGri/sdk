@@ -685,3 +685,53 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
         );
     }
 }
+
+#[test]
+fn secrets_grants_never_authorize_filesystem_discovery_indexes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let auth = Arc::new(authority(State::new()));
+    for filesystem_grant in [false, true] {
+        let bytes = signed::root(|block| {
+            for certificate in block
+                .certificates
+                .iter_mut()
+                .flat_map(|chain| chain.keys.iter_mut())
+                .take(1)
+            {
+                let mut grants = vec![Grant {
+                    kind: GrantKind::Secrets(SecretsGrant {
+                        operation: SecretsOperation::List,
+                        scope: "volume".into(),
+                        name: None,
+                    }),
+                }];
+                if filesystem_grant {
+                    grants.push(Grant {
+                        kind: GrantKind::Resource(ResourceGrant {
+                            resource: ResourcePattern {
+                                name: "fs:/volume".into(),
+                                prefix: true,
+                            },
+                            actions: vec!["fs/list".into()],
+                        }),
+                    });
+                }
+                certificate.key.grants = GrantSet { grants };
+            }
+        });
+        let capability = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW)?;
+        let context =
+            ResourceAuthorization::new(auth.clone(), "fs:/volume".into(), Arc::new(capability));
+        let result =
+            context.filter_paths("fs:/volume", &crate::FollowFilter::new(Default::default())?);
+        assert_eq!(
+            result.is_ok(),
+            filesystem_grant,
+            "secrets permission widened the filesystem index"
+        );
+        if !filesystem_grant {
+            assert!(matches!(result, Err(StreamError::AccessDenied)));
+        }
+    }
+    Ok(())
+}

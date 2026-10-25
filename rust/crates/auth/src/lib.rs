@@ -8,8 +8,8 @@ pub mod contract;
 pub mod credential;
 pub mod crypto;
 mod resource;
-pub mod socket;
 pub mod secrets;
+pub mod socket;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 #[path = "../tests/common/signed.rs"]

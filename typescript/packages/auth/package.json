@@ -18,7 +18,8 @@
     "./proto": {
       "types": "./generated/proto/auth/v1/auth_pb.d.ts",
       "default": "./generated/proto/auth/v1/auth_pb.js"
-    }
+    },
+    "./conformance": "./generated/conformance/secrets-v1.json"
   },
   "files": [
     "dist",

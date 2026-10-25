@@ -189,9 +189,16 @@ macro_rules! redacted_debug {
         }
     )*};
 }
-redacted_debug!(SecretPutRequest, SecretListRequest, SecretDeleteRequest,
-    SecretMutationReply, PlainSecretVariable, ProtectedSecretVariable,
-    SecretVariable, SecretListReply);
+redacted_debug!(
+    SecretPutRequest,
+    SecretListRequest,
+    SecretDeleteRequest,
+    SecretMutationReply,
+    PlainSecretVariable,
+    ProtectedSecretVariable,
+    SecretVariable,
+    SecretListReply
+);
 
 impl Serialize for SecretVariable {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
