@@ -265,6 +265,36 @@ impl crate::tool::ToolApprovalVerifier for PublicationDecision {
 }
 
 #[tokio::test]
+async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let operation = OperationId::new();
+    let publication = fixture.publication(operation)?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    let journal = publication
+        .prepare(&fixture.from, &fixture.to, &fixture.state, &options, &fixture.work)
+        .await?;
+    assert!(journal.custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(&fixture.work)));
+    let loaded = acyclic_fs::load_native_materialization_journal(
+        &fixture.state, operation, fixture.work.clone(),
+    ).await.map_err(|(cause, _)| cause)?.value.ok_or("prepared journal is absent")?;
+    assert!(loaded.custody.as_ref().is_some_and(|custody| custody.work().shares_ledger(&fixture.work)));
+    // The former preparation boundary constructed a separate ledger from the
+    // remaining counters. Its journal retains that separate owner even after
+    // the caller adds the receipt back to its own counters.
+    let detached = NativeMaterializationWork::new(fixture.work.remaining()?, fixture.work.cancellation())
+        .map_err(|(cause, _)| cause)?;
+    let other = fixture.publication(OperationId::new())?;
+    let options = MaterializeOptions::native(other.directory().join("target"));
+    let journal = acyclic_fs::materializer::prepare_native_generation_transition(
+        &fixture.from, &fixture.to, &fixture.state,
+        other.request(&fixture.from, &fixture.to, &options, &detached), detached.clone(),
+    ).await.map_err(|(cause, _)| cause)?.value;
+    assert!(journal.custody.as_ref().is_some_and(|custody| !custody.work().shares_ledger(&fixture.work)));
+    assert!(!fixture.root.join("note").exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_approval_binds_original_root_transition_paths_and_creator() -> TestResult {
     let fixture = Fixture::new().await?;
     let publication = fixture.publication(OperationId::new())?;
@@ -500,6 +530,7 @@ async fn every_adapter_refuses_retained_internal_edits_with_old_path_control() -
             &fixture.to,
             &fixture.state,
             old_request(),
+            fixture.work.clone(),
         )
         .await
         .map_err(|(cause, _)| cause)?;

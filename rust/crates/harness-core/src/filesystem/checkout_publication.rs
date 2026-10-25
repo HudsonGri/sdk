@@ -87,22 +87,16 @@ impl CheckoutPublication {
         options: &MaterializeOptions,
         work: &NativeMaterializationWork,
     ) -> Result<MaterializationJournal> {
-        let mut request = self.request(from, to, options, work);
-        request.budget = work.remaining()?;
         let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
-            from, to, state, request,
+            from, to, state, self.request(from, to, options, work), work.clone(),
         )
         .await;
         match prepared {
             Ok(receipt) => {
-                work.spent(receipt.work)?;
                 validate_plan(&receipt.value.plan)?;
                 Ok(receipt.value)
             }
-            Err((source, spent)) => {
-                work.spent(spent)?;
-                Err(source.into())
-            }
+            Err((source, _)) => Err(source.into()),
         }
     }
     /// Publishes with the caller's guard and original native work ledger.
@@ -133,19 +127,14 @@ impl CheckoutPublication {
         let retained = acyclic_fs::load_native_materialization_journal(
             state,
             self.operation,
-            work.remaining()?,
-            work.cancellation(),
+            work.clone(),
         )
         .await;
         let journal = match retained {
             Ok(receipt) => {
-                work.spent(receipt.work)?;
                 receipt.value
             }
-            Err((cause, spent)) => {
-                work.spent(spent)?;
-                return Err(cause.into());
-            }
+            Err((cause, _)) => return Err(cause.into()),
         };
         // Fresh transitions need the same validated plan as retained ones.
         // In particular, native case-insensitive lookup must not turn an
