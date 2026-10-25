@@ -62,17 +62,22 @@ fn decisive_reviews_share_settlement_durability_without_authorizing_early() -> R
                 for eager in [false, true] {
                     measured.push(trial(&flushes, approved, eager).await?);
                 }
-                assert_eq!(measured[0] + 1, measured[1], "{measured:?}");
+                assert_eq!(measured[0].0 + 1, measured[1].0, "{measured:?}");
+                assert_eq!(measured[0].1 + 1, measured[1].1, "{measured:?}");
                 eprintln!(
                     "APPROVALS_REVIEW_FLUSHES approved={approved} grouped={} former={}",
-                    measured[0], measured[1]
+                    measured[0].0, measured[1].0
+                );
+                eprintln!(
+                    "APPROVALS_ATTENTION_FLUSHES approved={approved} grouped={} former={}",
+                    measured[0].1, measured[1].1
                 );
             }
             Ok(())
         })
 }
 
-async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<u64> {
+async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<(u64, u64)> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let provider = Arc::new(
@@ -144,6 +149,7 @@ async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<u64> {
     let requests = pending(&observed);
     assert_eq!(requests.len(), 1);
     let request = requests[0];
+    let attention_flushes = attention_trial(&harness, task, request, &files, flushes, eager).await?;
     let Some(Stage::Automatic(review)) = harness
         .approval_stage(task, request, &files, &observed, true)
         .await?
@@ -201,5 +207,64 @@ async fn trial(flushes: &Flushes, approved: bool, eager: bool) -> Result<u64> {
     }
     drop(commands);
     harness.close().await?;
+    Ok((count, attention_flushes))
+}
+
+async fn attention_trial(
+    harness: &LocalHarness,
+    task: TaskId,
+    request: &FileValue,
+    files: &Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    flushes: &Flushes,
+    eager: bool,
+) -> Result<u64> {
+    let inbox = Inbox {
+        files: files.clone(),
+        reference: Component::new("child-attention-proof")?,
+        parent_done: acyclic_fs::CancellationToken::new(),
+        parent_passive: acyclic_fs::CancellationToken::new(),
+    };
+    let stream = harness.runtime.task_host().workflow_stream();
+    let other_directory = tempfile::tempdir().map_err(storage)?;
+    let other = Arc::new(
+        LocalStream::open(other_directory.path(), Default::default())
+            .await
+            .map_err(storage)?,
+    );
+    let before = files.inner.head().await?;
+    assert!(matches!(
+        parent::attention(&other, task, request, &inbox, "human").await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert_eq!(files.inner.head().await?, before);
+    let mirror = FileValue::new(
+        FileKey::Child {
+            reference: inbox.reference.clone(),
+            file: crate::task_volume::ChildFile::ApprovalRequest(request_id(request)?.clone()),
+        },
+        request.bytes.clone(),
+    );
+    flushes.0.store(0, Ordering::Relaxed);
+    if eager {
+        // Actual former ordering: flush the mirror independently first.
+        crate::task_volume::publish_durable(&files.inner, &mirror, None).await?;
+    }
+    parent::attention(&stream, task, request, &inbox, "human").await?;
+    let count = flushes.0.load(Ordering::Relaxed);
+    assert!(count > 0, "attention returned without a device barrier");
+    let snapshot = files
+        .snapshot(&Query::Child(inbox.reference.clone()), 2)
+        .await?;
+    assert_eq!(snapshot.files.len(), 2);
+    for file in &snapshot.files {
+        assert!(files.inner.file_is_durable(file).await?);
+    }
+    flushes.0.store(0, Ordering::Relaxed);
+    parent::attention(&stream, task, request, &inbox, "human").await?;
+    assert_eq!(
+        flushes.0.load(Ordering::Relaxed),
+        0,
+        "unchanged attention was republished"
+    );
     Ok(count)
 }

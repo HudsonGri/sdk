@@ -41,12 +41,18 @@ pub(super) async fn clear_attention(inbox: &Inbox) -> Result<()> {
 }
 
 pub(super) async fn attention(
+    stream: &Arc<LocalStream>,
     task: TaskId,
     request: &FileValue,
     inbox: &Inbox,
     principal: &str,
 ) -> Result<()> {
     let files = &inbox.files;
+    if !files.inner.shares_provider(stream) {
+        return Err(Error::Unauthorized(
+            "parent attention uses another provider".into(),
+        ));
+    }
     let reference = &inbox.reference;
     let mirror = FileValue::new(
         FileKey::Child {
@@ -55,7 +61,15 @@ pub(super) async fn attention(
         },
         request.bytes.clone(),
     );
-    crate::task_volume::publish_durable(&files.inner, &mirror, None).await?;
+    // The attention publication's barrier covers this preceding request on
+    // the same provider. Both exact durable proofs are checked before return.
+    acyclic_stream::deferring_provider_durability(&**stream, async {
+        crate::task_volume::publish(&files.inner, files.inner.head().await?, &mirror, || {
+            std::future::ready(Ok::<_, Error>((Vec::new(), None)))
+        })
+        .await
+    })
+    .await?;
     let attention = serde_json::json!({"task":task,"request":request_id(request)?,
         "request_sha256":fingerprint(request)?,"expected_version":1,"principal":principal,
         "subject":serde_json::from_slice::<serde_json::Value>(&request.bytes).map_err(storage)?});
@@ -69,7 +83,9 @@ pub(super) async fn attention(
             serde_json::to_vec(&attention).map_err(storage)?,
         ),
     )
-    .await
+    .await?;
+    crate::task_volume::publish_durable(&files.inner, &mirror, None).await?;
+    Ok(())
 }
 
 impl LocalHarness {
@@ -90,7 +106,14 @@ impl LocalHarness {
             reference: reference.clone(),
             file: ChildFile::ApprovalAttention,
         };
-        attention(task, request, inbox, &format!("parent:{parent}")).await?;
+        attention(
+            &self.runtime.task_host().workflow_stream(),
+            task,
+            request,
+            inbox,
+            &format!("parent:{parent}"),
+        )
+        .await?;
         // Observing completion before taking the inbox snapshot fences the
         // denial behind every message the parent committed before completing.
         // If completion races this read, the next service pass takes a new

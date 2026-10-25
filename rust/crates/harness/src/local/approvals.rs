@@ -473,7 +473,14 @@ impl LocalHarness {
                     if let Some(inbox) = inbox {
                         // Every external approval wakes a parent wait. Human
                         // attention conveys no parent settlement authority.
-                        parent::attention(task, request, inbox, &principal).await?;
+                        parent::attention(
+                            &self.runtime.task_host().workflow_stream(),
+                            task,
+                            request,
+                            inbox,
+                            &principal,
+                        )
+                        .await?;
                     }
                 }
                 Some(Stage::Parent(parent)) => {
