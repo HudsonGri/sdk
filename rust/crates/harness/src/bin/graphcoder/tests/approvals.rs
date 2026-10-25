@@ -181,7 +181,9 @@ fn call(name: &str, arguments: &Value, sequence: usize) -> String {
         }],
         ..Default::default()
     };
-    harness_mock_model::events("responses", &step).unwrap().concat()
+    harness_mock_model::events("responses", &step)
+        .unwrap()
+        .concat()
 }
 fn tool_result(body: &Value) -> Value {
     let item = body["input"]
@@ -432,7 +434,9 @@ impl Fixture {
                     step,
                 )
             }
-            3 if matches!(self.case, Case::ParentHumanWait) => response_text("fixture answer", "fixture answer"),
+            3 if matches!(self.case, Case::ParentHumanWait) => {
+                response_text("fixture answer", "fixture answer")
+            }
             3 => call("wait", &json!({"agents":["worker"],"mode":"all"}), step),
             _ => response_text("fixture answer", "fixture answer"),
         }
