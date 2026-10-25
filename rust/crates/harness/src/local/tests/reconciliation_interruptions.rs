@@ -414,7 +414,8 @@ fn reopen_never_captures_over_an_unpublished_rebase() {
         .unwrap();
     runner
         .run(&cases, |texts| {
-            runtime.block_on(sweep(&texts))
+            runtime
+                .block_on(sweep(&texts))
                 .map_err(|error| TestCaseError::fail(error.to_string()))
         })
         .unwrap();
