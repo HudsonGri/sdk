@@ -26,7 +26,9 @@ impl NativeSyncBatch {
         meter: &Arc<dyn NativeReadMeter>,
     ) -> io::Result<Self> {
         Self::prepare(files.len(), meter, |index| {
-            files.get(index).ok_or(io::ErrorKind::InvalidInput)?
+            files
+                .get(index)
+                .ok_or(io::ErrorKind::InvalidInput)?
                 .sync_async(durability, Some(Arc::clone(meter)))
         })
     }
@@ -48,7 +50,9 @@ impl NativeSyncBatch {
             failure: None,
             _allocation: allocation,
         };
-        batch.pending.try_reserve_exact(count)
+        batch
+            .pending
+            .try_reserve_exact(count)
             .map_err(|error| meter.allocation_failed(error))?;
         batch._allocation.reconcile_capacity(
             batch.pending.capacity() * std::mem::size_of::<Option<NativeCompletion<()>>>(),
@@ -77,7 +81,10 @@ impl Future for NativeSyncBatch {
                 Poll::Ready(result) => {
                     *slot = None;
                     if let Err(error) = result
-                        && this.failure.as_ref().is_none_or(|(first, _)| index < *first)
+                        && this
+                            .failure
+                            .as_ref()
+                            .is_none_or(|(first, _)| index < *first)
                     {
                         this.failure = Some((index, error));
                     }

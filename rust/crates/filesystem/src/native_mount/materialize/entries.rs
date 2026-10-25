@@ -293,17 +293,27 @@ where
     }
     if mode == MaterializeMode::DurableOutput && flush_file.is_some() {
         let file = flush_file.take().ok_or(MaterializeError::InvalidOptions)?;
-        flushes.push(
-            (file, path, host_path, authenticated_metadata),
-            (reader, host_root), receipt, before_effect,
-        ).await?;
+        flushes
+            .push(
+                (file, path, host_path, authenticated_metadata),
+                (reader, host_root),
+                receipt,
+                before_effect,
+            )
+            .await?;
     } else {
         // The last writer must close before authenticated timestamps are set.
         drop(flush_file);
         apply_metadata(
-            reader, host_root, path, host_path, authenticated_metadata,
-            receipt, before_effect,
-        ).await?;
+            reader,
+            host_root,
+            path,
+            host_path,
+            authenticated_metadata,
+            receipt,
+            before_effect,
+        )
+        .await?;
     }
     receipt
         .custody

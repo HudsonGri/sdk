@@ -347,7 +347,9 @@ where
         .await?;
         // Finish a selected file before advancing to another selection whose
         // lookup can fail. Directory traversal groups independent children.
-        flushes.drain((&reader, &host_root), &mut receipt, &mut before_effect).await?;
+        flushes
+            .drain((&reader, &host_root), &mut receipt, &mut before_effect)
+            .await?;
     }
     receipt
         .custody
@@ -484,7 +486,9 @@ where
                 .map_err(MaterializeError::from)?;
         }
     }
-    flushes.drain((&reader, &host_root), &mut receipt, &mut before_effect).await?;
+    flushes
+        .drain((&reader, &host_root), &mut receipt, &mut before_effect)
+        .await?;
     for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
         apply_metadata(
             &reader,

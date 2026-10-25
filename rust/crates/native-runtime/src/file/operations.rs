@@ -89,10 +89,12 @@ fn sync_full(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<()>
         };
         match sync_descriptor_once(descriptor) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result.and_then(|()| match meter {
-                Some(meter) => meter.check(),
-                None => Ok(()),
-            }),
+            result => {
+                return result.and_then(|()| match meter {
+                    Some(meter) => meter.check(),
+                    None => Ok(()),
+                });
+            }
         }
     }
 }
@@ -107,7 +109,7 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
             return sync_full(file, None);
             #[cfg(not(any(windows, target_os = "linux")))]
             file.sync_all()
-        },
+        }
         Durability::Barrier => barrier_sync(file),
     }
 }
@@ -138,7 +140,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                     return sync_file_unsequenced(file, durability);
                     #[cfg(not(windows))]
                     file.sync_data()
-                },
+                }
                 Durability::Barrier => barrier_sync(file),
             }
         }))

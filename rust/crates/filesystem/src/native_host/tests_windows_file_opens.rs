@@ -177,7 +177,6 @@ fn file_opens_reject_final_links_without_changing_the_target()
     Ok(())
 }
 
-
 #[test]
 fn held_full_flush_preserves_file_directory_attempts_and_native_access_errors()
 -> Result<(), Box<dyn std::error::Error>> {

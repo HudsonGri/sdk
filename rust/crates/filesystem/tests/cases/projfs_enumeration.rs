@@ -3,8 +3,7 @@
 #![cfg(windows)]
 
 use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions,
-    NativeMaterializationWork, WorkBudget,
+    CancellationToken, Fs, IdempotencyKey, LocalOptions, NativeMaterializationWork, WorkBudget,
 };
 use bytes::Bytes;
 use std::collections::HashSet;

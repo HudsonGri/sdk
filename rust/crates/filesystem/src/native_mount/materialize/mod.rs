@@ -76,14 +76,14 @@ pub(crate) use work::NativeMaterializationActionPhase;
 #[path = "tests/clone_tests.rs"]
 mod clone_tests;
 #[cfg(test)]
+#[path = "tests/flush_group_tests.rs"]
+mod flush_group_tests;
+#[cfg(test)]
 #[path = "tests/policy_metadata.rs"]
 mod policy_metadata_tests;
 #[cfg(test)]
 #[path = "tests/restore_recovery_tests.rs"]
 mod restore_recovery_tests;
-#[cfg(test)]
-#[path = "tests/flush_group_tests.rs"]
-mod flush_group_tests;
 #[cfg(test)]
 #[cfg(windows)]
 #[path = "tests/windows_name_tests.rs"]

@@ -163,9 +163,7 @@ where
         target: MountSeekTarget,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<u64>, MountSourceError> {
-        self.with_view(work, |file| {
-            file.seek_with_meter(offset, target, work)
-        })
+        self.with_view(work, |file| file.seek_with_meter(offset, target, work))
     }
     fn write_range_with_meter(
         &self,
@@ -193,9 +191,7 @@ where
         logical_bytes: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(work, |file| {
-            file.resize_with_meter(logical_bytes, work)
-        })
+        self.with_mutation(work, |file| file.resize_with_meter(logical_bytes, work))
     }
     fn allocate_range_with_meter(
         &self,
@@ -230,9 +226,7 @@ where
         ),
         MountSourceError,
     > {
-        self.with_view(work, |file| {
-            file.read_sparse_range(offset, length, work)
-        })
+        self.with_view(work, |file| file.read_sparse_range(offset, length, work))
     }
     fn write_sparse_range(
         &self,
@@ -243,22 +237,12 @@ where
         ),
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(work, |file| {
-            file.write_sparse_range(offset, range, work)
-        })
+        self.with_mutation(work, |file| file.write_sparse_range(offset, range, work))
     }
-
-
-
-
-
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation(work, |file| file.settle(work))
     }
-
-
-
 
     fn set_attributes(
         &self,
@@ -279,7 +263,6 @@ where
         self.with_view(work, |file| file.read_attribute(name, work))
     }
 
-
     fn write_attribute(
         &self,
         name: &[u8],
@@ -287,9 +270,7 @@ where
         mode: MountAttributeWriteMode,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.with_mutation(work, |file| {
-            file.write_attribute(name, value, mode, work)
-        })
+        self.with_mutation(work, |file| file.write_attribute(name, value, mode, work))
     }
 
     fn remove_attribute(

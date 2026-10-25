@@ -48,7 +48,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         };
         // Publication is a large state machine. Keep it out of every callback
         // future and charge its frame to the same invocation before building it.
-        runtime::native_future(work, || async move {
+        native_future(work, || async move {
             let mut carrier = NativeDemandCarrier::Native(work);
             let _publication = await_lock(
                 self.publication_fence.write(),

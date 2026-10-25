@@ -4,8 +4,8 @@ use acyclic_fs::model::{
     VolumeConfig,
 };
 use acyclic_fs::{
-    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem,
-    MountPath, SharedCheckout, WorkBudget,
+    CancellationToken, CheckoutMountSource, Fs, LocalOptions, MountFilesystem, MountPath,
+    SharedCheckout, WorkBudget,
 };
 use bytes::Bytes;
 use std::sync::Arc;

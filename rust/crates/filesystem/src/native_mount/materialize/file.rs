@@ -55,8 +55,11 @@ where
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
     let meter = receipt.custody.work().runtime_meter();
     let sync = acyclic_native_runtime::NativeSyncBatch::new(
-        files, acyclic_native_runtime::Durability::Full, &meter,
-    ).map_err(|error| receipt.runtime_error(error))?;
+        files,
+        acyclic_native_runtime::Durability::Full,
+        &meter,
+    )
+    .map_err(|error| receipt.runtime_error(error))?;
     sync.await.map_err(|error| receipt.runtime_error(error))?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
@@ -75,8 +78,16 @@ pub(super) struct GenerationFlush {
 }
 
 type PendingFlushMetadata = (HeldNamespacePath, HeldHostPath, Option<FileMetadata>);
-type FlushSource<'a, A, O> = (&'a PinnedReader<A, O>, &'a Arc<(HostRoot, crate::NativeAllocation)>);
-type FlushEntry<'a> = (acyclic_native_runtime::NativeFile, &'a NamespacePath, &'a HeldHostPath, Option<FileMetadata>);
+type FlushSource<'a, A, O> = (
+    &'a PinnedReader<A, O>,
+    &'a Arc<(HostRoot, crate::NativeAllocation)>,
+);
+type FlushEntry<'a> = (
+    acyclic_native_runtime::NativeFile,
+    &'a NamespacePath,
+    &'a HeldHostPath,
+    Option<FileMetadata>,
+);
 
 impl GenerationFlush {
     pub(super) async fn push<A, O, E, F, Fut>(
@@ -98,10 +109,15 @@ impl GenerationFlush {
                 .map_err(|error| receipt.runtime_error(error))?;
             receipt.reserve(&mut self.files, self.width)?;
             receipt.reserve(&mut self.metadata, self.width)?;
-            let bytes = vec_bytes(&self.files).checked_add(vec_bytes(&self.metadata))
+            let bytes = vec_bytes(&self.files)
+                .checked_add(vec_bytes(&self.metadata))
                 .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-            self.allocation = Some(receipt.custody.split_off(bytes as u64)
-                .map_err(MaterializeError::from)?);
+            self.allocation = Some(
+                receipt
+                    .custody
+                    .split_off(bytes as u64)
+                    .map_err(MaterializeError::from)?,
+            );
         }
         let namespace = clone_namespace(entry.1, None, source.0.volume_config().limits, receipt)?;
         let bytes = usize::try_from(namespace.retained_bytes())
@@ -135,9 +151,15 @@ impl GenerationFlush {
             self.files.clear();
             for (path, host_path, metadata) in self.metadata.drain(..) {
                 apply_metadata(
-                    source.0, source.1, &path.0, &host_path, metadata,
-                    receipt, before_effect,
-                ).await?;
+                    source.0,
+                    source.1,
+                    &path.0,
+                    &host_path,
+                    metadata,
+                    receipt,
+                    before_effect,
+                )
+                .await?;
             }
         }
         Ok(())

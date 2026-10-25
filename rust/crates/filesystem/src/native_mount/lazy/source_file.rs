@@ -41,10 +41,10 @@ where
     ) -> Result<T, MountSourceError> {
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-            self.runtime.wait_prepared(prepared, || async {
+            let (lease, file) = self.runtime.wait_prepared(prepared, || async {
                 let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
-                let _lease = self
+                let lease = self
                     .source_view
                     .read_for_callback_with_carrier(
                         owner,
@@ -55,18 +55,22 @@ where
                     )
                     .await?;
                 let file = self.current_authored(owner, carrier).await?;
-                let bytes = file.as_ref().map_or(0, |(_, bytes)| *bytes);
-                let result = operation(
-                    file.as_ref().map(|(file, _)| file.as_ref()),
-                    self.source_node,
-                    carrier,
-                );
-                drop(file);
-                carrier
-                    .with_work(|work| work.release(bytes))
-                    .map_err(MountSourceError::from)?;
-                result
-            })
+                Ok::<_, MountSourceError>((lease, file))
+            })?;
+            // The authored callback can enter the runtime itself. Retire this
+            // poll frame before invoking it, retaining the lease and custody.
+            let bytes = file.as_ref().map_or(0, |(_, bytes)| *bytes);
+            let result = operation(
+                file.as_ref().map(|(file, _)| file.as_ref()),
+                self.source_node,
+                carrier,
+            );
+            drop(file);
+            carrier
+                .with_work(|work| work.release(bytes))
+                .map_err(MountSourceError::from)?;
+            drop(lease);
+            result
         })
     }
 
@@ -494,5 +498,4 @@ where
     ) -> Result<(), MountSourceError> {
         self.mutate(work, |file| file.write_sparse_range(offset, range, work))
     }
-
 }

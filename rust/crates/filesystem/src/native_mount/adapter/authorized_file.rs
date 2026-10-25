@@ -76,10 +76,7 @@ impl AuthorizedFile {
         self.policy.check(&self.permissions, work)
     }
 
-    fn writable(
-        &self,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<bool, MountSourceError> {
+    fn writable(&self, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         let now = access::access_time(self.policy.clock())?;
         if self.created {
             access::require(&self.permissions, Action::Create, now)?;
@@ -179,7 +176,6 @@ impl MountOpenFile for AuthorizedFile {
         write_sparse_range(offset: u64, range: (MountSparseRange, crate::NativeAllocation), work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
     }
 
-
     fn write_range_with_meter(
         &self,
         offset: u64,
@@ -193,7 +189,6 @@ impl MountOpenFile for AuthorizedFile {
             self.file.append_range_with_meter(offset, bytes, work)
         }
     }
-
 
     fn append_range_with_meter(
         &self,

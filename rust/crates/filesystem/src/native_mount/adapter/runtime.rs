@@ -254,33 +254,6 @@ impl CallbackRuntime {
     }
 }
 
-// Field order is the destruction order: the boxed operation, including all
-// of its captured custody, always dies before its original-ledger charge.
-pub(in crate::native_mount) struct NativeFuture<F> {
-    future: Pin<Box<F>>,
-    _allocation: crate::NativeAllocation,
-}
-
-impl<F: Future> Future for NativeFuture<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        self.get_mut().future.as_mut().poll(context)
-    }
-}
-
-pub(in crate::native_mount) fn native_future<F: Future>(
-    work: &crate::NativeMaterializationWork,
-    create: impl FnOnce() -> F,
-) -> Result<NativeFuture<F>, crate::NativeTreeMaterializationError> {
-    let bytes = std::mem::size_of::<F>() as u64;
-    let allocation = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
-    Ok(NativeFuture {
-        future: crate::heap_future::in_heap(create),
-        _allocation: allocation,
-    })
-}
-
 pub(super) fn invoke<T, F: Future<Output = Result<T, MountSourceError>>>(
     runtime: &CallbackRuntime,
     work: &crate::NativeMaterializationWork,
