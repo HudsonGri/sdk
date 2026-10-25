@@ -172,7 +172,6 @@ mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
 mod host;
-pub(crate) use host::PublicationWitness;
 pub(crate) use host::file_publication;
 pub(crate) use host::map_error;
 use host::*;

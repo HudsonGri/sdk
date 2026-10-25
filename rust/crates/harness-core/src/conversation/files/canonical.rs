@@ -125,7 +125,7 @@ mod tests {
             ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &file)?;
             ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &scope, &file)?;
             let mut changed = file.clone();
-            changed.version.push_str("-changed");
+            changed.version = format!("{}-changed", changed.version).into_boxed_str();
             assert!(
                 ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &changed).is_err()
             );

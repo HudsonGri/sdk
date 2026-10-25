@@ -160,6 +160,20 @@ impl FileDescriptor {
     }
 }
 
+// Keep the in-process reference representation identical across provider
+// feature sets. Only a filesystem host can issue this opaque evidence.
+#[derive(Debug)]
+pub(crate) struct PublicationWitness {
+    pub(crate) _domain: Arc<PublicationDomain>,
+    pub(crate) _identity: [u8; 32],
+    pub(crate) _custody: crate::NativeCustody,
+}
+
+#[derive(Debug)]
+pub(crate) struct PublicationDomain {
+    pub(crate) _custody: crate::NativeCustody,
+}
+
 /// An immutable version of a file within a scoped volume.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -174,10 +188,9 @@ pub struct FileRef {
     #[serde(deserialize_with = "deserialize_label")]
     pub(super) display_name: String,
     // Wire identities carry no evidence of an in-process publication.
-    #[cfg(feature = "filesystem")]
     #[serde(skip)]
     #[schemars(skip)]
-    publication: Option<std::sync::Arc<crate::filesystem::PublicationWitness>>,
+    publication: Option<std::sync::Arc<PublicationWitness>>,
 }
 
 impl PartialEq for FileRef {
@@ -193,14 +206,14 @@ impl Eq for FileRef {}
 
 impl FileRef {
     #[cfg(feature = "filesystem")]
-    pub(crate) fn publication_witness(&self) -> Option<&crate::filesystem::PublicationWitness> {
+    pub(crate) fn publication_witness(&self) -> Option<&PublicationWitness> {
         self.publication.as_deref()
     }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn with_publication_witness(
         mut self,
-        witness: std::sync::Arc<crate::filesystem::PublicationWitness>,
+        witness: std::sync::Arc<PublicationWitness>,
     ) -> Self {
         self.publication = Some(witness);
         self
@@ -222,10 +235,7 @@ impl FileRef {
     pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
         validate_label(&version, &mut None)?;
         self.version = version.into_boxed_str();
-        #[cfg(feature = "filesystem")]
-        {
-            self.publication = None;
-        }
+        self.publication = None;
         Ok(self)
     }
 
@@ -244,7 +254,6 @@ impl FileRef {
             version: version.into_boxed_str(),
             descriptor,
             display_name,
-            #[cfg(feature = "filesystem")]
             publication: None,
         };
         value.validate(work)?;
@@ -290,10 +299,7 @@ impl FileRef {
     ) -> Result<()> {
         validate_label(&version, work)?;
         self.version = version.into_boxed_str();
-        #[cfg(feature = "filesystem")]
-        {
-            self.publication = None;
-        }
+        self.publication = None;
         Ok(())
     }
 
@@ -420,7 +426,6 @@ impl FileRef {
                 media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
             },
             display_name: crate::core::copy_text(&self.display_name, quota)?,
-            #[cfg(feature = "filesystem")]
             publication: self.publication.clone(),
         })
     }
@@ -441,8 +446,7 @@ impl crate::core::ownership::OwnedBytes for FileRef {
             display_name,
             // The shared evidence owns its separate allocation custody.
             // Cloning this Arc does not allocate another proof or domain.
-            #[cfg(feature = "filesystem")]
-                publication: _,
+            publication: _,
         } = self;
         crate::core::owned_sum([
             volume.owned_heap_bytes()?,

@@ -1,19 +1,6 @@
 use super::*;
 
-/// Local evidence tied to the issuing deployment and complete immutable identity.
-#[derive(Debug)]
-pub(crate) struct PublicationWitness {
-    domain: Arc<PublicationDomain>,
-    identity: [u8; 32],
-    #[cfg(not(target_arch = "wasm32"))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-#[derive(Debug)]
-struct PublicationDomain {
-    #[cfg(not(target_arch = "wasm32"))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
+use crate::conversation::{PublicationDomain, PublicationWitness};
 
 /// Adapter over any embedded, local, or distributed Filesystem provider pair.
 pub struct FilesystemHost<A, O> {
@@ -215,7 +202,6 @@ impl PublicationDomain {
         }
         let _custody = quota.into_custody()?;
         Ok(Arc::new(Self {
-            #[cfg(not(target_arch = "wasm32"))]
             _custody,
         }))
     }
@@ -243,9 +229,8 @@ impl<A, O> FilesystemHost<A, O> {
             let _custody = quota.into_custody()?;
             Ok(
                 reference.with_publication_witness(Arc::new(PublicationWitness {
-                    domain: Arc::clone(&self.publication_domain),
-                    identity,
-                    #[cfg(not(target_arch = "wasm32"))]
+                    _domain: Arc::clone(&self.publication_domain),
+                    _identity: identity,
                     _custody,
                 })),
             )
@@ -260,7 +245,7 @@ impl<A, O> FilesystemHost<A, O> {
         let Some(witness) = reference.publication_witness() else {
             return Ok(false);
         };
-        if !Arc::ptr_eq(&self.publication_domain, &witness.domain) {
+        if !Arc::ptr_eq(&self.publication_domain, &witness._domain) {
             return Ok(false);
         }
         let identity = crate::executor::with_history_io(io, |work| {
@@ -269,6 +254,6 @@ impl<A, O> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        Ok(identity == witness.identity)
+        Ok(identity == witness._identity)
     }
 }

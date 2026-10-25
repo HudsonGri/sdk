@@ -706,12 +706,12 @@ impl ContentGrant {
                 .exact_file
                 .as_ref()
                 .is_some_and(|(path, version, descriptor, display_name)| {
-                    (path, version, descriptor, display_name)
+                    (path.as_str(), version.as_str(), descriptor, display_name.as_str())
                         != (
-                            &file.path,
-                            &file.version,
-                            &file.descriptor,
-                            &file.display_name,
+                            file.path(),
+                            file.version(),
+                            file.descriptor(),
+                            file.display_name(),
                         )
                 })
             || self.directory_prefix.as_deref().is_some_and(|prefix| {
