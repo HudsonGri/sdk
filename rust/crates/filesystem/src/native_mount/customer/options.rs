@@ -57,6 +57,8 @@ pub struct MountOptions {
     pub(super) work: Option<NativeMaterializationWork>,
     pub(super) callback_guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(super) native_original: Option<NativeMaterializationWork>,
+    pub(crate) shared: bool,
+    pub(crate) view_root: Option<Arc<crate::HeldRoot>>,
 }
 
 impl MountOptions {
@@ -128,6 +130,8 @@ impl MountOptions {
             work: None,
             callback_guard: None,
             native_original: None,
+            shared: false,
+            view_root: None,
         }
     }
 
@@ -161,6 +165,27 @@ impl MountOptions {
             publication: MountPublication::Manual,
             ..Self::read_write()
         }
+    }
+
+    /// Serves the mount as one view of the process's shared native instance
+    /// at the destination's parent, named by the destination's last
+    /// component, instead of mounting a native instance of its own. Only
+    /// [`Workspace::mount_view`](crate::Workspace::mount_view) sets it, at a
+    /// destination the process issued for a shared view.
+    /// Linux and Windows; elsewhere the mount fails as an
+    /// unsupported target.
+    #[must_use]
+    pub(crate) const fn shared(mut self) -> Self {
+        self.shared = true;
+        self
+    }
+
+    /// Places task views inside an already admitted writable root. This
+    /// configures the shared instance; it grants no additional filesystem access.
+    #[must_use]
+    pub fn view_root(mut self, root: Arc<crate::HeldRoot>) -> Self {
+        self.view_root = Some(root);
+        self
     }
 
     /// Projects one exact workspace directory as the native mount root.

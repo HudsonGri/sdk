@@ -309,6 +309,8 @@ impl<'a> State<'a> {
         }
         let file = FileValue::from_record(&record)
             .map_err(publish::storage)?
+            .into_iter()
+            .next()
             .ok_or_else(|| Error::Invalid("content header repeated".into()))?;
         let view = self
             .heads

@@ -62,33 +62,35 @@ for (const path of [
   join(plugin, ".codex-plugin", "plugin.json"),
   join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
-for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json")]) {
+for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, "claude", ".claude-plugin", "plugin.json")]) {
   if (assets[path].version !== packageManifest.version) {
     fail(`host plugin manifest version mismatch: ${path}`);
   }
 }
 
-// Codex delivers hooks to the plugin's one MCP server, which exposes no tool
-// to the model; the shell-capable package exposes no other MCP server.
-const HOOK_SERVER = "acyclic-hooks";
+// Native command hooks capture at session boundaries. MCP only coordinates
+// separate native host processes; it never executes their tools or model loop.
+const HOOK_SERVER = "acyclic-sessions";
 const expectedMcp = {
   mcpServers: {
     [HOOK_SERVER]: {
       type: "stdio",
       command: "./bin/acyclic",
-      args: ["__mcp"],
+      args: ["__mcp", "codex"],
       cwd: ".",
-      env_vars: ["XDG_STATE_HOME"],
+      env_vars: ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"],
       required: true,
     },
   },
 };
 if (JSON.stringify(assets[join(plugin, ".mcp.json")]) !== JSON.stringify(expectedMcp)) {
-  fail("the plugin MCP declaration must be exactly the Codex hook server");
+  fail("the plugin MCP declaration must be exactly the native session coordinator");
 }
 if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.json") {
   fail("the Codex plugin manifest must declare ./.mcp.json");
@@ -96,10 +98,9 @@ if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.
 const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
   .flat()
   .flatMap(group => group.hooks ?? []);
-if (!hookHandlers.some(hook => hook.type === "mcp_tool")
-  || hookHandlers.some(hook => hook.type === "mcp_tool"
-    && (hook.server !== HOOK_SERVER || hook.tool !== "hook"))) {
-  fail("Codex MCP hooks must call the plugin's hook server");
+if (hookHandlers.length !== 3 || hookHandlers.some(hook => hook.type !== "command")
+  || JSON.stringify(Object.keys(assets[join(plugin, "hooks", "hooks.json")].hooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd"])) {
+  fail("Codex hooks must capture only native session boundaries");
 }
 
 // The `acyclic-plugin` command must link to an interpreter-less placeholder that the

@@ -1,8 +1,10 @@
 use crate::*;
 
 mod allocation;
+mod buffer;
 mod reservation;
 pub use allocation::{ReadAllocation, ReadAllocationReservation};
+pub(crate) use buffer::ReadBuffer;
 pub use reservation::{NativeByteReservation, NativeOperationReservation};
 
 /// Filesystem-operation allowance owned by one accepted native request.

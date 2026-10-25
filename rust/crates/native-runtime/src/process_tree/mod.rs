@@ -11,8 +11,15 @@ use std::time::{Duration, Instant};
 mod capture;
 #[cfg(windows)]
 mod custodian;
+mod events;
+mod pump;
+#[cfg(windows)]
+mod spawner;
+pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInput};
 mod custody;
 pub use custody::ProcessCustody;
+mod storage;
+pub use storage::ProcessTreeStorage;
 #[cfg(unix)]
 mod warden;
 
@@ -46,8 +53,6 @@ use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
 mod prepared;
 #[cfg(unix)]
 pub use prepared::PreparedClosedProcess;
-#[cfg(unix)]
-use prepared::prepared_process_vec;
 #[cfg(test)]
 mod custody_tests;
 #[cfg(unix)]
@@ -56,6 +61,10 @@ mod platform;
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod platform;
+#[cfg(test)]
+#[cfg(feature = "test-support")]
+#[cfg(not(acyclic_native_runtime_loom))]
+mod scale_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -75,14 +84,29 @@ pub struct ProcessTree {
     #[cfg(unix)]
     prepared_spawn: Option<PreparedClosedProcess>,
     custody: Option<custody::Record>,
+    /// The direct child's pidfd, opened by its first wait and closed at reap.
+    #[cfg(target_os = "linux")]
+    exit_fd: Option<std::os::fd::OwnedFd>,
+    /// Owner of overlapped stdin writes, created by the first write.
+    writer: platform::Writer,
+    /// Input owned by an incremental native-session supervisor. The writer
+    /// drops before this storage, including a pending overlapped operation.
+    queued_stdin: Option<PendingStdin<'static>>,
+    /// The process-event hub every wait of this tree arms, held from before
+    /// its child is created.
+    _events: events::Events,
 }
 
 impl ProcessTree {
     /// Maximum observation time for each physical termination phase.
     pub const TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// Minimum delay between unfinished physical termination observations.
-    pub const TERMINATION_POLL_INTERVAL: Duration = Duration::from_millis(1);
+    /// Kernel observations that decide a macOS process group whose kill was
+    /// refused, for a group of up to 255 members: two listings and one probe
+    /// per member, with no wait. A larger group needs its member count plus
+    /// four. No termination phase observes on a clock: an exit wait reads
+    /// once per exit event or deadline.
+    pub const TERMINATION_OBSERVATIONS: u64 = 257;
 
     /// Starts a child in an owned operating-system process tree.
     pub fn spawn(command: &mut Command) -> io::Result<Self> {
@@ -102,29 +126,57 @@ impl ProcessTree {
     /// [`ProcessCustody::fence_stale`] returns only after it is dead.
     /// `command` must not be reused for another spawn.
     pub fn spawn_in_custody(command: &mut Command, custody: &ProcessCustody) -> io::Result<Self> {
+        let mut retained = None;
+        if let Err(error) = Self::spawn_in_custody_controlled(command, custody, None, &mut retained)
+        {
+            if let Some(tree) = retained.as_mut() {
+                tree.terminate(None)?;
+            }
+            return Err(error);
+        }
+        retained.ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+
+    /// Starts a durably recorded tree on the original invocation's meter.
+    /// Admission and cleanup failures leave every acquired tree and record in
+    /// `retained`. The caller keeps this slot through recovery; an error does
+    /// not mean that the tree is absent or that its effects can be settled.
+    pub fn spawn_in_custody_controlled(
+        command: &mut Command,
+        custody: &ProcessCustody,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<Self>,
+    ) -> io::Result<()> {
+        if retained.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
         #[cfg(unix)]
         {
-            let directory = custody.arm(command)?;
-            let mut tree = Self::spawn(command)?;
-            let pid = libc::pid_t::try_from(tree.owned_child_id()?)
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            tree.custody = Some(custody::Record::new(directory, pid));
-            Ok(tree)
+            let directory =
+                process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+                    custody.arm(command)
+                })?;
+            let spawned = Self::spawn_controlled(command, meter, retained);
+            if let Some(tree) = retained.as_mut()
+                && (tree.child.is_some() || tree.native_child.is_some())
+            {
+                let pid = libc::pid_t::try_from(tree.owned_child_id()?)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                tree.custody = Some(custody::Record::new(directory, pid));
+            }
+            spawned
         }
         #[cfg(windows)]
         {
-            let (mut record, name) = custody.record()?;
-            let mut tree = None;
-            if let Err(admission) = platform::spawn_named(command, &mut tree, &name, &mut record) {
-                if let Some(tree) = tree.as_mut() {
-                    tree.terminate(None)?;
-                }
-                record.remove()?;
-                return Err(admission);
-            }
-            let mut tree = tree.ok_or(io::ErrorKind::NotFound)?;
-            tree.custody = Some(record);
-            Ok(tree)
+            // Event startup can fail. Finish it before acquiring a physical
+            // custody record, so every later failure has a retained tree slot.
+            let events = events::Events::start()?;
+            let (record, recorded) =
+                pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
+                    custody.record()
+                })?;
+            let (record, name) = record?;
+            platform::spawn_named(command, meter, retained, &name, record, recorded, events)
         }
     }
 
@@ -186,7 +238,7 @@ impl ProcessTree {
         let argument_slots = argument_count
             .checked_add(2)
             .ok_or(io::ErrorKind::InvalidInput)?;
-        let mut arguments = prepared_process_vec(argument_slots, &meter)?;
+        let mut arguments = crate::meter::ReadBuffer::new(argument_slots, &meter)?;
         // Actual pointer writes and their copy receipt occur at the later
         // synchronous spawn, never hypothetically.
         arguments
@@ -207,11 +259,11 @@ impl ProcessTree {
                     .ok_or(io::ErrorKind::InvalidInput)?;
             }
         }
-        let mut environment = prepared_process_vec(environment_count, &meter)?;
+        let mut environment = crate::meter::ReadBuffer::new(environment_count, &meter)?;
         let pointer_count = environment_count
             .checked_add(1)
             .ok_or(io::ErrorKind::InvalidInput)?;
-        let mut environment_pointers = prepared_process_vec(pointer_count, &meter)?;
+        let mut environment_pointers = crate::meter::ReadBuffer::new(pointer_count, &meter)?;
         for index in 0..environment_count {
             meter.examine(1, 0)?;
             // SAFETY: `index` precedes the terminator counted above.
@@ -228,7 +280,7 @@ impl ProcessTree {
             }
             let terminated = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
             meter.admit_examination(0, terminated as u64)?;
-            let mut bytes = prepared_process_vec(terminated, &meter)?;
+            let mut bytes = crate::meter::ReadBuffer::new(terminated, &meter)?;
             // SAFETY: the entry's `length` bytes and its terminator were read above.
             bytes.data.extend_from_slice(unsafe {
                 std::slice::from_raw_parts(value.cast::<u8>(), terminated)
@@ -307,7 +359,58 @@ impl ProcessTree {
 
     /// Transfers the input pipe to a host-owned streaming protocol.
     pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        if self.queued_stdin.is_some() {
+            return None;
+        }
         self.child.as_mut()?.stdin.take()
+    }
+
+    /// Queues one literal prompt without transferring the pipe or starting a
+    /// writer thread. Uses the same partial-write/EOF pump as process capture.
+    pub fn queue_stdin(&mut self, bytes: Vec<u8>) -> io::Result<()> {
+        if self.queued_stdin.is_some() || self.output_taken {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        if self
+            .child
+            .as_ref()
+            .and_then(|child| child.stdin.as_ref())
+            .is_none()
+        {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.queued_stdin = Some(PendingStdin::required_literal(bytes)?);
+        Ok(())
+    }
+
+    /// Advances queued stdin once without waiting. True means all bytes were
+    /// delivered and EOF sent; a peer closing early returns `BrokenPipe`.
+    pub fn pump_stdin(&mut self) -> io::Result<bool> {
+        self.pump_stdin_controlled(None)
+    }
+
+    fn pump_stdin_controlled(
+        &mut self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<bool> {
+        let Some(mut input) = self.queued_stdin.take() else {
+            return Ok(true);
+        };
+        let result = input.poll(self, meter);
+        let complete = input.finished();
+        if !complete {
+            self.queued_stdin = Some(input);
+        }
+        result?;
+        Ok(complete)
+    }
+
+    /// Refuses completion of a session whose queued prompt was not delivered.
+    pub fn require_stdin_complete(&self) -> io::Result<()> {
+        if self.queued_stdin.is_some() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(())
     }
 
     /// Transfers stdout to a host-owned reader, which owns its output bounds.
@@ -322,6 +425,14 @@ impl ProcessTree {
 
     /// Reads owned stdout without waiting for data.
     pub fn read_stdout(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        self.read_stdout_controlled(buffer, None)
+    }
+
+    fn read_stdout_controlled(
+        &mut self,
+        buffer: &mut [u8],
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<Option<usize>> {
         if buffer.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -334,7 +445,7 @@ impl ProcessTree {
         // SAFETY: initialized bytes can be borrowed as MaybeUninit bytes.
         let buffer =
             unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast(), buffer.len()) };
-        let (read, recorded) = platform::read_pipe(pipe, buffer, None)?;
+        let (read, recorded) = platform::read_pipe(pipe, buffer, meter)?;
         recorded?;
         Ok(read)
     }
@@ -433,21 +544,22 @@ impl ProcessTree {
                             "process exit deadline exceeded; termination may be unresolved",
                         ));
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    self.arm_exit(deadline)?.block();
                 }
             })())
         })
     }
 
-    /// Captures bounded output and optional input, preserving partial output on failure.
+    /// Captures bounded output and optional input, preserving partial output
+    /// on failure. The calling thread parks between capture turns; it never
+    /// sleeps on a fixed interval.
     #[allow(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "capture and cleanup share the same owned pipes, callbacks and deadline"
     )]
     pub fn wait_with_output(
         &mut self,
-        timeout: Duration,
+        schedule: impl Into<CaptureSchedule>,
         max_bytes: usize,
         input: Option<CaptureInput<'_>>,
         mut check: impl FnMut() -> io::Result<()>,
@@ -468,20 +580,14 @@ impl ProcessTree {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        let mut remaining = max_bytes;
+        let mut captured = 0;
         let result = operation.in_scope(|| {
             if self.output_taken {
                 return Err(ProcessCaptureFailure::before_capture(io::Error::other(
                     "process output was already collected",
                 )));
             }
-            let deadline = capture_now().checked_add(timeout).ok_or_else(|| {
-                ProcessCaptureFailure::before_capture(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "process deadline overflow",
-                ))
-            })?;
-            let (mut output, stdin_buffer) = match buffers {
+            let (output, stdin_buffer) = match buffers {
                 Some([stdout, stderr, stdin]) => ([stdout, stderr], Some(stdin)),
                 None => ([Vec::new(), Vec::new()], None),
             };
@@ -494,118 +600,240 @@ impl ProcessTree {
                     io::ErrorKind::OutOfMemory.into(),
                 ));
             }
-            let mut input = input
+            let input = input
                 .map(|input| PendingStdin::new_with_buffer(input, stdin_buffer, meter))
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
-            if input.is_none() {
-                self.capture_close_stdin(meter)
-                    .map_err(ProcessCaptureFailure::before_capture)?;
-            }
-            let child = self.child.as_mut().ok_or_else(|| {
-                ProcessCaptureFailure::before_capture(io::Error::other(
-                    "process output was already collected",
-                ))
-            })?;
-            self.output_taken = true;
-            let mut stdout = child.stdout.take();
-            let mut stderr = child.stderr.take();
-            let mut status = None;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                loop {
-                    check()?;
-                    let mut progressed = input
-                        .as_mut()
-                        .map_or(Ok(false), |stdin| stdin.poll(self, meter))?;
-                    let before_stdout = output[0].len();
-                    let before_stderr = output[1].len();
-                    let drained = (|| {
-                        Ok::<_, io::Error>(
-                            drain_pipe(&mut stdout, &mut output[0], &mut remaining, meter)?
-                                | drain_pipe(&mut stderr, &mut output[1], &mut remaining, meter)?,
-                        )
-                    })();
-                    if output[0].len() > before_stdout {
-                        let chunk = output[0]
-                            .get(before_stdout..)
-                            .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
-                        if let Some(input) = input.as_mut().filter(|input| !input.complete) {
-                            input.observe(
-                                chunk,
-                                &mut |bytes| observe(ProcessOutput::Stdout(bytes)),
-                                meter,
-                            )?;
-                        } else {
-                            observe_output(ProcessOutput::Stdout(chunk), &mut observe)?;
-                        }
-                    }
-                    if output[1].len() > before_stderr {
-                        let chunk = output[1]
-                            .get(before_stderr..)
-                            .ok_or_else(|| io::Error::other("invalid observed process stderr"))?;
-                        observe_output(ProcessOutput::Stderr(chunk), &mut observe)?;
-                    }
-                    progressed |= drained?;
-                    if status.is_none()
-                        && let Some(exit) = self.try_wait(meter)?
-                    {
-                        status = Some(exit);
-                        self.capture_terminate_descendants(meter)?;
-                    }
-                    if status.is_some() && stdout.is_none() && stderr.is_none() {
-                        // An exchange the child left before taking all of its
-                        // queued input failed, whether or not a write saw the
-                        // closed pipe before the exit was observed.
-                        if input.as_ref().is_some_and(PendingStdin::undelivered) {
-                            return Err(io::ErrorKind::BrokenPipe.into());
-                        }
-                        return Ok(());
-                    }
-                    if capture_now() >= deadline {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "process output deadline exceeded; effects may have occurred",
-                        ));
-                    }
-                    if !progressed {
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
+            let mut pump = pump::Pump::new(self, schedule.into(), max_bytes, input, meter, output)?;
+            let result = loop {
+                match pump.turn(self, &mut check, &mut observe, meter) {
+                    pump::Turn::Done(result) => break result,
+                    pump::Turn::Wait => match pump.arm(self) {
+                        Ok(wait) => wait.block(),
+                        Err(error) => break Err(error),
+                    },
                 }
-            }));
-            // Both stopped capture and callback panic return outstanding pipe
-            // custody to the original supervisor, never an unmetered drop.
-            if let Some(child) = self.child.as_mut() {
-                child.stdout = stdout;
-                child.stderr = stderr;
-            }
-            let result = match result {
-                Ok(result) => result,
-                Err(panic) => std::panic::resume_unwind(panic),
             };
-            // Cleanup errors take precedence: a capture timeout alone does not
-            // describe an unresolved termination. Keep Child ownership on error.
-            let result = self.capture_terminate(meter).and(result).and_then(|()| {
-                status.ok_or_else(|| io::Error::other("capture completed without an exit status"))
-            });
-            let [stdout, stderr] = output;
-            match result {
-                Ok(status) => Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                }),
-                Err(error) => Err(ProcessCaptureFailure {
-                    error,
-                    status,
-                    stdout,
-                    stderr,
-                    cleanup_completed: self.is_reaped(),
-                }),
-            }
+            captured = pump.captured(max_bytes);
+            pump.finish(self, result, meter)
         });
-        operation.record("bytes", max_bytes - remaining);
+        operation.record("bytes", captured);
         operation.record_error(result.as_ref().err().map(|failure| &failure.error));
         result
+    }
+
+    /// Captures bounded output like [`Self::wait_with_output`], holding no
+    /// thread while the child runs: each turn runs on the blocking pool, and
+    /// between turns the capture awaits one readiness wait on its pipes, its
+    /// exit and its next check. The returned future owns the tree until
+    /// cleanup finishes: dropping it early terminates the tree from the
+    /// dropping thread, so callers that may be cancelled spawn it. An `Err`
+    /// means a turn could not be submitted, and the dropped tree cleans
+    /// itself up.
+    pub async fn capture<H: CaptureHandler>(
+        self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<CaptureOutcome<H>> {
+        // How many turns a capture takes is OS readiness timing. A simulation
+        // scope sees all of them as one physical submission, so a seeded
+        // replay schedules the same work however the child's output arrives.
+        #[cfg(feature = "test-support")]
+        if crate::testing::Context::current().is_some() {
+            return self
+                .capture_physical(schedule, max_bytes, input, handler)
+                .await;
+        }
+        self.capture_scheduled(schedule, max_bytes, input, handler)
+            .await
+    }
+
+    /// Captures with each turn as one pool job, awaiting readiness between
+    /// them without holding a thread.
+    async fn capture_scheduled<H: CaptureHandler>(
+        self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<CaptureOutcome<H>> {
+        let (mut tree, mut pump, mut handler) = match self
+            .start_capture(schedule, max_bytes, input, handler)
+            .await?
+        {
+            Ok(started) => started,
+            Err(outcome) => return Ok(outcome),
+        };
+        let result = loop {
+            let (turned, (returned_tree, returned_pump, returned_handler)) =
+                crate::run_blocking_io(
+                    move || {
+                        let turn = pump::handled_turn(&mut pump, &mut tree, &mut handler);
+                        (turn, (tree, pump, handler))
+                    },
+                    None,
+                )?
+                .await?;
+            tree = returned_tree;
+            pump = returned_pump;
+            handler = returned_handler;
+            match turned {
+                pump::Turn::Done(result) => break result,
+                pump::Turn::Wait => match pump.arm(&mut tree) {
+                    Ok(wait) => wait.await,
+                    Err(error) => break Err(error),
+                },
+            }
+        };
+        let (result, handler) = crate::run_blocking_io(
+            move || {
+                let result = pump.finish(&mut tree, result, None);
+                drop(tree);
+                (result, handler)
+            },
+            None,
+        )?
+        .await?;
+        Ok(CaptureOutcome { handler, result })
+    }
+
+    /// Captures in one pool job that blocks on readiness between turns.
+    #[cfg(feature = "test-support")]
+    async fn capture_physical<H: CaptureHandler>(
+        self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<CaptureOutcome<H>> {
+        let (mut tree, mut pump, mut handler) = match self
+            .start_capture(schedule, max_bytes, input, handler)
+            .await?
+        {
+            Ok(started) => started,
+            Err(outcome) => return Ok(outcome),
+        };
+        crate::run_blocking_io(
+            move || {
+                let result = loop {
+                    match pump::handled_turn(&mut pump, &mut tree, &mut handler) {
+                        pump::Turn::Done(result) => break result,
+                        pump::Turn::Wait => match pump.arm(&mut tree) {
+                            Ok(wait) => wait.block(),
+                            Err(error) => break Err(error),
+                        },
+                    }
+                };
+                let result = pump.finish(&mut tree, result, None);
+                drop(tree);
+                CaptureOutcome { handler, result }
+            },
+            None,
+        )?
+        .await
+    }
+
+    /// Starts a capture's pump, or cleans up a tree whose capture cannot start.
+    async fn start_capture<H: CaptureHandler>(
+        mut self,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> io::Result<Result<StartedCapture<H>, CaptureOutcome<H>>> {
+        let start = (|| {
+            if self.output_taken {
+                return Err(ProcessCaptureFailure::before_capture(io::Error::other(
+                    "process output was already collected",
+                )));
+            }
+            let input = input
+                .map(PendingStdin::owned)
+                .transpose()
+                .map_err(ProcessCaptureFailure::before_capture)?;
+            pump::Pump::new(
+                &mut self,
+                schedule,
+                max_bytes,
+                input,
+                None,
+                [Vec::new(), Vec::new()],
+            )
+        })();
+        match start {
+            Ok(pump) => Ok(Ok((self, pump, handler))),
+            Err(failure) => {
+                // Cleanup of an unstarted capture may block; it runs on the
+                // pool like every other turn.
+                crate::run_blocking_io(move || drop(self), None)?.await?;
+                Ok(Err(CaptureOutcome {
+                    handler,
+                    result: Err(failure),
+                }))
+            }
+        }
+    }
+
+    /// Opens this tree's exit source once, before a wait borrows it.
+    #[cfg(unix)]
+    fn prepare_exit_source(&mut self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.exit_fd.is_none() && (self.child.is_some() || self.native_child.is_some()) {
+            let pid = libc::pid_t::try_from(self.owned_child_id()?)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            // SAFETY: pidfd_open takes the unreaped owned child's PID and no flags.
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let fd = std::os::fd::RawFd::try_from(fd).map_err(io::Error::other)?;
+            // SAFETY: a successful pidfd_open returns one new owned fd.
+            self.exit_fd = Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) });
+        }
+        Ok(())
+    }
+
+    /// The readiness source of the direct child's exit, once prepared.
+    #[cfg(unix)]
+    fn exit_source(&self) -> io::Result<Option<events::Source<'_>>> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsFd as _;
+            Ok(self
+                .exit_fd
+                .as_ref()
+                .map(|fd| events::Source::Exit(fd.as_fd())))
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            if self.child.is_none() && self.native_child.is_none() {
+                return Ok(None);
+            }
+            let pid = libc::pid_t::try_from(self.owned_child_id()?)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            Ok(Some(events::Source::Exit(pid, std::marker::PhantomData)))
+        }
+    }
+
+    /// Arms one wait on the direct child's exit, waking by `deadline`.
+    #[cfg(unix)]
+    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
+        self.prepare_exit_source()?;
+        let exit = self.exit_source()?;
+        events::arm(exit.as_slice(), Some(deadline))
+    }
+
+    /// Arms one wait on the direct child's exit, waking by `deadline`.
+    #[cfg(windows)]
+    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
+        use std::os::windows::io::AsHandle as _;
+        let exit = self
+            .child
+            .as_ref()
+            .map(|child| events::Source::Exit(child.as_handle()));
+        events::arm(exit.as_slice(), Some(deadline))
     }
 
     /// Terminates containment and reaps the direct child.
@@ -637,7 +865,7 @@ impl ProcessTree {
                         return Err(io::ErrorKind::TimedOut.into());
                     }
                     process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
+                        self.arm_exit(deadline)?.block();
                         Ok(())
                     })?;
                 }
@@ -663,9 +891,7 @@ impl ProcessTree {
                 })?;
             }
             self.guard.close(meter)?;
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             Ok(())
         }
     }
@@ -685,7 +911,7 @@ impl ProcessTree {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
                 process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
+                    self.arm_exit(deadline)?.block();
                     Ok(())
                 })?;
             }
@@ -709,9 +935,7 @@ impl ProcessTree {
             }
             // The exited leader still holds its PID, so no new tree's record
             // can take this name before it is removed.
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             let (reaped, recorded) =
                 platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
             if reaped.is_some() {
@@ -735,10 +959,11 @@ impl ProcessTree {
         #[cfg(unix)]
         return self.child.is_none()
             && self.native_child.is_none()
-            && !self.spawn_resources.pending();
+            && !self.spawn_resources.pending()
+            && self.custody.is_none();
         #[cfg(windows)]
         {
-            self.child.is_none() && !self.guard.pending()
+            self.child.is_none() && !self.guard.pending() && self.custody.is_none()
         }
     }
 
@@ -806,6 +1031,9 @@ impl ProcessTree {
         }
     }
 }
+
+/// A tree whose capture started, with its pump and handler.
+type StartedCapture<H> = (ProcessTree, pump::Pump<'static>, H);
 
 /// Reads one chunk; returns whether the pipe produced data or reached EOF, so the caller sleeps only when both pipes are idle.
 impl Drop for ProcessTree {

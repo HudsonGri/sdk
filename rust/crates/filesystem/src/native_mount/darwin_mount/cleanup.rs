@@ -88,10 +88,7 @@ pub(super) struct Diskutil {
 impl Diskutil {
     pub(super) fn prepare(original: &Work) -> Result<Self, NativeMountError> {
         const OBSERVATIONS: u64 = control_visits(DISKUTIL_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL);
-        const TERMINATION: u64 = control_visits(
-            acyclic_native_runtime::ProcessTree::TERMINATION_TIMEOUT,
-            acyclic_native_runtime::ProcessTree::TERMINATION_POLL_INTERVAL,
-        );
+        const TERMINATION: u64 = acyclic_native_runtime::ProcessTree::TERMINATION_OBSERVATIONS;
         let credit = original
             .reserve_work(WorkCounters {
                 backend_read_operations: TERMINATION * 5 + OBSERVATIONS + 1,
