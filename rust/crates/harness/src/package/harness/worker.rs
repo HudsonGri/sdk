@@ -39,10 +39,13 @@ where
         .await?
         {
             crate::distributed::WorkPull::Claimed(lease) => Some(
-                local
-                    .task_runtime()
-                    .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                    .await,
+                crate::conversation::BoundedContentFuture::new(None, || async {
+                    Ok(local
+                        .task_runtime()
+                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                        .await)
+                })?
+                .await?,
             ),
             crate::distributed::WorkPull::Unresolved { error, .. } => {
                 if local
@@ -57,10 +60,16 @@ where
                 None
             }
             crate::distributed::WorkPull::Idle => {
-                local
-                    .task_runtime()
-                    .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                    .await?
+                crate::conversation::BoundedContentFuture::new(None, || {
+                    local.task_runtime().run_operation(
+                        &worker,
+                        task,
+                        commands,
+                        TRANSITIONS_PER_SLICE,
+                        None,
+                    )
+                })?
+                .await?
             }
         };
         loop {
@@ -72,10 +81,13 @@ where
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
                     attempt = Some(
-                        local
-                            .task_runtime()
-                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                            .await,
+                        crate::conversation::BoundedContentFuture::new(None, || async {
+                            Ok(local
+                                .task_runtime()
+                                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                                .await)
+                        })?
+                        .await?,
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
@@ -86,10 +98,16 @@ where
                     }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
-                    attempt = local
-                        .task_runtime()
-                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?;
+                    attempt = crate::conversation::BoundedContentFuture::new(None, || {
+                        local.task_runtime().run_operation(
+                            &worker,
+                            task,
+                            commands,
+                            TRANSITIONS_PER_SLICE,
+                            None,
+                        )
+                    })?
+                    .await?;
                 }
                 _ => break,
             }

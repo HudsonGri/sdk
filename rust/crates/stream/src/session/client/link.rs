@@ -1,4 +1,17 @@
 use super::*;
+use crate::runtime::backoff::{Backoff, Policy};
+use std::time::Duration;
+
+fn backoff(attempts: u32, delay_ms: u32, identity: &[u8]) -> Backoff {
+    Backoff::new(
+        Policy {
+            attempts,
+            base_delay: Duration::from_millis(u64::from(delay_ms)),
+            max_delay: Duration::from_millis(u64::from(delay_ms)),
+        },
+        identity,
+    )
+}
 
 impl Pool {
     pub(super) fn install(
@@ -62,6 +75,7 @@ impl Pool {
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
+                let mut retry = backoff(u32::MAX, 100, name.as_bytes());
                 let outcome = loop {
                     let result = async {
                         let channel = match &channel {
@@ -81,7 +95,12 @@ impl Pool {
                     match result {
                         // Existing interests own recovery until cancellation.
                         // Initial admission and credential rejection stay bounded.
-                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        Err(StreamError::Unavailable) if recovering => {
+                            let Some(wait) = retry.next_millis(Duration::MAX) else {
+                                break Err(StreamError::Unavailable);
+                            };
+                            executor.sleep(wait).await;
+                        }
                         result => break result,
                     }
                 };
@@ -334,7 +353,10 @@ impl Pool {
             self.dials.insert(
                 destination.into(),
                 Box::pin(async move {
-                    executor.sleep(10).await;
+                    let mut retry = backoff(1, 10, b"unopened subscription");
+                    if let Some(wait) = retry.next_millis(Duration::MAX) {
+                        executor.sleep(wait).await;
+                    }
                     dial.await
                 }),
             );
@@ -350,7 +372,9 @@ async fn open_link(
     credentials: BTreeMap<u32, Bytes>,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
 ) -> Result<Ready, StreamError> {
-    for attempt in 0..3 {
+    let mut retry = backoff(2, 10, &identity);
+    let mut attempt = 0;
+    loop {
         let mut observation = Observation::session(attempt);
         let result = observation
             .operation
@@ -377,11 +401,16 @@ async fn open_link(
             }
         };
         match result {
-            Err(StreamError::Unavailable) if attempt < 2 => executor.sleep(10).await,
+            Err(StreamError::Unavailable) => {
+                let Some(wait) = retry.next_millis(Duration::MAX) else {
+                    return Err(StreamError::Unavailable);
+                };
+                executor.sleep(wait).await;
+                attempt += 1;
+            }
             result => return result,
         }
     }
-    Err(StreamError::Unavailable)
 }
 
 async fn handshake(

@@ -62,6 +62,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     for (step, expected) in case.expect.events.iter().enumerate() {
         let request = PreparedModelRequest::prepare(
             ModelRequest {
+                conversation_id: None,
                 model: provider.model().clone(),
                 messages: vec![ModelMessage {
                     role: ModelRole::User,
@@ -114,7 +115,10 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                     let mut broken = events.clone();
                     if let Some(ModelEvent::ReasoningBlock { block }) = broken.get_mut(index) {
                         if scope {
-                            block.origin.credential_scope = None;
+                            block.origin.credential_scope = match block.origin.credential_scope {
+                                Some(_) => None,
+                                None => Some([73; 32]),
+                            };
                         } else {
                             block.continuity.push(255);
                         }
@@ -194,30 +198,35 @@ fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
     }
 }
 
-pub(super) async fn run(case: ProviderCase) -> TestResult {
-    case.validate()?;
-    let transport = Recorded::new(&case);
-    // The parse oracle replays completed exchanges one per step; refusals and stalls are
-    // task-level.
-    let parse =
-        case.unreachable == 0 && (0..case.responses.len()).all(|index| case.completes(index));
-    if parse {
-        parsed(&case, transport.clone()).await?;
-    }
-    // A case with registered tools runs again with a default tool added ahead
-    // of them: every request expectation, including wire tool names, holds.
-    let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for (run, added) in added
-        .iter()
-        .take(if case.tools.is_empty() { 1 } else { 2 })
-        .enumerate()
-    {
-        if parse || run > 0 {
-            transport.restart()?;
+#[inline(never)]
+pub(super) fn run(
+    case: ProviderCase,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult>>> {
+    Box::pin(async move {
+        case.validate()?;
+        let transport = Recorded::new(&case);
+        // The parse oracle replays completed exchanges one per step; refusals and stalls are
+        // task-level.
+        let parse =
+            case.unreachable == 0 && (0..case.responses.len()).all(|index| case.completes(index));
+        if parse {
+            parsed(&case, transport.clone()).await?;
         }
-        task(&case, &transport, *added).await?;
-    }
-    Ok(())
+        // A case with registered tools runs again with a default tool added ahead
+        // of them: every request expectation, including wire tool names, holds.
+        let added = [None, Some(ADDED_DEFAULT_TOOL)];
+        for (run, added) in added
+            .iter()
+            .take(if case.tools.is_empty() { 1 } else { 2 })
+            .enumerate()
+        {
+            if parse || run > 0 {
+                transport.restart()?;
+            }
+            task(&case, &transport, *added).await?;
+        }
+        Ok(())
+    })
 }
 
 async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str>) -> TestResult {

@@ -1,5 +1,55 @@
 use super::*;
 
+struct SelectedMember {
+    member: Model,
+    script: Arc<ScriptedModelProvider>,
+}
+impl ModelProvider for SelectedMember {
+    fn model_for_turn<'a>(
+        &'a self,
+        _: &'a Model,
+        _: crate::model::ModelTurn<'_>,
+        _: crate::NativeWork<'_>,
+    ) -> Result<&'a Model> {
+        Ok(&self.member)
+    }
+    fn recorded_model<'a>(
+        &'a self,
+        _: &'a Model,
+        recorded: &Model,
+        _: crate::NativeWork<'_>,
+    ) -> Result<&'a Model> {
+        if recorded == &self.member {
+            Ok(&self.member)
+        } else {
+            Err(Error::Invalid("foreign recorded member".into()))
+        }
+    }
+    fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+        self.script.context_capacity(model)
+    }
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        if request.request().model != self.member {
+            return Box::pin(async {
+                Err(Error::Invalid(
+                    "accounting used the fallback instead of the recorded member".into(),
+                ))
+            });
+        }
+        self.script.count_tokens(request)
+    }
+    fn generate<'a>(
+        &'a self,
+        request: &'a crate::model::PreparedModelRequest,
+        dispatch: crate::model::ModelDispatch,
+    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+        self.script.generate(request, dispatch)
+    }
+}
+
 #[tokio::test]
 async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_reentry() -> Result<()>
 {
@@ -39,7 +89,15 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
             "1".into(),
             Value::Null,
         )?,
-        provider.clone(),
+        Arc::new(SelectedMember {
+            member: Model::new(
+                "fixture".into(),
+                "selected-member".into(),
+                "1".into(),
+                Value::Null,
+            )?,
+            script: provider.clone(),
+        }),
         ContextPipeline::default(),
         tools,
     )
@@ -93,11 +151,13 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
 #[tokio::test]
 async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Result<()> {
     let journal = Journal::default();
+    // Keep each tool projection below the private-file threshold. Pressure comes
+    // from the complete protected call/result exchange, not oversized output.
     let (provider, _) = counted_model(
-        65_536,
+        32_768,
         None,
         [
-            tool_turn([echo_call("only", json!({"value": "old ".repeat(6_500)}))]),
+            tool_turn([echo_call("only", json!({"value": "old ".repeat(3_100)}))]),
             done_turn(),
         ],
         [],
@@ -116,7 +176,15 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
             "1".into(),
             Value::Null,
         )?,
-        provider.clone(),
+        Arc::new(SelectedMember {
+            member: Model::new(
+                "fixture".into(),
+                "selected-member".into(),
+                "1".into(),
+                Value::Null,
+            )?,
+            script: provider.clone(),
+        }),
         ContextPipeline::default(),
         tools,
     )
@@ -143,7 +211,9 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
         .execute_progress(&input, &journal)
         .await;
     assert!(
-        matches!(result, Err(Error::Invalid(ref reason)) if reason == "mandatory content leaves no compaction source")
+        matches!(result, Err(Error::Invalid(ref reason)) if reason == "mandatory content leaves no compaction source"),
+        "unexpected protected-exchange outcome: {:?}",
+        result.as_ref().err().map(ToString::to_string)
     );
     assert_eq!(
         provider.requests().len(),

@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn request(count: usize) -> Result<crate::model::ModelRequest> {
     Ok(crate::model::ModelRequest {
+        conversation_id: None,
         model: Model::new(
             "test".into(),
             "content-admission".into(),

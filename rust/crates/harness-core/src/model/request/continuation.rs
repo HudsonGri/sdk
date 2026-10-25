@@ -33,6 +33,38 @@ impl PreparedModelRequest {
 }
 
 impl RequestContinuation {
+    pub(crate) fn select_model(&mut self, model: &Model, io: Option<&PreparationIo>) -> Result<()> {
+        model.validate()?;
+        if self.request.model != *model {
+            // Capture the admitted prefix before changing the model trailer.
+            encoding::EncodingPrefix::admit(
+                &self.bytes,
+                &mut self.encoding,
+                self.request.messages.len(),
+                &self.request,
+                io,
+            )?;
+            let selected = super::super::clone_model(model, io)?;
+            #[cfg(feature = "filesystem")]
+            if let Some(bytes) = self.resident_payload {
+                self.resident_payload = Some(add(
+                    bytes
+                        .checked_sub(self.request.model.retained_payload_bytes()?)
+                        .ok_or_else(super::super::inventory::overflow)?,
+                    selected.retained_payload_bytes()?,
+                )?);
+            }
+            #[cfg(feature = "filesystem")]
+            let hold = io
+                .map(|io| io.guard_owned(self.request.model.retained_payload_bytes()?))
+                .transpose()?;
+            drop(std::mem::replace(&mut self.request.model, selected));
+            #[cfg(feature = "filesystem")]
+            drop(hold);
+        }
+        Ok(())
+    }
+
     pub(crate) fn messages(&mut self) -> &mut Vec<ModelMessage> {
         &mut self.suffix
     }
@@ -108,6 +140,24 @@ impl RequestContinuation {
         let content_admission = self.content_admission.take();
         let (request, remaining) = self.validate(limits, io)?;
         if !same_limits {
+            // Retire the old canonical header and hash state on their original
+            // ledger before funding the selected member's new encoding.
+            #[cfg(feature = "filesystem")]
+            let old_encoding = io
+                .map(|io| {
+                    io.guard_owned(add(
+                        slots(encoding.capacity(), size_of::<encoding::EncodingPrefix>())?,
+                        content_admission
+                            .as_ref()
+                            .map_or(Ok(0), admission::ContentAdmission::owned_bytes)?,
+                    )?)
+                })
+                .transpose()?;
+            #[cfg(feature = "filesystem")]
+            let old_bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            drop((encoding, bytes, content_admission));
+            #[cfg(feature = "filesystem")]
+            drop((old_encoding, old_bytes));
             return PreparedModelRequest::encode_validated(request, limits, remaining, io);
         }
         #[cfg(feature = "filesystem")]
@@ -136,6 +186,7 @@ impl RequestContinuation {
             request,
             bytes,
             request_digest,
+            provider_memo: std::sync::OnceLock::new(),
             admitted_limits: limits,
             instruction_remaining: remaining,
             encoding,

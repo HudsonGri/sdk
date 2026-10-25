@@ -26,6 +26,8 @@ mod linux;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub use held_sync::sync_descriptor_once;
 pub mod obs;
+pub mod process_admission;
+pub mod process_identity;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
@@ -44,7 +46,8 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
 pub use process_tree::{
-    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessInput, ProcessOutput, ProcessTree,
+    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessExit, ProcessInput, ProcessOutput,
+    ProcessTree,
 };
 
 mod file;

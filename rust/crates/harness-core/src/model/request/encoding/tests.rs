@@ -9,6 +9,7 @@ fn message(index: usize) -> ModelMessage {
 
 fn request(count: usize) -> Result<ModelRequest> {
     Ok(ModelRequest {
+        conversation_id: None,
         model: Model::new(
             "scripted".into(),
             "encoding".into(),

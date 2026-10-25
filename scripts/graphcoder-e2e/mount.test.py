@@ -16,10 +16,10 @@ HERE = Path(__file__).resolve().parent
 
 
 def host(root, mode="exit", leased=True, lease_root=None):
-    command = [sys.executable, str(HERE / "owned-process.py")]
+    command = [sys.executable, str(HERE / "owned-process.py"), "--host", os.environ["E2E_PROCESS_HOST"]]
     if leased:
-        command += ["--mount-root", str(lease_root or root), "--"]
-    command += [sys.executable, str(HERE / "mount-fixture.py"), str(root / "mounted space\ttab"), mode]
+        command += ["--mount-root", str(lease_root or root)]
+    command += ["--", sys.executable, str(HERE / "mount-fixture.py"), str(root / "mounted space\ttab"), mode]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
 

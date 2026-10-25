@@ -83,3 +83,28 @@ test("cache finds both upstream Node module formats", () => {
     } finally { rmSync(cache,{recursive:true,force:true}); }
   }
 });
+
+test("cache isolates upstream module grammar from a CommonJS artifact parent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "node-wasm-package-scope-"));
+  try {
+    writeFileSync(join(root, "package.json"), JSON.stringify({type:"commonjs"}));
+    const module = join(root, "fixture.wasm");
+    writeFileSync(module, "admitted module");
+    const runner = join(root, "runner.cjs");
+    writeFileSync(runner, `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process");
+const output = path.join(process.env.TMPDIR, "generated");
+fs.mkdirSync(output, {recursive:true});
+fs.writeFileSync(path.join(output, "inline.js"), "export const value = 42;");
+const entry = path.join(output, "run.cjs");
+fs.writeFileSync(entry, "require('node:assert/strict').equal(require('./inline.js').value, 42);");
+const result = cp.spawnSync(process.execPath, [entry], {stdio:'inherit'});
+process.exit(result.status ?? 1);
+`, {mode:0o700});
+    const execute = (command, args, options) => command === runner
+      ? spawnSync(process.execPath, [runner, ...args], options)
+      : spawnSync(command, args, options);
+    expect(await runNodeWasmTests([module], runner, execute)).toBe(0);
+    expect(await runNodeWasmTests([module], runner, execute)).toBe(0);
+  } finally { rmSync(root, {recursive:true,force:true}); }
+});

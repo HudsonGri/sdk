@@ -351,65 +351,73 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        use crate::kernel::allocation::KernelOwnedAllocation;
-        use crate::kernel::{Owned, retire_allocation, split_allocation};
-        #[cfg(not(target_arch = "wasm32"))]
-        self.validate_authored_input(&input, accounting)?;
-        accounting.check()?;
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        if maximum == 0 {
-            return Err(FsError::TooManyPendingMutations);
-        }
-        let mut candidate = self.private_candidate(accounting, cancellation)?;
-        let backing =
-            crate::foundation::usize_to_u64(input.value.capacity() * size_of::<AuthoredMutation>());
-        let mut input = (input.value.into_iter(), input.allocation);
-        let mut batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
-        let mut count = 0_usize;
-        for mutation in input.0.by_ref() {
-            let next = authored_mutation_operation_count(&mutation);
-            if next > maximum {
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            use crate::kernel::allocation::KernelOwnedAllocation;
+            use crate::kernel::{Owned, retire_allocation, split_allocation};
+            #[cfg(not(target_arch = "wasm32"))]
+            self.validate_authored_input(&input, accounting)?;
+            accounting.check()?;
+            let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
+                .unwrap_or(usize::MAX);
+            if maximum == 0 {
                 return Err(FsError::TooManyPendingMutations);
             }
-            if !batch.value.is_empty() && (batch.value.len() == maximum || next > maximum - count) {
-                let output = candidate
-                    .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
-                    .await?;
-                output.retire(accounting)?;
-                batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
-                count = 0;
+            let mut candidate = self.private_candidate(accounting, cancellation)?;
+            let backing = crate::foundation::usize_to_u64(
+                input.value.capacity() * size_of::<AuthoredMutation>(),
+            );
+            let mut input = (input.value.into_iter(), input.allocation);
+            let mut batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
+            let mut count = 0_usize;
+            for mutation in input.0.by_ref() {
+                let next = authored_mutation_operation_count(&mutation);
+                if next > maximum {
+                    return Err(FsError::TooManyPendingMutations);
+                }
+                if !batch.value.is_empty()
+                    && (batch.value.len() == maximum || next > maximum - count)
+                {
+                    let output = candidate
+                        .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
+                        .await?;
+                    output.retire(accounting)?;
+                    batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
+                    count = 0;
+                }
+                batch.ensure_for_push(maximum, accounting)?;
+                let bytes = mutation.logical_owned_bytes();
+                let allocation = split_allocation(&mut input.1, bytes)?;
+                let mut mutation = Owned::new(mutation, allocation, bytes);
+                accounting.charge(WorkCounters {
+                    bytes_copied: crate::foundation::usize_to_u64(size_of::<AuthoredMutation>()),
+                    ..WorkCounters::UNCHARGED
+                })?;
+                batch.value.push(mutation.value);
+                batch.allocation.absorb(&mut mutation.allocation)?;
+                batch.bytes = batch.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                count += next;
             }
-            batch.ensure_for_push(maximum, accounting)?;
-            let bytes = mutation.logical_owned_bytes();
-            let allocation = split_allocation(&mut input.1, bytes)?;
-            let mut mutation = Owned::new(mutation, allocation, bytes);
-            accounting.charge(WorkCounters {
-                bytes_copied: crate::foundation::usize_to_u64(size_of::<AuthoredMutation>()),
-                ..WorkCounters::UNCHARGED
-            })?;
-            batch.value.push(mutation.value);
-            batch.allocation.absorb(&mut mutation.allocation)?;
-            batch.bytes = batch.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            count += next;
-        }
-        drop(input.0);
-        if batch.value.is_empty() {
-            batch.retire(accounting)?;
-        } else {
-            candidate
-                .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
-                .await?
-                .retire(accounting)?;
-        }
-        let backing = match &input.1 {
-            KernelOwnedAllocation::Standalone => backing,
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(guard) => guard.bytes(),
-        };
-        retire_allocation(input.1, backing, accounting)?;
-        *self = candidate;
-        Ok(())
+            drop(input.0);
+            if batch.value.is_empty() {
+                batch.retire(accounting)?;
+            } else {
+                candidate
+                    .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
+                    .await?
+                    .retire(accounting)?;
+            }
+            let backing = match &input.1 {
+                KernelOwnedAllocation::Standalone => backing,
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelOwnedAllocation::NativeOriginal(guard) => guard.bytes(),
+            };
+            retire_allocation(input.1, backing, accounting)?;
+            *self = candidate;
+            Ok(())
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {

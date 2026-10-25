@@ -91,7 +91,7 @@ where
                     }
                     WorkerContext::Ordinary(context) => {
                         let payload = crate::contract::json_from_slice(
-                            &context.read_file(&command.payload, None).await?,
+                            &crate::conversation::BoundedContentFuture::new(io, || context.read_file(&command.payload, None))?.await?,
                         )
                         .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                         commands

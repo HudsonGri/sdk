@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { requestStep } from "./assertions.mjs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
@@ -39,7 +40,9 @@ export async function pty(processes, binary, fixture, input, capture) {
   if (process.platform === "win32") {
     assert.ok(process.env.E2E_CONPTY_HOST, "cross-build the ConPTY host on bb2 and set E2E_CONPTY_HOST");
     program = process.env.E2E_CONPTY_HOST;
-    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, "e2e/tiny", "8000", input.resume ? "resume" : "fresh"];
+    const modelOption = fixture.args.indexOf("--model");
+    const model = modelOption < 0 ? "" : fixture.args[modelOption + 1];
+    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, model, "8000", input.resume ? "resume" : "fresh"];
   } else {
     // Python sets the controlling terminal on Linux and macOS and exposes a
     // kill signal targeting the executable, so wrapper death cannot fake SIGKILL.
@@ -50,10 +53,12 @@ export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const frames = new TerminalFrames(screen), failures = new FailureHistory();
   const killSignal = process.platform === "win32" ? "SIGKILL" : "SIGUSR1";
-  const running = processes.start(program, args, {
+  const start = process.platform === "win32" ? processes.startOwned.bind(processes) : processes.start.bind(processes);
+  const running = start(program, args, {
     cwd: fixture.workspace,
     env: { ...fixture.env, TERM: "xterm-256color" },
     scopeKillSignal: killSignal,
+    ...(process.platform === "win32" ? { scopeInheritInput: true } : {}),
   });
   screen.onData(data => running.child.stdin.write(data));
   let index = 0, failure;
@@ -67,7 +72,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       if (raw.includes("has overflowed its stack") || failures.unexpected(visible, action.when)) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
-      if (action.after_request && !fixture.requests.some(event => event.path === action.after_request.path && event.step === action.after_request.step)) return;
+      if (action.after_request && !requestStep(fixture.requests, action.after_request)) return;
       if (!matches(screen, raw, action.when)) return;
       failures.accept(visible, action.when);
       snapshots.push({ action: index, visible });

@@ -30,26 +30,26 @@ impl LocalHarness {
     ) -> BoxProviderFuture<'a, Result<Value>> {
         // Cut the concrete admission/tool/compaction future graph here, before
         // it becomes part of each client owner's dispatch future.
-        Box::pin(self.dispatch_effect(operation, target, resolution, settings))
+        self.dispatch_effect(operation, target, resolution, settings)
     }
-    async fn dispatch_effect(
-        &self,
+    fn dispatch_effect<'a>(
+        &'a self,
         operation: OperationId,
         target: Option<TaskId>,
         resolution: CommandResolution,
-        settings: &Value,
-    ) -> Result<Value> {
+        settings: &'a Value,
+    ) -> BoxProviderFuture<'a, Result<Value>> {
         match resolution {
             CommandResolution::Tool { tool, input } => {
-                self.direct_tool(operation, target, tool, input).await
+                Box::pin(async move { self.direct_tool(operation, target, tool, input).await })
             }
-            resolution @ CommandResolution::Prompt { .. } => {
+            resolution @ CommandResolution::Prompt { .. } => Box::pin(async move {
                 let text = self.retain_prompt_input(operation, resolution).await?;
                 self.queue_prompt(operation, target, &text, settings).await
-            }
+            }),
             CommandResolution::Submit {
                 request: CommandRequest::Replace { message, text },
-            } => {
+            } => Box::pin(async move {
                 let original = crate::runtime::task_id_for_admission(message);
                 self.runtime.task_host().observe_admission(original).await?;
                 // Replacement is a new immutable branch; the original history
@@ -57,36 +57,38 @@ impl LocalHarness {
                 let mut result = self.queue_prompt(operation, None, &text, settings).await?;
                 result["replaces"] = json!(message);
                 Ok(result)
-            }
+            }),
             CommandResolution::Submit {
                 request: CommandRequest::Cancel { task },
-            } => {
+            } => Box::pin(async move {
                 self.runtime.task_host().cancel(task).await?;
                 self.refresh_command_task(task).await?;
                 Ok(json!({"task": task, "cancel_requested": true}))
-            }
+            }),
             CommandResolution::Submit {
                 request: CommandRequest::New,
-            } => Ok(json!({"selected_task":null})),
+            } => Box::pin(async { Ok(json!({"selected_task":null})) }),
             CommandResolution::Submit {
                 request: CommandRequest::Delete,
-            } => self.delete_commands(Some(required(target)?)).await,
+            } => Box::pin(async move { self.delete_commands(Some(required(target)?)).await }),
             CommandResolution::Submit {
                 request: CommandRequest::ClearAll,
-            } => self.delete_commands(None).await,
+            } => Box::pin(async move { self.delete_commands(None).await }),
             CommandResolution::Submit {
                 request: CommandRequest::Export,
-            } => self.export(operation, target).await,
+            } => Box::pin(async move { self.export(operation, target).await }),
             CommandResolution::Submit {
                 request: CommandRequest::Compact { instructions },
-            } => {
+            } => Box::pin(async move {
                 self.compact(operation, required(target)?, &instructions)
                     .await
-            }
+            }),
             CommandResolution::Submit {
                 request: CommandRequest::Rewind,
-            } => self.rewind_checkpoint(operation, required(target)?).await,
-            CommandResolution::Submit { request } => {
+            } => {
+                Box::pin(async move { self.rewind_checkpoint(operation, required(target)?).await })
+            }
+            CommandResolution::Submit { request } => Box::pin(async move {
                 let (task, paused) = match request {
                     CommandRequest::TogglePause => (Some(required(target)?), None),
                     CommandRequest::Pause { scope } => (
@@ -122,10 +124,12 @@ impl LocalHarness {
                 )
                 .await?;
                 Ok(json!({"paused":paused,"scope":task}))
-            }
-            _ => Err(Error::Invalid(
-                "renderer selection is not a harness request".into(),
-            )),
+            }),
+            _ => Box::pin(async {
+                Err(Error::Invalid(
+                    "renderer selection is not a harness request".into(),
+                ))
+            }),
         }
     }
     pub(super) async fn wait_command_control(&self, task: TaskId) -> Result<()> {
@@ -303,19 +307,22 @@ impl LocalHarness {
         prompt: &str,
         settings: &Value,
     ) -> Result<Value> {
-        self.retain_prompt_input(
-            operation,
-            CommandResolution::Prompt {
-                text: prompt.into(),
-                source: None,
-                mentions: Vec::new(),
-            },
-        )
-        .await?;
-        self.retain_settings(operation, settings).await?;
-        let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
-        self.refresh_command_task(task).await?;
-        Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.retain_prompt_input(
+                operation,
+                CommandResolution::Prompt {
+                    text: prompt.into(),
+                    source: None,
+                    mentions: Vec::new(),
+                },
+            )
+            .await?;
+            self.retain_settings(operation, settings).await?;
+            let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
+            self.refresh_command_task(task).await?;
+            Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        })?
+        .await
     }
     pub(super) async fn retain_settings(
         &self,

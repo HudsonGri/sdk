@@ -333,6 +333,7 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
         .await?;
     for count in [1, 8] {
         let projection = ResponseProjection {
+            model: Model::new("test".into(), "projection".into(), "1".into(), Value::Null)?,
             context: crate::context::Context {
                 messages: vec![ModelMessage {
                     role: ModelRole::User,

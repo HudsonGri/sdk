@@ -91,7 +91,7 @@ impl<'a> StockExecution<'a> {
         let previous = self
             .previous_request_projection(journal, input.operation_id, retained.step)
             .await?;
-        let projection =
+        let mut projection =
             ResponseProjection::continuation_metadata(journal, &previous, self.io).await?;
         self.synchronize_working_cut(
             journal,
@@ -115,7 +115,21 @@ impl<'a> StockExecution<'a> {
         }
         #[cfg(not(feature = "filesystem"))]
         let _ = hold;
+        let selected = self.selected_for_turn(input, step)?;
+        let selected_projection = crate::model::clone_model(selected, self.io)?;
+        #[cfg(feature = "filesystem")]
+        let previous_model = self
+            .io
+            .map(|io| io.guard_owned(projection.model.retained_payload_bytes()?))
+            .transpose()?;
+        drop(std::mem::replace(
+            &mut projection.model,
+            selected_projection,
+        ));
+        #[cfg(feature = "filesystem")]
+        drop(previous_model);
         let mut continued = request.into_continuation();
+        continued.select_model(selected, self.io)?;
         *continued.messages() = crate::model::clone_messages(suffix, self.io)?;
         Ok(Some((
             projection,

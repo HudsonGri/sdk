@@ -170,25 +170,62 @@ where
     /// Replaces or disables compaction while retaining task accounting and fencing.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
-        self.executor = self.executor.with_compaction_policy(policy);
+        self.set_compaction_policy(policy);
+        self
+    }
+
+    /// Binds every model step to the command's retained conversation.
+    #[must_use]
+    pub fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.set_conversation_id(conversation);
         self
     }
 
     /// Sets the output token budget without replacing task ownership or its journal.
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
-        self.executor = self.executor.with_max_output_tokens(maximum)?;
+        self.set_max_output_tokens(maximum)?;
         Ok(self)
     }
 
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
-        self.executor = self.executor.with_summary_source(source);
+        self.set_summary_source(source);
+        self
+    }
+
+    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
+        self.set_role(role);
         self
     }
 
     #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
-        self.executor = self.executor.with_hooks(hooks);
+        self.set_hooks(hooks);
         self
+    }
+
+    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+    pub(crate) fn set_hooks(&mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) {
+        self.executor.set_hooks(hooks);
+    }
+
+    pub(crate) fn set_role(&mut self, role: Option<String>) {
+        self.executor.set_role(role);
+    }
+
+    pub(crate) fn set_conversation_id(&mut self, conversation: crate::ConversationId) {
+        self.executor.set_conversation_id(conversation);
+    }
+
+    pub(crate) fn set_summary_source(&mut self, source: Option<Box<FileRef>>) {
+        self.executor.set_summary_source(source);
+    }
+
+    pub(crate) fn set_compaction_policy(&mut self, policy: crate::context::CompactionPolicy) {
+        self.executor.set_compaction_policy(policy);
+    }
+
+    pub(crate) fn set_max_output_tokens(&mut self, maximum: u32) -> Result<()> {
+        self.executor.set_max_output_tokens(maximum)
     }
 
     /// Executes or reconciles using the bound journal and existing stock loop.

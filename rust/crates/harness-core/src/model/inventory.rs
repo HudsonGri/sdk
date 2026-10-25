@@ -74,6 +74,10 @@ impl ModelContentPart {
 impl ToolResultContent {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
+            Self::Stored { file, preview } => add(
+                add(size_of::<FileRef>() as u64, file.logical_owned_bytes()?)?,
+                preview.capacity() as u64,
+            ),
             Self::Json { value } => crate::executor::json::json_value_logical_owned_bytes(value),
             Self::Parts { parts } => parts.iter().try_fold(
                 slots(parts.capacity(), size_of::<ModelDataPart>())?,
@@ -108,16 +112,23 @@ impl ModelContent {
     }
 }
 #[cfg(feature = "filesystem")]
-impl ModelRequest {
+impl Model {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
-        let mut bytes = crate::executor::json::json_value_logical_owned_bytes(&self.model.options)?;
+        let mut bytes = crate::executor::json::json_value_logical_owned_bytes(&self.options)?;
         for capacity in [
-            self.model.provider.capacity(),
-            self.model.name.capacity(),
-            self.model.revision.capacity(),
+            self.provider.capacity(),
+            self.name.capacity(),
+            self.revision.capacity(),
         ] {
             bytes = add(bytes, capacity as u64)?;
         }
+        Ok(bytes)
+    }
+}
+#[cfg(feature = "filesystem")]
+impl ModelRequest {
+    pub(super) fn payload_bytes(&self) -> Result<u64> {
+        let mut bytes = self.model.payload_bytes()?;
         let messages = self.messages.iter().try_fold(
             slots(self.messages.capacity(), size_of::<ModelMessage>())?,
             |bytes, message| add(bytes, message.content.payload_bytes()?),

@@ -2,7 +2,7 @@
 // Data cases drive the shipping executable through argv, HTTP and real PTYs.
 // Build graphcoder and harness-mock-model ahead of time, then run:
 //   node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [case-id...]
-// Install scripts/graphcoder-pty's pinned @xterm/headless before timing.
+// Before building or timing: node scripts/graphcoder-pty/prepare.mjs
 // On Windows, cross-build the ConPTY transport on bb2 and set E2E_CONPTY_HOST
 // to its EXE. Use serial.mjs for the full matrix. E2E_SCRATCH_ROOT selects
 // all temporary directories and is mandatory on Windows.
@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Processes, Events, schedule } from "./process.mjs";
-import { requests, subset, recordedRequests } from "./assertions.mjs";
+import { requestStep, requests, subset, recordedRequests } from "./assertions.mjs";
 import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
@@ -89,14 +89,15 @@ async function execute(test, gitOrigin) {
     const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: `http://127.0.0.1:${port}/${test.id}/v1`,
       models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
       token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
-    await json(fixture.catalog, { e2e: provider });
+    await json(fixture.catalog, expand(test.catalog ?? { e2e: provider }, fixture));
     fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
     fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
     fixture.requests = events.seen.filter(event => event.case === test.id);
     fixture.onRequest = listener => events.subscribe(event => {
       if (event.case === test.id) { fixture.requests.push(event); listener(event); }
     });
-    fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
+    fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
+      ...(test.selection === null ? [] : ["--model", test.selection ?? "e2e/tiny"])];
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
@@ -113,7 +114,7 @@ async function execute(test, gitOrigin) {
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
       const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env });
       if (input.kill_on) {
-        await Promise.race([events.wait(event => event.case === test.id && event.path === input.kill_on.path && event.step === input.kill_on.step), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
+        await Promise.race([events.wait(event => event.case === test.id && requestStep([event], input.kill_on)), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
         const result = await running.exited;
         assert.ok(result.signal || result.code !== 0);
@@ -138,6 +139,7 @@ async function execute(test, gitOrigin) {
           assert.ok(subset(outcome, input.outcome), `terminal outcome mismatch: ${JSON.stringify(outcome)}`);
         } else assert.equal(outcome.completion, "completed", JSON.stringify(outcome));
         if (input.answer !== undefined) assert.equal(outcome.ok.text, input.answer);
+        if (test.assert.member_usage) assert.ok(subset(outcome.ok.metadata?.members, test.assert.member_usage), `per-member final usage differs: ${JSON.stringify(outcome.ok.metadata)}`);
       }
     }
     // Check while the mock's held response is still open. Killing the mock

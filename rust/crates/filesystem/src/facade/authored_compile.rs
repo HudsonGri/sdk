@@ -10,72 +10,107 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileId>, FsError> {
-        let crate::kernel::Owned {
-            value,
-            mut allocation,
-            mut bytes,
-        } = authored;
-        let path_bytes = value.logical_owned_bytes();
-        let result = async {
-            accounting.check()?;
-            let mutation = match value {
-                AuthoredMutation::Reidentify { path, file_id } => {
-                    let current = lookup_path_async_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        &self.root,
-                        &path,
-                        self.volume.config,
-                        accounting,
-                        cancellation,
-                        None,
-                    )
-                    .await?
-                    .record
-                    .ok_or(FsError::NotFound)?;
-                    if current.kind == FileKind::Directory {
-                        return Err(FsError::InvalidSpecialKind);
-                    }
-                    if current.file_id == file_id {
-                        return Ok(None);
-                    }
-                    let existing = {
-                        let (existing, _existing_allocation) =
-                            lookup_file_record_async_with_accounting(
-                                &self.volume.fs.inner.objects,
-                                self.root.file_table,
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            let crate::kernel::Owned {
+                value,
+                mut allocation,
+                mut bytes,
+            } = authored;
+            let path_bytes = value.logical_owned_bytes();
+            let result = async {
+                accounting.check()?;
+                let mutation = match value {
+                    AuthoredMutation::Reidentify { path, file_id } => {
+                        let current = lookup_path_async_with_accounting(
+                            &self.volume.fs.inner.objects,
+                            &self.root,
+                            &path,
+                            self.volume.config,
+                            accounting,
+                            cancellation,
+                            None,
+                        )
+                        .await?
+                        .record
+                        .ok_or(FsError::NotFound)?;
+                        if current.kind == FileKind::Directory {
+                            return Err(FsError::InvalidSpecialKind);
+                        }
+                        if current.file_id == file_id {
+                            return Ok(None);
+                        }
+                        let existing = {
+                            let (existing, _existing_allocation) =
+                                lookup_file_record_async_with_accounting(
+                                    &self.volume.fs.inner.objects,
+                                    self.root.file_table,
+                                    file_id,
+                                    DecodeLimits::for_volume(self.volume.config),
+                                    accounting,
+                                    cancellation,
+                                    Some(&self.dependencies.data_custody),
+                                )
+                                .await?;
+                            existing
+                        };
+                        if existing.is_some_and(|existing| {
+                            existing.kind != current.kind
+                                || existing.metadata != current.metadata
+                                || existing.payload != current.payload
+                        }) {
+                            return Err(FsError::FileIdentityCollision);
+                        }
+                        Mutation::Restore {
+                            path,
+                            record: FileRecord {
                                 file_id,
-                                DecodeLimits::for_volume(self.volume.config),
+                                link_count: 1,
+                                ..current
+                            },
+                        }
+                    }
+                    AuthoredMutation::CreateFile {
+                        path,
+                        bytes: content,
+                        metadata,
+                    } => {
+                        let file_id =
+                            self.authored_file_id(FileKind::Regular, &path, accounting)?;
+                        return self
+                            .compile_create_file_with_accounting(
+                                path,
+                                content,
+                                metadata,
+                                file_id,
+                                operations,
+                                &mut allocation,
+                                &mut bytes,
+                                staged_metadata,
                                 accounting,
                                 cancellation,
-                                Some(&self.dependencies.data_custody),
+                            )
+                            .await
+                            .map(Some);
+                    }
+                    AuthoredMutation::CreateFileFromContent {
+                        path,
+                        content,
+                        metadata,
+                        file_id,
+                    } => {
+                        let metadata = self
+                            .stage_authored_metadata_with_accounting(
+                                metadata,
+                                staged_metadata,
+                                accounting,
+                                cancellation,
                             )
                             .await?;
-                        existing
-                    };
-                    if existing.is_some_and(|existing| {
-                        existing.kind != current.kind
-                            || existing.metadata != current.metadata
-                            || existing.payload != current.payload
-                    }) {
-                        return Err(FsError::FileIdentityCollision);
-                    }
-                    Mutation::Restore {
-                        path,
-                        record: FileRecord {
-                            file_id,
-                            link_count: 1,
-                            ..current
-                        },
-                    }
-                }
-                AuthoredMutation::CreateFile {
-                    path,
-                    bytes: content,
-                    metadata,
-                } => {
-                    let file_id = self.authored_file_id(FileKind::Regular, &path, accounting)?;
-                    return self
-                        .compile_create_file_with_accounting(
+                        let file_id = match file_id {
+                            Some(file_id) => file_id,
+                            None => self.authored_file_id(FileKind::Regular, &path, accounting)?,
+                        };
+                        self.compile_regular_content_with_accounting(
                             path,
                             content,
                             metadata,
@@ -83,291 +118,271 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             operations,
                             &mut allocation,
                             &mut bytes,
-                            staged_metadata,
                             accounting,
-                            cancellation,
-                        )
-                        .await
-                        .map(Some);
-                }
-                AuthoredMutation::CreateFileFromContent {
-                    path,
-                    content,
-                    metadata,
-                    file_id,
-                } => {
-                    let metadata = self
-                        .stage_authored_metadata_with_accounting(
-                            metadata,
-                            staged_metadata,
-                            accounting,
-                            cancellation,
-                        )
-                        .await?;
-                    let file_id = match file_id {
-                        Some(file_id) => file_id,
-                        None => self.authored_file_id(FileKind::Regular, &path, accounting)?,
-                    };
-                    self.compile_regular_content_with_accounting(
-                        path,
-                        content,
-                        metadata,
-                        file_id,
-                        operations,
-                        &mut allocation,
-                        &mut bytes,
-                        accounting,
-                    )?;
-                    return Ok(Some(file_id));
-                }
-                create @ (AuthoredMutation::CreateDirectory { .. }
-                | AuthoredMutation::CreateSymbolicLink { .. }
-                | AuthoredMutation::CreateEmptySpecial { .. }
-                | AuthoredMutation::CreateDevice { .. }
-                | AuthoredMutation::CreateReparsePoint { .. }) => {
-                    let (path, kind, payload, metadata) = match create {
-                        AuthoredMutation::CreateDirectory { path, metadata } => {
-                            let entries = self
-                                .stage_empty_tree_with_accounting(accounting, cancellation)
-                                .await?;
-                            (
-                                path,
-                                FileKind::Directory,
-                                FilePayload::Directory { entries },
-                                metadata,
-                            )
-                        }
-                        AuthoredMutation::CreateSymbolicLink {
-                            path,
-                            target,
-                            metadata,
-                        } => {
-                            let content = self
-                                .stage_authored_blob_with_accounting(
-                                    target,
-                                    accounting,
-                                    cancellation,
+                        )?;
+                        return Ok(Some(file_id));
+                    }
+                    create @ (AuthoredMutation::CreateDirectory { .. }
+                    | AuthoredMutation::CreateSymbolicLink { .. }
+                    | AuthoredMutation::CreateEmptySpecial { .. }
+                    | AuthoredMutation::CreateDevice { .. }
+                    | AuthoredMutation::CreateReparsePoint { .. }) => {
+                        let (path, kind, payload, metadata) = match create {
+                            AuthoredMutation::CreateDirectory { path, metadata } => {
+                                let entries = self
+                                    .stage_empty_tree_with_accounting(accounting, cancellation)
+                                    .await?;
+                                (
+                                    path,
+                                    FileKind::Directory,
+                                    FilePayload::Directory { entries },
+                                    metadata,
                                 )
-                                .await?;
-                            (
+                            }
+                            AuthoredMutation::CreateSymbolicLink {
                                 path,
-                                FileKind::SymbolicLink,
-                                FilePayload::SymbolicLink {
-                                    target_bytes: content.logical_bytes,
-                                    target: content.root,
-                                },
+                                target,
                                 metadata,
-                            )
-                        }
-                        AuthoredMutation::CreateEmptySpecial {
-                            path,
-                            kind,
-                            metadata,
-                        } => {
-                            if !matches!(
+                            } => {
+                                let content = self
+                                    .stage_authored_blob_with_accounting(
+                                        target,
+                                        accounting,
+                                        cancellation,
+                                    )
+                                    .await?;
+                                (
+                                    path,
+                                    FileKind::SymbolicLink,
+                                    FilePayload::SymbolicLink {
+                                        target_bytes: content.logical_bytes,
+                                        target: content.root,
+                                    },
+                                    metadata,
+                                )
+                            }
+                            AuthoredMutation::CreateEmptySpecial {
+                                path,
                                 kind,
-                                FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary
-                            ) {
-                                return Err(FsError::InvalidSpecialKind);
+                                metadata,
+                            } => {
+                                if !matches!(
+                                    kind,
+                                    FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary
+                                ) {
+                                    return Err(FsError::InvalidSpecialKind);
+                                }
+                                if !kind.is_supported_by_profile(self.volume.config.profile) {
+                                    return Err(FsError::UnsupportedFileKind);
+                                }
+                                (path, kind, FilePayload::Empty, metadata)
                             }
-                            if !kind.is_supported_by_profile(self.volume.config.profile) {
-                                return Err(FsError::UnsupportedFileKind);
+                            AuthoredMutation::CreateDevice {
+                                path,
+                                kind,
+                                major,
+                                minor,
+                                metadata,
+                            } => {
+                                if !matches!(
+                                    kind,
+                                    FileKind::CharacterDevice | FileKind::BlockDevice
+                                ) {
+                                    return Err(FsError::InvalidSpecialKind);
+                                }
+                                if !kind.is_supported_by_profile(self.volume.config.profile) {
+                                    return Err(FsError::UnsupportedFileKind);
+                                }
+                                (path, kind, FilePayload::Device { major, minor }, metadata)
                             }
-                            (path, kind, FilePayload::Empty, metadata)
-                        }
-                        AuthoredMutation::CreateDevice {
-                            path,
-                            kind,
-                            major,
-                            minor,
-                            metadata,
-                        } => {
-                            if !matches!(kind, FileKind::CharacterDevice | FileKind::BlockDevice) {
-                                return Err(FsError::InvalidSpecialKind);
+                            AuthoredMutation::CreateReparsePoint {
+                                path,
+                                payload,
+                                metadata,
+                            } => {
+                                if !FileKind::ReparsePoint
+                                    .is_supported_by_profile(self.volume.config.profile)
+                                {
+                                    return Err(FsError::UnsupportedFileKind);
+                                }
+                                let content = self
+                                    .stage_authored_blob_with_accounting(
+                                        payload,
+                                        accounting,
+                                        cancellation,
+                                    )
+                                    .await?;
+                                (
+                                    path,
+                                    FileKind::ReparsePoint,
+                                    FilePayload::ReparsePoint {
+                                        payload_bytes: content.logical_bytes,
+                                        payload: content.root,
+                                    },
+                                    metadata,
+                                )
                             }
-                            if !kind.is_supported_by_profile(self.volume.config.profile) {
-                                return Err(FsError::UnsupportedFileKind);
-                            }
-                            (path, kind, FilePayload::Device { major, minor }, metadata)
-                        }
-                        AuthoredMutation::CreateReparsePoint {
-                            path,
-                            payload,
-                            metadata,
-                        } => {
-                            if !FileKind::ReparsePoint
-                                .is_supported_by_profile(self.volume.config.profile)
-                            {
-                                return Err(FsError::UnsupportedFileKind);
-                            }
+                            _ => unreachable!("record creation kinds are exhausted"),
+                        };
+                        return self
+                            .compile_record_with_accounting(
+                                operations,
+                                path,
+                                kind,
+                                payload,
+                                metadata,
+                                &mut allocation,
+                                &mut bytes,
+                                staged_metadata,
+                                accounting,
+                                cancellation,
+                            )
+                            .await
+                            .map(Some);
+                    }
+                    AuthoredMutation::Remove {
+                        path,
+                        expected_file_id,
+                    } => Mutation::Remove {
+                        path,
+                        expected_file_id: expected_file_id
+                            .map_or(MetadataField::Unavailable, MetadataField::Value),
+                    },
+                    AuthoredMutation::Rename {
+                        source,
+                        destination,
+                        replace,
+                    } => Mutation::Rename {
+                        source,
+                        destination,
+                        replace,
+                    },
+                    AuthoredMutation::HardLink {
+                        source,
+                        destination,
+                    } => Mutation::Link {
+                        source,
+                        destination,
+                    },
+                    AuthoredMutation::Write {
+                        path,
+                        offset,
+                        bytes: content,
+                    } => {
+                        if content.is_empty() {
+                            drop(content);
+                            Mutation::ValidateRegular { path }
+                        } else {
                             let content = self
                                 .stage_authored_blob_with_accounting(
-                                    payload,
+                                    content,
                                     accounting,
                                     cancellation,
                                 )
                                 .await?;
-                            (
+                            Mutation::Write {
                                 path,
-                                FileKind::ReparsePoint,
-                                FilePayload::ReparsePoint {
-                                    payload_bytes: content.logical_bytes,
-                                    payload: content.root,
-                                },
+                                offset,
+                                length: content.logical_bytes,
+                                content: content.root,
+                                content_offset: 0,
+                            }
+                        }
+                    }
+                    AuthoredMutation::WriteFromContent {
+                        path,
+                        offset,
+                        content,
+                    } => {
+                        if content.logical_bytes == 0 {
+                            Mutation::ValidateRegular { path }
+                        } else {
+                            Mutation::Write {
+                                path,
+                                offset,
+                                length: content.logical_bytes,
+                                content: content.root,
+                                content_offset: 0,
+                            }
+                        }
+                    }
+                    AuthoredMutation::SetMetadata { path, metadata } => {
+                        let metadata = self
+                            .stage_authored_metadata_with_accounting(
                                 metadata,
+                                staged_metadata,
+                                accounting,
+                                cancellation,
                             )
-                        }
-                        _ => unreachable!("record creation kinds are exhausted"),
-                    };
-                    return self
-                        .compile_record_with_accounting(
-                            operations,
-                            path,
-                            kind,
-                            payload,
-                            metadata,
-                            &mut allocation,
-                            &mut bytes,
-                            staged_metadata,
-                            accounting,
-                            cancellation,
-                        )
-                        .await
-                        .map(Some);
-                }
-                AuthoredMutation::Remove {
-                    path,
-                    expected_file_id,
-                } => Mutation::Remove {
-                    path,
-                    expected_file_id: expected_file_id
-                        .map_or(MetadataField::Unavailable, MetadataField::Value),
-                },
-                AuthoredMutation::Rename {
-                    source,
-                    destination,
-                    replace,
-                } => Mutation::Rename {
-                    source,
-                    destination,
-                    replace,
-                },
-                AuthoredMutation::HardLink {
-                    source,
-                    destination,
-                } => Mutation::Link {
-                    source,
-                    destination,
-                },
-                AuthoredMutation::Write {
-                    path,
-                    offset,
-                    bytes: content,
-                } => {
-                    if content.is_empty() {
-                        drop(content);
-                        Mutation::ValidateRegular { path }
-                    } else {
-                        let content = self
-                            .stage_authored_blob_with_accounting(content, accounting, cancellation)
                             .await?;
-                        Mutation::Write {
-                            path,
-                            offset,
-                            length: content.logical_bytes,
-                            content: content.root,
-                            content_offset: 0,
+                        if path.is_root() {
+                            drop(path);
+                            let remaining =
+                                bytes.checked_sub(path_bytes).ok_or(WorkError::Overflow)?;
+                            let retired =
+                                crate::kernel::split_allocation(&mut allocation, path_bytes)?;
+                            bytes = remaining;
+                            retire_allocation(retired, path_bytes, accounting)?;
+                            Mutation::File {
+                                file_id: self.root.root_file_id,
+                                mutation: FileMutation::SetMetadata { metadata },
+                            }
+                        } else {
+                            Mutation::SetMetadata { path, metadata }
                         }
                     }
-                }
-                AuthoredMutation::WriteFromContent {
-                    path,
-                    offset,
-                    content,
-                } => {
-                    if content.logical_bytes == 0 {
-                        Mutation::ValidateRegular { path }
-                    } else {
-                        Mutation::Write {
-                            path,
-                            offset,
-                            length: content.logical_bytes,
-                            content: content.root,
-                            content_offset: 0,
-                        }
-                    }
-                }
-                AuthoredMutation::SetMetadata { path, metadata } => {
-                    let metadata = self
-                        .stage_authored_metadata_with_accounting(
-                            metadata,
-                            staged_metadata,
-                            accounting,
-                            cancellation,
-                        )
-                        .await?;
-                    if path.is_root() {
-                        drop(path);
-                        let remaining = bytes.checked_sub(path_bytes).ok_or(WorkError::Overflow)?;
-                        let retired = crate::kernel::split_allocation(&mut allocation, path_bytes)?;
-                        bytes = remaining;
-                        retire_allocation(retired, path_bytes, accounting)?;
-                        Mutation::File {
-                            file_id: self.root.root_file_id,
-                            mutation: FileMutation::SetMetadata { metadata },
-                        }
-                    } else {
-                        Mutation::SetMetadata { path, metadata }
-                    }
-                }
-                AuthoredMutation::Resize {
-                    path,
-                    logical_bytes,
-                } => Mutation::Resize {
-                    path,
-                    logical_bytes,
-                },
-                AuthoredMutation::ZeroRange {
-                    path,
-                    range,
-                    allocated,
-                    extend,
-                } => Mutation::ZeroRange {
-                    path,
-                    offset: range.offset,
-                    length: range.length,
-                    allocated,
-                    extend,
-                },
-                AuthoredMutation::Preallocate {
-                    path,
-                    range,
-                    keep_size,
-                } => Mutation::Preallocate {
-                    path,
-                    offset: range.offset,
-                    length: range.length,
-                    keep_size,
-                },
-                AuthoredMutation::CloneRange(request) => Mutation::CloneRange {
-                    source: request.source,
-                    source_offset: request.source_offset,
-                    destination: request.destination,
-                    destination_offset: request.destination_offset,
-                    length: request.length,
-                },
-            };
-            push_authored_operation(
-                operations,
-                &mut allocation,
-                &mut bytes,
-                accounting,
-                mutation,
-            )?;
-            Ok(None)
-        }
-        .await;
-        retire_allocation(allocation, bytes, accounting)?;
+                    AuthoredMutation::Resize {
+                        path,
+                        logical_bytes,
+                    } => Mutation::Resize {
+                        path,
+                        logical_bytes,
+                    },
+                    AuthoredMutation::ZeroRange {
+                        path,
+                        range,
+                        allocated,
+                        extend,
+                    } => Mutation::ZeroRange {
+                        path,
+                        offset: range.offset,
+                        length: range.length,
+                        allocated,
+                        extend,
+                    },
+                    AuthoredMutation::Preallocate {
+                        path,
+                        range,
+                        keep_size,
+                    } => Mutation::Preallocate {
+                        path,
+                        offset: range.offset,
+                        length: range.length,
+                        keep_size,
+                    },
+                    AuthoredMutation::CloneRange(request) => Mutation::CloneRange {
+                        source: request.source,
+                        source_offset: request.source_offset,
+                        destination: request.destination,
+                        destination_offset: request.destination_offset,
+                        length: request.length,
+                    },
+                };
+                push_authored_operation(
+                    operations,
+                    &mut allocation,
+                    &mut bytes,
+                    accounting,
+                    mutation,
+                )?;
+                Ok(None)
+            }
+            .await;
+            retire_allocation(allocation, bytes, accounting)?;
+            result
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
         result
     }
 }

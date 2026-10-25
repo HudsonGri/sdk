@@ -42,6 +42,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
 fn request() -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new("test".into(), "inline".into(), "1".into(), Value::Null)?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,

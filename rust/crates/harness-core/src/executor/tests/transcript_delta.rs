@@ -4,6 +4,7 @@ use crate::executor::transcript as segments;
 fn request(messages: &[ModelMessage]) -> Result<crate::model::PreparedModelRequest> {
     crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new("test".into(), "segments".into(), "1".into(), Value::Null)?,
             messages: messages.to_vec(),
             tools: Vec::new(),
@@ -89,6 +90,7 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
                 // estimate based on the number of turns.
                 let old_request = crate::contract::canonical_json_bytes(prepared.request())?;
                 let old_projection = crate::contract::canonical_json_bytes(&ResponseProjection {
+                    model: Model::new("test".into(), "projection".into(), "1".into(), Value::Null)?,
                     context: crate::context::Context {
                         messages: messages.clone(),
                         ..Default::default()

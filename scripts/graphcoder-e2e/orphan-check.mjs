@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 export function alive(pid) {
   assert.ok(Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid, "invalid fixture process identity");
@@ -14,6 +15,17 @@ export function alive(pid) {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
     } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  }
+  if (process.platform === "darwin") {
+    // launchd can retain an exited generation as a zombie. Read the kernel's
+    // process state once; an unexpected inspection error fails the oracle.
+    const observed = spawnSync("/bin/ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" });
+    if (observed.error) throw observed.error;
+    if (observed.status === 1 && !observed.stdout.trim() && !observed.stderr.trim()) return false;
+    assert.equal(observed.status, 0, observed.stderr);
+    const state = observed.stdout.trim();
+    assert.ok(state, "missing process state");
+    return !state.startsWith("Z");
   }
   return true;
 }

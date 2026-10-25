@@ -224,6 +224,8 @@ export function publicModelContent(content: NativeModel.ModelContent): ModelCont
         ? { kind: "json" as const, value: normalizeModelJson(part.content.value) }
         : part.content.kind === "error"
         ? { kind: "error" as const, message: part.content.message }
+        : part.content.kind === "stored"
+        ? { kind: "stored" as const, file: publicFile(part.content.file), preview: part.content.preview }
         : { kind: "parts" as const, parts: part.content.parts.map(data => data.kind === "file"
           ? publicFilePart(data) : data) as readonly ModelDataPart[] };
       return { kind: part.kind, callId: part.call_id, name: part.name, content };

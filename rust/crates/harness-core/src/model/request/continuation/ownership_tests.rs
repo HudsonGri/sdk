@@ -143,3 +143,41 @@ fn continuation_retires_dead_suffix_slots_and_retains_only_its_live_storage() ->
     }
     Ok(())
 }
+
+#[test]
+fn changing_members_retires_previous_headers_and_models_on_the_original_ledger() -> Result<()> {
+    for native in [false, true] {
+        let measured =
+            crate::test_support::accounted::accounted(native, 4 * 1024 * 1024, false, |io| {
+                let mut prepared = PreparedModelRequest::prepare(
+                    crate::model::clone_request(&request(10)?, Some(io))?,
+                    Limits::default(),
+                    Some(io),
+                )?;
+                let mut selected = prepared.request().model.clone();
+                let before_owned = io.owned_bytes()?;
+                let before_inventory = prepared.preparation_owned_bytes(io)?;
+                for step in 1..=100 {
+                    selected.name = format!("member-{step:03}");
+                    let mut continuation = prepared.into_continuation();
+                    continuation.select_model(&selected, Some(io))?;
+                    prepared = continuation.finish(Limits::default(), Some(io))?;
+                    assert_eq!(
+                        io.owned_bytes()? + before_inventory,
+                        before_owned + prepared.preparation_owned_bytes(io)?,
+                        "member change retained dead header/model at {step}, native={native}"
+                    );
+                }
+                Ok::<_, Error>(())
+            })
+            .map_err(|(cause, _)| Error::Storage(cause))?;
+        measured.0?;
+        if native {
+            assert_eq!(
+                measured.5,
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+            );
+        }
+    }
+    Ok(())
+}

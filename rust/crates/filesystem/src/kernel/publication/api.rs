@@ -138,7 +138,7 @@ fn native_publication_owner<E, F, Fut>(
     &crate::NativeMaterializationWork,
 ) -> futures::future::Either<
     std::future::Ready<Result<(), E>>,
-    acyclic_stream::BoxProviderFuture<'static, Result<(), E>>,
+    crate::heap_future::HeapFuture<dyn Future<Output = Result<(), E>> + Send>,
 > + Clone
 + Send
 + 'static
@@ -180,7 +180,7 @@ where
                     },
                 );
                 match boxed {
-                    Ok((future, _)) => futures::future::Either::Right(future),
+                    Ok((future, _)) => futures::future::Either::Right(future.erase_send()),
                     Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
                 }
             }

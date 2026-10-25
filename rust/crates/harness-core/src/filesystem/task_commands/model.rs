@@ -19,6 +19,8 @@ struct ModelExecution<P, A, O> {
 }
 
 struct ModelExecutionInput {
+    conversation_id: crate::ConversationId,
+    role: Option<String>,
     input: ModelContent,
     selected_context: Option<SelectedModelContext>,
     max_steps: u32,
@@ -26,6 +28,24 @@ struct ModelExecutionInput {
     selected_output_volume: Option<crate::conversation::VolumeRef>,
     max_output_tokens: Option<u32>,
 }
+impl ModelExecutionInput {
+    fn split_manifest(command: ModelTaskCommand, task: TaskId) -> (Self, FileRef) {
+        let input = Self {
+            conversation_id: command
+                .conversation_id
+                .unwrap_or_else(|| crate::ConversationId::from_bytes(task.into_bytes())),
+            role: command.role,
+            input: command.input,
+            selected_context: command.selected_context,
+            max_steps: command.max_steps,
+            summary_source: command.summary_source,
+            selected_output_volume: command.selected_output_volume,
+            max_output_tokens: command.max_output_tokens,
+        };
+        (input, command.context_manifest)
+    }
+}
+
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
     P: StreamProvider + 'static,
@@ -96,14 +116,20 @@ where
         payload: Value,
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
-        let context = self.model_task_context(invocation).await?;
+        let context = crate::conversation::BoundedContentFuture::new(io, || async {
+            self.model_task_context(invocation).await
+        })?
+        .await?;
         let stock = admission.task.name == "acyclic.stock_turn"
             || super::super::child_agent::is_child(admission);
         let mut command = self.decoded_model_command(payload, io)?;
         let steering = self
             .model_steering(invocation, &context, stock, &command)
             .await?;
-        let (journal, operation) = self.prepared_model_journal(invocation, &context).await?;
+        let (journal, operation) = crate::conversation::BoundedContentFuture::new(io, || async {
+            self.prepared_model_journal(invocation, &context).await
+        })?
+        .await?;
         if self
             .reconcile_undispatched_model(
                 invocation,
@@ -130,15 +156,11 @@ where
             .await?;
         }
         reserve_model_input(io)?;
+        let (command, manifest) = ModelExecutionInput::split_manifest(command, admission.task_id());
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let manifest_digest = *command.context_manifest.descriptor().sha256();
+        let manifest_digest = *manifest.descriptor().sha256();
         let (pipeline, tools) = BoundedContentFuture::new(io, || {
-            self.prepared_model_context(
-                &context,
-                command.context_manifest,
-                command.summary_source.is_some(),
-                io,
-            )
+            self.prepared_model_context(&context, manifest, command.summary_source.is_some(), io)
         })?
         .await?;
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
@@ -169,27 +191,23 @@ where
         } else {
             (pipeline, None)
         };
-        self.execute_model_command(
-            invocation,
-            ModelExecution {
-                context,
-                command: ModelExecutionInput {
-                    input: command.input,
-                    selected_context: command.selected_context,
-                    max_steps: command.max_steps,
-                    summary_source: command.summary_source,
-                    selected_output_volume: command.selected_output_volume,
-                    max_output_tokens: command.max_output_tokens,
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            self.execute_model_command(
+                invocation,
+                ModelExecution {
+                    context,
+                    command,
+                    pipeline,
+                    tools,
+                    journal,
+                    operation,
+                    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                    hooks,
                 },
-                pipeline,
-                tools,
-                journal,
-                operation,
-                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-                hooks,
-            },
-            phase,
-        )
+                phase,
+            )
+            .await
+        })?
         .await
     }
 
@@ -214,6 +232,13 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<ModelTaskCommand> {
         let command: ModelTaskCommand = mail::decode_command(payload, io)?;
+        if command
+            .role
+            .as_deref()
+            .is_some_and(|role| role.trim().is_empty())
+        {
+            return Err(boundary(io, ErrorCode::Invalid, "agent role is empty"));
+        }
         self.model.as_ref().ok_or_else(|| {
             boundary(
                 io,
@@ -325,7 +350,7 @@ where
             max_steps: command.max_steps,
         };
         BoundedContentFuture::new(io, || async {
-            let execution = BoundedContentFuture::new(io, || {
+            let mut execution = BoundedContentFuture::new(io, || {
                 self.runtime.stock_execution_with_context(
                     Arc::clone(&context),
                     fence.clone(),
@@ -337,15 +362,16 @@ where
                     command.selected_output_volume.as_ref(),
                 )
             })?
-            .await?
-            .with_compaction_policy(compaction.clone())
-            .with_summary_source(command.summary_source);
+            .await?;
+            execution.set_compaction_policy(compaction.clone());
+            execution.set_summary_source(command.summary_source);
+            execution.set_conversation_id(command.conversation_id);
+            execution.set_role(command.role);
             #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-            let execution = execution.with_hooks(hooks);
-            let execution = match command.max_output_tokens {
-                Some(maximum) => execution.with_max_output_tokens(maximum)?,
-                None => execution,
-            };
+            execution.set_hooks(hooks);
+            if let Some(maximum) = command.max_output_tokens {
+                execution.set_max_output_tokens(maximum)?;
+            }
             if reconciliation_only {
                 let result =
                     BoundedContentFuture::new(io, || execution.reconcile_progress(input))?.await;
@@ -442,7 +468,9 @@ where
                 compaction,
                 command.max_output_tokens,
             )?
-            .with_summary_source(command.summary_source);
+            .with_summary_source(command.summary_source)
+            .with_conversation_id(command.conversation_id)
+            .with_role(command.role);
         let executor = if reconciliation_only {
             executor.into_reconciliation()
         } else {

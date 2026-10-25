@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import init, { WasmMcpHttpTransport } from "../generated/wasm/acyclic_harness_wasm.js";
-import { createBrowserMcpHttpProvider } from "../src/mcp-http.ts";
+import { createBrowserMcpHttpProvider } from "../dist/mcp-http.js";
 
 await init({ module_or_path: readFileSync(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)) });
 const operation = "00000000-0000-0000-0000-000000000007";
@@ -27,7 +27,7 @@ test("browser transport rejects lossy byte and deadline bounds before I/O", () =
 
 test("browser I/O feeds the Rust JSON/SSE decoder at every chunk width", async () => {
   for (const sse of [false, true]) {
-    const bytes = new TextEncoder().encode(sse ? `data: ${message}\r\n\r\n` : message);
+    const bytes = new TextEncoder().encode(sse ? `data: ${message}\r\n\r\n: heartbeat` : message);
     for (let width = 1; width <= bytes.length; width++) {
       let calls = 0;
       let captured;
@@ -49,7 +49,7 @@ test("browser I/O feeds the Rust JSON/SSE decoder at every chunk width", async (
         assert.equal(JSON.parse(result).content[0].text, "hello 🦀");
         assert.equal(captured.headers.get("mcp-session-id"), "session");
         assert.equal(captured.credentials, "omit");
-        assert.equal(captured.redirect, "manual");
+        assert.equal(captured.redirect, "error");
         assert.equal(captured.signal.aborted, true);
         assert.equal(await transport.reconcileJson(operation), undefined);
         assert.equal(calls, 1);
@@ -100,5 +100,112 @@ test("truncation, expired session and overflow retain explicit failure with no r
       assert.equal(await transport.reconcileJson(operation), undefined);
       assert.equal(calls, 1);
     } finally { transport.free(); }
+  }
+});
+
+
+test("MCP uses owned split deadlines through the full u32 range", async () => {
+  const originalSet = globalThis.setTimeout;
+  const originalClear = globalThis.clearTimeout;
+  const timers = new Map();
+  const intervals = [];
+  globalThis.setTimeout = (callback, milliseconds) => {
+    const handle = {};
+    intervals.push(milliseconds);
+    timers.set(handle, callback);
+    return handle;
+  };
+  globalThis.clearTimeout = handle => timers.delete(handle);
+  let exchange;
+  let transport;
+  try {
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    let calls = 0;
+    const provider = createBrowserMcpHttpProvider((_url, options) => {
+      calls++;
+      started();
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, 2 ** 32 - 1);
+    exchange = provider(operation, transport.initializationRequest(operation, "fixture", "1"));
+    const rejected = assert.rejects(exchange.response);
+    await ready;
+    while (timers.size) {
+      assert.equal(timers.size, 1);
+      const [handle, callback] = timers.entries().next().value;
+      timers.delete(handle);
+      callback();
+    }
+    await rejected;
+    assert.deepEqual(intervals, [2 ** 31 - 1, 2 ** 31 - 1, 1]);
+    assert.equal(calls, 1);
+    exchange.cancel();
+    assert.equal(timers.size, 0);
+  } finally {
+    exchange?.cancel();
+    transport?.free();
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+  }
+});
+
+test("MCP cancellation owns the reader independently of the injected fetch signal", async () => {
+  for (const pendingRead of [false, true]) {
+    let cancelled = false;
+    let source;
+    const stream = new ReadableStream({
+      start(controller) { source = controller; },
+      cancel() { cancelled = true; },
+    });
+    const provider = createBrowserMcpHttpProvider(async () => new Response(stream));
+    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, 1000);
+    let exchange;
+    let rejected;
+    try {
+      exchange = provider(operation, transport.initializationRequest(operation, "fixture", "1"));
+      await exchange.response;
+      if (pendingRead) {
+        rejected = assert.rejects(exchange.read());
+        await Promise.resolve();
+      }
+      exchange.cancel();
+      assert.equal(cancelled, true);
+      assert.equal(stream.locked, false);
+      await rejected;
+    } finally {
+      if (!cancelled) source.close();
+      exchange?.cancel();
+      transport.free();
+    }
+  }
+});
+
+test("MCP cancellation retains a body returned after abort", async () => {
+  let completeHead;
+  let started;
+  let cancelled = false;
+  const ready = new Promise(resolve => { started = resolve; });
+  const stream = new ReadableStream({ cancel() { cancelled = true; } });
+  const provider = createBrowserMcpHttpProvider(() => new Promise(resolve => {
+    completeHead = () => resolve(new Response(stream));
+    started();
+  }));
+  const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, 1000);
+  let exchange;
+  try {
+    exchange = provider(operation, transport.initializationRequest(operation, "fixture", "1"));
+    const rejected = assert.rejects(exchange.response);
+    await ready;
+    exchange.cancel();
+    completeHead();
+    await rejected;
+    assert.equal(cancelled, true);
+    assert.equal(stream.locked, false);
+  } finally {
+    exchange?.cancel();
+    transport.free();
   }
 });

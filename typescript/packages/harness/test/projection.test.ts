@@ -44,6 +44,17 @@ async function reference(path: string, bytes: Uint8Array, mediaType: string): Pr
   });
 }
 
+test("stored tool results cross the public projection and WASM boundary as references", async () => {
+  const file = await reference("tools/complete.txt", new TextEncoder().encode("complete output"), "text/plain");
+  const preview = "complete … output";
+  const native = { kind: "tool_result" as const, call_id: "call", name: "fixture",
+    content: { kind: "stored" as const, file: { ...file, descriptor: { ...file.descriptor, byte_length: BigInt(file.descriptor.byte_length) } }, preview } };
+  const content = publicModelContent(native);
+  expect(content).toEqual({ kind: "tool_result", callId: "call", name: "fixture", content: { kind: "stored", file, preview } });
+  const inventory = contracts.modelContentInventory(content, DEFAULT_LIMITS);
+  expect(inventory.files).toEqual([file]);
+});
+
 test("verified resolver routes exact owner volumes through one content binding", async () => {
   const first = await reference("messages/first.txt", new TextEncoder().encode("first"), "text/plain");
   const second = contracts.validate("file_ref", { ...first, descriptor: await descriptorFor(new TextEncoder().encode("second"), "text/plain"), volume: {

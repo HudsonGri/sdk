@@ -65,6 +65,14 @@ pub(super) fn stock_json_bound<T: Serialize>(
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    stock_json_length(value, maximum, io).map(|_| ())
+}
+
+pub(super) fn stock_json_length<T: Serialize>(
+    value: &T,
+    maximum: u64,
+    io: Option<&PreparationIo>,
+) -> Result<u64> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         return crate::executor::json::count_json_bytes_trusted(
@@ -76,44 +84,67 @@ pub(super) fn stock_json_bound<T: Serialize>(
             },
             Some(crate::wire::ErrorCode::Invalid),
             &mut |next| io.codec_charge(next, false),
-        )
-        .map(|_| ());
+        );
     }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
         let bytes = io.encode(value, maximum, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
-        return Ok(());
+        return Ok(bytes.len() as u64);
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, &mut None)
 }
 
 impl StockExecution<'_> {
-    pub(super) fn model_capacity(&self) -> Result<Option<crate::context::ModelContextCapacity>> {
-        match self.compaction_policy()? {
-            crate::context::CompactionPolicy::Disabled => Ok(None),
-            crate::context::CompactionPolicy::Threshold(policy) => {
-                let capacity = stock_context_capacity(
-                    self.stock.provider.as_ref(),
-                    &self.stock.model,
-                    self.io,
-                )?;
-                policy.validate(capacity, self.output_tokens())?;
-                Ok(Some(capacity))
-            }
-        }
+    pub(super) fn model_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
+        // Capacity admission is mandatory even when automatic summaries are off.
+        // Resolve the summary authority first so its refusal still wins at entry.
+        self.compaction_policy()?;
+        let capacity =
+            stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+        capacity.validate()?;
+        Ok(capacity)
     }
 
     pub(super) fn output_budget(&self) -> Result<Option<u32>> {
-        match (self.compaction_policy()?, self.model_capacity()?) {
-            (crate::context::CompactionPolicy::Threshold(policy), Some(capacity)) => {
-                Ok(Some(policy.validate(capacity, self.output_tokens())?))
+        let capacity = self.model_capacity()?;
+        let output = match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Threshold(policy) => {
+                policy.validate(capacity, self.output_tokens())?
             }
-            _ => Ok(self.output_tokens()),
+            crate::context::CompactionPolicy::Disabled => {
+                let output = self
+                    .output_tokens()
+                    .unwrap_or(capacity.default_output_budget());
+                if !capacity.permits_output(output) {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "response output exceeds selected model capacity",
+                    ));
+                }
+                output
+            }
+        };
+        Ok(Some(output))
+    }
+
+    pub(super) fn accounted_input(
+        &self,
+        prepared: &crate::model::PreparedModelRequest,
+        accounting: &ContextAccounting,
+    ) -> Result<u64> {
+        if self.model_capacity()? != accounting.capacity {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "selected capacity differs from captured accounting",
+            ));
         }
+        with_history_io(self.io, |work| accounting.count.validate(prepared, work))
     }
 
     pub(super) async fn validate_summary_capacity(
@@ -149,12 +180,15 @@ impl StockExecution<'_> {
                 "summary output exceeds selected model capacity",
             ));
         }
-        let mut prepared = executor.prepare_request(input, step, &[]).await?;
+        let selected = executor.selected_for_turn(input, step)?;
+        let mut prepared = executor
+            .prepare_request_for(selected, input, step, &[])
+            .await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
-        if count + u64::from(output) > u64::from(capacity.context_tokens) {
+        if !capacity.permits_request(count, output) {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

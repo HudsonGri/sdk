@@ -167,24 +167,21 @@ where
     } else {
         json!({"children": [format!("local-child-{}", level + 1)]})
     };
-    let provider = Arc::new(
-        ScriptedModelProvider::new([
-            ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                    "fork-plan".into(),
-                    "example.fork".into(),
-                    children,
-                ))),
-                ScriptedEvent::Event(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ]),
-            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+    let provider = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                "fork-plan".into(),
+                "example.fork".into(),
+                children,
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: Value::Null,
-            })]),
-        ])
-        .without_accounting(),
-    );
+            }),
+        ]),
+        ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: Value::Null,
+        })]),
+    ]));
     let model = Model::new(
         "example".into(),
         if level >= 3 { "alternate" } else { "exact" }.into(),

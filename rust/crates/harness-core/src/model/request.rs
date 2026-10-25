@@ -11,6 +11,10 @@ mod encoding;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelRequest {
+    /// Durable conversation owning this request; absent for an unbound one-off request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+    pub conversation_id: Option<crate::ConversationId>,
     /// Pinned model selection.
     pub model: Model,
     /// Ordered reconstructable context.
@@ -233,7 +237,9 @@ impl ModelRequest {
                     None => Err(Error::Invalid("model tool call is unbound".into())),
                 };
                 match (tool, content) {
-                    (_, ToolResultContent::Error { .. }) => {}
+                    // Stored history validates its immutable reference and bounded shape.
+                    (_, ToolResultContent::Error { .. })
+                    | (Ok(_), ToolResultContent::Stored { .. }) => {}
                     (Ok(tool), content) => Self::validate_tool_result(tool, content, io)?,
                     (Err(refused), _) => return Err(refused),
                 }
@@ -251,7 +257,6 @@ impl ModelRequest {
 type PendingCall<'a> = (&'a String, &'a Value);
 
 /// Admitted values, exact canonical request bytes and their digest.
-#[derive(Debug)]
 pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
@@ -262,6 +267,21 @@ pub struct PreparedModelRequest {
     content_admission: Option<admission::ContentAdmission>,
     #[cfg(feature = "filesystem")]
     resident_payload: Option<u64>,
+    provider_memo: std::sync::OnceLock<Box<ProviderMemo>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type ProviderMemo = dyn std::any::Any + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type ProviderMemo = dyn std::any::Any;
+
+impl std::fmt::Debug for PreparedModelRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedModelRequest")
+            .field("request", &self.request)
+            .field("request_digest", &self.request_digest)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Clone for PreparedModelRequest {
@@ -278,6 +298,7 @@ impl Clone for PreparedModelRequest {
             // The next continuation inventories its new storage once.
             #[cfg(feature = "filesystem")]
             resident_payload: None,
+            provider_memo: std::sync::OnceLock::new(),
         }
     }
 }
@@ -346,6 +367,22 @@ impl PreparedModelRequest {
         add(bytes, self.bytes.retained_capacity().unwrap_or(0) as u64)
     }
 
+    /// Request-local provider state. Initialization must fund any retained allocation.
+    /// Cloning or decoding a request starts with no provider state or authority.
+    pub fn provider_memo<T: std::any::Any + acyclic_stream::ProviderPlatform>(
+        &self,
+        initialize: impl FnOnce() -> Result<T>,
+    ) -> Result<&T> {
+        if self.provider_memo.get().is_none() {
+            let value = initialize()?;
+            // A racing initialization loses ownership and releases its custody here.
+            let _ = self.provider_memo.set(Box::new(value));
+        }
+        self.provider_memo
+            .get()
+            .and_then(|memo| memo.downcast_ref())
+            .ok_or_else(|| Error::Invalid("prepared request provider state type differs".into()))
+    }
     /// Decodes and verifies exact canonical input on the optional ledger.
     pub fn decode(bytes: &[u8], limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
         let request: ModelRequest = match io {
@@ -404,6 +441,7 @@ impl PreparedModelRequest {
                 encoding: Vec::new(),
                 content_admission: None,
                 resident_payload,
+                provider_memo: std::sync::OnceLock::new(),
             });
         }
         Self::encode_admitted(request, limits, io)
@@ -473,6 +511,7 @@ impl PreparedModelRequest {
             content_admission: None,
             #[cfg(feature = "filesystem")]
             resident_payload,
+            provider_memo: std::sync::OnceLock::new(),
         })
     }
     /// Admitted values for provider-specific encoding.

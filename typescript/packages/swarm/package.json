@@ -25,12 +25,15 @@
   "scripts": {
     "build": "bun run generate && tsc -b",
     "check:types": "tsc -p tsconfig.type-tests.json",
-    "test": "bun run generate && tsc -b && tsc -p tsconfig.type-tests.json && node --test test/http.test.mjs",
+    "test": "bun run generate && tsc -b && tsc -p tsconfig.type-tests.json && node --test --test-concurrency=1 test/http.test.mjs test/http-lifecycle.test.mjs",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs swarm",
     "prepack": "bun run generate"
   },
   "devDependencies": {
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@acyclic-labs/harness": "0.2.0"
   }
 }

@@ -24,6 +24,7 @@ impl ResponseProjection {
         let stored = retain_preparation(load_json::<Self>(journal, reference, io).await?)?;
         #[cfg(feature = "filesystem")]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let model = crate::model::clone_model(&stored.model, io)?;
         let context = crate::context::copy_context(
             &crate::context::Context {
                 messages: Vec::new(),
@@ -38,6 +39,7 @@ impl ResponseProjection {
             .map(|file| crate::model::clone_file(file, io))
             .transpose()?;
         drop((
+            stored.model,
             stored.context.messages,
             stored.canonical,
             stored.checkpoint,
@@ -53,6 +55,7 @@ impl ResponseProjection {
             scope.finish(retained)?;
         }
         let projection = Self {
+            model,
             context,
             canonical: None,
             checkpoint: None,
@@ -83,6 +86,7 @@ pub(crate) async fn load_projection<'a>(
     #[cfg(feature = "filesystem")]
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     let projection = ResponseProjection {
+        model: crate::model::clone_model(&stored.model, io)?,
         context: crate::context::copy_context(&stored.context, io)?,
         canonical: stored
             .canonical
@@ -125,8 +129,11 @@ impl StockExecution<'_> {
         let mut projection = retain_preparation(
             load_projection(journal, reference, self.stock.limits, self.io).await?,
         )?;
-        let request =
-            self.request_from_messages(std::mem::take(&mut projection.context.messages))?;
+        let selected = self.recorded_model(&projection.model)?;
+        let request = self.request_from_messages_for(
+            selected,
+            std::mem::take(&mut projection.context.messages),
+        )?;
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         Ok((projection, prepared))

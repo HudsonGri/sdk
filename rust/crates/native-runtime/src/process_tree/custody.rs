@@ -10,7 +10,7 @@
 //!   locks its record, watches the owner (Linux: pidfd; macOS: kqueue
 //!   `NOTE_EXIT`) and forks the program. When the owner or the program exits
 //!   it kills every remaining descendant (Linux: as child subreaper; macOS:
-//!   its process group), unlinks the record and exits as the program did.
+//!   its session), unlinks the record and exits as the program did.
 //!   A fence takes each record's lock, which the kernel releases only when
 //!   the warden exits, so the identity of the waited-for tree never depends
 //!   on a PID. A record still linked after its lock is free belongs to a
@@ -121,6 +121,27 @@ impl Record {
             let mut storage = [0; 24];
             let name = super::warden::record_name(self.pid, &mut storage)
                 .ok_or(io::ErrorKind::InvalidInput)?;
+            // Completion and recovery share the same physical fence. Killing
+            // a warden outright must not erase custody of its surviving services.
+            // SAFETY: retained directory and NUL-terminated record name.
+            let descriptor = unsafe {
+                libc::openat(
+                    std::os::fd::AsRawFd::as_raw_fd(&self.directory),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                let error = io::Error::last_os_error();
+                return if error.kind() == io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                };
+            }
+            // SAFETY: exclusively owned descriptor from openat above.
+            let record = unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(descriptor) };
+            unix::fence_opened(record, self.pid)?;
             // SAFETY: a live directory descriptor and a NUL-terminated name.
             let removed = unsafe {
                 libc::unlinkat(
@@ -140,10 +161,11 @@ impl Record {
             }
         }
         #[cfg(windows)]
-        match fs::remove_file(&self.path) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
+        windows::fence(
+            &self.path,
+            self.path.file_name().ok_or(io::ErrorKind::InvalidData)?,
+        )
+        .map(|_| ())
     }
 }
 
@@ -192,11 +214,19 @@ mod unix {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
             Err(error) => return Err(error),
         };
+        fence_opened(record, pid)?;
+        match fs::remove_file(path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(true),
+        }
+    }
+
+    pub(super) fn fence_opened(record: File, pid: libc::pid_t) -> io::Result<()> {
         // Blocks until the warden, the lock's only other holder, has exited.
         let record = crate::FileLock::acquire(record, crate::FileLockMode::Exclusive)?;
         if record.metadata()?.nlink() == 0 {
             // The warden drained its tree and unlinked the record.
-            return Ok(true);
+            return Ok(());
         }
         let mut recorded = Vec::new();
         (&*record).read_to_end(&mut recorded)?;
@@ -211,10 +241,7 @@ mod unix {
         {
             fence_group(pid, start)?;
         }
-        match fs::remove_file(path) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(true),
-        }
+        Ok(())
     }
 
     /// Kills and awaits the group of a warden that was killed outright and
@@ -228,13 +255,30 @@ mod unix {
     /// group ID stays reserved while any member of the warden's group lives.
     fn fence_group(group: libc::pid_t, start: &[u8]) -> io::Result<()> {
         let mut current = [0; super::super::warden::START_BYTES];
-        match super::super::warden::start_identity(group, &mut current) {
-            Ok(length) if current.get(..length) != Some(start) => return Ok(()),
-            // Another user's process is never this owner's warden.
-            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return Ok(()),
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
+        use crate::process_identity::{IncarnationState, ProcessIncarnation, ProcessObservation};
+        let owner = ProcessIncarnation::new(
+            u32::try_from(group).map_err(|_| io::ErrorKind::InvalidData)?,
+            start,
+        )
+        .ok_or(io::ErrorKind::InvalidData)?;
+        let observation = match super::super::warden::start_identity(group, &mut current) {
+            Ok(length) => ProcessObservation::Present {
+                started: current.get(..length).ok_or(io::ErrorKind::InvalidData)?,
+                exited: false,
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => ProcessObservation::Absent,
+            Err(error) => return Err(error),
+        };
+        match owner.observe(observation) {
+            IncarnationState::Replaced => return Ok(()),
+            IncarnationState::Unknown => return Err(io::ErrorKind::InvalidData.into()),
+            // Unlike a Windows process handle, a POSIX group can outlive its
+            // absent or zombie leader. Retain the group until every member exits.
+            IncarnationState::Running | IncarnationState::Exited | IncarnationState::Absent => {}
         }
+        #[cfg(target_vendor = "apple")]
+        return fence_session(group);
+        #[cfg(target_os = "linux")]
         loop {
             // SAFETY: a negative PID names exactly this process group.
             if unsafe { libc::kill(-group, libc::SIGKILL) } != 0 {
@@ -249,6 +293,18 @@ mod unix {
                 return Ok(());
             }
         }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn fence_session(session: libc::pid_t) -> io::Result<()> {
+        // SAFETY: kqueue has no preconditions.
+        let queue = unsafe { libc::kqueue() };
+        if queue < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: exclusively owned descriptor just created.
+        let queue = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(queue) };
+        super::super::warden::session::drain(queue.as_raw_fd(), session)
     }
 
     /// Waits for the live members of `group` to exit. False when none lived.
@@ -310,32 +366,6 @@ mod unix {
         }
         Ok(true)
     }
-
-    #[cfg(target_vendor = "apple")]
-    fn await_members(group: libc::pid_t) -> io::Result<bool> {
-        use super::super::warden::{group_members, next_exit, watch_exit};
-        let mut members = [0; 256];
-        let count = group_members(group, &mut members)?;
-        // SAFETY: kqueue has no preconditions.
-        let queue = unsafe { libc::kqueue() };
-        if queue < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the queue just created.
-        let queue = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(queue) };
-        let mut live = 0_usize;
-        for member in members.iter().take(count).copied() {
-            if member > 0 && watch_exit(queue.as_raw_fd(), member)? {
-                live += 1;
-            }
-        }
-        let any = live > 0;
-        while live > 0 {
-            next_exit(queue.as_raw_fd())?;
-            live -= 1;
-        }
-        Ok(any)
-    }
 }
 #[cfg(unix)]
 use unix::fence;
@@ -344,35 +374,18 @@ use unix::fence;
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_FILE_NOT_FOUND, FILETIME, HANDLE, WAIT_FAILED,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_FAILED};
     use windows_sys::Win32::System::JobObjects::{
         JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, OpenJobObjectW,
         QueryInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_SYNCHRONIZE,
-        WaitForMultipleObjects,
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
     };
 
     const PREFIX: &str = "acyclic-process-tree-";
     // JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE.
     const JOB_ACCESS: u32 = 0x0004 | 0x0008;
-
-    /// This process's creation time, in 100 ns intervals since 1601.
-    fn creation_time() -> io::Result<u64> {
-        let mut times = [FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        }; 4];
-        let [creation, exit, kernel, user] = &mut times;
-        // SAFETY: the current-process pseudo-handle and four writable times.
-        if unsafe { GetProcessTimes(GetCurrentProcess(), creation, exit, kernel, user) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
-    }
 
     /// The Job name a record names, NUL-terminated.
     pub(in crate::process_tree) fn job_name(record: &str) -> Vec<u16> {
@@ -395,7 +408,7 @@ mod windows {
             let name = format!(
                 "{PREFIX}{}-{}-{sequence}",
                 std::process::id(),
-                creation_time()?
+                crate::process_identity::current_process_started()?
             );
             let path = self.path.join(&name);
             fs::OpenOptions::new()
@@ -442,12 +455,14 @@ mod windows {
             // A member leaves the Job's list before its process has fully
             // exited; the custodian exits only once each has, so its exit
             // ends the fence.
-            let fenced = terminate_and_await(job)
-                .and_then(|()| custodian.map_or(Ok(()), super::super::custodian::await_custodian));
+            let fenced = terminate_and_await(job);
             // SAFETY: the Job handle opened above.
             unsafe { CloseHandle(job) };
             fenced?;
         }
+        // A Job can disappear before its custodian finishes exiting. Missing Job
+        // lookup is not permission to remove that custodian's durable identity.
+        custodian.map_or(Ok(()), super::super::custodian::await_custodian)?;
         match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(true),

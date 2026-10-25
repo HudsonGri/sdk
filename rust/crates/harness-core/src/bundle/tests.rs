@@ -489,7 +489,6 @@ async fn private_writer_defaults_require_capacity_before_bundle_turn_effects() -
         Some(crate::context::CompactionPolicy::default()),
         Some(crate::context::CompactionPolicy::Disabled),
     ] {
-        let disabled = policy == Some(crate::context::CompactionPolicy::Disabled);
         let provider =
             Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting());
         let journal = Arc::new(RecordingTurnJournal::default());
@@ -523,26 +522,14 @@ async fn private_writer_defaults_require_capacity_before_bundle_turn_effects() -
                 max_steps: 1,
             })
             .await;
-        // Explicit Disabled is the negative control for an incorrectly disabled
-        // writer-backed default: it reaches the journal instead of the capacity gate.
-        let expected = if disabled {
-            "stock journal dispatch forbidden"
-        } else {
-            "selected model context capacity is unavailable"
-        };
+        // Disabling summaries cannot disable capacity admission, with or
+        // without a private writer. Unknown capacity is rejected before effects.
         assert!(
-            matches!(&result, Err(Error::Unsupported(message)) if message == expected),
+            matches!(&result, Err(Error::Unsupported(message)) if message == "selected model context capacity is unavailable"),
             "{result:?}"
         );
         assert!(provider.requests().is_empty());
-        if disabled {
-            assert!(matches!(
-                journal.events.lock().unwrap().as_slice(),
-                [crate::executor::ExecutionEvent::Started { .. }]
-            ));
-        } else {
-            assert!(journal.events.lock().unwrap().is_empty());
-        }
+        assert!(journal.events.lock().unwrap().is_empty());
     }
     Ok(())
 }
@@ -574,11 +561,11 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
         selected_context: None,
         max_steps: 1,
     };
-    // Without a private summary volume the default runs uncompacted: it needs
-    // no context capacity and passes turn entry to its first journal append.
+    // A writerless task runs without automatic summaries but still requires
+    // capacity admission before its first journal append.
     let uncompacted = bundle.run(turn()).await;
     assert!(
-        matches!(&uncompacted, Err(Error::Unsupported(message)) if message == "stock journal dispatch forbidden"),
+        matches!(&uncompacted, Err(Error::Unsupported(message)) if message == "selected model context capacity is unavailable"),
         "{uncompacted:?}"
     );
     // Explicitly arming compaction there is rejected at turn entry, before

@@ -11,6 +11,7 @@ fn request(count: usize) -> Result<ModelRequest> {
         });
     }
     Ok(ModelRequest {
+        conversation_id: None,
         model: Model::new(
             "test".into(),
             "inventory".into(),

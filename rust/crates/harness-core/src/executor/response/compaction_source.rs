@@ -22,7 +22,7 @@ impl StockExecution<'_> {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
             let request = crate::model::PreparedModelRequest::prepare(
-                self.request_from_context(&base)?,
+                self.request_from_context_for(self.recorded_model(&projection.model)?, &base)?,
                 self.stock.limits,
                 self.io,
             )?;
