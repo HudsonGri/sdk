@@ -63,11 +63,16 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
     }
 }
 
-/// Names issued by [`shared_view_destination`] and not yet listed. A name
-/// leaves the set when its view is listed, so no name is ever listed twice
-/// and the set holds only names in flight.
-static ISSUED: std::sync::Mutex<(u64, Option<std::collections::HashSet<u64>>)> =
-    std::sync::Mutex::new((0, None));
+/// The last serial [`shared_view_destination`] issued.
+static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Names issued and not yet listed, kept only where a view's listing
+/// claims its name (Windows). A name leaves the set when its view is
+/// listed, so no name is ever listed twice and the set holds only names in
+/// flight; elsewhere nothing would ever take a name out.
+#[cfg(windows)]
+static UNLISTED: std::sync::Mutex<Option<std::collections::HashSet<u64>>> =
+    std::sync::Mutex::new(None);
 
 const ISSUED_PREFIX: &str = "v";
 
@@ -78,12 +83,13 @@ const ISSUED_PREFIX: &str = "v";
 /// later view of the same name.
 pub fn shared_view_destination() -> Result<PathBuf, NativeMountError> {
     let root = shared_view_root()?;
-    let mut issued = ISSUED
+    #[cfg(windows)]
+    let mut unlisted = UNLISTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    issued.0 += 1;
-    let serial = issued.0;
-    issued.1.get_or_insert_default().insert(serial);
+    let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    #[cfg(windows)]
+    unlisted.get_or_insert_default().insert(serial);
     Ok(root.join(format!("{ISSUED_PREFIX}{serial:016x}")))
 }
 
@@ -98,10 +104,9 @@ pub(in crate::native_mount) fn claim_issued_name(name: &std::ffi::OsStr) -> bool
     else {
         return false;
     };
-    ISSUED
+    UNLISTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .1
         .as_mut()
         .is_some_and(|unlisted| unlisted.remove(&serial))
 }
