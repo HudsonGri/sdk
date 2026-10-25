@@ -3,8 +3,8 @@
 
 Run on the host OS with prebuilt binaries; never starts a model or reads a login.
 Codex uses its own sandbox CLI. Claude uses its real Bash tool and sandbox with
-a scripted HTTP response. Pi uses its real RPC Bash tool; Pi has no native
-sandbox, so an externally supplied Pi sandbox must be qualified separately.
+a scripted HTTP response. Pi uses its real RPC Bash tool; --pi-sandbox-codex
+launches Pi under the pinned Codex workspace-write profile to test inheritance.
 """
 import argparse
 import http.server
@@ -42,7 +42,7 @@ def inside(config):
         Path(cfg['outside']).write_text('must be refused by the host')
     except OSError:
         blocked = True
-    assert blocked == (cfg['host'] != 'pi'), 'host sandbox boundary changed'
+    assert blocked == cfg['outside_write_blocked'], 'host sandbox boundary changed'
 
     def cli(args, cwd=workspace, payload=None):
         env = dict(os.environ)
@@ -130,8 +130,14 @@ def scripted_model(command):
     return Handler
 
 
-def pi_command(binary, command, *, cwd, env, log):
-    native = subprocess.Popen([binary, '--mode', 'rpc', '--no-session', '--no-skills',
+def codex_sandbox(binary, workspace):
+    return [binary, 'sandbox', '-c', 'sandbox_mode="workspace-write"', '-c',
+            'approval_policy="never"', '-c', 'sandbox_workspace_write.writable_roots=' +
+            json.dumps([str(workspace)]), '--']
+
+
+def pi_command(binary, command, *, cwd, env, log, prefix=()):
+    native = subprocess.Popen([*prefix, binary, '--mode', 'rpc', '--no-session', '--no-skills',
                                '--no-prompt-templates', '--no-themes'], cwd=cwd, env=env,
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                               text=True, bufsize=1)
@@ -168,11 +174,13 @@ def main():
     parser.add_argument('--native')
     parser.add_argument('--package')
     parser.add_argument('--scratch')
+    parser.add_argument('--pi-sandbox-codex')
     args = parser.parse_args()
     if args.inside:
         inside(args.inside)
         return
     assert all([args.host, args.binary, args.graphcoder, args.native, args.package, args.scratch])
+    assert not args.pi_sandbox_codex or args.host == 'pi'
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='plugin-sandbox-', dir=args.scratch) as fixture:
         root = Path(fixture)
@@ -228,14 +236,14 @@ def main():
                 config = workspace / 'sandbox-config.json'
                 config.write_text(json.dumps(dict(host=args.host, workspace=str(workspace), view=str(view),
                     binary=args.binary, parent=parent['task'], child=child['task'], negative=str(negative),
-                    external_data=str(external), outside=str(state / 'forbidden'))))
+                    external_data=str(external), outside=str(state / 'forbidden'),
+                    outside_write_blocked=args.host != 'pi' or bool(args.pi_sandbox_codex))))
                 probe = workspace / 'sandbox-commands.py'
                 shutil.copyfile(__file__, probe)
                 command = shlex.join([sys.executable, str(probe), '--inside', str(config)])
                 if args.host == 'codex':
-                    checked([args.native, 'sandbox', '-c', 'sandbox_mode="workspace-write"', '-c',
-                             'approval_policy="never"', '-c', 'sandbox_workspace_write.writable_roots=' +
-                             json.dumps([str(workspace)]), '--', sys.executable, str(probe), '--inside', str(config)],
+                    checked([*codex_sandbox(args.native, workspace),
+                             sys.executable, str(probe), '--inside', str(config)],
                             cwd=workspace, env=env)
                 elif args.host == 'claude-code':
                     policy = root / 'policy.json'
@@ -270,15 +278,22 @@ def main():
                             outcome = json.loads(event['stdout'])
                             assert outcome.get('continue') is not False, outcome
                 else:
+                    prefix = ()
+                    if args.pi_sandbox_codex:
+                        profile = workspace / '.acyclic-sdk/pi-fixture'
+                        profile.mkdir()
+                        env['PI_CODING_AGENT_DIR'] = str(profile)
+                        prefix = codex_sandbox(args.pi_sandbox_codex, workspace)
                     checked([args.binary, 'install', 'pi', '--plugin-root', args.package, '--settings',
                              str(Path(env['PI_CODING_AGENT_DIR']) / 'extensions/acyclic.ts')], cwd=workspace, env=env)
-                    pi_command(args.native, command, cwd=workspace, env=env, log=native_log)
+                    pi_command(args.native, command, cwd=workspace, env=env, log=native_log, prefix=prefix)
                     session = action({'kind': 'hook', 'host': 'pi', 'event': 'NativeSession',
                                       'input': {'task': parent['task']}})
                     assert session['id'], 'native Pi extension did not attach its session'
                 result_path = workspace / 'sandbox-result.json'
                 assert result_path.exists(), (root / 'native.log').read_text()[-5000:]
                 result = json.loads(result_path.read_text())
+                result['inherited_codex_workspace_write'] = bool(args.pi_sandbox_codex)
                 for name in ['XDG_STATE_HOME', 'XDG_DATA_HOME', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA']:
                     assert not list(Path(env[name]).iterdir()), f'client wrote external {name}'
                 result['seconds'] = time.monotonic() - started

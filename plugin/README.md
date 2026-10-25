@@ -106,6 +106,11 @@ that case explicitly reports Pi's unrestricted default. Each case checks agents,
 log, capture, merge, discard and the hook command, with an external-data mailbox
 negative control. These probes do not replace the independent live matrix.
 
+On Linux, `--host pi --pi-sandbox-codex /path/to/codex` launches native Pi under
+that host's existing workspace-write sandbox. The same command contract then
+requires outside writes to fail. This tests inherited restrictions without
+adding a sandbox implementation to Pi or the plugin.
+
 The separate [identity package](identity-mcp.md) retains its command surface.
 
 The probe-only resource check exercises each production host adapter with
@@ -149,3 +154,5 @@ python3 plugin/tests/hosts/settled-session.py ACYCLIC
 
 Settled empty and stopped sessions must remain read-only. Queued messages must
 reach the next-input claim; orphaned turns must recover before claiming.
+Pending waits reuse the refresh or completion observation for that child;
+responding to a waiter must not issue a second observation request.
