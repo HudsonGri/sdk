@@ -56,7 +56,8 @@ impl<A, O> FilesystemContentVerifier<A, O> {
                     .observer()?
                     .allocation_attempt(std::mem::size_of::<Self>() as u64)?;
                 let authority_bytes = (std::mem::size_of::<crate::core::VerifiedScope>()
-                    + 2 * std::mem::size_of::<usize>()) as u64;
+                    + 2 * std::mem::size_of::<usize>())
+                    as u64;
                 quota.retain(authority_bytes)?;
                 quota.observer()?.allocation_attempt(1)?;
             }
