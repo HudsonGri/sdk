@@ -84,13 +84,17 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             Err(Error::NotFound(_))
         ));
     }
-    journal.scope = issuer.issue(
+    let writer = issuer.issue(
         "writer",
         &crate::Capabilities::new([write]),
         Some(agent),
         None,
         &mut None,
     )?;
+    journal.authority = journal
+        .authority
+        .verifier()
+        .authenticate_scope(&writer, &mut None)?;
     assert!(matches!(
         journal.staged_ref_with_io(operation, key, None).await,
         Err(Error::Unauthorized(_))

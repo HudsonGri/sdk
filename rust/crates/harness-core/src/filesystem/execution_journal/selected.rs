@@ -43,8 +43,8 @@ where
                 StreamAggregate::open(
                     &self.stream,
                     (
-                        self.verifier.audience().clone(),
-                        self.verifier.clone(),
+                        self.authority.verifier().audience().clone(),
+                        self.authority.verifier().clone(),
                         self.schemas.clone(),
                     ),
                     None,
@@ -67,8 +67,8 @@ where
             *aggregate = StreamAggregate::open(
                 &self.stream,
                 (
-                    self.verifier.audience().clone(),
-                    self.verifier.clone(),
+                    self.authority.verifier().audience().clone(),
+                    self.authority.verifier().clone(),
                     self.schemas.clone(),
                 ),
                 None,
@@ -138,8 +138,8 @@ where
         let lookup_bytes = 2 * acyclic_stream::MAX_RECORD_BYTES as u64;
         let (event, _) = crate::store::operations::find_operation_bounded_with_work(
             &self.stream,
-            self.verifier.audience(),
-            &self.verifier,
+            self.authority.verifier().audience(),
+            self.authority.verifier(),
             turn_operation,
             lookup_bytes,
             true,
@@ -190,8 +190,8 @@ where
         for id in &committed.message_ids {
             let (message, _) = crate::store::operations::find_message_with_work(
                 &self.stream,
-                self.verifier.audience(),
-                &self.verifier,
+                self.authority.verifier().audience(),
+                self.authority.verifier(),
                 *id,
                 event.revision,
                 lookup_bytes,

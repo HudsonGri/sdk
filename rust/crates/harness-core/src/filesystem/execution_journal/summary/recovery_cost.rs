@@ -48,8 +48,8 @@ async fn check_cold_recovery(native: bool) -> Result<()> {
             &SchemaRegistry::new(),
             crate::filesystem::FilesystemJournalBinding {
                 volume: &original.volume,
-                verifier: &original.verifier,
-                scope: &original.scope,
+                verifier: original.authority.verifier(),
+                scope: original.authority.scope(),
                 maximum_bytes: original.maximum_payload_bytes,
                 io: None,
             },

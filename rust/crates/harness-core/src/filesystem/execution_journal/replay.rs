@@ -229,9 +229,8 @@ where
                             .await?;
                     let model = if authenticated {
                         crate::executor::with_history_io(io, |work| {
-                            ContentGrant::authorize_volume(
-                                &self.verifier,
-                                &self.scope,
+                            ContentGrant::authorize_authenticated_volume(
+                                &self.authority,
                                 &self.volume,
                                 VolumeOperation::Read,
                                 io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))

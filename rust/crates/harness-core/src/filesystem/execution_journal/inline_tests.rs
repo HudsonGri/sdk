@@ -253,20 +253,24 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
     let (mut journal, _issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
-    let original = journal.scope.clone();
+    let original = journal.authority.clone();
     let issuer = crate::core::AuthorityIssuer::new(
         "append-cost",
         [81; 32],
-        journal.verifier.audience().clone(),
+        journal.authority.verifier().audience().clone(),
     );
     for grant in [VolumeOperation::Read, VolumeOperation::Write] {
-        journal.scope = issuer.issue(
+        let scope = issuer.issue(
             "owner",
             &crate::Capabilities::new([journal.volume.capability(grant, &mut None)?]),
             Some(crate::AgentId::from_bytes([81; 16])),
             None,
             &mut None,
         )?;
+        journal.authority = journal
+            .authority
+            .verifier()
+            .authenticate_scope(&scope, &mut None)?;
         assert!(
             crate::executor::append_model_event(
                 &journal,
@@ -281,7 +285,7 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             "missing opposite grant for {grant:?}"
         );
     }
-    journal.scope = original;
+    journal.authority = original;
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
     crate::executor::append_model_event(
         &journal,
@@ -293,13 +297,17 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
     )
     .await?;
     for grant in [VolumeOperation::Read, VolumeOperation::Write] {
-        journal.scope = issuer.issue(
+        let scope = issuer.issue(
             "owner",
             &crate::Capabilities::new([journal.volume.capability(grant, &mut None)?]),
             Some(crate::AgentId::from_bytes([81; 16])),
             None,
             &mut None,
         )?;
+        journal.authority = journal
+            .authority
+            .verifier()
+            .authenticate_scope(&scope, &mut None)?;
         assert_eq!(
             journal.records(operation, 0, 64, None).await.is_ok(),
             grant == VolumeOperation::Read,
@@ -349,7 +357,7 @@ async fn owned_journal(
         fixture.stream.clone(),
         &fixture.storage,
         &fixture.issuer.verifier(&mut None)?,
-        &journal.scope,
+        journal.authority.scope(),
         65_536,
     )
     .await?;

@@ -3,6 +3,42 @@ use super::*;
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod tests;
 
+/// Admit immutable authentication and its private-volume write binding together.
+fn journal_authority(
+    verifier: &AuthorityVerifier,
+    scope: &Scope,
+    volume: &VolumeRef,
+    io: Option<&PreparationIo>,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<(crate::core::VerifiedScope, ContentGrant)> {
+    let authority = verifier.authenticate_scope(scope, quota.work())?;
+    quota.adopt(authority.logical_owned_bytes()?)?;
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        let maximum = io
+            .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+            .transpose()?
+            .unwrap_or(u64::MAX);
+        ContentGrant::authorize_authenticated_volume(
+            &authority,
+            volume,
+            operation,
+            maximum,
+            quota.work(),
+        )?;
+    }
+    let write_grant = ContentGrant::verify_in_quota(
+        verifier,
+        scope,
+        volume,
+        VolumeOperation::Write,
+        io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+            .transpose()?
+            .unwrap_or(u64::MAX),
+        quota,
+    )?;
+    Ok((authority, write_grant))
+}
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -193,15 +229,6 @@ where
                 "execution journal requires a private volume and positive limit",
             ));
         }
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            let maximum = io
-                .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                .transpose()?
-                .unwrap_or(u64::MAX);
-            crate::executor::with_history_io(io, |work| {
-                ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work)
-            })?;
-        }
         if !matches!(
             verifier.audience().kind,
             crate::core::AggregateKind::Conversation | crate::core::AggregateKind::Task
@@ -216,9 +243,8 @@ where
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
         let volume = volume.copy_in_quota(&mut quota)?;
-        let verifier = verifier.copy_in_quota(&mut quota)?;
         let schemas = schemas.copy(quota.work())?;
-        let scope = scope.copy_in_quota(&mut quota)?;
+        let (authority, write_grant) = journal_authority(verifier, scope, &volume, io, &mut quota)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(),
@@ -227,8 +253,8 @@ where
                 &schemas,
                 crate::filesystem::FilesystemJournalBinding {
                     volume: &volume,
-                    verifier: &verifier,
-                    scope: &scope,
+                    verifier,
+                    scope,
                     maximum_bytes: maximum_payload_bytes,
                     io,
                 },
@@ -242,8 +268,8 @@ where
             stream,
             host,
             volume,
-            verifier,
-            scope,
+            authority,
+            write_grant,
             schemas,
             maximum_payload_bytes,
             input_verifier: None,
@@ -291,7 +317,7 @@ where
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
-        } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
+        } else if self.authority.verifier().audience().kind == crate::core::AggregateKind::Task {
             return Err(crate::filesystem::interaction_host::interaction_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

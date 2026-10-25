@@ -136,7 +136,8 @@ where
         }
         crate::executor::with_history_io(io, |work| {
             let digest = crate::model::hash_bytes(&codec::state_bytes(&checkpoint.state, io)?, io)?;
-            self.verifier
+            self.authority
+                .verifier()
                 .verify_execution_checkpoint(digest, &checkpoint.proof, work)
         })
     }
@@ -219,9 +220,8 @@ where
     ) -> Result<Option<(IndexState, u64)>> {
         self.require_operation(operation, io)?;
         crate::executor::with_history_io(io, |work| {
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
                 &self.volume,
                 VolumeOperation::Read,
                 self.maximum_payload_bytes,
@@ -322,7 +322,9 @@ where
         let bytes = codec::state_bytes(&state, io)?;
         let digest = crate::model::hash_bytes(&bytes, io)?;
         let proof = crate::executor::with_history_io(io, |work| {
-            self.verifier.execution_checkpoint_proof(digest, work)
+            self.authority
+                .verifier()
+                .execution_checkpoint_proof(digest, work)
         })?;
         codec::encode_state(&bytes, &proof, io)
     }

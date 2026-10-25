@@ -60,11 +60,11 @@ where
     }
 
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
-        Some(self.verifier.audience())
+        Some(self.authority.verifier().audience())
     }
 
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
-        Some(&self.verifier)
+        Some(self.authority.verifier())
     }
 
     fn indexed_records<'a>(
@@ -321,7 +321,7 @@ where
                 key,
                 prepared,
                 previous,
-                &self.verifier,
+                self.authority.verifier(),
                 io,
             )
         })

@@ -77,7 +77,14 @@ async fn published_summary() -> Result<(MemoryHarnessStorage, Journal, Operation
     storage
         .run_conversation(&bundle, operation, current, vec![], 1)
         .await?;
-    let host = FilesystemHost::new(filesystem, storage.volume().provider(), None)?;
+    let host = FilesystemHost::new(
+        filesystem,
+        storage.volume().provider(),
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let input = crate::filesystem::FilesystemContentVerifier::new(
         host.clone(),
         &storage.verifier(),

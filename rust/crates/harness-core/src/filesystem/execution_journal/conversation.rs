@@ -37,8 +37,8 @@ where
             .put_internal_content(
                 &self.volume,
                 &ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
+                    self.authority.verifier(),
+                    self.authority.scope(),
                     &self.volume,
                     VolumeOperation::Write,
                     u64::MAX,
@@ -88,8 +88,8 @@ where
                 .put_internal_content(
                     &self.volume,
                     &ContentGrant::verify(
-                        &self.verifier,
-                        &self.scope,
+                        self.authority.verifier(),
+                        self.authority.scope(),
                         &self.volume,
                         VolumeOperation::Write,
                         u64::MAX,
@@ -295,7 +295,7 @@ where
                         "conversation:{operation_id}:{label}"
                     ))?,
                     expected_revision: aggregate.reducer().revision(),
-                    scope: self.scope.clone(),
+                    scope: self.authority.scope().clone(),
                     causal_parent: None,
                     action,
                 },
@@ -381,8 +381,8 @@ where
                 .put_internal_content(
                     &self.volume,
                     &ContentGrant::verify(
-                        &self.verifier,
-                        &self.scope,
+                        self.authority.verifier(),
+                        self.authority.scope(),
                         &self.volume,
                         VolumeOperation::Write,
                         u64::MAX,

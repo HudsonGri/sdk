@@ -56,6 +56,11 @@ fn compact_evidence(
     Ok(evidence)
 }
 impl VerifiedScope {
+    #[cfg(feature = "filesystem")]
+    pub(crate) const fn verifier(&self) -> &AuthorityVerifier {
+        &self.verifier
+    }
+
     pub(crate) const fn scope(&self) -> &Scope {
         &self.scope
     }

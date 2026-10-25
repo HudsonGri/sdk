@@ -40,9 +40,8 @@ where
             (hold, key, path)
         };
         crate::executor::with_history_io(io, |work| {
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
                 &self.volume,
                 VolumeOperation::Read,
                 io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
@@ -61,7 +60,7 @@ where
                     maximum_bytes: self.maximum_payload_bytes,
                     internal_class: Some(InternalContentClass::Execution),
                     purpose: super::super::PublicationPurpose::Content,
-                    scope: &self.scope,
+                    scope: self.authority.scope(),
                     ceiling: None,
                 },
                 io,
@@ -127,10 +126,9 @@ where
                 .transpose()?;
             (_identity_hold, key, path)
         };
-        let grant = crate::executor::with_history_io(io, |work| {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
                 &self.volume,
                 VolumeOperation::Write,
                 io.map_or(Ok(u64::MAX), |io| {
@@ -139,14 +137,11 @@ where
                 work,
             )
         })?;
-        let grant_hold = io
-            .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-            .transpose()?;
         let result = self
             .host
             .put_internal_content(
                 &self.volume,
-                &grant,
+                &self.write_grant,
                 &path,
                 bytes,
                 media_type,
@@ -163,8 +158,6 @@ where
                 payload_stages = 1_u64, payload_stage_bytes = bytes.len() as u64,
                 "execution payload published");
         }
-        drop(grant);
-        drop(grant_hold);
         result
     }
 
@@ -185,9 +178,8 @@ where
             .transpose()?
             .unwrap_or(u64::MAX);
         crate::executor::with_history_io(io, |work| {
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
                 &self.volume,
                 VolumeOperation::Read,
                 maximum,
@@ -224,9 +216,8 @@ where
             ));
         }
         crate::executor::with_history_io(io, |work| {
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
                 &self.volume,
                 operation,
                 io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
@@ -313,7 +304,7 @@ where
                             bytes, scope.io()
                         )?)?;
                         if manifest.authenticates(
-                            &self.verifier,
+                            self.authority.verifier(),
                             limits,
                             *request_digest,
                             scope.io(),
@@ -434,9 +425,9 @@ where
                     ));
                 }
                 let mut work = io.history_io();
-                self.verifier.verify(&self.scope, &mut Some(&mut work))?;
+                self.authority.recheck(&mut Some(&mut work))?;
                 if !io.contains_capability(
-                    self.scope.capabilities(),
+                    self.authority.scope().capabilities(),
                     reference,
                     acyclic_fs::access::FILE_READ_PREFIX,
                 )? {
@@ -448,9 +439,8 @@ where
                 }
             } else {
                 crate::executor::with_history_io(Some(io), |work| {
-                    ContentGrant::authorize_volume(
-                        &self.verifier,
-                        &self.scope,
+                    ContentGrant::authorize_authenticated_volume(
+                        &self.authority,
                         reference.volume(),
                         VolumeOperation::Read,
                         io.remaining()?.bytes_encoded,
@@ -470,11 +460,15 @@ where
             let grant = if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
-                ContentGrant::verify_file_read(&self.verifier, &self.scope, reference)?
+                ContentGrant::verify_file_read(
+                    self.authority.verifier(),
+                    self.authority.scope(),
+                    reference,
+                )?
             } else {
                 ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
+                    self.authority.verifier(),
+                    self.authority.scope(),
                     reference.volume(),
                     VolumeOperation::Read,
                     self.maximum_payload_bytes,

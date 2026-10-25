@@ -271,8 +271,8 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
         &SchemaRegistry::new(),
         crate::filesystem::FilesystemJournalBinding {
             volume: &first.volume,
-            verifier: &first.verifier,
-            scope: &first.scope,
+            verifier: first.authority.verifier(),
+            scope: first.authority.scope(),
             maximum_bytes: first.maximum_payload_bytes,
             io: None,
         },

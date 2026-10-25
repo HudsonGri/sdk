@@ -14,7 +14,14 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(
+        acyclic_fs::Fs::memory(),
+        &provider,
+        None,
+        acyclic_fs::WorkspaceLineageStorage::Memory(Arc::new(
+            acyclic_fs::MemoryWorkspaceLineageStore::new(),
+        )),
+    )?;
     let agent = crate::AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,

@@ -37,9 +37,8 @@ where
             let io = scratch.io();
             self.require_operation(operation, io)?;
             crate::executor::with_history_io(io, |work| {
-                ContentGrant::authorize_volume(
-                    &self.verifier,
-                    &self.scope,
+                ContentGrant::authorize_authenticated_volume(
+                    &self.authority,
                     &self.volume,
                     VolumeOperation::Read,
                     self.maximum_payload_bytes,

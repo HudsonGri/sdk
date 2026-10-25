@@ -167,7 +167,11 @@ where
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        workflow.require_execution_owner(owner, &self.volume, self.verifier.audience())?;
+        workflow.require_execution_owner(
+            owner,
+            &self.volume,
+            self.authority.verifier().audience(),
+        )?;
         let result = crate::NativeFutureBundle::new(work, || async {
             let mut borrowed = io.history_io();
             owner.verify(true, &mut Some(&mut borrowed)).await?;
