@@ -1,5 +1,4 @@
 //! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
-mod certification;
 mod codex;
 mod install;
 mod sessions;
@@ -108,10 +107,27 @@ fn internal(args: &[String]) -> Result<bool> {
             install::run(args)?;
         }
         "__verify-certification" => {
-            let [_, path] = args else {
-                return Err("certification verification requires RECEIPT".into());
+            let path = match args {
+                [_, path] => path,
+                [_, path, version] if version == env!("CARGO_PKG_VERSION") => path,
+                _ => return Err("step=admit installed certification version; recovery: install a package whose release version matches its executable, then run acyclic __verify-certification RECEIPT VERSION".into()),
             };
-            certification::verify(Path::new(path))?;
+            let receipt = verify_certification(
+                path,
+                &env::current_exe()?,
+                env::consts::OS,
+                env::consts::ARCH,
+                env!("CARGO_PKG_VERSION"),
+            )?;
+            if args.len() == 3 {
+                println!("{receipt}");
+            }
+        }
+        "__verify-release-certification" => {
+            let [_, receipt, executable, os, arch, version] = args else {
+                return Err("release certification verification requires RECEIPT EXECUTABLE OS ARCH VERSION; recovery: run acyclic __verify-release-certification with all five arguments".into());
+            };
+            verify_certification(receipt, Path::new(executable), os, arch, version)?;
         }
         "__installer-rename" => {
             let [_, from, to, mode] = args else {
@@ -127,6 +143,38 @@ fn internal(args: &[String]) -> Result<bool> {
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+fn verify_certification(
+    receipt: &str,
+    executable: &Path,
+    os: &str,
+    arch: &str,
+    version: &str,
+) -> Result<Value> {
+    let recovery = serde_json::to_string(&json!([
+        env::current_exe()?,
+        "__verify-release-certification",
+        receipt,
+        executable,
+        os,
+        arch,
+        version
+    ]))?;
+    let verify = || -> Result<Value> {
+        let document = acyclic_fs::mount_qualification::verify(
+            std::fs::File::open(receipt)?,
+            std::fs::File::open(executable)?,
+            acyclic_fs::mount_qualification::ReleaseTarget { os, arch, version },
+        )?;
+        Ok(document)
+    };
+    verify().map_err(|error| {
+        format!(
+            "step=verify native mount release certification: {error}; recovery argv: {recovery}"
+        )
+        .into()
+    })
 }
 
 fn action(task: TaskId, args: &[String]) -> Result<HostAction> {

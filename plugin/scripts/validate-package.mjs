@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
-const { sha256File } = require("../bin/verify.js");
+const { sha256File, verifyTarget } = require("../bin/verify.js");
 
 function fail(message) {
   throw new Error(message);
@@ -131,31 +131,21 @@ if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SU
 }
 if (args.require_universal) {
   const version = packageManifest.version;
+  const helper = verifyTarget(join(plugin, "bin")).source;
   const receipts = [
-    ["linux-x64-gnu", "linux", "x86_64", "linux-fuse"],
-    ["darwin-arm64", "macos", "aarch64", "macos-nfs"],
-    ["win32-x64", "windows", "x86_64", "windows-projfs"],
+    ["linux-x64-gnu", "linux", "x86_64"],
+    ["darwin-arm64", "macos", "aarch64"],
+    ["win32-x64", "windows", "x86_64"],
   ];
-  for (const [target, os, arch, backend] of receipts) {
+  for (const [target, os, arch] of receipts) {
     const path = join(plugin, "certification", `native-mount-${target}.json`);
     if (!existsSync(path) || !statSync(path).isFile()) fail(`missing certification receipt: ${path}`);
-    const receipt = JSON.parse(readFileSync(path, "utf8"));
-    if (
-      receipt.schema !== "acyclic-native-mount-qualification-v2"
-      || receipt.os !== os
-      || receipt.arch !== arch
-      || receipt.required_kind !== backend
-      || receipt.release_version !== version
-      || receipt.passed !== true
-      || typeof receipt.executable_blake3 !== "string"
-      || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
-      || receipt.capability?.kind !== backend
-      || receipt.capability?.available !== true
-      || receipt.capability?.writable !== true
-      || receipt.capability?.provider_process_io_observable !== (os !== "windows")
-      || receipt.capability?.session_isolation !== "SharedProcess"
-      || receipt.capability?.unavailable_reason !== null
-    ) fail(`invalid certification receipt: ${path}`);
+    const executable = verifyTarget(join(plugin, "bin"), target).source;
+    const argv = ["__verify-release-certification", path, executable, os, arch, version];
+    const verified = spawnSync(helper, argv, { stdio: "inherit", windowsHide: true });
+    if (verified.error || verified.status !== 0) {
+      fail(`step=verify ${target} certification${verified.error ? `: ${verified.error.message}` : ""}; recovery argv: ${JSON.stringify([helper, ...argv])}`);
+    }
   }
 }
 for (const target of args.require_target) {

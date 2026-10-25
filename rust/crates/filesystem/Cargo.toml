@@ -21,6 +21,10 @@ path = "tests/main.rs"
 name = "shared_storage_contract"
 path = "tests/shared_storage_contract.rs"
 
+[[test]]
+name = "mount-qualification"
+path = "tests/mount_qualification.rs"
+
 [[bench]]
 name = "lease_paths"
 harness = false

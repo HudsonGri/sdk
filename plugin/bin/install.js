@@ -84,40 +84,18 @@ function durableStateDirectory() {
 
 function installCertification(packageVersion, helper) {
   const target = hostTarget();
-  const platform = { linux: "linux", darwin: "macos", win32: "windows" }[process.platform];
-  const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
-  const backend = { linux: "linux-fuse", darwin: "macos-nfs", win32: "windows-projfs" }[process.platform];
-  if (!platform || !architecture || !backend) return;
   const name = `native-mount-${target}.json`;
   const source = join(__dirname, "..", "certification", name);
   if (!existsSync(source)) return;
-  const receipt = readJson(source);
-  if (
-    receipt.schema !== "acyclic-native-mount-qualification-v2"
-    || receipt.os !== platform
-    || receipt.arch !== architecture
-    || receipt.required_kind !== backend
-    || receipt.release_version !== packageVersion
-    || receipt.passed !== true
-    || typeof receipt.executable_blake3 !== "string"
-    || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
-    || receipt.capability?.kind !== backend
-    || receipt.capability?.available !== true
-    || receipt.capability?.writable !== true
-    || receipt.capability?.provider_process_io_observable !== (platform !== "windows")
-    || receipt.capability?.session_isolation !== "SharedProcess"
-    || receipt.capability?.unavailable_reason !== null
-  ) {
-    throw new Error(`invalid Acyclic platform certification receipt: ${name}`);
+  const verified = spawnSync(helper, ["__verify-certification", source, packageVersion], {
+    stdio: ["ignore", "pipe", "inherit"], encoding: "utf8", windowsHide: true,
+  });
+  if (verified.error || verified.status !== 0) {
+    const recovery = [helper, "__verify-certification", source, packageVersion];
+    throw new Error(`step=verify installed release certification${verified.error ? `: ${verified.error.message}` : ""}; recovery argv: ${JSON.stringify(recovery)}`);
   }
-  const testBypass = process.env.NODE_ENV === "test"
-    && process.env.ACYCLIC_INSTALL_TEST_CERTIFICATION === "1";
-  if (!testBypass) {
-    const verified = spawnSync(helper, ["__verify-certification", source], { stdio: "inherit", windowsHide: true });
-    if (verified.error || verified.status !== 0) {
-      throw new Error(`Acyclic platform certification does not match the installed binary${verified.error ? `: ${verified.error.message}` : ""}`);
-    }
-  }
+  // Publish the document returned by the verifier, never a second path read.
+  const receipt = JSON.parse(verified.stdout);
   const directory = join(durableStateDirectory(), "certification");
   mkdirSync(directory, { recursive: true });
   durableJson(join(directory, name), receipt, helper);
