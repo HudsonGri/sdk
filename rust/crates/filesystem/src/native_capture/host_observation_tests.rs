@@ -15,9 +15,10 @@ fn root_identity_keeps_the_real_native_open_failure() -> Result<(), Box<dyn std:
     for path in paths {
         // Observe the host's actual failure, rather than inventing errno or
         // assuming that different kernels reject a no-follow open identically.
-        let expected = match HostRoot::open(&path, &mut crate::native_host::ordinary_work()) {
-            Err(DemandError::Io(error)) => error,
-            _ => panic!("invalid root did not return a native open error: {path:?}"),
+        let Err(DemandError::Io(expected)) =
+            HostRoot::open(&path, &mut crate::native_host::ordinary_work())
+        else {
+            panic!("invalid root did not return a native open error: {path:?}");
         };
         match capture_root_identity(&path) {
             Err(CaptureError::Kernel(error)) => match *error {
