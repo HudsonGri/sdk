@@ -7,6 +7,13 @@ enum Event {
     Retired(Result<(), NativeMountError>),
 }
 
+#[derive(Clone, Copy)]
+enum Retirement {
+    Meter,
+    AcceptedWait,
+    LastOwner,
+}
+
 fn waiting_mount(
     polling: Sender<Event>,
     acknowledged: Receiver<()>,
@@ -38,7 +45,7 @@ fn waiting_mount(
 fn accepted_unmount_waits_for_kernel_ack_using_birth_credit()
 -> Result<(), Box<dyn std::error::Error>> {
     for interrupted in [false, true] {
-        interleaving(false, interrupted)?;
+        interleaving(Retirement::AcceptedWait, interrupted)?;
     }
     Ok(())
 }
@@ -46,12 +53,22 @@ fn accepted_unmount_waits_for_kernel_ack_using_birth_credit()
 #[test]
 fn accepted_unmount_waits_for_kernel_ack_on_meter() -> Result<(), Box<dyn std::error::Error>> {
     for interrupted in [false, true] {
-        interleaving(true, interrupted)?;
+        interleaving(Retirement::Meter, interrupted)?;
     }
     Ok(())
 }
 
-fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
+#[test]
+fn last_session_drop_waits_for_kernel_ack_using_birth_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    for interrupted in [false, true] {
+        interleaving(Retirement::LastOwner, interrupted)?;
+    }
+    Ok(())
+}
+
+fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let meter = matches!(mode, Retirement::Meter);
     let (source, _) = shared_sources(posix_config())?;
     let core = projection_core(
         Arc::new(source),
@@ -114,13 +131,28 @@ fn interleaving(meter: bool, interrupted: bool) -> Result<(), Box<dyn std::error
     };
     let caller = original.clone();
     let worker = std::thread::spawn(move || {
-        let wait = crate::CancellationToken::new();
-        let work = if meter {
-            NativeSessionStopWork::Meter(&caller)
-        } else {
-            NativeSessionStopWork::AcceptedWait(&wait)
+        let result = match mode {
+            Retirement::Meter => facade.stop(&NativeSessionStopWork::Meter(&caller)),
+            Retirement::AcceptedWait => {
+                let wait = crate::CancellationToken::new();
+                facade.stop(&NativeSessionStopWork::AcceptedWait(&wait))
+            }
+            Retirement::LastOwner => {
+                let mut owner = crate::NativeMountSession::new(
+                    crate::NativeMountRequest {
+                        mount_id: crate::MountId::new(),
+                        volume_id: crate::VolumeId::new(),
+                        destination: Path::new("/not-mounted").to_path_buf(),
+                        writable: false,
+                    },
+                    None,
+                    None,
+                );
+                owner.driver = Some(facade);
+                drop(owner);
+                Ok(())
+            }
         };
-        let result = facade.stop(&work);
         events.send(Event::Retired(result)).unwrap();
     });
     match observed.recv()? {
