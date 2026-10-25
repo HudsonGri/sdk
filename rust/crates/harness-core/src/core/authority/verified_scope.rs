@@ -60,6 +60,11 @@ impl VerifiedScope {
         &self.scope
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) const fn verifier(&self) -> &AuthorityVerifier {
+        &self.verifier
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn copy_verifier(
         &self,

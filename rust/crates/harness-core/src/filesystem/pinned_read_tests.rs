@@ -3,6 +3,8 @@ use crate::core::{AggregateKind, AuthorityIssuer};
 use proptest::prelude::*;
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+#[cfg(not(target_arch = "wasm32"))]
+mod authenticated;
 mod legacy;
 pub(super) mod retained;
 
