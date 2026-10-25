@@ -173,3 +173,62 @@ fn rejected(control: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
         "unexpected control failure: {message}"
     );
 }
+
+#[test]
+fn shared_registry_descriptor_serializes_threads_before_the_kernel_lock() {
+    registry::initialize().unwrap();
+    let fixture = tempfile::tempdir().unwrap();
+    let destination = fixture.path().join("checkout");
+    std::fs::create_dir(&destination).unwrap();
+    let state = fixture.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let base = rustix::fs::statx(
+        rustix::fs::CWD,
+        &destination,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW | rustix::fs::AtFlags::STATX_DONT_SYNC,
+        rustix::fs::StatxFlags::TYPE | rustix::fs::StatxFlags::MNT_ID,
+    )
+    .unwrap();
+    let helper = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
+    loom::model(move || {
+        let kernel =
+            super::super::disconnected::kernel::Kernel::install(base, helper, false, false);
+        kernel.set_registry_directory(state.clone());
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)
+        .unwrap();
+        let registry = registry::shared(&mut &work).unwrap();
+        let active = loom::sync::Arc::new(loom::sync::Mutex::new(0_u8));
+        let peer = {
+            let registry = registry.clone();
+            let active = active.clone();
+            let work = work.clone();
+            loom::thread::spawn(move || shared_admission(&registry, &active, &work))
+        };
+        shared_admission(&registry, &active, &work);
+        peer.join().unwrap();
+        assert_eq!(*active.lock().unwrap(), 0);
+    });
+}
+
+fn shared_admission(
+    registry: &registry::Registry,
+    active: &loom::sync::Mutex<u8>,
+    work: &NativeMaterializationWork,
+) {
+    let held = registry.lock(&mut &*work).unwrap();
+    {
+        let mut active = active.lock().unwrap();
+        *active += 1;
+        assert_eq!(
+            *active, 1,
+            "shared descriptor admitted concurrent registry owners"
+        );
+    }
+    loom::thread::yield_now();
+    *active.lock().unwrap() -= 1;
+    held.unlock(&mut &*work).unwrap();
+}
