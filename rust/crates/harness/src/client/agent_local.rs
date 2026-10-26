@@ -156,7 +156,16 @@ impl LocalAgentClient {
     /// Classify composer syntax with the canonical catalog. Non-prompt actions
     /// remain typed client intents and must never become model prompt text.
     pub async fn resolve_command(&self, text: &str) -> Result<CommandResolution> {
-        Ok(self.catalog.resolve(text, &*self.reader, MAXIMUM_AGENT_PROMPT_BYTES as u64).await?)
+        let resolution = self.catalog.resolve(text, &*self.reader, MAXIMUM_AGENT_PROMPT_BYTES as u64).await?;
+        if let CommandResolution::Prompt { text, source, mentions } = &resolution
+            && (source.is_some() || !mentions.is_empty() || !super::file_mention_paths(text)?.is_empty())
+        {
+            // The current host entry stages plain text only. Passing just the
+            // expanded text would silently discard pinned template/file input.
+            // Keep the typed refusal until the host's ModelContent entry lands.
+            return Err(Error::Unsupported("file and template prompt submission is not available".into()).into());
+        }
+        Ok(resolution)
     }
 
     /// Stage and send one user intent through the LocalHarness actor entry.
