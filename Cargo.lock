@@ -87,8 +87,8 @@ dependencies = [
 name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
- "acyclic-differential",
  "acyclic-contract-derive",
+ "acyclic-differential",
  "acyclic-proto-build",
  "acyclic-test-support",
  "ed25519-dalek",
@@ -343,6 +343,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-search",
  "acyclic-harness-tui",
@@ -408,6 +409,13 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "which",
+]
+
+[[package]]
+name = "acyclic-harness-client"
+version = "0.2.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -505,8 +513,8 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
- "acyclic-native-runtime",
  "acyclic-harness-core",
+ "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
  "blake3",
@@ -792,7 +800,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "windows 0.62.2",
+ "windows",
  "windows-sys 0.61.2",
  "zeroize",
 ]
