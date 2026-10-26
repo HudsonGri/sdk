@@ -16,14 +16,19 @@ struct State {
     failure: Option<io::Error>,
 }
 
-fn retire_child(state: &mut State, child: Child) -> io::Result<ExitStatus> {
-    // Return the original child before entering the one ordered retirement
-    // path. In particular, Unix must retain its unreaped identity if removing
-    // the recovery record fails.
-    state.tree.child = Some(child);
-    let status = state.tree.try_wait(None);
-    state.tree.terminate(None)?;
-    status?.ok_or_else(|| io::ErrorKind::NotFound.into())
+fn retire_after_observation(
+    tree: &mut ProcessTree,
+    child: Child,
+    observed: io::Result<()>,
+) -> io::Result<ExitStatus> {
+    // Restore the original child before entering the one ordered retirement
+    // API. Failed observation leaves both child and durable recovery record
+    // owned; the adapter never removes records or closes containment itself.
+    tree.child = Some(child);
+    observed?;
+    let status = tree.try_wait(None)?.ok_or(io::ErrorKind::WouldBlock)?;
+    tree.terminate(None)?;
+    Ok(status)
 }
 
 struct Directory(PathBuf);
@@ -125,9 +130,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The Child has crossed its physical wait. Keep all original custody
     // records and output leases until the same owner has drained descendants.
-    let status = retire_child(&mut state, child);
-    waited?;
-    let status = status?;
+    let status = retire_after_observation(&mut state.tree, child, waited)?;
     if let Some(failure) = state.failure.take() {
         return Err(failure);
     }
@@ -165,7 +168,12 @@ mod tests {
             cancelled: false,
             failure: None,
         };
-        assert_eq!(retire_child(&mut state, child).unwrap().code(), Some(7));
+        assert_eq!(
+            retire_after_observation(&mut state.tree, child, Ok(()))
+                .unwrap()
+                .code(),
+            Some(7)
+        );
         assert!(state.tree.is_reaped());
     }
 
@@ -208,7 +216,7 @@ mod tests {
                 state.tree.guard.close(None).unwrap();
                 state.tree.custody.as_ref().unwrap().remove().is_err()
             } else {
-                retire_child(&mut state, child).is_err()
+                retire_after_observation(&mut state.tree, child, Ok(())).is_err()
             };
             let retained = state.tree.custody.is_some() && !state.tree.is_reaped();
             #[cfg(unix)]
@@ -230,5 +238,34 @@ mod tests {
             assert!(state.tree.is_reaped());
             assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
         }
+    }
+
+    #[test]
+    fn failed_host_observation_keeps_the_live_child_and_recovery_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let records = root.path().join("custody");
+        let custody = ProcessCustody::open(&records).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("partial", root.path()),
+            &custody,
+        )
+        .unwrap();
+        super::super::tests::ready(root.path(), "partial-ready", || {
+            tree.try_wait(None).map_or(true, |status| status.is_some())
+        });
+        let child = tree.child.take().unwrap();
+        let failure = retire_after_observation(
+            &mut tree,
+            child,
+            Err(io::ErrorKind::Interrupted.into()),
+        );
+        let retained = tree.child.is_some()
+            && tree.custody.is_some()
+            && std::fs::read_dir(&records).unwrap().count() == 1;
+        tree.terminate(None).unwrap();
+        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert!(retained);
+        assert!(tree.is_reaped());
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
     }
 }
