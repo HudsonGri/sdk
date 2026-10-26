@@ -389,6 +389,25 @@ impl<K> Registration<K> {
         Ok(())
     }
 }
+impl<K> Registration<K> {
+    /// Withdraw the alarm from the due index while its actor is paused. The
+    /// observed alarm is retained, so reinstalling the same committed alarm
+    /// on resume is a permitted `update_alarm`.
+    pub fn suspend_alarm(&self) {
+        let mut index = self
+            .core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let due = index
+            .entries
+            .get_mut(&self.id)
+            .and_then(|entry| entry.due.take());
+        if let Some(due) = due {
+            index.due.remove(&due);
+        }
+    }
+}
 impl<K> Drop for Registration<K> {
     fn drop(&mut self) {
         let mut index = self

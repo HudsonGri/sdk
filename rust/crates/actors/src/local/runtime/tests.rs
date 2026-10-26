@@ -408,3 +408,217 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     assert_eq!(records(&*provider, "out/paused").await?, vec![Bytes::from_static(b"r0")]);
     Ok(())
 }
+
+/// Create `name` under `store`'s root with its inbox holding `commands`, in
+/// one foreign commit.
+async fn spawn_with<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    name: &str,
+    commands: &[&'static [u8]],
+) -> Result<ActorReference, Box<dyn std::error::Error>> {
+    let address = actor(name)?;
+    let inbox = StreamPath::new(format!("agents/{name}"))?;
+    let mut prepared = PreparedPublish::foreign(key(&format!("spawn-{name}"))?);
+    let (condition, mutation) = store.create(
+        &address,
+        BTreeMap::from([(
+            "inbox".to_owned(),
+            Subscription {
+                path: inbox.clone(),
+                cursor: 0,
+            },
+        )]),
+        Some(ledger(&format!("out/{name}"))?),
+    )?;
+    prepared.join(Effect {
+        conditions: vec![condition],
+        mutation,
+    })?;
+    prepared.join(Effect {
+        conditions: vec![CommitCondition::Absent {
+            path: inbox.clone(),
+        }],
+        mutation: CommitMutation::Append {
+            path: inbox,
+            records: commands
+                .iter()
+                .map(|command| Bytes::from_static(command).into())
+                .collect(),
+        },
+    })?;
+    PreparedPublish::settle(&store.provider().commit(prepared.into_request()).await?)?;
+    Ok(address)
+}
+
+/// A paused actor's overdue alarm leaves the due index (no wake loop) but
+/// stays committed and fires once on resume.
+#[tokio::test]
+async fn a_paused_actor_withdraws_its_due_alarm_until_resume() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let clock = Arc::new(Manual(AtomicU64::new(1)));
+    let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        shared,
+    );
+    let address = spawn_with(&store, "sleeper", &[b"set 10"]).await?;
+    runtime.track(address.clone())?;
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(runtime.ready.next_deadline(), Some(11));
+    runtime.pause(&address, true).await?;
+    runtime.wake(&address);
+    assert!(runtime.drain().await.is_empty());
+    // Control: scheduling before the paused check keeps Some(11) here, and
+    // every timer fire re-queues the paused actor.
+    assert_eq!(
+        runtime.ready.next_deadline(),
+        None,
+        "paused alarm left the due index"
+    );
+    clock.0.store(100, Ordering::SeqCst);
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(runtime.counts().1, 0, "no wake while paused");
+    assert!(records(&*provider, "out/sleeper").await?.is_empty());
+    runtime.pause(&address, false).await?;
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(
+        records(&*provider, "out/sleeper").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
+
+/// Two runtimes claiming one cut use distinct attempt keys, so the second
+/// claim is fenced instead of replaying the first claim's saved success.
+#[tokio::test]
+async fn two_runtimes_claiming_one_cut_cannot_share_an_epoch() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "contested", &[b"emit"]).await?;
+    let host = || -> Result<Runtime<MemoryStream>, Box<dyn std::error::Error>> {
+        Ok(Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(SystemClock),
+        ))
+    };
+    let (first, second) = (host()?, host()?);
+    let cut = store.load(&address).await?;
+    let attempt =
+        |runtime: &Runtime<MemoryStream>| super::key(&cut, &format!("claim-1-{}", runtime.instance));
+    store.claim(&cut, 1, attempt(&first)?).await?;
+    // A retry of the same attempt replays its own success.
+    store.claim(&cut, 1, attempt(&first)?).await?;
+    // Control: with one shared `claim-1` key this replays success as well.
+    assert!(matches!(
+        store.claim(&cut, 1, attempt(&second)?).await,
+        Err(Error::Conflict)
+    ));
+    Ok(())
+}
+
+/// Generated keys stay bounded for any valid root: a 338-byte root hosts.
+#[tokio::test]
+async fn a_long_state_root_still_claims_and_delivers() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let long = StreamPath::new(format!("harness/{}", ["segment-xx"; 30].join("/")))?;
+    let store = Store::new(Arc::clone(&provider), long.clone());
+    let address = spawn_with(&store, "deep", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), long),
+        Arc::new(Package::new()?),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.track(address)?;
+    // Control: a key embedding the path exceeds 256 bytes, so every claim
+    // fails with InvalidArgument.
+    let failures = runtime.drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(
+        records(&*provider, "out/deep").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    Ok(())
+}
+
+/// Wraps the package with explicit manifest limits; `stall` never resolves.
+struct Limited {
+    package: Package,
+    manifest: Manifest,
+    stall: bool,
+}
+impl Limited {
+    fn new(
+        timeout_ms: u64,
+        checkpoint_bytes: u64,
+        stall: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            package: Package::new()?,
+            manifest: Manifest {
+                code: crate::domain::CodeSha256::try_from(vec![0xa4; 32])?,
+                codec: conformance::codec(),
+                subscriptions: vec!["inbox".into()],
+                bindings: Vec::new(),
+                limits: crate::domain::ActorLimits::new(timeout_ms, 1 << 20, checkpoint_bytes)?,
+            },
+            stall,
+        })
+    }
+}
+impl Handler for Limited {
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+    ) -> GuestFuture<'a, Transition> {
+        if self.stall {
+            return futures::future::pending().boxed();
+        }
+        self.package.on_record(delivery, checkpoint)
+    }
+}
+
+type Outcome = (Vec<(ActorReference, Error)>, Vec<Bytes>);
+
+async fn run_limited(handler: Limited) -> Result<Outcome, Box<dyn std::error::Error>> {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "limited", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(handler),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.track(address)?;
+    let failures = runtime.drain().await;
+    Ok((failures, records(&*provider, "out/limited").await?))
+}
+
+fn refused(failures: &[(ActorReference, Error)], reason: &str) -> bool {
+    matches!(failures, [(_, Error::Invalid(found))] if found.contains(reason))
+}
+
+/// Manifest limits bind: a stalled handler is abandoned at its timeout and an
+/// oversized checkpoint is refused; neither consumes the input.
+#[tokio::test]
+async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult {
+    let stalled = run_limited(Limited::new(50, 1 << 16, true)?);
+    let (failures, published) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), stalled).await??;
+    assert!(refused(&failures, "timeout"), "{failures:?}");
+    assert!(published.is_empty());
+    // Control: the same package within its limits publishes.
+    let (failures, published) = run_limited(Limited::new(10_000, 1 << 16, false)?).await?;
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(published, vec![Bytes::from_static(b"r0")]);
+    let (failures, published) = run_limited(Limited::new(10_000, 4, false)?).await?;
+    assert!(refused(&failures, "checkpoint"), "{failures:?}");
+    assert!(published.is_empty());
+    Ok(())
+}

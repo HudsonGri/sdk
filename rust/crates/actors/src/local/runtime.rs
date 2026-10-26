@@ -14,6 +14,7 @@ use acyclic_stream::{
     StreamPath, StreamProvider,
 };
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
     convert::Infallible,
@@ -83,6 +84,9 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
     actors: SyncMutex<HashMap<ActorReference, Arc<Slot>>>,
+    /// Identity of this runtime's placement attempts: two hosts claiming the
+    /// same cut never share an idempotency key, so only one claim commits.
+    instance: uuid::Uuid,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -94,6 +98,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             clock,
             ready: ReadySet::default(),
             actors: SyncMutex::new(HashMap::new()),
+            instance: uuid::Uuid::new_v4(),
         }
     }
 
@@ -300,7 +305,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .ok_or(Error::Invalid("epoch overflow"))?;
                 match self
                     .store
-                    .claim(&snapshot, epoch, key(&snapshot, &format!("claim-{epoch}"))?)
+                    .claim(
+                        &snapshot,
+                        epoch,
+                        key(&snapshot, &format!("claim-{epoch}-{}", self.instance))?,
+                    )
                     .await
                 {
                     Ok(()) => inner.epoch = epoch,
@@ -309,10 +318,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 continue;
             }
-            slot.registration.update_alarm(state.alarm())?;
             if state.paused() {
+                // The alarm stays committed; only its active wake is withdrawn.
+                slot.registration.suspend_alarm();
                 return Ok(());
             }
+            slot.registration.update_alarm(state.alarm())?;
             let now = self.clock.now_unix_ms();
             let (trigger, record) = match state.alarm().pending() {
                 Some(deadline) if deadline <= now => (
@@ -334,9 +345,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 },
             };
             let epoch = inner.epoch;
-            let transition = self
-                .handler
-                .on_record(
+            let limits = &self.handler.manifest().limits;
+            // A handler past its manifest timeout is abandoned with its input
+            // unconsumed; the actor lock is released for the next attempt.
+            let transition = tokio::time::timeout(
+                std::time::Duration::from_millis(limits.handler_timeout_millis()),
+                self.handler.on_record(
                     Delivery {
                         actor: actor.clone(),
                         epoch,
@@ -345,8 +359,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         record,
                     },
                     state.checkpoint(),
-                )
-                .await?;
+                ),
+            )
+            .await
+            .map_err(|_| Error::Invalid("handler exceeded its manifest timeout"))??;
+            if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+                > limits.checkpoint_bytes()
+            {
+                return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+            }
             match self
                 .store
                 .publish(&snapshot, epoch, &trigger, transition, key(&snapshot, "publish")?)
@@ -482,8 +503,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 /// One stable key per intent at one exact cut: an uncertain acknowledgement
 /// retries the identical request, and distinct cuts never share a key.
 fn key(snapshot: &Snapshot, operation: &str) -> Result<IdempotencyKey, Error> {
+    // Hashed so any valid root and path fit the bounded key; parts are
+    // length-prefixed so distinct (path, tail, operation) never collide.
+    let mut hash = Sha256::new();
+    for part in [
+        snapshot.path.as_str().as_bytes(),
+        &snapshot.tail.to_le_bytes(),
+        operation.as_bytes(),
+    ] {
+        hash.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hash.update(part);
+    }
     Ok(IdempotencyKey::new(
-        format!("actors/v1/{}/{}/{operation}", snapshot.path, snapshot.tail).into_bytes(),
+        [b"actors/v1/".as_slice(), hash.finalize().as_slice()].concat(),
     )?)
 }
 

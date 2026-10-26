@@ -36,6 +36,7 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
+sha2.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
