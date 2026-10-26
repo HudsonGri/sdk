@@ -334,7 +334,8 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<()>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            let (revision, existing) = self.verified_history(admission, record, false, io)?.await?;
+            let (revision, existing) =
+                self.verified_history(admission, record, false, io)?.await?;
             if let Some(existing) = existing {
                 if existing != *record {
                     return Err(Error::Conflict("workflow operation identity reused".into()));
@@ -345,9 +346,12 @@ where
             if revision == expected_revision {
                 return Ok(None);
             }
-            Err(Error::Conflict("workflow checkpoint or ownership changed".into()))
+            Err(Error::Conflict(
+                "workflow checkpoint or ownership changed".into(),
+            ))
         })
     }
+
     pub(crate) async fn commit_with_io(
         &self,
         expected_revision: u64,
@@ -464,12 +468,18 @@ where
                     .await;
                 match appended {
                     Ok(false) if self.owner.is_some() => {
-                        if self.settle_owned_append(&admission, record, expected_revision, io)?.await?.is_none() {
+                        if self
+                            .settle_owned_append(&admission, record, expected_revision, io)?
+                            .await?
+                            .is_none()
+                        {
                             continue;
                         }
                     }
                     appended => {
-                        if let Some(reconciliation) = self.resolve_commit_append(appended, record, io)? {
+                        if let Some(reconciliation) =
+                            self.resolve_commit_append(appended, record, io)?
+                        {
                             reconciliation.await?;
                         }
                     }
