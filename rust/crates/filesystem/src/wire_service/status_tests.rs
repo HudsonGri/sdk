@@ -178,10 +178,6 @@ fn filesystem_admission_cases(
             F::LocalRoot(std::io::Error::other("root")),
             Code::Unavailable,
         ),
-        (
-            F::LocalStaging(std::io::Error::other("staging")),
-            Code::Unavailable,
-        ),
         (F::LocalOptionsConflict, Code::FailedPrecondition),
         (F::LocalInitializationWorker, Code::Unavailable),
         (
