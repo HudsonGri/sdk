@@ -13,12 +13,35 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
     let physical = tempfile::tempdir()?;
     let lazy = native_lazy_source(physical.path(), "terminal-drain-proof", &cancellation).await?;
     let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
-    let (source, _, _) = admitted_source(
+    let (authored, _, root_text) = admitted_source(
         &lazy,
         &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
         &work,
     )
     .await?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(root_custody) = root_text.1
+    else {
+        return Err("authenticated root lost its native allocation".into());
+    };
+    let mut source_allocation = work.claim(
+        std::mem::size_of::<
+            LazyMountSource<
+                crate::facade::MemoryAuthorityBackend,
+                crate::facade::MemoryObjectBackend,
+                NativeDemandSource,
+                MemoryLazyWorkspaceStore,
+            >,
+        >() as u64,
+        1,
+        crate::WorkCounters::default(),
+    )?;
+    let source = Arc::new(LazyMountSource::new(
+        lazy.share(&mut KernelAccounting::native(&work, &cancellation))?,
+        authored,
+        root_text.0,
+        super::super::adapter::NativeDemandCarrier::Native(&work),
+        Some((root_custody, &mut source_allocation)),
+    )?);
     let Fixture {
         root,
         mut session,
