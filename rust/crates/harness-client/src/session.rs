@@ -362,6 +362,13 @@ impl WireSession {
     pub fn followed_agents(&self) -> usize {
         self.follows.len()
     }
+
+    /// Whether this selected stream still owns a pending or open follow.
+    /// Terminal views remain readable after their follow has been released.
+    #[must_use]
+    pub fn is_following(&self, stream: &StreamPath) -> bool {
+        self.follows.contains_key(stream)
+    }
 }
 
 fn validate_subscription(

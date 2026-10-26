@@ -205,13 +205,22 @@ impl AgentClient {
         for offset in 0..self.streams.len() {
             let index = (self.next_stream + offset) % self.streams.len();
             let (agent, status, path) = &self.streams[index];
-            let frame = match self.session.poll_stream(path, context) {
+            // WireSession releases terminal follows but retains their final
+            // views. Poll only its actual live ownership, so reporting one
+            // failed path cannot strand the other selected streams on NotOpen.
+            if !self.session.is_following(path) {
+                continue;
+            }
+            let outcome = self.session.poll_stream(path, context);
+            if outcome.is_ready() {
+                self.next_stream = (index + 1) % self.streams.len();
+            }
+            let frame = match outcome {
                 Poll::Pending => continue,
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                 Poll::Ready(Ok(None)) => return Poll::Ready(Err(AgentClientError::Closed(path.clone()))),
                 Poll::Ready(Ok(Some(frame))) => frame,
             };
-            self.next_stream = (index + 1) % self.streams.len();
             let event = match frame.body {
                 Some(wire::session_frame::Body::Data(data)) => {
                     let Some(wire::session_data::Item::Record(record)) = data.item else {
