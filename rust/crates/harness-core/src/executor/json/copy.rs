@@ -38,11 +38,11 @@ pub(super) fn value(value: &Value, scope: &mut Scope<'_>) -> Result<Value> {
             Value::Array(copied)
         }
         Value::Object(values) => {
+            scope.map_nodes(values.len())?;
             let mut copied = serde_json::Map::new();
             for (key, child) in values {
                 let key = string(key, scope)?;
                 let child = self::value(child, scope)?;
-                scope.map_nodes(copied.len())?;
                 copied.insert(key, child);
             }
             Value::Object(copied)

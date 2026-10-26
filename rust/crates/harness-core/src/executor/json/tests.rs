@@ -39,6 +39,48 @@ mod digest_properties {
     }
 
     proptest! {
+        // Resident copies fund the complete insertion-only map once. Compare
+        // the charge with physical allocations, independently of the bound.
+        #[test]
+        fn resident_maps_fund_nodes_once_before_copy(
+            entries in prop::collection::btree_map("[a-z]{0,8}", any::<i64>(), 1..512),
+        ) {
+            let value = Value::Object(entries.into_iter().map(|(key, value)| (key, Value::from(value))).collect());
+            let mut operations = 0;
+            let mut batches = 0;
+            let mut copied = None;
+            let measured = acyclic_test_support::measure(|| {
+                copied = Some(json_value_copy_bounded(&value, BOUNDS, None, &mut |event| {
+                    operations += match event {
+                        JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
+                        JsonCodecCharge::AllocationOperations { operations } => {
+                            batches += 1;
+                            operations
+                        }
+                        _ => 0,
+                    };
+                    Ok(())
+                }));
+            });
+            prop_assert_eq!(&copied.unwrap().unwrap(), &value);
+            prop_assert_eq!(batches, 1);
+            prop_assert!(operations >= measured.count_total);
+            prop_assert!(operations <= measured.count_total + map_slack(&value));
+
+            let mut refusal = Some(Error::Unsupported("map funding denied".into()));
+            let denied = acyclic_test_support::measure(|| {
+                let result = json_value_copy_bounded(&value, BOUNDS, None, &mut |event| {
+                    if matches!(event, JsonCodecCharge::AllocationOperations { .. }) {
+                        Err(refusal.take().unwrap())
+                    } else {
+                        Ok(())
+                    }
+                });
+                assert!(result.is_err());
+            });
+            prop_assert_eq!(denied.count_total, 0);
+        }
+
         // Flat arrays need one output buffer and at most one array allocation,
         // regardless of length. The former reserve-per-element path fails this.
         #[test]

@@ -188,18 +188,7 @@ impl Decoder<'_, '_, '_> {
                 .windows(2)
                 .filter(|pair| pair[0].0 != pair[1].0)
                 .count();
-        // Conservative occupancy bound, shared with the retained-byte audit:
-        // eleven slots per node, at least five entries in each non-root node,
-        // and at least one in the root. This does not predict split positions.
-        let operations = if unique == 0 {
-            0
-        } else {
-            1 + (unique as u64 - 1) / 5
-        };
-        if operations != 0 {
-            self.scope
-                .event(JsonCodecCharge::AllocationOperations { operations })?;
-        }
+        self.scope.map_nodes(unique)?;
         let mut values = serde_json::Map::new();
         for (key, value, _) in entries.drain(..) {
             values.insert(key, value);

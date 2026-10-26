@@ -129,6 +129,16 @@ pub(crate) fn json_value_retained_owned_bytes(value: &Value) -> Result<u64> {
     value_owned_bytes(value, true)
 }
 
+// An insertion-only B-tree never frees a node: the final occupancy bounds
+// every node allocation during construction, including root splits.
+pub(super) fn object_nodes(entries: usize) -> usize {
+    if entries == 0 {
+        0
+    } else {
+        1 + (entries - 1) / 5
+    }
+}
+
 fn value_owned_bytes(value: &Value, retained: bool) -> Result<u64> {
     let overflow = || {
         boundary(
@@ -158,7 +168,7 @@ fn value_owned_bytes(value: &Value, retained: bool) -> Result<u64> {
             let slots = if retained && !values.is_empty() {
                 let node =
                     11 * std::mem::size_of::<(String, Value)>() + 14 * std::mem::size_of::<usize>();
-                (1 + (values.len() - 1) / 5).checked_mul(node)
+                object_nodes(values.len()).checked_mul(node)
             } else {
                 values
                     .len()
