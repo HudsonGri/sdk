@@ -65,20 +65,11 @@ impl VerifiedScope {
         &self.scope
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn copy_verifier(
-        &self,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<AuthorityVerifier> {
-        self.verifier.copy(work)
-    }
-
     #[cfg(feature = "filesystem")]
     pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         self.recheck(quota.work())?;
         let scope = self.scope.copy_in_quota(quota)?;
-        let verifier = self.verifier.copy(quota.work())?;
-        quota.adopt(verifier.logical_owned_bytes()?)?;
+        let verifier = self.verifier.copy_in_quota(quota)?;
         let evidence = self.evidence.try_clone_with(|bytes| -> Result<()> {
             let bytes = bytes as u64;
             quota.retain(bytes)?;

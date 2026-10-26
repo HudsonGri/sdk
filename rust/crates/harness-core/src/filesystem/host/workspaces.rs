@@ -36,6 +36,30 @@ fn require_publication_fence(fence: Option<acyclic_fs::access::PolicyFence>) -> 
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn native_publication_authority(
+    grant: &ContentGrant,
+    io: &PreparationIo,
+) -> Result<Arc<(crate::core::VerifiedScope, acyclic_fs::NativeAllocation)>> {
+    if io.original_native_work().is_none() {
+        return Err(io.invalid("native publication requires its original work"));
+    }
+    crate::executor::with_history_io(Some(io), |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let authority = grant.authority.copy_in_quota(&mut quota)?;
+        let slot = acyclic_native_runtime::arc_allocation_bytes::<(
+            crate::core::VerifiedScope,
+            acyclic_fs::NativeAllocation,
+        )>() as u64;
+        quota.retain(slot)?;
+        quota.observer()?.allocation_attempt(slot)?;
+        let custody = quota
+            .into_custody()?
+            .ok_or_else(|| io.invalid("native publication lost its original work"))?;
+        Ok(Arc::new((authority, custody)))
+    })
+}
+
 fn creation_error(error: WorkspaceError, io: Option<&PreparationIo>) -> Error {
     match error {
         WorkspaceError::Filesystem(acyclic_fs::FsError::Mutation(
@@ -736,19 +760,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     let preparation = preparation.cloned();
                     let fence = publication.fence();
                     let authority = if let FilePublication::Authorized(_, grant) = publication {
-                        let before = io.owned_bytes()?;
-                        let verifier = grant.copy_verifier(&mut Some(&mut io.history_io()))?;
-                        let scope = grant.policy_scope().copy(&mut Some(&mut io.history_io()))?;
-                        let metadata = (std::mem::size_of::<(
-                            AuthorityVerifier,
-                            Scope,
-                            acyclic_fs::NativeAllocation,
-                        )>() + 2 * std::mem::size_of::<usize>())
-                            as u64;
-                        io.retain_owned(metadata)?;
-                        io.allocation_attempt(metadata)?;
-                        let custody = io.take_native_custody(io.owned_since(before)?)?;
-                        Some(Arc::new((verifier, scope, custody)))
+                        Some(native_publication_authority(grant, io)?)
                     } else {
                         None
                     };
@@ -761,9 +773,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 require_publication_fence(fence)?;
                                 if let Some(authority) = &authority {
                                     let io = PreparationIo::from_native_work(&work)?;
-                                    authority
-                                        .0
-                                        .verify(&authority.1, &mut Some(&mut io.history_io()))?;
+                                    authority.0.recheck(&mut Some(&mut io.history_io()))?;
                                 }
                                 Ok(())
                             };
@@ -868,8 +878,17 @@ async fn verify_native_publication(
 mod workload_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn revocation_during_staging_prevents_content_publication() -> Result<()> {
+    struct Fixture {
+        host: Arc<
+            FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
+        >,
+        volume: VolumeRef,
+        issuer: crate::core::AuthorityIssuer,
+        scope: Scope,
+        grant: ContentGrant,
+    }
+
+    async fn fixture() -> Result<Fixture> {
         let provider = ProviderRef::new(
             "revocation".into(),
             "filesystem".into(),
@@ -884,7 +903,7 @@ mod workload_tests {
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
-        let mut host = FilesystemHost::new(
+        let host = FilesystemHost::new(
             Fs::memory(),
             &provider,
             None,
@@ -916,40 +935,189 @@ mod workload_tests {
             u64::MAX,
             &mut None,
         )?;
-        let workspace = fork_preparer_io::content_workspace(&provider, &volume, None)?;
-        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        let opened = host.open(&workspace, Some(&io)).await?;
-        let before = io.sdk(opened.head(&io, io.cancellation()).await)?.id();
-        Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
-            let issuer = issuer.clone();
-            let scope = scope.clone();
-            Box::pin(async move {
-                issuer.revoke_workload(&scope).unwrap();
-            })
-        }));
-        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        let result = host
-            .put_content(
-                &volume,
-                &grant,
-                "private",
-                b"secret",
-                "text/plain",
-                "private",
-                64,
-                &IdempotencyKey::new("revoked-publication")?,
-                None,
-                crate::conversation::ContentAccess {
-                    ceiling: None,
-                    io: Some(&io),
-                },
-            )
-            .await;
-        assert!(result.is_err());
-        assert_eq!(
-            io.sdk(opened.head(&io, io.cancellation()).await)?.id(),
-            before
+        Ok(Fixture {
+            host,
+            volume,
+            issuer,
+            scope,
+            grant,
+        })
+    }
+
+    fn publication_io(native: bool, budget: acyclic_fs::WorkBudget) -> Result<PreparationIo> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            return PreparationIo::from_native_work(&work);
+        }
+        let _ = native;
+        PreparationIo::from_budget(budget, &cancellation)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn publication_retains_evidence_without_repeating_signatures() -> Result<()> {
+        let Fixture {
+            host,
+            volume,
+            grant,
+            ..
+        } = fixture().await?;
+        for native in [false, true] {
+            for internal in [false, true] {
+                let io = publication_io(native, acyclic_fs::performance::BOUNDARY_BUDGET)?;
+                let key = IdempotencyKey::new(format!("publication-{native}-{internal}"))?;
+                let (result, signatures): (_, Vec<acyclic_auth::crypto::SignatureVerification>) =
+                    acyclic_test_support::differential::observe_async(async {
+                        if internal {
+                            host.put_internal_content(
+                                &volume,
+                                &grant,
+                                "turns/.canonical/evidence",
+                                b"hello",
+                                "text/plain",
+                                "hello.txt",
+                                4096,
+                                &key,
+                                InternalContentClass::Conversation,
+                                Some(&io),
+                            )
+                            .await
+                        } else {
+                            host.put_content(
+                                &volume,
+                                &grant,
+                                "evidence",
+                                b"hello",
+                                "text/plain",
+                                "hello.txt",
+                                4096,
+                                &key,
+                                None,
+                                crate::conversation::ContentAccess {
+                                    ceiling: None,
+                                    io: Some(&io),
+                                },
+                            )
+                            .await
+                        }
+                    })
+                    .await;
+                result?;
+                assert!(
+                    signatures.is_empty(),
+                    "publication repeated signatures: native={native} internal={internal} count={}",
+                    signatures.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_publication_evidence_owns_complete_storage_and_partial_failures() -> Result<()>
+    {
+        let Fixture {
+            grant,
+            issuer,
+            scope,
+            ..
+        } = fixture().await?;
+        let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        let probe = publication_io(true, budget)?;
+        probe.retain_owned(17)?;
+        let setup = budget.allocation_operations - probe.remaining()?.allocation_operations;
+        let before = probe.remaining()?.peak_allocation_bytes;
+        let evidence = native_publication_authority(&grant, &probe)?;
+        let required =
+            budget.allocation_operations - setup - probe.remaining()?.allocation_operations;
+        assert!(required > 3);
+        let retained = before - probe.remaining()?.peak_allocation_bytes;
+        let physical = acyclic_test_support::measure(|| drop(evidence))
+            .bytes_current
+            .unsigned_abs();
+        assert!(
+            physical > 0 && retained >= physical,
+            "publication evidence underfunded: retained={retained} physical={physical}"
         );
+        assert_eq!(probe.owned_bytes()?, 17);
+        for cut in 0..required {
+            let mut limited = budget;
+            limited.allocation_operations = setup + cut;
+            let io = publication_io(true, limited)?;
+            io.retain_owned(17)?;
+            let result = native_publication_authority(&grant, &io);
+            assert!(
+                result.is_err(),
+                "publication bypassed original allocation cut {cut}"
+            );
+            drop(result);
+            assert_eq!(
+                io.owned_bytes()?,
+                17,
+                "partial publication evidence leaked at allocation {cut}"
+            );
+        }
+        let evidence = native_publication_authority(&grant, &probe)?;
+        issuer.revoke_workload(&scope)?;
+        assert!(
+            evidence
+                .0
+                .recheck(&mut Some(&mut probe.history_io()))
+                .is_err()
+        );
+        assert!(native_publication_authority(&grant, &probe).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revocation_during_staging_prevents_content_publication() -> Result<()> {
+        for native in [false, true] {
+            let Fixture {
+                mut host,
+                volume,
+                issuer,
+                scope,
+                grant,
+            } = fixture().await?;
+            let workspace = fork_preparer_io::content_workspace(volume.provider(), &volume, None)?;
+            let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            let opened = host.open(&workspace, Some(&io)).await?;
+            let before = io.sdk(opened.head(&io, io.cancellation()).await)?.id();
+            Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+                let issuer = issuer.clone();
+                let scope = scope.clone();
+                Box::pin(async move {
+                    issuer.revoke_workload(&scope).unwrap();
+                })
+            }));
+            let io = publication_io(native, acyclic_fs::performance::BOUNDARY_BUDGET)?;
+            let result = host
+                .put_content(
+                    &volume,
+                    &grant,
+                    "private",
+                    b"secret",
+                    "text/plain",
+                    "private",
+                    64,
+                    &IdempotencyKey::new("revoked-publication")?,
+                    None,
+                    crate::conversation::ContentAccess {
+                        ceiling: None,
+                        io: Some(&io),
+                    },
+                )
+                .await;
+            assert!(result.is_err());
+            assert_eq!(
+                io.sdk(opened.head(&io, io.cancellation()).await)?.id(),
+                before
+            );
+        }
         Ok(())
     }
 }

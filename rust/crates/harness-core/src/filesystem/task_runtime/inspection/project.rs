@@ -1,6 +1,6 @@
 use super::*;
 use crate::conversation::{
-    FileDescriptor, Limits, PrivateDirectoryEntry, PrivateDirectoryEntryKind, VolumeOperation,
+    FileDescriptor, Limits, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
 };
 use crate::durable_host::TaskJournalOwner;
 use crate::filesystem::fork_preparer::bounded_io;
@@ -64,8 +64,14 @@ where
             .generation(&workspace, &authorization.generation, Some(&io))
             .await?;
         Self::verify_owner(&owner, &io, &owner_work).await?;
-        let view =
-            Self::require_unrestricted(&workspace, &handle, &owner, generation.id(), &io).await?;
+        let view = crate::filesystem::host::project_source_access(
+            &workspace,
+            &handle,
+            &owner.admission().grants,
+            generation.id(),
+            &io,
+        )
+        .await?;
         Self::finish_verification(&workspace, &owner, &view.0, &io, &owner_work).await?;
         drop(view);
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
@@ -130,10 +136,10 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
-        let view = Self::require_unrestricted(
+        let view = crate::filesystem::host::project_source_access(
             &self.workspace,
             &self.handle,
-            &self.owner,
+            &self.owner.admission().grants,
             self.generation.id(),
             &self.io,
         )
@@ -196,43 +202,6 @@ where
         Ok(())
     }
 
-    async fn require_unrestricted<'a>(
-        workspace: &acyclic_fs::Workspace<A, O>,
-        handle: &ProjectSourceReadHandle,
-        owner: &TaskJournalOwner<P>,
-        generation: acyclic_fs::GenerationId,
-        io: &'a PreparationIo,
-    ) -> Result<crate::filesystem::access::CompiledAccess<'a>> {
-        use crate::filesystem::access;
-        use acyclic_fs::access::Action;
-        access::require_directory_ceiling(
-            Some(&owner.admission().grants),
-            &handle.authorization().project,
-            "",
-            Some(io),
-        )?;
-        let scope = handle.grant().policy_scope();
-        let label = crate::core::filesystem_scope_label(
-            scope.capabilities(),
-            &mut Some(&mut io.history_io()),
-        )?;
-        let view = access::access_view(
-            workspace,
-            scope,
-            Some(generation),
-            access::capability_payload(label, VolumeOperation::Read, io)?,
-            Some(&owner.admission().grants),
-            io,
-        )
-        .await?;
-        access::require_unrestricted(
-            &view.0,
-            &[Action::List, Action::Read],
-            "selected-project queries",
-        )?;
-        Ok(view)
-    }
-
     async fn finish_verification(
         workspace: &acyclic_fs::Workspace<A, O>,
         owner: &TaskJournalOwner<P>,
@@ -246,10 +215,10 @@ where
 
     async fn verify(&self) -> Result<()> {
         Self::verify_owner(&self.owner, &self.io, &self.owner_work).await?;
-        let view = Self::require_unrestricted(
+        let view = crate::filesystem::host::project_source_access(
             &self.workspace,
             &self.handle,
-            &self.owner,
+            &self.owner.admission().grants,
             self.generation.id(),
             &self.io,
         )

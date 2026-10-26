@@ -732,14 +732,6 @@ impl ContentGrant {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn copy_verifier(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<AuthorityVerifier> {
-        self.authority.copy_verifier(work)
-    }
-
     /// Revalidates expiry and revocation immediately before authority is used.
     pub(crate) fn recheck(&self, io: Option<&ContentIo>) -> Result<()> {
         crate::executor::with_history_io(io, |work| self.authority.recheck(work))

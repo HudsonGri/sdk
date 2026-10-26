@@ -181,6 +181,7 @@ pub(in crate::filesystem) use directory::DirectoryListing;
 mod import;
 mod volume_access;
 pub use import::VolumeImportPlan;
+pub(in crate::filesystem) use volume_access::project_source_access;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;

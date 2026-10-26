@@ -127,7 +127,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 authorization.native_snapshot.as_ref(),
                 Some(work),
             )?;
-            return handle.grant().require(source, VolumeOperation::Read, io);
+            return handle.grant().require_directory_path(source, "", io);
         }
         handle.require_selection(
             operation,
@@ -137,7 +137,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             authorization.native_snapshot.as_ref(),
             None,
         )?;
-        handle.grant().require(source, VolumeOperation::Read, io)
+        handle.grant().require_directory_path(source, "", io)
     }
 
     /// Plans an approved source, recovering the original operation when its target is pinned.
@@ -252,8 +252,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let endpoints = self
             .project_import_endpoints(source, generation, target, true, &mut guard)
             .await?;
+        let verification_io = endpoints.io.scoped()?;
+        let workspace = endpoints.source.clone();
+        let access = super::super::host::project_source_access(
+            &workspace,
+            handle,
+            &owner.admission().grants,
+            endpoints.source_generation.id(),
+            &verification_io,
+        )
+        .await?;
+        guard().await?;
+        super::super::access::require_current(&workspace, &access.0, &verification_io).await?;
         let result = finish(endpoints).await?;
         guard().await?;
+        super::super::access::require_current(&workspace, &access.0, &verification_io).await?;
         Ok(result)
     }
 

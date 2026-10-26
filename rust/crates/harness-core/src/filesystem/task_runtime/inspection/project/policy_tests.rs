@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::VolumeOperation;
 use crate::durable_host::tests::fixture::Fixture;
 use crate::runtime::TaskSpawner;
 use crate::source_authorization::ProjectSourceAuthorization;
@@ -63,7 +64,12 @@ impl Source {
             Arc::new(MemoryStream::default()),
             Fs::memory(),
             json!({"type": "integer"}),
-            None,
+            Some(crate::scheduler::SessionLimits {
+                active_tasks: 1,
+                total_tasks: 1,
+                depth: 0,
+                model_steps: 1,
+            }),
             &[&read, &write, &label],
         )
         .await?;
@@ -309,10 +315,10 @@ impl Source {
 async fn late_selected_verification(protected: bool) -> TestResult {
     let mut source = Source::new("verify-cut.txt").await?;
     let (reader, _) = source.reader(0).await?;
-    let view = Reader::require_unrestricted(
+    let view = crate::filesystem::host::project_source_access(
         &reader.workspace,
         &reader.handle,
-        &reader.owner,
+        &reader.owner.admission().grants,
         reader.generation.id(),
         &reader.io,
     )
@@ -424,123 +430,148 @@ async fn selected_import_inspection_requires_the_original_live_owner_and_selecti
     use crate::filesystem::ParentProjectController;
     use crate::runtime::{Bindings, RuntimeScope};
 
-    let source = Source::new("selected-import.txt").await?;
-    let (reader, _) = source.reader(0).await?;
-    let owner = &reader.owner;
-    let mut bindings = Bindings::local();
-    bindings.scope = RuntimeScope::new(owner.admission().grants.clone(), owner.admission().limits)?;
-    bindings.durable_host = Some(source.fixture.host.clone());
-    let harness = bindings.build(None)?;
-    let mut context = harness
-        .durable_context(owner.task_id(), owner.operation_id(), None)
-        .await?;
-    Arc::get_mut(&mut context)
-        .ok_or("context is already shared")?
-        .owned_mailbox = Some(Arc::new(crate::filesystem::task_runtime::TaskJournalMailbox {
-        host: source.fixture.host.clone(),
-        owner: owner.clone(),
-        native_custody: None,
-    }));
+    for deny_volume in [false, true] {
+        let mut source = Source::new("selected-import.txt").await?;
+        let (reader, _) = source.reader(0).await?;
+        let owner = &reader.owner;
+        let mut bindings = Bindings::local();
+        bindings.scope =
+            RuntimeScope::new(owner.admission().grants.clone(), owner.admission().limits)?;
+        bindings.durable_host = Some(source.fixture.host.clone());
+        let harness = bindings.build(None)?;
+        let mut context = harness
+            .durable_context(owner.task_id(), owner.operation_id(), None)
+            .await?;
+        Arc::get_mut(&mut context)
+            .ok_or("context is already shared")?
+            .owned_mailbox = Some(Arc::new(
+            crate::filesystem::task_runtime::TaskJournalMailbox {
+                host: source.fixture.host.clone(),
+                owner: owner.clone(),
+                native_custody: None,
+            },
+        ));
 
-    // The destination conversation and task owner have independent authority.
-    // The source is readable only through the selected-source handle.
-    let authority = Authority {
-        kind: AggregateKind::Conversation,
-        id: "selected-import-parent".into(),
-    };
-    let issuer = AuthorityIssuer::new("selected-import-parent", [17; 32], authority.clone());
-    let verifier = issuer.verifier(&mut None)?;
-    let agent = crate::AgentId::from_bytes([1; 16]);
-    let scope = issuer.issue(
-        "selected-import-parent",
-        &Capabilities::new([
-            "conversation:bind".to_owned(),
-            "project:merge".to_owned(),
-            source
-                .fixture
-                .destination
-                .capability(VolumeOperation::Write, &mut None)?,
-        ]),
-        Some(agent),
-        None,
-        &mut None,
-    )?;
-    let mut parent = Reducer::new(
-        authority,
-        issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
-    );
-    parent.apply(&crate::core::Command {
-        operation_id: crate::OperationId::from_bytes([93; 16]),
-        idempotency_key: crate::IdempotencyKey::new("selected-import-bind")?,
-        expected_revision: 0,
-        scope: scope.clone(),
-        causal_parent: None,
-        action: crate::core::Action::BindConversation { agent },
-    })?;
-    let controller = ParentProjectController::new(
-        &source.fixture.files,
-        &parent,
-        &verifier,
-        &scope,
-        &source.fixture.destination,
-        None,
-    )?;
-    assert!(
-        controller
-            .inspect_project_import(&source.project, &source.generation)
-            .await
-            .is_err()
-    );
-    let operation = reader.handle.authorization().operation_id;
-    let selected = || {
-        controller.inspect_project_import_from_selected_source(
-            &source.project,
-            &source.generation,
-            &reader.handle,
-            owner,
-            &context,
-            operation,
-        )
-    };
-    let inspected = selected().await;
-    assert!(
-        inspected.is_ok(),
-        "selected inspection attempted join planning: {inspected:?}"
-    );
-    let target = inspected?;
-    let destination = bounded_io::content_workspace(
-        &source.fixture.files.provider,
-        &source.fixture.destination,
-        None,
-    )?;
-    assert_eq!(
-        source
-            .fixture
-            .files
-            .resolve(&destination, None)
-            .await?
-            .generation,
-        source.fixture.files.generation_ref_id(target, None)?
-    );
-    assert!(
-        controller
-            .inspect_project_import_from_selected_source(
+        // The destination conversation and task owner have independent authority.
+        // The source is readable only through the selected-source handle.
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "selected-import-parent".into(),
+        };
+        let issuer = AuthorityIssuer::new("selected-import-parent", [17; 32], authority.clone());
+        let verifier = issuer.verifier(&mut None)?;
+        let agent = crate::AgentId::from_bytes([1; 16]);
+        let scope = issuer.issue(
+            "selected-import-parent",
+            &Capabilities::new([
+                "conversation:bind".to_owned(),
+                "project:merge".to_owned(),
+                source
+                    .fixture
+                    .destination
+                    .capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
+        let mut parent = Reducer::new(
+            authority,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        );
+        parent.apply(&crate::core::Command {
+            operation_id: crate::OperationId::from_bytes([93; 16]),
+            idempotency_key: crate::IdempotencyKey::new("selected-import-bind")?,
+            expected_revision: 0,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: crate::core::Action::BindConversation { agent },
+        })?;
+        let files = source.fixture.files.clone();
+        let destination_volume = source.fixture.destination.clone();
+        let controller = ParentProjectController::new(
+            &files,
+            &parent,
+            &verifier,
+            &scope,
+            &destination_volume,
+            None,
+        )?;
+        assert!(
+            controller
+                .inspect_project_import(&source.project, &source.generation)
+                .await
+                .is_err()
+        );
+        let operation = reader.handle.authorization().operation_id;
+        let selected = || {
+            controller.inspect_project_import_from_selected_source(
                 &source.project,
                 &source.generation,
                 &reader.handle,
                 owner,
                 &context,
-                crate::OperationId::from_bytes([94; 16]),
+                operation,
             )
-            .await
-            .is_err(),
-        "selected import accepted another operation"
-    );
-    source.fixture.replace(30).await?;
-    assert!(
-        selected().await.is_err(),
-        "selected import accepted a retired owner"
-    );
+        };
+        let inspected = selected().await;
+        assert!(
+            inspected.is_ok(),
+            "selected inspection attempted join planning: {inspected:?}"
+        );
+        let target = inspected?;
+        let destination = bounded_io::content_workspace(
+            &source.fixture.files.provider,
+            &source.fixture.destination,
+            None,
+        )?;
+        assert_eq!(
+            source
+                .fixture
+                .files
+                .resolve(&destination, None)
+                .await?
+                .generation,
+            source.fixture.files.generation_ref_id(target, None)?
+        );
+        assert!(
+            controller
+                .inspect_project_import_from_selected_source(
+                    &source.project,
+                    &source.generation,
+                    &reader.handle,
+                    owner,
+                    &context,
+                    crate::OperationId::from_bytes([94; 16]),
+                )
+                .await
+                .is_err(),
+            "selected import accepted another operation"
+        );
+        if deny_volume {
+            source.deny_secret().await?;
+            assert!(
+                controller
+                    .inspect_project_import_from_selected_source(
+                        &source.project,
+                        &source.generation,
+                        &reader.handle,
+                        owner,
+                        &context,
+                        operation,
+                    )
+                    .await
+                    .is_err(),
+                "selected import bypassed the source policy cut"
+            );
+        } else {
+            source.fixture.replace(30).await?;
+            assert!(
+                selected().await.is_err(),
+                "selected import accepted a retired owner"
+            );
+        }
+    }
     Ok(())
 }
