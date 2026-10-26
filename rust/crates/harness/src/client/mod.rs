@@ -87,6 +87,10 @@ pub use agents::{AgentClient, AgentClientError, AgentEvent};
 mod agent_local;
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use agent_local::{AgentTurn, LocalAgentClient, LocalAgentError};
+#[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod agent_stdio;
+#[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use agent_stdio::{AgentRequest, run_agent_jsonl, run_agent_prompt};
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;

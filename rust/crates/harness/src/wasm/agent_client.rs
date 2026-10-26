@@ -113,7 +113,7 @@ impl WasmAgentClient {
     /// Read the shared fold's revision without copying conversation history.
     #[wasm_bindgen(js_name = viewRevision)]
     pub fn view_revision(&self) -> Result<u64, JsValue> {
-        self.with_client(|client| client.conversation().revision())
+        self.with_client(|client| client.session().revision())
     }
 
     /// The live-tail eviction edge, distinct from its recovery cursor.
