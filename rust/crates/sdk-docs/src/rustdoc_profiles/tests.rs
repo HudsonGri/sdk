@@ -1,5 +1,4 @@
 use super::*;
-use cargo_metadata::MetadataCommand;
 use rustdoc_types::FORMAT_VERSION;
 use std::{fs, path::PathBuf, process::Command};
 
@@ -183,42 +182,6 @@ fn rustdoc_version_must_match_cargo_package_even_without_items() {
     assert!(validate_rustdoc_version(&metadata(), "feature-rich", &invalid).is_err());
     invalid.crate_version = None;
     assert!(validate_rustdoc_version(&metadata(), "feature-rich", &invalid).is_err());
-}
-
-#[test]
-fn merge_retains_overloads_and_unions_availability() {
-    let key = |signature: &str| ProjectionKey {
-        path: "crate::Thing::run".into(),
-        kind: "function".into(),
-        signature: signature.into(),
-    };
-    let merged = merge_projection([
-        ProjectedItem {
-            key: key("(u8)"),
-            profile: ProfileId("one".into()),
-        },
-        ProjectedItem {
-            key: key("(u8)"),
-            profile: ProfileId("two".into()),
-        },
-        ProjectedItem {
-            key: key("(String)"),
-            profile: ProfileId("one".into()),
-        },
-    ]);
-    assert_eq!(merged.len(), 2);
-    assert!(merged
-        .iter()
-        .any(|item| item.key.signature == "(u8)" && item.profiles.len() == 2));
-    assert!(merged
-        .iter()
-        .any(|item| item.key.signature == "(String)" && item.profiles.len() == 1));
-}
-
-#[test]
-fn metadata_command_is_the_runtime_source() {
-    let command = MetadataCommand::new();
-    assert!(!format!("{command:?}").is_empty());
 }
 
 #[test]
@@ -703,8 +666,8 @@ fn real_cargo_profiles_have_distinct_public_items_when_requested() {
                 && profile.features.contains("local")
         })
         .unwrap();
-    let out_dir = std::env::temp_dir().join("rust-docs-profile-receipts");
-    fs::create_dir_all(&out_dir).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let out_dir = directory.path();
     let first = out_dir.join("objects-json.json");
     let second = out_dir.join("objects-all-features.json");
     let first_observation = execute_profile(

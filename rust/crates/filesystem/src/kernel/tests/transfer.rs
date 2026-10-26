@@ -3,8 +3,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
-    MetadataField, TreePage, encode_file_metadata, encode_file_table_page, encode_generation_root,
-    encode_tree_page,
+    MetadataField, TreePage,
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig};
@@ -38,82 +37,38 @@ fn empty_metadata() -> FileMetadata {
     FileMetadata::default()
 }
 
-async fn put(
-    store: &MemoryObjectStore,
-    kind: ObjectKind,
-    bytes: Vec<u8>,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let object_id = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    AsyncObjectStore::put(
-        store,
-        object_id,
-        acyclic_stream::OwnedBytes::from(bytes),
-        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
-    )
-    .await?;
-    Ok(object_id)
-}
+use crate::test_support::{
+    put_file_metadata, put_file_table_page, put_generation_root, put_tree_page,
+};
 
 async fn minimal_generation(
     store: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let metadata = put(
-        store,
-        ObjectKind::Metadata,
-        encode_file_metadata(
-            empty_metadata(),
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
-    )
-    .await?;
-    let entries = put(
-        store,
-        ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(Vec::new()),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
-    )
-    .await?;
+    let metadata = put_file_metadata(store, empty_metadata()).await?;
+    let entries = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
     let root_file_id = FileId::from_bytes([41; 16]);
-    let table = put(
+    let table = put_file_table_page(
         store,
-        ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
-                file_id: root_file_id,
-                kind: FileKind::Directory,
-                link_count: 1,
-                metadata,
-                payload: FilePayload::Directory { entries },
-            }]),
-            8,
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &FileTablePage::Leaf(vec![FileRecord {
+            file_id: root_file_id,
+            kind: FileKind::Directory,
+            link_count: 1,
+            metadata,
+            payload: FilePayload::Directory { entries },
+        }]),
+        8,
     )
     .await?;
-    put(
+    put_generation_root(
         store,
-        ObjectKind::GenerationRoot,
-        encode_generation_root(
-            &GenerationRoot {
-                volume_id,
-                root_file_id,
-                file_table: table,
-                parents: Vec::new(),
-                required_features: 0,
-            },
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-        )?,
+        &GenerationRoot {
+            volume_id,
+            root_file_id,
+            file_table: table,
+            parents: Vec::new(),
+            required_features: 0,
+        },
     )
     .await
 }
@@ -210,24 +165,14 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
     ))
     .await?;
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies) {
-        let read = {
-            let __object_args = (
-                object_id,
-                manifest.config.limits.maximum_object_bytes,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = AsyncObjectStore::read(
-                &destination,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
-        }?;
-        assert_eq!(read.value.bytes.as_ref(), body.as_ref());
+        let read = AsyncObjectStore::read(
+            &destination,
+            object_id,
+            manifest.config.limits.maximum_object_bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
+        assert_eq!(read.bytes.as_ref(), body.as_ref());
     }
     Ok(())
 }

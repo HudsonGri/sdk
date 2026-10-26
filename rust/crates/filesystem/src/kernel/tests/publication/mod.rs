@@ -6,8 +6,7 @@ use crate::foundation::FileId;
 use crate::foundation::Sequence;
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
-    TreePage, encode_file_metadata, encode_file_table_page, encode_generation_root,
-    encode_tree_page,
+    TreePage, encode_generation_root,
 };
 use crate::kernel::{
     Extent, ExtentKind, ExtentPage, GenerationExportManifestError, LogicalName, NameEncoding,
@@ -109,20 +108,10 @@ async fn fenced(
         .await?)
 }
 
-async fn put(store: &MemoryObjectStore, kind: ObjectKind, bytes: Vec<u8>) -> TestResult<ObjectId> {
-    let object = ObjectId {
-        kind,
-        digest: object_digest(kind, &bytes),
-    };
-    store
-        .put(
-            object,
-            acyclic_stream::OwnedBytes::from(bytes),
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
-        )
-        .await?;
-    Ok(object)
-}
+use crate::test_support::put_object as put;
+use crate::test_support::{
+    put_file_metadata, put_file_table_page, put_generation_root, put_tree_page,
+};
 
 async fn fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> TestResult<ObjectId> {
     let metadata = metadata_object(objects).await?;
@@ -138,12 +127,7 @@ async fn fixture(objects: &MemoryObjectStore, volume_id: VolumeId) -> TestResult
     .await?[2])
 }
 async fn metadata_object(objects: &MemoryObjectStore) -> TestResult<ObjectId> {
-    put(
-        objects,
-        ObjectKind::Metadata,
-        encode_file_metadata(FileMetadata::default(), accept, allocation_failed)?,
-    )
-    .await
+    put_file_metadata(objects, FileMetadata::default()).await
 }
 async fn generation(
     objects: &MemoryObjectStore,
@@ -154,12 +138,7 @@ async fn generation(
     mut files: Vec<FileRecord>,
     parents: Vec<crate::GenerationId>,
 ) -> TestResult<[ObjectId; 3]> {
-    let tree = put(
-        objects,
-        ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(entries), 8, accept, allocation_failed)?,
-    )
-    .await?;
+    let tree = put_tree_page(objects, &TreePage::Leaf(entries), 8).await?;
     files.insert(
         0,
         FileRecord {
@@ -170,26 +149,16 @@ async fn generation(
             payload: FilePayload::Directory { entries: tree },
         },
     );
-    let table = put(
+    let table = put_file_table_page(objects, &FileTablePage::Leaf(files), 8).await?;
+    let root = put_generation_root(
         objects,
-        ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(files), 8, accept, allocation_failed)?,
-    )
-    .await?;
-    let root = put(
-        objects,
-        ObjectKind::GenerationRoot,
-        encode_generation_root(
-            &GenerationRoot {
-                volume_id,
-                root_file_id,
-                file_table: table,
-                parents,
-                required_features: 0,
-            },
-            accept,
-            allocation_failed,
-        )?,
+        &GenerationRoot {
+            volume_id,
+            root_file_id,
+            file_table: table,
+            parents,
+            required_features: 0,
+        },
     )
     .await?;
     Ok([tree, table, root])
